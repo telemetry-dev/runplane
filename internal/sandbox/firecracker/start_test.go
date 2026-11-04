@@ -1,0 +1,226 @@
+package firecracker
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/hashicorp/yamux"
+
+	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/sandbox"
+)
+
+// The test binary is also the fake jailer: systemd-run (a script in the
+// tests) executes it with the jailer arguments.
+func TestMain(m *testing.M) {
+	if os.Getenv("RUNPLANE_FAKE_JAILER") == "1" {
+		fakeJailer(os.Args[1:])
+		return
+	}
+	os.Exit(m.Run())
+}
+
+// fakeJailer serves the Firecracker API in the chroot. After InstanceStart
+// it acts as runplane-init: it gets the config, reports the runner, and
+// powers off on a shutdown request.
+func fakeJailer(args []string) {
+	var id, base, execFile string
+	for i := 0; i+1 < len(args); i++ {
+		switch args[i] {
+		case "--id":
+			id = args[i+1]
+		case "--chroot-base-dir":
+			base = args[i+1]
+		case "--exec-file":
+			execFile = args[i+1]
+		}
+	}
+	fmt.Println("jailer: starting", id)
+	if msg := os.Getenv("RUNPLANE_FAKE_JAILER_FAIL"); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(1)
+	}
+	chroot := filepath.Join(base, filepath.Base(execFile), id, "root")
+	ln, err := net.Listen("unix", filepath.Join(chroot, apiSocket))
+	if err != nil {
+		fmt.Println("listen:", err)
+		os.Exit(1)
+	}
+	booted := make(chan struct{})
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/actions" && strings.Contains(string(b), "InstanceStart") {
+			close(booted)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	<-booted
+
+	conn, err := net.Dial("unix", filepath.Join(chroot, controlSocket))
+	if err != nil {
+		fmt.Println("dial the control socket:", err)
+		os.Exit(1)
+	}
+	sess, _ := yamux.Client(conn, nil)
+	host := &http.Client{Transport: &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
+	}}
+	shutdown := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		close(shutdown)
+	})
+	go http.Serve(sess, mux)
+	post := func(path, body string) {
+		resp, err := host.Post("http://host"+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			fmt.Println("post", path, err)
+			os.Exit(1)
+		}
+		resp.Body.Close()
+	}
+	resp, err := host.Get("http://host/v1/config")
+	if err != nil {
+		os.Exit(1)
+	}
+	cfg, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if bytes.Contains(cfg, []byte(`"jit_config":"jit-secret"`)) {
+		fmt.Println("guest: got the JIT config")
+	}
+	post("/v1/logs", fmt.Sprintf("%d runner Listening for Jobs\n", time.Now().UnixMilli()))
+	post("/v1/events", `{"kind":"listening"}`)
+	<-shutdown
+	post("/v1/events", `{"kind":"exited","exit_code":0}`)
+	sess.Close()
+	os.Exit(0)
+}
+
+// startDriver is a driver whose jailer is the fake jailer above.
+func startDriver(t *testing.T) (*Driver, *fakeHost, string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("Go polls FIFOs on Linux only; scratch disks need Linux")
+	}
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("no mkfs.ext4")
+	}
+	root := shortTempDir(t)
+	bin := filepath.Join(root, "bin")
+	writeFile(t, filepath.Join(bin, "systemd-run"), "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n")
+	os.Chmod(filepath.Join(bin, "systemd-run"), 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("RUNPLANE_FAKE_JAILER", "1")
+
+	sys := &fakeHost{}
+	d := testDriver(t, root, sys)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.opts.Jailer = self
+	files := filepath.Join(root, "files")
+	for _, f := range []string{"vmlinux", "root.ext4", "runner.ext4"} {
+		writeFile(t, filepath.Join(files, f), f)
+	}
+	d.opts.Kernel = filepath.Join(files, "vmlinux")
+	d.opts.RootDisk = func(digest string) (string, error) { return filepath.Join(files, "root.ext4"), nil }
+	d.opts.RunnerDrive = func(_ context.Context, version, arch string) (string, error) {
+		return filepath.Join(files, "runner.ext4"), nil
+	}
+	return d, sys, filepath.Join(root, "data")
+}
+
+func testSpec() sandbox.Spec {
+	return sandbox.Spec{ID: "vm1", PoolID: "pool1", Arch: host.Arch(), VCPU: 1, MemoryMB: 512, DiskGB: 1, JITConfig: "jit-secret", TimeLimit: time.Hour}
+}
+
+func TestStartAndStop(t *testing.T) {
+	d, sys, data := startDriver(t)
+	ctx := context.Background()
+	if err := d.Start(ctx, testSpec()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"starting", "runner listening", "idle"} {
+		ev := nextEvent(t, d)
+		got := string(ev.State)
+		if ev.Type == sandbox.EventRunner {
+			got = "runner " + ev.Runner.Kind
+		}
+		if got != want {
+			t.Fatalf("got event %q, want %q", got, want)
+		}
+	}
+	list, _ := d.List(ctx)
+	if len(list) != 1 || list[0].State != sandbox.StateIdle || list[0].IP != "10.214.0.2" || list[0].Spec.JITConfig != "" {
+		t.Errorf("listed %+v", list)
+	}
+	record, _ := os.ReadFile(filepath.Join(data, "sandboxes", "vm1", recordFile))
+	if bytes.Contains(record, []byte("jit-secret")) {
+		t.Error("the JIT config is on disk")
+	}
+
+	logs, err := d.Logs(ctx, "vm1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(logs)
+	logs.Close()
+	for _, want := range []string{" console jailer: starting vm1\n", " console guest: got the JIT config\n", " runner Listening for Jobs\n"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("the log has no line %q:\n%s", want, b)
+		}
+	}
+
+	if err := d.Stop(ctx, "vm1"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for range 3 {
+		ev := nextEvent(t, d)
+		got = append(got, fmt.Sprintf("%s %s %s", ev.Type, ev.State, ev.Reason))
+	}
+	if want := []string{"state stopping stopped", "runner  ", "state gone stopped"}; !slices.Equal(got, want) {
+		t.Errorf("events after Stop: %q, want %q", got, want)
+	}
+	if exists(filepath.Join(data, "sandboxes", "vm1")) || exists(filepath.Join(data, "jail", "firecracker", "vm1")) {
+		t.Error("the folders of the VM remain")
+	}
+	if !slices.Equal(sys.calls(&sys.added), []string{"rp-0"}) || !slices.Equal(sys.calls(&sys.dropped), []string{"rp-0"}) {
+		t.Errorf("TAPs added %v and removed %v, want rp-0 both", sys.calls(&sys.added), sys.calls(&sys.dropped))
+	}
+	if err := d.Stop(ctx, "vm1"); err != nil {
+		t.Errorf("a second Stop: %v", err)
+	}
+}
+
+func TestStartFailureRemovesTheVM(t *testing.T) {
+	d, sys, data := startDriver(t)
+	t.Setenv("RUNPLANE_FAKE_JAILER_FAIL", "Jailer error: Cgroup not found")
+	err := d.Start(context.Background(), testSpec())
+	if err == nil || !strings.Contains(err.Error(), "Jailer error: Cgroup not found") {
+		t.Fatalf("got %v, want the jailer error from the console", err)
+	}
+	if list, _ := d.List(context.Background()); len(list) != 0 {
+		t.Errorf("listed %+v", list)
+	}
+	if exists(filepath.Join(data, "sandboxes", "vm1")) || exists(filepath.Join(data, "jail", "firecracker", "vm1")) {
+		t.Error("the folders of the failed VM remain")
+	}
+	if !slices.Equal(sys.calls(&sys.dropped), []string{"rp-0"}) {
+		t.Errorf("TAPs removed: %v, want rp-0", sys.calls(&sys.dropped))
+	}
+}

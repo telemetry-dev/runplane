@@ -1,0 +1,14 @@
+/* Indeterminate progress: a 35% bar that sweeps across the track and back. */
+@keyframes progress-sweep {
+  from {
+    translate: 0;
+  }
+  to {
+    translate: 185%;
+  }
+}
+
+.progress-indicator[data-indeterminate] {
+  width: 35%;
+  animation: progress-sweep calc(var(--motion-large-duration) * 4) var(--motion-large-easing) infinite alternate;
+}

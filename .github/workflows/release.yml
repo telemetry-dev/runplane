@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  kernel:
+    uses: ./.github/workflows/kernel.yml
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      # The binaries verify SHA256SUMS.sig with this key before a self-update,
+      # and install.sh before an install.
+      - name: Read the public signing key
+        env:
+          RUNPLANE_SIGNING_KEY: ${{ secrets.RUNPLANE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RUNPLANE_SIGNING_KEY" ]; then
+            echo "::error::The secret RUNPLANE_SIGNING_KEY (ed25519 private key, PEM) is not set."
+            exit 1
+          fi
+          key=$(printf '%s\n' "$RUNPLANE_SIGNING_KEY" | openssl pkey -pubout -outform DER | tail -c 32 | base64 -w0)
+          echo "UPDATE_PUBLIC_KEY=$key" >> "$GITHUB_ENV"
+      - name: Build web, init, and the binaries for linux/amd64 and linux/arm64
+        run: make dist VERSION="$GITHUB_REF_NAME" COMMIT="$GITHUB_SHA" REPO="$GITHUB_REPOSITORY"
+      - name: Check the version in the binary
+        run: |
+          tar -xzf "dist/runplane_${GITHUB_REF_NAME#v}_linux_amd64.tar.gz" -C "$RUNNER_TEMP" runplane
+          "$RUNNER_TEMP/runplane" version | tee /dev/stderr | grep -qF "$GITHUB_REF_NAME"
+      - name: Check the repository and the key in install.sh
+        run: |
+          grep -qxF "RUNPLANE_REPO=\${RUNPLANE_REPO:-$GITHUB_REPOSITORY}" dist/install.sh
+          grep -qxF "RUNPLANE_PUBLIC_KEY=\${RUNPLANE_PUBLIC_KEY:-$UPDATE_PUBLIC_KEY}" dist/install.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [build, kernel]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: kernel-*
+          path: kernel-out
+          merge-multiple: true
+      - name: Add the guest kernels and write SHA256SUMS
+        run: |
+          cp kernel-out/vmlinux-x86_64 kernel-out/vmlinux-arm64 dist/
+          make sums
+          cat dist/SHA256SUMS
+      - name: Sign SHA256SUMS
+        env:
+          RUNPLANE_SIGNING_KEY: ${{ secrets.RUNPLANE_SIGNING_KEY }}
+        run: |
+          key="$RUNNER_TEMP/signing.pem"
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printf '%s\n' "$RUNPLANE_SIGNING_KEY" > "$key")
+          openssl pkeyutl -sign -rawin -inkey "$key" -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/public.pem"
+          openssl pkeyutl -verify -rawin -pubin -inkey "$RUNNER_TEMP/public.pem" \
+            -in dist/SHA256SUMS -sigfile dist/SHA256SUMS.sig
+      - name: Make the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=
+          case $GITHUB_REF_NAME in *-*) flags=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes \
+            --title "runplane $GITHUB_REF_NAME" $flags

@@ -1,0 +1,5 @@
+# Written by hand, with the rarer forms of the format.
+PRETTY_NAME='Example OS 1.0 (Server)'
+NAME="Say \"hi\""
+ID=example
+VERSION_ID=1.0

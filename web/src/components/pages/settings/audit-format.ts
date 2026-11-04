@@ -1,0 +1,145 @@
+import type { Schemas } from '~/api/client'
+import { relativeTime, shortDateTime } from './format'
+
+// The rows of Settings · Members › Activity, from the entries of GET /api/audit.
+
+export type AuditEntry = Schemas['AuditEntry']
+
+/** Who made the change: the user's name, or "runplane" for runplane itself. */
+export function auditActor(entry: AuditEntry): string {
+  if (!entry.user_id) return 'runplane'
+  return entry.user_name || entry.user_email || 'A removed user'
+}
+
+/**
+ * What the actor did, as the rest of the sentence after the name: "added the
+ * label runplane-8cpu". An action this page does not know shows as it is.
+ */
+export function auditChange(entry: AuditEntry): string {
+  return changes[entry.action]?.(new Detail(entry.detail)) ?? `did ${entry.action}`
+}
+
+/** The changed object by name: a runner label, or another name such as "gra-b2-30". Undefined if the entry names none. */
+export function auditTarget(entry: AuditEntry): { name: string; label: boolean } | undefined {
+  const detail = new Detail(entry.detail)
+  const label = detail.text('label')
+  if (label) return { name: label, label: true }
+  const name = detail.text('name') || detail.text('email') || detail.text('repository')
+  return name ? { name, label: false } : undefined
+}
+
+/** "25 min ago" or "3 hours ago", then "Nov 3, 18:12" from the time relativeTime would say "1 day ago". */
+export function auditTime(at: string, now = Date.now()): string {
+  return Math.round((now - Date.parse(at)) / hour) < 24 ? relativeTime(at, now) : shortDateTime(at)
+}
+
+const hour = 60 * 60 * 1000
+
+class Detail {
+  constructor(private readonly values: Record<string, unknown>) {}
+
+  text(key: string): string {
+    const value = this.values[key]
+    return typeof value === 'string' ? value : ''
+  }
+
+  number(key: string): number | undefined {
+    const value = this.values[key]
+    return typeof value === 'number' ? value : undefined
+  }
+
+  is(key: string): boolean {
+    return this.values[key] === true
+  }
+
+  list(key: string): string[] {
+    const value = this.values[key]
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  }
+}
+
+const changes: Record<string, (detail: Detail) => string> = {
+  'setup.done': () => 'set up runplane',
+  'user.update': (d) => `made ${d.text('email') || 'a user'} ${d.text('role') === 'admin' ? 'an admin' : 'a member'}`,
+  'user.delete': (d) => `removed ${d.text('email') || 'a member'}`,
+  'user.password': () => 'changed their password',
+  'invite.create': (d) => `invited ${d.text('email')} as ${d.text('role') || 'member'}`,
+  'invite.link': (d) => `made a new invite link for ${d.text('email')}`,
+  'invite.delete': () => 'revoked an invite',
+  'pool.create': (d) => `added the label ${d.text('label')}`,
+  'pool.update': (d) => `changed the label ${d.text('label')}`,
+  'pool.delete': (d) => `removed the label ${d.text('label')}`,
+  'server.token': (d) => `made an install command for ${d.text('name')}`,
+  'server.install': (d) => `installed the server ${d.text('name')} over SSH`,
+  'server.update': (d) => `${serverVerbs[d.text('status')] ?? 'changed'} the server ${d.text('name')}`,
+  'server.delete': (d) => `removed the server ${d.text('name')}`,
+  'server.update_agent': (d) => `started the update of ${d.text('name')} to runplane ${d.text('to').replace(/^v/, '')}`,
+  'sandbox.stop': () => 'stopped a runner',
+  'sandbox.shell': () => 'opened a debug shell',
+  'cache.delete': (d) => {
+    const count = d.number('deleted') ?? 0
+    const entries = count === 1 ? '1 cache entry' : `${count} cache entries`
+    const repository = d.text('repository')
+    return repository ? `deleted ${entries} of ${repository}` : `deleted ${entries}`
+  },
+  'image.create': (d) => `added the image ${d.text('name')}`,
+  'image.update': (d) => (d.is('is_default') ? `made ${d.text('name')} the default image` : `changed the image ${d.text('name')}`),
+  'image.delete': (d) => `removed the image ${d.text('name')}`,
+  'image.refresh': (d) => `refreshed the image ${d.text('name') || d.text('ref')}`,
+  'settings.update': (d) => `changed ${settingNames(d.list('keys'))}`,
+  'job.rerun': (d) => (d.is('debug') ? 're-ran a job with SSH' : 're-ran a job'),
+  'backup.create': () => 'made a backup',
+  'backup.download': () => 'downloaded a backup',
+  'update.apply': () => 'started an update of runplane',
+  'github.manifest': (d) => `started a GitHub App for ${d.text('organization') || 'a personal account'}`,
+  'github.app.create': () => 'made the GitHub App',
+  'github.installation.install': () => 'installed the GitHub App',
+  'github.installation.update': () => 'changed the GitHub App installation',
+  'github.installation.request': () => 'asked an owner to install the GitHub App',
+  'github.sync': () => 'checked GitHub for new installations',
+  'github.disconnect': () => 'disconnected GitHub',
+  'notification.create': (d) => `added the ${channelKinds[d.text('kind')] ?? 'notification'} channel ${d.text('name')}`,
+  'notification.update': (d) => `changed the channel ${d.text('name')}`,
+  'notification.delete': () => 'removed a notification channel',
+}
+
+const serverVerbs: Record<string, string> = { draining: 'drained', online: 'resumed', disabled: 'disabled' }
+
+const channelKinds: Record<string, string> = { slack: 'Slack', discord: 'Discord', webhook: 'webhook' }
+
+/** "CPU overcommit", "the log retention and the debug hold", "3 settings". */
+function settingNames(keys: string[]): string {
+  const names = [...new Set(keys.map((key) => settingNamesByKey[key] ?? key.replaceAll('_', ' ')))]
+  if (names.length === 0) return 'the settings'
+  if (names.length > 2) return `${names.length} settings`
+  return names.join(' and ')
+}
+
+// The names of the settings pages, with "the" where a sentence needs it.
+const settingNamesByKey: Record<string, string> = {
+  instance_name: 'the name',
+  public_url: 'the dashboard URL',
+  domain: 'the domain',
+  acme_email: 'the contact email',
+  mode: 'the sandbox mode',
+  reserve_vcpu: 'the host reserve',
+  reserve_memory_mb: 'the host reserve',
+  cpu_overcommit: 'CPU overcommit',
+  min_free_disk_percent: 'the minimum free disk',
+  default_time_limit_minutes: 'the default time limit',
+  allow_public_repos: 'public repositories',
+  allow_fork_prs: 'fork pull requests',
+  egress_allowlist: 'the egress allowlist',
+  bandwidth_mbps: 'the bandwidth limit',
+  dns_servers: 'the DNS servers',
+  registry_mirror: 'the registry mirror',
+  actions_cache: 'the Actions cache',
+  cache_max_gb: 'the cache size limit',
+  job_retention_days: 'the job retention',
+  log_retention_days: 'the log retention',
+  debug_hold_minutes: 'the debug hold',
+  auto_update: 'automatic updates',
+  backup_enabled: 'daily backups',
+  backup_keep: 'the backups to keep',
+  backup_s3: 'the S3 upload',
+}

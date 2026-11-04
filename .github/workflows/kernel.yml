@@ -1,0 +1,37 @@
+# Builds the guest kernels for VM mode: vmlinux-x86_64 and vmlinux-arm64.
+# release.yml calls this workflow and puts the two files on the release, next
+# to the binaries, so that SHA256SUMS and its signature cover them.
+name: Kernel
+
+on:
+  push:
+    branches: [main]
+    paths: ['kernel/**', '.github/workflows/kernel.yml']
+  pull_request:
+    paths: ['kernel/**', '.github/workflows/kernel.yml']
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential flex bison bc \
+            libelf-dev libssl-dev xz-utils gcc-aarch64-linux-gnu
+      - name: Build
+        run: kernel/build.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: kernel/out/
+          if-no-files-found: error

@@ -1,0 +1,465 @@
+/*
+ * runplane theme. The values come from gui/themes/runplane.md (generated light
+ * and dark tables). :root holds the light mode; :root.dark overrides only the
+ * values that differ in dark mode. Components use the names, never the values.
+ */
+:root {
+  color-scheme: light;
+  --theme-name: runplane;
+  --theme-icon-family: Lucide;
+  --theme-icon-style: outlined;
+  --theme-hugeicons-variant: stroke-standard;
+  --theme-icon-stroke-width: initial;
+  --theme-icon-thin-display: initial;
+  --theme-icon-light-display: initial;
+  --theme-icon-regular-display: initial;
+  --theme-icon-bold-display: initial;
+  --toolbar-divider-bleed: 0;
+  --focus-ring-outline: initial;
+  --icon-stroke-width: var(--theme-icon-stroke-width, 1.5);
+  --icon-light-display: var(--theme-icon-light-display, inline);
+  --icon-regular-display: var(--theme-icon-regular-display, none);
+  --icon-bold-display: var(--theme-icon-bold-display, none);
+  --motion-duration: 150ms;
+  --motion-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-type: easing;
+  --motion-visual-duration: 0.15;
+  --motion-bounce: 0.2;
+  --motion-enabled: 1;
+  --motion-small-iterations: infinite;
+  --motion-large-duration: 300ms;
+  --motion-large-easing: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-large-type: easing;
+  --motion-large-visual-duration: 0.3;
+  --motion-large-bounce: 0.2;
+  --motion-large-iterations: infinite;
+  --motion-popup-scale: 0.96;
+  --motion-press-distance: 1px;
+  --option-badge-background: #f0f0f0;
+  --option-badge-foreground: #000000;
+  --navigation-active-foreground: #000000;
+  --emphasis-chart-fill: #5151fc33;
+  --emphasis-balance-background: #f0f0f0;
+  --emphasis-rewards-background: #f0f0f0;
+  --emphasis-icon-background: #f0f0f0;
+  --emphasis-icon-foreground: #000000;
+  --emphasis-type-background: #f0f0f0;
+  --emphasis-type-foreground: #000000;
+  --navigation-active-background: #f0f0f0;
+  --surface-raised-image: none;
+  --surface-raised-shadow: 0 0 0 0 transparent;
+  --surface-recessed-image: none;
+  --surface-recessed-shadow: 0 0 0 0 transparent;
+  --space-zero: 0px;
+  --space-xxs: 3px;
+  --space-xs: 6px;
+  --space-s: 9px;
+  --space-m: 12px;
+  --space-l: 18px;
+  --space-xl: 24px;
+  --space-xxl: 36px;
+  --tracking-xs: -0.02em;
+  --tracking-s: -0.01em;
+  --tracking-m: 0em;
+  --tracking-l: 0.01em;
+  --tracking-xl: 0.02em;
+  --size-xxs: 9px;
+  --line-xxs: 13px;
+  --letter-spacing-xxs: 0.02em;
+  --size-xs: 11px;
+  --line-xs: 14px;
+  --letter-spacing-xs: 0.01em;
+  --size-s: 13px;
+  --line-s: 18px;
+  --letter-spacing-s: 0.01em;
+  --size-m: 14px;
+  --line-m: 22px;
+  --letter-spacing-m: 0em;
+  --size-l: 22px;
+  --line-l: 29px;
+  --letter-spacing-l: -0.01em;
+  --size-xl: 32px;
+  --line-xl: 36px;
+  --letter-spacing-xl: -0.01em;
+  --size-xxl: 43px;
+  --line-xxl: 47px;
+  --letter-spacing-xxl: -0.02em;
+  --radius-zero: 0px;
+  --radius-xs: 2px;
+  --radius-s: 5px;
+  --radius-m: 7px;
+  --radius-l: 14px;
+  --radius-xl: 20px;
+  --radius-full: 9999px;
+  --border-none: 0px;
+  --border-s: 0px;
+  --border-m: 0px;
+  --border-l: 0px;
+  --border-default-color: #dedede33;
+  --border-shadow-none: 0 0 0 0 transparent;
+  --border-shadow-s: 0 0 0 0 transparent;
+  --border-shadow-m: 0 0 0 0 transparent;
+  --border-shadow-l: 0 0 0 0 transparent;
+  --font-ui: "Sidebar Inter", sans-serif;
+  --weight-ui-regular: 300;
+  --weight-ui-medium: 400;
+  --weight-ui-heavy: 600;
+  --font-brand: "Sidebar Inter", sans-serif;
+  --weight-brand-regular: 300;
+  --weight-brand-medium: 400;
+  --weight-brand-heavy: 600;
+  --font-editorial: "Sidebar Inter", sans-serif;
+  --weight-editorial-regular: 300;
+  --weight-editorial-medium: 400;
+  --weight-editorial-heavy: 600;
+  --font-data: "Sidebar Inter", sans-serif;
+  --weight-data-regular: 300;
+  --weight-data-medium: 400;
+  --weight-data-heavy: 600;
+  --color-none: transparent;
+  --color-1: #5151fc;
+  --color-1-transparent: #5151fc33;
+  --color-2: #ffc0ff;
+  --color-2-transparent: #ffc0ff33;
+  --color-3: #abff5a;
+  --color-3-transparent: #abff5a33;
+  --color-4: #242866;
+  --color-4-transparent: #24286633;
+  --neutral-1: #ffffff;
+  --neutral-1-transparent: #ffffff33;
+  --neutral-2: #fafafa;
+  --neutral-2-transparent: #fafafa33;
+  --neutral-3: #f0f0f0;
+  --neutral-3-transparent: #f0f0f033;
+  --neutral-4: #dedede;
+  --neutral-4-transparent: #dedede33;
+  --neutral-5: #c5c5c5;
+  --neutral-5-transparent: #c5c5c533;
+  --neutral-6: #969696;
+  --neutral-6-transparent: #96969633;
+  --neutral-7: #6c6c6c;
+  --neutral-7-transparent: #6c6c6c33;
+  --neutral-8: #454545;
+  --neutral-8-transparent: #45454533;
+  --neutral-9: #252525;
+  --neutral-9-transparent: #25252533;
+  --neutral-10: #000000;
+  --neutral-10-transparent: #00000033;
+  --success: #000000;
+  --success-transparent: #00000033;
+  --warning: #000000;
+  --warning-transparent: #00000033;
+  --error: #000000;
+  --error-transparent: #00000033;
+  --shadow-none: none;
+  --shadow-s: 0px 1px 2px 0px #00000000;
+  --shadow-m: 0px 8px 24px 0px #00000000;
+  --shadow-l: 0px 12px 30px 0px #00000000;
+  --cte-canvas: #ffffff;
+  --cte-surface: #fafafa;
+  --cte-surface-muted: #f0f0f0;
+  --cte-text: #000000;
+  --cte-text-muted: #6c6c6c;
+  --cte-border: #dedede33;
+  --cte-accent: #5151fc;
+  --cte-accent-text: #fafafa;
+  --cte-danger: #000000;
+  --cte-focus: #5151fc;
+  --cte-font: "Sidebar Inter", sans-serif;
+  --cte-font-size: 13px;
+  --cte-font-weight: 300;
+  --cte-line-height: 18px;
+  --cte-letter-spacing: 0.01em;
+  --cte-detail-font-size: 11px;
+  --cte-detail-line-height: 14px;
+  --cte-detail-letter-spacing: 0.01em;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --option-badge-background: #2b2b2b;
+  --option-badge-foreground: #ffffff;
+  --navigation-active-foreground: #ffffff;
+  --emphasis-balance-background: #2b2b2b;
+  --emphasis-rewards-background: #2b2b2b;
+  --emphasis-icon-background: #2b2b2b;
+  --emphasis-icon-foreground: #ffffff;
+  --emphasis-type-background: #2b2b2b;
+  --emphasis-type-foreground: #ffffff;
+  --navigation-active-background: #2b2b2b;
+  --border-default-color: #38383833;
+  --neutral-1: #000000;
+  --neutral-1-transparent: #00000033;
+  --neutral-2: #202020;
+  --neutral-2-transparent: #20202033;
+  --neutral-3: #2b2b2b;
+  --neutral-3-transparent: #2b2b2b33;
+  --neutral-4: #383838;
+  --neutral-4-transparent: #38383833;
+  --neutral-5: #505050;
+  --neutral-5-transparent: #50505033;
+  --neutral-6: #777777;
+  --neutral-6-transparent: #77777733;
+  --neutral-7: #a3a3a3;
+  --neutral-7-transparent: #a3a3a333;
+  --neutral-8: #c6c6c6;
+  --neutral-8-transparent: #c6c6c633;
+  --neutral-9: #e5e5e5;
+  --neutral-9-transparent: #e5e5e533;
+  --neutral-10: #ffffff;
+  --neutral-10-transparent: #ffffff33;
+  --success: #ffffff;
+  --success-transparent: #ffffff33;
+  --warning: #ffffff;
+  --warning-transparent: #ffffff33;
+  --error: #ffffff;
+  --error-transparent: #ffffff33;
+  --cte-canvas: #000000;
+  --cte-surface: #202020;
+  --cte-surface-muted: #2b2b2b;
+  --cte-text: #ffffff;
+  --cte-text-muted: #a3a3a3;
+  --cte-border: #38383833;
+  --cte-accent-text: #e5e5e5;
+  --cte-danger: #ffffff;
+}
+
+:root {
+  /* App alias, not in the theme: the designs set code and runner labels in JetBrains Mono. */
+  --font-code: "JetBrains Mono Variable", ui-monospace, monospace;
+}
+
+/*
+ * Tailwind utilities that use the theme names: bg-neutral-2, text-neutral-9,
+ * text-s, font-heavy, tracking-l, leading-m, gap-m, p-xl, rounded-s, shadow-m.
+ * "inline reference" makes each utility read the theme variable above, and
+ * keeps Tailwind from writing a second (circular) copy of the variables.
+ * The resets remove the default Tailwind scales, so only theme values exist.
+ */
+@theme inline reference {
+  --color-*: initial;
+  --color-neutral-1: var(--neutral-1);
+  --color-neutral-2: var(--neutral-2);
+  --color-neutral-3: var(--neutral-3);
+  --color-neutral-4: var(--neutral-4);
+  --color-neutral-5: var(--neutral-5);
+  --color-neutral-6: var(--neutral-6);
+  --color-neutral-7: var(--neutral-7);
+  --color-neutral-8: var(--neutral-8);
+  --color-neutral-9: var(--neutral-9);
+  --color-neutral-10: var(--neutral-10);
+  --color-neutral-1-transparent: var(--neutral-1-transparent);
+  --color-neutral-2-transparent: var(--neutral-2-transparent);
+  --color-neutral-3-transparent: var(--neutral-3-transparent);
+  --color-neutral-4-transparent: var(--neutral-4-transparent);
+  --color-neutral-5-transparent: var(--neutral-5-transparent);
+  --color-neutral-6-transparent: var(--neutral-6-transparent);
+  --color-neutral-7-transparent: var(--neutral-7-transparent);
+  --color-neutral-8-transparent: var(--neutral-8-transparent);
+  --color-neutral-9-transparent: var(--neutral-9-transparent);
+  --color-neutral-10-transparent: var(--neutral-10-transparent);
+  --color-color-1: var(--color-1);
+  --color-color-2: var(--color-2);
+  --color-color-3: var(--color-3);
+  --color-color-4: var(--color-4);
+  --color-color-1-transparent: var(--color-1-transparent);
+  --color-color-2-transparent: var(--color-2-transparent);
+  --color-color-3-transparent: var(--color-3-transparent);
+  --color-color-4-transparent: var(--color-4-transparent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-success-transparent: var(--success-transparent);
+  --color-warning-transparent: var(--warning-transparent);
+  --color-error-transparent: var(--error-transparent);
+
+  --spacing-*: initial;
+  /* The reset also drops the numeric scale; keep 0 for layout utilities such as min-w-0 and basis-0. */
+  --spacing-0: 0px;
+  --spacing-zero: var(--space-zero);
+  --spacing-xxs: var(--space-xxs);
+  --spacing-xs: var(--space-xs);
+  --spacing-s: var(--space-s);
+  --spacing-m: var(--space-m);
+  --spacing-l: var(--space-l);
+  --spacing-xl: var(--space-xl);
+  --spacing-xxl: var(--space-xxl);
+
+  --radius-*: initial;
+  --radius-zero: var(--radius-zero);
+  --radius-xs: var(--radius-xs);
+  --radius-s: var(--radius-s);
+  --radius-m: var(--radius-m);
+  --radius-l: var(--radius-l);
+  --radius-xl: var(--radius-xl);
+  --radius-full: var(--radius-full);
+
+  /* Each text step sets its size, line height, and default tracking together. */
+  --text-*: initial;
+  --text-xxs: var(--size-xxs);
+  --text-xxs--line-height: var(--line-xxs);
+  --text-xxs--letter-spacing: var(--letter-spacing-xxs);
+  --text-xs: var(--size-xs);
+  --text-xs--line-height: var(--line-xs);
+  --text-xs--letter-spacing: var(--letter-spacing-xs);
+  --text-s: var(--size-s);
+  --text-s--line-height: var(--line-s);
+  --text-s--letter-spacing: var(--letter-spacing-s);
+  --text-m: var(--size-m);
+  --text-m--line-height: var(--line-m);
+  --text-m--letter-spacing: var(--letter-spacing-m);
+  --text-l: var(--size-l);
+  --text-l--line-height: var(--line-l);
+  --text-l--letter-spacing: var(--letter-spacing-l);
+  --text-xl: var(--size-xl);
+  --text-xl--line-height: var(--line-xl);
+  --text-xl--letter-spacing: var(--letter-spacing-xl);
+  --text-xxl: var(--size-xxl);
+  --text-xxl--line-height: var(--line-xxl);
+  --text-xxl--letter-spacing: var(--letter-spacing-xxl);
+
+  --leading-*: initial;
+  --leading-xxs: var(--line-xxs);
+  --leading-xs: var(--line-xs);
+  --leading-s: var(--line-s);
+  --leading-m: var(--line-m);
+  --leading-l: var(--line-l);
+  --leading-xl: var(--line-xl);
+  --leading-xxl: var(--line-xxl);
+
+  --tracking-*: initial;
+  --tracking-xs: var(--tracking-xs);
+  --tracking-s: var(--tracking-s);
+  --tracking-m: var(--tracking-m);
+  --tracking-l: var(--tracking-l);
+  --tracking-xl: var(--tracking-xl);
+
+  --font-*: initial;
+  --font-ui: var(--font-ui);
+  --font-brand: var(--font-brand);
+  --font-editorial: var(--font-editorial);
+  --font-data: var(--font-data);
+  --font-code: var(--font-code);
+  /* All four font roles share these weights. */
+  --font-weight-regular: var(--weight-ui-regular);
+  --font-weight-medium: var(--weight-ui-medium);
+  --font-weight-heavy: var(--weight-ui-heavy);
+
+  --shadow-*: initial;
+  --shadow-s: var(--shadow-s);
+  --shadow-m: var(--shadow-m);
+  --shadow-l: var(--shadow-l);
+
+  --ease-*: initial;
+  --ease-small: var(--motion-easing);
+  --ease-large: var(--motion-large-easing);
+
+  --default-transition-duration: var(--motion-duration);
+  --default-transition-timing-function: var(--motion-easing);
+  --default-font-family: var(--font-ui);
+  --default-mono-font-family: var(--font-code);
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Type roles of the designs. Each sets family, weight, size, line height, and tracking. */
+@utility type-display {
+  font-family: var(--font-brand);
+  font-weight: var(--weight-brand-heavy);
+  font-size: var(--size-xl);
+  line-height: var(--line-xl);
+  letter-spacing: var(--letter-spacing-xl);
+}
+
+@utility type-page-title {
+  font-family: var(--font-brand);
+  font-weight: var(--weight-brand-heavy);
+  font-size: var(--size-l);
+  line-height: var(--line-l);
+  letter-spacing: var(--letter-spacing-l);
+}
+
+@utility type-section {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-ui-heavy);
+  font-size: var(--size-m);
+  line-height: var(--line-m);
+  letter-spacing: var(--letter-spacing-m);
+}
+
+@utility type-body {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-ui-regular);
+  font-size: var(--size-s);
+  line-height: var(--line-s);
+  letter-spacing: var(--letter-spacing-s);
+}
+
+@utility type-label {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-ui-medium);
+  font-size: var(--size-xs);
+  line-height: var(--line-xs);
+  letter-spacing: var(--letter-spacing-xs);
+}
+
+@utility type-meta {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-ui-regular);
+  font-size: var(--size-xs);
+  line-height: var(--line-xs);
+  letter-spacing: var(--letter-spacing-xs);
+}
+
+@utility type-stat {
+  font-family: var(--font-data);
+  font-weight: var(--weight-data-regular);
+  font-size: var(--size-xl);
+  line-height: var(--line-xl);
+  letter-spacing: var(--letter-spacing-xl);
+}
+
+@utility type-code {
+  font-family: var(--font-code);
+  font-weight: var(--weight-ui-regular);
+  font-size: var(--size-xs);
+  line-height: var(--line-xs);
+  letter-spacing: var(--tracking-m);
+}
+
+@layer base {
+  html {
+    background-color: var(--cte-canvas);
+    color: var(--cte-text);
+    font-family: var(--cte-font);
+    font-size: var(--cte-font-size);
+    font-weight: var(--cte-font-weight);
+    line-height: var(--cte-line-height);
+    letter-spacing: var(--cte-letter-spacing);
+    text-wrap: pretty;
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--cte-focus);
+    outline-offset: 0;
+  }
+
+  /* Lucide writes stroke-width as an attribute; the theme owns the width. */
+  svg.lucide {
+    stroke-width: var(--icon-stroke-width);
+    flex-shrink: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      transition-duration: 0s !important;
+      animation-duration: 0s !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
+}

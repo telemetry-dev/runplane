@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -w these files: $unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      # The non-Linux files must also compile, for development on macOS.
+      - run: GOOS=darwin go vet ./...
+      - run: go test ./...
+      # The dev seed is in a build only with the tag devseed.
+      - run: go vet -tags devseed ./internal/devseed ./cmd/runplane
+      - run: go test -tags devseed ./internal/devseed
+      # Tests of netlink, nftables, loop devices, and mounts skip without root.
+      - name: go test as root
+        run: sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME "$(go env GOROOT)/bin/go" test ./internal/...
+        env:
+          GOCACHE: /tmp/go-root-cache
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test --passWithNoTests
+      - run: pnpm build
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: shellcheck -s sh install.sh kernel/build.sh deploy/*.sh
+      - name: install.sh dry runs on Ubuntu, Debian, and Fedora
+        run: sh deploy/test-install.sh
+
+  # A real container mode install on the runner VM: Docker, Sysbox, the
+  # systemd units, the service, and the uninstall.
+  install:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make binary OUT=bin/runplane GOOS=linux GOARCH=amd64
+      - run: sudo sh install.sh --binary bin/runplane --mode container --yes
+      - name: Check the install
+        run: |
+          systemctl is-active runplane.service
+          sudo docker info --format '{{json .Runtimes}}' | grep -q sysbox-runc
+          curl -fsS http://127.0.0.1:8484/api/status
+          sudo stat -c '%a %n' /etc/runplane /var/lib/runplane /etc/runplane/runplane.env
+      - name: Logs
+        if: failure()
+        run: sudo journalctl -u runplane -u docker -u sysbox --no-pager -n 200
+      - run: sudo sh install.sh --uninstall --yes
+      - name: Check the uninstall
+        run: |
+          if systemctl is-active --quiet runplane.service; then exit 1; fi
+          test ! -e /usr/local/bin/runplane
+          test ! -e /etc/systemd/system/runplane.service
+          sudo test ! -e /var/lib/runplane

@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@import "./fonts.css";
+@import "./theme.css";
+
+@layer base {
+  /* The router focuses these after a navigation (router.tsx). They are no controls, so they show no ring. */
+  main:focus-visible,
+  main h1:focus-visible {
+    outline: none;
+  }
+}

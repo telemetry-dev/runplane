@@ -1,0 +1,108 @@
+# Builds the base images for linux/amd64 and linux/arm64 and pushes them to
+# ghcr.io/<owner>/<repo>/runner-ubuntu-24.04 and -26.04. runplane pulls the
+# "latest" tag. A weekly build gets the new packages and tool versions.
+#
+# The arm64 builds use the ubuntu-24.04-arm runners. For a private repository
+# without these runners, change the runner to ubuntu-24.04 and add
+# docker/setup-qemu-action (the arm64 build is then much slower).
+name: Images
+
+on:
+  push:
+    branches: [main]
+    paths: ['images/**', '.github/workflows/images.yml']
+  pull_request:
+    paths: ['images/**', '.github/workflows/images.yml']
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-24.04, ubuntu-26.04]
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/runner-${{ matrix.image }}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: images/${{ matrix.image }}
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+      # VM mode copies the image into an ext4 root disk, so keep it small.
+      - name: Check the size (3 GB or less)
+        run: |
+          docker buildx build --platform linux/${{ matrix.arch }} --load -t size-check -q images/${{ matrix.image }} >/dev/null
+          mb=$(docker run --rm size-check du -sxm / | cut -f 1)
+          echo "Image size: $mb MB"
+          if [ "$mb" -gt 3072 ]; then
+            echo "::error::${{ matrix.image }} uses $mb MB. The limit is 3072 MB."
+            exit 1
+          fi
+      - name: Keep the digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest='${{ steps.build.outputs.digest }}'
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+
+  # Joins the two architectures into one multi-arch tag.
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix:
+        image: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digests-${{ matrix.image }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Push the tags
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/runner-${{ matrix.image }}"
+          refs=()
+          for digest in *; do refs+=("$image@sha256:$digest"); done
+          docker buildx imagetools create -t "$image:latest" -t "$image:$(date -u +%Y%m%d)" "${refs[@]}"
+          docker buildx imagetools inspect "$image:latest"
