@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { settingsQuery } from '~/api/settings'
 import { RunnerSettings } from '~/components/pages/settings/runners-page'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { pageHead } from '~/lib/head'
 
 export const Route = createFileRoute('/_app/settings/runners')({

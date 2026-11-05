@@ -2,7 +2,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CirclePause, CirclePlay, Ellipsis, Pencil, Trash2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
-import { usePoolStats } from '~/api/events'
+import { dropPool, putPool, refreshRunners } from '~/api/pools'
+import { serversQuery } from '~/api/servers'
 import {
   CellTitle,
   DataTable,
@@ -13,14 +14,12 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
-import { serversQuery } from '~/components/pages/servers/queries'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
-import { dropPool, putPool, refreshRunners } from './queries'
 import { Code } from './code'
-import { liveCounts, poolHardware, poolScope, poolSize, type Pool } from './runner-format'
+import { poolHardware, poolScope, poolSize, type Pool } from './runner-format'
 import { SkeletonRows } from './skeleton-rows'
 
 type LabelsTableProps = {
@@ -48,7 +47,7 @@ const columns = {
 
 type Shown = Record<keyof typeof columns, boolean>
 
-/** The Labels table of the Runners design. pool.stats events move the counts. */
+/** The Labels table of the Runners design. */
 export function LabelsTable({ pools, admin, marked, onEdit }: LabelsTableProps) {
   const servers = useQuery(serversQuery).data
   const { ref, shown, columns: widths } = useFittingColumns(columns)
@@ -101,7 +100,6 @@ type LabelRowProps = {
 }
 
 function LabelRow({ pool, servers, shown, admin, marked, onEdit }: LabelRowProps) {
-  const counts = liveCounts(pool, usePoolStats(pool.id))
   return (
     <DataTableRow selected={marked}>
       <DataTableCell>
@@ -127,10 +125,10 @@ function LabelRow({ pool, servers, shown, admin, marked, onEdit }: LabelRowProps
       )}
       {pool.enabled ? (
         <>
-          {shown.idle && <Count value={counts.idle} />}
-          <Count value={counts.busy} />
-          {shown.starting && <Count value={counts.starting} />}
-          <Count value={counts.queued} strong />
+          {shown.idle && <Count value={pool.idle} />}
+          <Count value={pool.busy} />
+          {shown.starting && <Count value={pool.starting} />}
+          <Count value={pool.queued} strong />
         </>
       ) : (
         // A disabled pool runs nothing, so its state takes the count lanes.

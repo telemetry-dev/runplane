@@ -1,7 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { $api, errorMessage } from '~/api/client'
-import { githubQuery, statusQuery } from '~/api/queries'
+import { githubQuery } from '~/api/github'
+import { statusQuery } from '~/api/session'
 import {
   AlertDialog,
   AlertDialogClose,

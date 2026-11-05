@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Ellipsis, Pencil, Plus, Send, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, errorMessage, type Schemas } from '~/api/client'
+import { notificationsQuery } from '~/api/notifications'
+import { useIsAdmin } from '~/api/session'
 import { DataTable, DataTableCell, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
 import { CheckIcon } from '~/components/app/status-icon'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
@@ -10,13 +12,12 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/compone
 import { Skeleton } from '~/components/ui/skeleton'
 import { Switch } from '~/components/ui/switch'
 import { toastManager } from '~/components/ui/toast'
+import { formatRelativeTime } from '~/lib/format'
 import { ChannelDialog } from './channel-dialog'
 import { ChannelTile } from './channel-icons'
 import { eventsSummary } from './channel-info'
-import { notificationsQuery, useSendTest } from './notifications-api'
-import { relativeTime } from './format'
 import { ErrorHint, LoadError, ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
-import { useIsAdmin } from './settings-api'
+import { useSendTest } from './send-test'
 
 type Channel = Schemas['NotificationChannel']
 
@@ -138,7 +139,7 @@ function ChannelRow({ channel, shown }: { channel: Channel; shown: Shown }) {
 /** A failed last delivery, with the error in a tooltip. A channel that works shows nothing more. */
 function LastDelivery({ channel }: { channel: Channel }) {
   if (!channel.last_error) return null
-  const when = channel.last_sent_at ? ` ${relativeTime(channel.last_sent_at)}` : ''
+  const when = channel.last_sent_at ? ` ${formatRelativeTime(channel.last_sent_at, Date.now(), { long: true })}` : ''
   return (
     <ErrorHint error={channel.last_error}>
       <span className="mt-xxs flex items-center gap-xs text-xs font-medium text-neutral-10">

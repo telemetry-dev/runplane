@@ -1,10 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
-import { useMemo, useRef } from 'react'
+import { useRef } from 'react'
 import { $api } from '~/api/client'
-import { sessionQuery, statusQuery } from '~/api/queries'
+import { useFormProblems } from '~/api/form-problems'
+import { currentSession, sessionQuery } from '~/api/session'
 import { FormAlert, FormPanel, SetupHeader } from '~/components/pages/setup/parts'
-import { submitProblems } from '~/components/pages/setup/problems'
 import { SetupColumn } from '~/components/shell/setup'
 import { Button } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
@@ -17,10 +17,7 @@ export const Route = createFileRoute('/_setup/login')({
     redirect: typeof search.redirect === 'string' ? search.redirect : undefined,
   }),
   beforeLoad: async ({ context: { queryClient }, search }) => {
-    const status = await queryClient.ensureQueryData(statusQuery)
-    if (status.needs_setup) throw redirect({ to: '/setup' })
-    const user = await queryClient.ensureQueryData(sessionQuery)
-    if (user) throw redirect({ href: safeRedirectPath(search.redirect) })
+    if (await currentSession(queryClient)) throw redirect({ href: safeRedirectPath(search.redirect) })
   },
   head: () => pageHead('Log in'),
   component: LoginPage,
@@ -47,7 +44,7 @@ function LoginPage() {
       password.current?.select()
     },
   })
-  const { errors, alert } = useMemo(() => submitProblems(login.error, fields), [login.error])
+  const { fields: errors, alert } = useFormProblems(login.error, { fields })
 
   return (
     <SetupColumn>

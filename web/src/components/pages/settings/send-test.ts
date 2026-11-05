@@ -1,12 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { $api, api, errorMessage, type Schemas } from '~/api/client'
+import { api, errorMessage, type Schemas } from '~/api/client'
+import { notificationsQuery } from '~/api/notifications'
 import { toastManager } from '~/components/ui/toast'
 
-/** GET /api/notifications, for admins. */
-export const notificationsQuery = $api.queryOptions('get', '/api/notifications')
-
 /** A test message to a saved channel, or to the kind and URL of a channel that is not saved yet. */
-export type TestTarget = { name: string } & ({ id: string } | Schemas['TestChannelRequest'])
+type TestTarget = { name: string } & ({ id: string } | Schemas['TestChannelRequest'])
 
 /**
  * Sends a test message and shows a toast for the result. A test of a saved

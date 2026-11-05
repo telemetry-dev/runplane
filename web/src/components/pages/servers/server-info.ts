@@ -1,18 +1,10 @@
 import type { Schemas } from '~/api/client'
-import type { HostStats } from '~/api/events'
 import { formatBytes, formatMegabytes, formatRelativeTime } from '~/lib/format'
 
 // Text and state of the server rows, from the objects of GET /api/servers.
 
 export type Server = Schemas['Server']
-
-export const statusNames: Record<Server['status'], string> = {
-  online: 'Online',
-  installing: 'Installing',
-  unreachable: 'Unreachable',
-  draining: 'Draining',
-  disabled: 'Disabled',
-}
+export type Check = Schemas['Check']
 
 /** "136.243.18.40 · Hetzner FSN1 · Ubuntu 24.04", without the facts the server has not reported. */
 export function serverOrigin(server: Server): string {
@@ -59,15 +51,9 @@ export function sortServers(servers: readonly Server[]): Server[] {
 
 type Usage = { cpu: number | null; memory: number | null; disk: number | null }
 
-/**
- * Usage percents from the newer of the server's sample and the last host.stats
- * event. An unreachable server's last sample is old, so its usage is unknown.
- */
-export function currentUsage(server: Server, live: HostStats | undefined): Usage {
+/** Usage percents of the latest host sample. An unreachable server's last sample is old, so its usage is unknown. */
+export function currentUsage(server: Server): Usage {
   if (server.status === 'unreachable') return { cpu: null, memory: null, disk: null }
-  if (live && (!server.stats_at || Date.parse(live.at) >= Date.parse(server.stats_at))) {
-    return { cpu: live.cpu_percent, memory: live.memory_percent, disk: live.disk_percent }
-  }
   return { cpu: server.cpu_percent, memory: server.memory_percent, disk: server.disk_percent }
 }
 
@@ -110,6 +96,11 @@ export function commandLines(command: string): string[] {
   return lines.map((line, index) => (index < lines.length - 1 ? `${line} \\` : line))
 }
 
+/** Problems first, failures before warnings; passed checks keep the doctor's order. */
+export function sortChecks(checks: readonly Check[]): Check[] {
+  return checks.toSorted((a, b) => checkRank[a.status] - checkRank[b.status])
+}
+
 export function removeDescription(runningJobs: number): string {
   if (runningJobs === 0) return 'runplane stops its sandboxes and disconnects the agent.'
   const jobs = runningJobs === 1 ? 'Its running job is' : `Its ${runningJobs} running jobs are`
@@ -117,6 +108,8 @@ export function removeDescription(runningJobs: number): string {
 }
 
 const statusRank: Record<Server['status'], number> = { online: 0, draining: 0, disabled: 0, installing: 1, unreachable: 2 }
+
+const checkRank: Record<Check['status'], number> = { fail: 0, warn: 1, ok: 2 }
 
 function dotted(parts: string[]): string {
   return parts.filter(Boolean).join(' · ')

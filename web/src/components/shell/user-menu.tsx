@@ -2,8 +2,9 @@ import { Form } from '@base-ui/react/form'
 import { useQuery } from '@tanstack/react-query'
 import { KeyRound, LogOut } from 'lucide-react'
 import { useState } from 'react'
-import { $api, api, errorMessage, isApiError, useFieldErrors } from '~/api/client'
-import { sessionQuery, statusQuery } from '~/api/queries'
+import { $api, api, isApiError } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { sessionQuery, statusQuery } from '~/api/session'
 import { Avatar } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
@@ -84,13 +85,12 @@ export function UserMenu() {
 // Lives inside the popup, so closing the dialog drops the form state and the last error.
 function ChangePasswordForm({ onDone }: { onDone: () => void }) {
   const update = $api.useMutation('patch', '/api/me', { onSuccess: onDone })
-  const errors = useFieldErrors(update.error)
-  const message = update.error && Object.keys(errors).length === 0 ? errorMessage(update.error) : undefined
+  const problems = useFormProblems(update.error)
 
   return (
     <Form
       className="flex flex-col gap-l"
-      errors={errors}
+      errors={problems.fields}
       onFormSubmit={(values) =>
         update.mutate({ body: { current_password: values.current_password, new_password: values.new_password } })
       }
@@ -108,9 +108,9 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
       >
         <Input type="password" autoComplete="new-password" required />
       </Field>
-      {message && (
+      {problems.alert && (
         <p role="alert" className="text-s text-error">
-          {message}
+          {problems.alert}
         </p>
       )}
       <DialogFooter>

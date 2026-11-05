@@ -3,10 +3,14 @@ import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Input } from '~/components/ui/input'
 import { NumberInput } from '~/components/ui/number-field'
 import { Switch } from '~/components/ui/switch'
+import type { Schemas } from '~/api/client'
+import { useSaveSettings, type SwitchKey } from '~/api/settings'
 import { cx } from '~/lib/cx'
 import { lineNumber, listItems } from './list-text'
 import { SettingRow } from './parts'
-import { saveError, showSaved, useSaveSettings, type SettingsPatch, type SwitchKey } from './settings-api'
+import { saveError, showSaved } from './save'
+
+type SettingsPatch = Schemas['SettingsPatch']
 
 // Settings rows whose control saves itself: text and number fields send their
 // one key on blur or Enter (Escape puts the saved value back), switches send

@@ -23,28 +23,26 @@ export function formatDuration(ms: number, { fraction = false } = {}): string {
   return `${Math.floor(minutes / 60)}h ${pad(minutes % 60)}m`
 }
 
-/** Formats a time relative to now: "now", "12s ago", "2m ago", "in 25m", then "Oct 2" after a week. */
-export function formatRelativeTime(time: Time, now = Date.now()): string {
+/**
+ * Formats a time relative to now: "just now", "12s ago", "2m ago", "in 25m",
+ * then "Oct 2" after a week. `long` gives the words of the settings designs:
+ * "25 min ago", "3 hours ago", "in 7 days", then "Oct 2, 2026" after 30 days.
+ */
+export function formatRelativeTime(time: Time, now = Date.now(), { long = false } = {}): string {
   const diff = now - toMillis(time)
   const distance = Math.abs(diff)
-  if (distance < 5 * second) return 'now'
-  if (distance >= 7 * day) return formatDate(time, { year: new Date(time).getFullYear() !== new Date(now).getFullYear() })
-
-  const amount =
-    distance < minute
-      ? `${Math.floor(distance / second)}s`
-      : distance < hour
-        ? `${Math.floor(distance / minute)}m`
-        : distance < day
-          ? `${Math.floor(distance / hour)}h`
-          : `${Math.floor(distance / day)}d`
+  if (distance < (long ? 30 * second : 5 * second)) return 'just now'
+  if (long ? Math.round(distance / day) >= 30 : distance >= 7 * day) {
+    return formatDate(time, { year: long || new Date(time).getFullYear() !== new Date(now).getFullYear() })
+  }
+  const amount = long ? longAmount(distance) : shortAmount(distance)
   return diff > 0 ? `${amount} ago` : `in ${amount}`
 }
 
 /**
  * formatRelativeTime for a time that has passed, as when a check ran. A `now`
- * that ticks slowly can lag behind a time that just arrived; that reads "now",
- * not "in 21s".
+ * that ticks slowly can lag behind a time that just arrived; that reads
+ * "just now", not "in 21s".
  */
 export function formatTimeAgo(time: Time, now = Date.now()): string {
   return formatRelativeTime(time, Math.max(now, toMillis(time)))
@@ -53,6 +51,11 @@ export function formatTimeAgo(time: Time, now = Date.now()): string {
 /** Formats a calendar date: "Oct 2, 2026", or "Oct 2" without the year. */
 export function formatDate(time: Time, { year = true } = {}): string {
   return (year ? dateWithYear : dateWithoutYear).format(new Date(time))
+}
+
+/** Formats a date and time in local time: "Nov 4, 03:00", or "Nov 4, 2026, 03:00:12 GMT+1" in full, for a tooltip. */
+export function formatDateTime(time: Time, { full = false } = {}): string {
+  return (full ? fullDateTime : dateTime).format(new Date(time))
 }
 
 export function formatCount(n: number): string {
@@ -89,7 +92,38 @@ export function formatPercent(value: number): string {
 const count = new Intl.NumberFormat('en-US')
 const dateWithYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 const dateWithoutYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+const dateTime = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+const fullDateTime = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+  timeZoneName: 'short',
+})
 const byteUnits = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+
+function shortAmount(distance: number): string {
+  if (distance < minute) return `${Math.floor(distance / second)}s`
+  if (distance < hour) return `${Math.floor(distance / minute)}m`
+  if (distance < day) return `${Math.floor(distance / hour)}h`
+  return `${Math.floor(distance / day)}d`
+}
+
+// Rounded, so an invite made a moment ago expires "in 7 days", not "in 6 days".
+function longAmount(distance: number): string {
+  const minutes = Math.round(distance / minute)
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.round(distance / hour)
+  if (hours < 24) return plural(hours, 'hour')
+  return plural(Math.round(distance / day), 'day')
+}
+
+function plural(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? '' : 's'}`
+}
 
 function pad(n: number): string {
   return String(n).padStart(2, '0')

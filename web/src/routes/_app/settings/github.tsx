@@ -1,9 +1,11 @@
-import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { ExternalLink, Plus, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { $api, errorMessage, type Schemas } from '~/api/client'
-import { githubQuery, sessionQuery } from '~/api/queries'
+import { errorMessage, type Schemas } from '~/api/client'
+import { githubQuery, useSyncGitHub } from '~/api/github'
+import { useIsAdmin } from '~/api/session'
+import { settingsQuery } from '~/api/settings'
 import { SectionHeader } from '~/components/app/section-header'
 import { GitHubAppCard, GitHubCard, ListenerStatus } from '~/components/pages/github/app-card'
 import { callbackSearch } from '~/components/pages/github/callback'
@@ -11,7 +13,6 @@ import { DisconnectGitHub } from '~/components/pages/github/disconnect'
 import { InstallationList } from '~/components/pages/github/installation-list'
 import { JobAccess } from '~/components/pages/github/job-access'
 import { CallbackError, InstallRequested, Loading } from '~/components/pages/github/parts'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { buttonClassName, IconButton } from '~/components/ui/button'
 import { GithubIcon } from '~/components/ui/icons'
 import { cx } from '~/lib/cx'
@@ -35,7 +36,7 @@ function GithubSettings() {
   const navigate = Route.useNavigate()
   const { app, installations, scale_sets } = useSuspenseQuery(githubQuery).data
   const settings = useSuspenseQuery(settingsQuery).data
-  const isAdmin = useSuspenseQuery(sessionQuery).data?.role === 'admin'
+  const isAdmin = useIsAdmin()
   const dismiss = () => void navigate({ search: {}, replace: true })
 
   return (
@@ -80,11 +81,7 @@ type InstallationsProps = {
 }
 
 function Installations({ app, installations, isAdmin }: InstallationsProps) {
-  const queryClient = useQueryClient()
-  // runplane syncs installations every 5 minutes; this picks up changes made on GitHub now.
-  const sync = $api.useMutation('post', '/api/github/sync', {
-    onSuccess: (status) => queryClient.setQueryData(githubQuery.queryKey, status),
-  })
+  const sync = useSyncGitHub()
 
   return (
     <section className="flex flex-col gap-s">

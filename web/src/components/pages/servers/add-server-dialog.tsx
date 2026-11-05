@@ -1,7 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactElement } from 'react'
-import { $api, errorMessage, fieldErrors, useFieldErrors, type Schemas } from '~/api/client'
+import { $api, errorMessage, type Schemas } from '~/api/client'
+import { applyChange, refreshServers } from '~/api/events'
+import { useFormProblems } from '~/api/form-problems'
+import { serversQuery, sshKeyQuery, tokenStatusQuery } from '~/api/servers'
+import { settingsQuery } from '~/api/settings'
 import { CodeBlock } from '~/components/app/code-block'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogPopup, DialogTrigger } from '~/components/ui/dialog'
@@ -10,7 +14,6 @@ import { Form } from '~/components/ui/form'
 import { Spinner } from '~/components/ui/spinner'
 import { Tab, Tabs, TabsList, TabsPanel } from '~/components/ui/tabs'
 import { InstallProgress } from './install-progress'
-import { refreshServers, serversQuery } from './queries'
 import { commandLines, installState } from './server-info'
 
 type AddServerDialogProps = {
@@ -133,12 +136,11 @@ function useScriptInstall() {
     mutate({})
   }, [mutate])
 
-  const status = $api.useQuery(
-    'get',
-    '/api/servers/tokens/{id}/status',
-    { params: { path: { id: token?.token_id ?? '' } } },
-    { enabled: token !== undefined, refetchInterval: (query) => (query.state.data?.used ? false : 3000) },
-  ).data
+  const status = useQuery({
+    ...tokenStatusQuery(token?.token_id ?? ''),
+    enabled: token !== undefined,
+    refetchInterval: (query) => (query.state.data?.used ? false : 3000),
+  }).data
   const serverId = status?.used ? status.server_id : undefined
   const servers = useQuery(serversQuery).data
   const server = serverId ? servers?.find((item) => item.id === serverId) : undefined
@@ -188,7 +190,7 @@ function InstallCommand({ script }: { script: ScriptInstall }) {
 function useSshInstall() {
   const client = useQueryClient()
   const formId = useId()
-  const installSsh = $api.useMutation('post', '/api/servers/ssh', { onSuccess: () => void refreshServers(client) })
+  const installSsh = $api.useMutation('post', '/api/servers/ssh', { onSuccess: (server) => void applyChange(client, 'server.state', server) })
   const started = installSsh.data
   const servers = useQuery(serversQuery).data
   return {
@@ -201,8 +203,8 @@ function useSshInstall() {
 }
 
 function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
-  const key = $api.useQuery('get', '/api/servers/ssh-key', undefined, { staleTime: Infinity })
-  const errors = useFieldErrors(ssh.error)
+  const key = useQuery(sshKeyQuery)
+  const problems = useFormProblems(ssh.error)
   const disabled = ssh.server !== undefined
 
   return (
@@ -228,7 +230,7 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
       )}
       <Form
         id={ssh.formId}
-        errors={errors}
+        errors={problems.fields}
         onFormSubmit={(values) =>
           ssh.connect({
             host: String(values.host).trim(),
@@ -255,25 +257,19 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
             <Input maxLength={64} autoComplete="off" spellCheck={false} />
           </Field>
         </div>
-        <FormError error={ssh.error} />
+        {problems.alert && (
+          <p role="alert" className="text-s text-error">
+            {problems.alert}
+          </p>
+        )}
       </Form>
     </>
   )
 }
 
-/** A failed request that is not about one field, for example a 503 when this runplane cannot add servers. */
-function FormError({ error }: { error: unknown }) {
-  if (!error || Object.keys(fieldErrors(error)).length > 0) return null
-  return (
-    <p role="alert" className="text-s text-error">
-      {errorMessage(error)}
-    </p>
-  )
-}
-
 /** The host that new servers connect to: the public_url setting, or this page's host. */
 function PublicHost() {
-  const publicUrl = $api.useQuery('get', '/api/settings').data?.public_url
+  const publicUrl = useQuery(settingsQuery).data?.public_url
   return <>{publicUrl ? new URL(publicUrl).host : window.location.host}</>
 }
 

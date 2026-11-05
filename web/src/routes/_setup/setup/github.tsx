@@ -1,6 +1,6 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { githubQuery } from '~/api/queries'
+import { githubQuery } from '~/api/github'
 import { ConnectForm } from '~/components/pages/github/connect-form'
 import { callbackSearch } from '~/components/pages/github/callback'
 import { ExistingApp } from '~/components/pages/github/existing-app'

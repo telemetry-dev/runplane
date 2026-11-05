@@ -1,5 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { $api, errorMessage, type Schemas } from '~/api/client'
+import { errorMessage, type Schemas } from '~/api/client'
+import { poolsQuery } from '~/api/pools'
 import { CodeBlock, type CodeLine } from '~/components/app/code-block'
 import { CopyButton } from '~/components/app/copy-button'
 import { EmptyState } from '~/components/app/empty-state'
@@ -7,7 +9,7 @@ import { Button, buttonClassName } from '~/components/ui/button'
 
 /** The "No jobs yet" panel: the runs-on change that sends a first job to runplane. */
 export function NoJobs() {
-  const { data: pools, isError, error, refetch, isFetching } = $api.useQuery('get', '/api/pools')
+  const { data: pools, isError, error, refetch, isFetching } = useQuery(poolsQuery)
   const label = pools && suggestedLabel(pools)
 
   if (isError && !pools) {

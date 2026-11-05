@@ -3,7 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useLocation, type LinkProps } from '@tanstack/react-router'
 import { Activity, Database, LayoutDashboard, Menu as MenuIcon, Server, Settings2, type LucideIcon } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
-import { githubQuery, runningJobsQuery, statusQuery } from '~/api/queries'
+import { githubQuery } from '~/api/github'
+import { runningJobsQuery } from '~/api/jobs'
+import { statusQuery } from '~/api/session'
 import { LogoMark } from '~/components/ui/brand'
 import { CpuIcon, GithubIcon } from '~/components/ui/icons'
 import { formatCount } from '~/lib/format'
@@ -114,7 +116,7 @@ function NavItem({ to, icon: Icon, exact = false, badge, children }: NavItemProp
 }
 
 function RunningJobsBadge() {
-  const running = useQuery({ ...runningJobsQuery, subscribed: useFrameSubscribed() }).data?.items.length ?? 0
+  const running = useQuery({ ...runningJobsQuery, subscribed: useFrameSubscribed() }).data?.total ?? 0
   if (running === 0) return null
   return (
     <span className="flex items-center gap-xxs text-xs font-medium text-color-1">

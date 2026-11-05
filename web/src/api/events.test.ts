@@ -1,16 +1,25 @@
-import { QueryClient, QueryObserver } from '@tanstack/react-query'
+import { QueryClient, QueryObserver, type QueryKey } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { backupsQuery } from './backups'
 import { createEventHandler, reconnectDelay } from './events'
+import { githubQuery } from './github'
+import { jobQuery, jobsQuery, metricsQuery } from './jobs'
+import { overviewQuery } from './overview'
+import { poolsQuery } from './pools'
+import { sandboxesQuery, sandboxQuery } from './sandboxes'
+import { serverQuery, serversQuery } from './servers'
+import { statusQuery } from './session'
 
-const jobKey = (id: string) => ['get', '/api/jobs/{id}', { params: { path: { id } } }]
-const metricsKey = (id: string) => ['get', '/api/jobs/{id}/metrics', { params: { path: { id } } }]
-const jobListKey = ['get', '/api/jobs', { params: { query: { status: 'running' } } }]
-const serverListKey = ['get', '/api/servers']
-const serverKey = (id: string) => ['get', '/api/servers/{id}', { params: { path: { id } } }]
+const jobKey = (id: string) => jobQuery(id).queryKey
+const metricsKey = (id: string) => metricsQuery(id).queryKey
+const jobListKey = jobsQuery({ status: 'running' }).queryKey
+const serverListKey = serversQuery.queryKey
+const serverKey = (id: string) => serverQuery(id).queryKey
+const overviewKey = overviewQuery('24h').queryKey
 
 describe('createEventHandler', () => {
   let client: QueryClient
-  const invalidated = (key: unknown[]) => client.getQueryState(key)?.isInvalidated
+  const invalidated = (key: QueryKey) => client.getQueryState(key)?.isInvalidated
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -22,13 +31,14 @@ describe('createEventHandler', () => {
     vi.useRealTimers()
   })
 
-  test('job.state merges into the cached job and refetches only that job, its metrics, and job lists', async () => {
+  test('job.state merges into the cached job and refetches only that job, its metrics, job lists, and the status', async () => {
     client.setQueryData(jobKey('j1'), { id: 'j1', state: 'running', steps: [{ name: 'Checkout' }] })
     client.setQueryData(jobKey('j2'), { id: 'j2', state: 'queued' })
     client.setQueryData(metricsKey('j1'), { samples: [] })
     client.setQueryData(metricsKey('j2'), { samples: [] })
     client.setQueryData(jobListKey, { items: [] })
     client.setQueryData(serverListKey, [])
+    client.setQueryData(statusQuery.queryKey, { has_jobs: false })
     const handle = createEventHandler(client)
 
     handle('job.state', { id: 'j1', state: 'completed', result: 'failed' })
@@ -45,24 +55,28 @@ describe('createEventHandler', () => {
     expect(invalidated(jobKey('j1'))).toBe(true)
     expect(invalidated(metricsKey('j1'))).toBe(true)
     expect(invalidated(jobListKey)).toBe(true)
+    // The first-job step of the setup waits for has_jobs.
+    expect(invalidated(statusQuery.queryKey)).toBe(true)
     expect(invalidated(jobKey('j2'))).toBe(false)
     expect(invalidated(metricsKey('j2'))).toBe(false)
     expect(invalidated(serverListKey)).toBe(false)
   })
 
   test('sandbox.state refetches that sandbox, the server list and its server, and the job it runs', async () => {
-    const sandboxKey = (id: string) => ['get', '/api/sandboxes/{id}', { params: { path: { id } } }]
+    const sandboxKey = (id: string) => sandboxQuery(id).queryKey
     for (const key of [sandboxKey('sb1'), sandboxKey('sb2'), serverKey('s1'), serverKey('s2'), jobKey('j1'), jobKey('j2')]) {
       client.setQueryData(key, {})
     }
-    client.setQueryData(['get', '/api/sandboxes'], [])
+    client.setQueryData(sandboxesQuery().queryKey, [])
+    client.setQueryData(sandboxesQuery('s1').queryKey, [])
     client.setQueryData(serverListKey, [])
     const handle = createEventHandler(client)
 
     handle('sandbox.state', stoppedDebugSandbox)
     await vi.advanceTimersByTimeAsync(300)
 
-    expect(invalidated(['get', '/api/sandboxes'])).toBe(true)
+    expect(invalidated(sandboxesQuery().queryKey)).toBe(true)
+    expect(invalidated(sandboxesQuery('s1').queryKey)).toBe(true)
     expect(invalidated(serverListKey)).toBe(true)
     expect(invalidated(sandboxKey('sb1'))).toBe(true)
     expect(invalidated(serverKey('s1'))).toBe(true)
@@ -77,9 +91,9 @@ describe('createEventHandler', () => {
     client.setQueryData(serverKey('s1'), { ...drainingServer, status: 'online', update_state: 'available' })
     client.setQueryData(serverKey('s2'), other)
     client.setQueryData(serverListKey, [{ ...drainingServer, status: 'online', update_state: 'available' }, other])
-    client.setQueryData(['get', '/api/pools'], [])
-    client.setQueryData(['get', '/api/overview', { params: { query: { range: '24h' } } }], {})
-    client.setQueryData(['get', '/api/jobs'], { items: [] })
+    client.setQueryData(poolsQuery.queryKey, [])
+    client.setQueryData(overviewKey, {})
+    client.setQueryData(jobsQuery().queryKey, { items: [] })
     const handle = createEventHandler(client)
 
     handle('server.state', drainingServer)
@@ -90,9 +104,9 @@ describe('createEventHandler', () => {
     await vi.advanceTimersByTimeAsync(300)
     expect(invalidated(serverListKey)).toBe(false)
     expect(invalidated(serverKey('s1'))).toBe(false)
-    expect(invalidated(['get', '/api/pools'])).toBe(true)
-    expect(invalidated(['get', '/api/overview', { params: { query: { range: '24h' } } }])).toBe(true)
-    expect(invalidated(['get', '/api/jobs'])).toBe(false)
+    expect(invalidated(poolsQuery.queryKey)).toBe(true)
+    expect(invalidated(overviewKey)).toBe(true)
+    expect(invalidated(jobsQuery().queryKey)).toBe(false)
   })
 
   test('server.state of a server that the list lacks refetches the list', async () => {
@@ -107,18 +121,18 @@ describe('createEventHandler', () => {
 
   test('github.state replaces the cached GitHub status and backup.state refetches the backups', async () => {
     const status = { connected: true, installations: [{ id: 7, account_login: 'kestrel-hq' }], scale_sets: [] }
-    client.setQueryData(['get', '/api/github'], { connected: false, installations: [], scale_sets: [] })
-    client.setQueryData(['get', '/api/backups'], [])
+    client.setQueryData(githubQuery.queryKey, { connected: false, installations: [], scale_sets: [] })
+    client.setQueryData(backupsQuery.queryKey, [])
     client.setQueryData(serverListKey, [])
     const handle = createEventHandler(client)
 
     handle('github.state', status)
     handle('backup.state', { id: 'bk1', status: 'running' })
 
-    expect(client.getQueryData(['get', '/api/github'])).toEqual(status)
+    expect(client.getQueryData(githubQuery.queryKey)).toEqual(status)
     await vi.advanceTimersByTimeAsync(300)
-    expect(client.getQueryState(['get', '/api/backups'])?.isInvalidated).toBe(true)
-    expect(client.getQueryState(['get', '/api/github'])?.isInvalidated).toBe(false)
+    expect(client.getQueryState(backupsQuery.queryKey)?.isInvalidated).toBe(true)
+    expect(client.getQueryState(githubQuery.queryKey)?.isInvalidated).toBe(false)
     expect(client.getQueryState(serverListKey)?.isInvalidated).toBe(false)
   })
 
@@ -141,16 +155,76 @@ describe('createEventHandler', () => {
     unsubscribe()
   })
 
-  test('stats events are stored under the pool or server they name', () => {
+  test('pool.stats moves the counts of its pool in the cached list', () => {
+    const counts = { idle: 0, busy: 0, starting: 1, queued: 0 }
+    client.setQueryData(poolsQuery.queryKey, [
+      { id: 'p1', label: 'runplane-4cpu', ...counts },
+      { id: 'p2', label: 'runplane-8cpu', ...counts },
+    ])
     const handle = createEventHandler(client)
-    const pool = { pool_id: 'p1', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 0 }
-    const host = { server_id: 's1', cpu_percent: 52, memory_percent: 40, disk_percent: 12, at: '2026-11-04T12:00:00Z' }
 
-    handle('pool.stats', pool)
-    handle('host.stats', host)
+    handle('pool.stats', { pool_id: 'p1', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 0 })
 
-    expect(client.getQueryData(['live', 'pool.stats', 'p1'])).toEqual(pool)
-    expect(client.getQueryData(['live', 'host.stats', 's1'])).toEqual(host)
+    expect(client.getQueryData(poolsQuery.queryKey)).toEqual([
+      { id: 'p1', label: 'runplane-4cpu', idle: 1, busy: 3, starting: 0, queued: 2 },
+      { id: 'p2', label: 'runplane-8cpu', ...counts },
+    ])
+  })
+
+  describe('host.stats', () => {
+    // A sample 10 seconds after the one of drainingServer.
+    const sample = { server_id: 's1', cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, at: '2026-11-04T12:00:10Z' }
+    const sampled = { cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, stats_at: '2026-11-04T12:00:10Z', last_seen_at: '2026-11-04T12:00:10Z' }
+    const other = { ...drainingServer, id: 's2', name: 'fsn1-ax52-b' }
+
+    test('moves the usage of its server in the list, the detail, and the overview', () => {
+      client.setQueryData(serverListKey, [drainingServer, other])
+      client.setQueryData(serverKey('s1'), drainingServer)
+      client.setQueryData(overviewKey, { servers: [{ id: 's1', kind: 'agent', cpu_percent: 88, memory_percent: 61, disk_percent: 41, last_seen_at: null }] })
+      const handle = createEventHandler(client)
+
+      handle('host.stats', sample)
+
+      expect(client.getQueryData(serverListKey)).toEqual([{ ...drainingServer, ...sampled }, other])
+      expect(client.getQueryData(serverKey('s1'))).toEqual({ ...drainingServer, ...sampled })
+      expect(client.getQueryData(overviewKey)).toEqual({
+        servers: [{ id: 's1', kind: 'agent', cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, last_seen_at: '2026-11-04T12:00:10Z' }],
+      })
+    })
+
+    test('keeps a refetched list sample that is newer than the event', () => {
+      const refetched = { ...drainingServer, stats_at: '2026-11-04T12:00:20Z' }
+      client.setQueryData(serverListKey, [refetched])
+      const handle = createEventHandler(client)
+
+      handle('host.stats', sample)
+
+      expect(client.getQueryData(serverListKey)).toEqual([refetched])
+    })
+
+    test('a sample of a server without one sets its usage', () => {
+      const fresh = { ...drainingServer, cpu_percent: null, memory_percent: null, disk_percent: null, stats_at: null }
+      client.setQueryData(serverListKey, [fresh])
+      const handle = createEventHandler(client)
+
+      handle('host.stats', sample)
+
+      expect(client.getQueryData(serverListKey)).toEqual([{ ...fresh, ...sampled }])
+    })
+
+    test('a sample counts as a sign of life of an agent, and an older one does not move the time back', () => {
+      const seen = { ...drainingServer, stats_at: null, last_seen_at: '2026-11-04T12:00:15Z' }
+      client.setQueryData(serverListKey, [seen, { ...seen, id: 's2', kind: 'local', last_seen_at: null }])
+      const handle = createEventHandler(client)
+
+      handle('host.stats', sample)
+      handle('host.stats', { ...sample, server_id: 's2' })
+
+      expect(client.getQueryData<{ last_seen_at: string | null }[]>(serverListKey)?.map((server) => server.last_seen_at)).toEqual([
+        '2026-11-04T12:00:15Z',
+        null,
+      ])
+    })
   })
 })
 

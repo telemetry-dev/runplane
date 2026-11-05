@@ -13,9 +13,9 @@ type StatusIconProps = {
 
 /** The job and step state glyphs of the designs. Each has an accessible name ("Failed"). */
 export function StatusIcon({ status, size = 16, className }: StatusIconProps) {
-  if (status === 'running') return <Spinner size={size} label={labels.running} className={className} />
+  if (status === 'running') return <Spinner size={size} label={jobStatusNames.running} className={className} />
   return (
-    <Glyph size={size} label={labels[status]} className={className}>
+    <Glyph size={size} label={jobStatusNames[status]} className={className}>
       {glyphs[status](size)}
     </Glyph>
   )
@@ -49,7 +49,7 @@ function Glyph({ size, label, className, children }: { size: number; label: stri
   )
 }
 
-const labels: Record<JobStatus, string> = {
+export const jobStatusNames: Record<JobStatus, string> = {
   queued: 'Queued',
   running: 'Running',
   succeeded: 'Succeeded',
@@ -139,4 +139,23 @@ const stepConclusions: Record<string, JobStatus> = {
 
 function isResult(result: string | null | undefined): result is 'succeeded' | 'failed' | 'cancelled' | 'skipped' {
   return result === 'succeeded' || result === 'failed' || result === 'cancelled' || result === 'skipped'
+}
+
+type BuildState = Schemas['ImageBuild']['status']
+
+/** The icon status of the build of an image on one server. */
+export function buildStatus(state: BuildState): JobStatus {
+  if (state === 'ready') return 'succeeded'
+  if (state === 'pending') return 'queued'
+  if (state === 'failed') return 'failed'
+  return 'running'
+}
+
+export const buildStateNames: Record<BuildState, string> = {
+  pending: 'Waiting',
+  pulling: 'Pulling',
+  building: 'Building',
+  converting: 'Converting',
+  ready: 'Ready',
+  failed: 'Failed',
 }

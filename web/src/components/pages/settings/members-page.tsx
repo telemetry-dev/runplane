@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Ellipsis, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, errorMessage, type Schemas } from '~/api/client'
-import { sessionQuery } from '~/api/queries'
+import { sessionQuery, useIsAdmin } from '~/api/session'
+import { membersQuery } from '~/api/users'
 import { DataTable, DataTableCell, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
@@ -12,12 +13,11 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { Select, SelectItem, SelectPopup, SelectTrigger } from '~/components/ui/select'
 import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
+import { formatRelativeTime } from '~/lib/format'
 import { Activity } from './activity'
-import { relativeTime } from './format'
 import { Invites } from './invites'
-import { membersQuery, roles, type Members, type Role } from './members-api'
+import { roles, type Members, type Role } from './member-info'
 import { LoadError, ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
-import { useIsAdmin } from './settings-api'
 
 type User = Schemas['User']
 
@@ -122,7 +122,7 @@ function UserRow({ user, me, onlyAdmin, shown }: UserRowProps) {
         </Select>
       </DataTableCell>
       {shown.login && (
-        <DataTableCell>{user.last_login_at ? relativeTime(user.last_login_at) : <None />}</DataTableCell>
+        <DataTableCell>{user.last_login_at ? formatRelativeTime(user.last_login_at, Date.now(), { long: true }) : <None />}</DataTableCell>
       )}
       <DataTableCell align="end">
         {!me && (

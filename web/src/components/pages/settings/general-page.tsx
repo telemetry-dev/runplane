@@ -1,13 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import { Check, X } from 'lucide-react'
 import type { Schemas } from '~/api/client'
+import { useIsAdmin } from '~/api/session'
+import { domainDNSQuery, settingsQuery } from '~/api/settings'
 import { Spinner } from '~/components/ui/spinner'
 import { formatDate } from '~/lib/format'
 import { Backups } from './backups'
 import { dnsStatus, serverRecord } from './dns-info'
 import { LoadError, ReadOnlyNote, SettingRow, SettingRows, SettingsColumn, SettingsSection, SettingRowsSkeleton } from './parts'
 import { NumberSetting, TextSetting } from './setting-controls'
-import { domainDNSQuery, settingsQuery, useIsAdmin } from './settings-api'
 import { Updates } from './updates'
 
 /** Settings · General: instance, HTTPS, data retention, and for admins updates and backups. */

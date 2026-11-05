@@ -1,21 +1,21 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
-import { sessionQuery } from '~/api/queries'
+import { cachesQuery } from '~/api/caches'
+import { useIsAdmin } from '~/api/session'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { None } from '~/components/app/none'
 import { SectionHeader } from '~/components/app/section-header'
 import { Stat } from '~/components/app/stat'
 import { PageHeader } from '~/components/ui/page-header'
-import { formatBytes } from '~/lib/format'
+import { formatBytes, formatDateTime } from '~/lib/format'
 import { cacheStats, mirrorHitRate, mirrorSince, pulls, type CacheOverview } from './cache-format'
-import { cacheQuery } from './queries'
 import { RepositoriesTable } from './repositories-table'
 
 /** The Cache design: the Actions cache by repository, and the registry mirror. */
 export function CachePage() {
-  const { data: cache } = useSuspenseQuery(cacheQuery)
-  const admin = useSuspenseQuery(sessionQuery).data?.role === 'admin'
+  const { data: cache } = useSuspenseQuery({ ...cachesQuery, refetchInterval })
+  const admin = useIsAdmin()
   const stats = cacheStats(cache)
   const repositories = cache.enabled ? cache.repositories.length : 0
 
@@ -36,6 +36,9 @@ export function CachePage() {
     </>
   )
 }
+
+// No event reports cache use, so the page refetches it while it is open.
+const refetchInterval = 30_000
 
 /** The page while the overview loads. */
 export function CacheSkeleton() {
@@ -73,7 +76,7 @@ function RegistryMirror({ cache }: { cache: CacheOverview }) {
       <h2 className="flex min-h-[22px] flex-wrap items-baseline gap-x-xs text-m font-heavy tracking-l text-neutral-10">
         Registry mirror
         {cache.mirror_enabled && mirror && (
-          <span className="font-regular text-neutral-6" title={new Date(mirror.started_at).toLocaleString()}>
+          <span className="font-regular text-neutral-6" title={formatDateTime(mirror.started_at, { full: true })}>
             {mirrorSince(mirror.started_at)}
           </span>
         )}

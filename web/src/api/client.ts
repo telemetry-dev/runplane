@@ -1,6 +1,5 @@
 import createFetchClient from 'openapi-fetch'
 import createQueryHooks from 'openapi-react-query'
-import { useMemo } from 'react'
 import type { components, paths } from './schema'
 
 export type Schemas = components['schemas']
@@ -46,8 +45,9 @@ api.use({
 })
 
 /**
- * TanStack Query hooks over `api`. Query keys are `[method, path, init]`, for
- * example `['get', '/api/jobs/{id}', { params: { path: { id } } }]`.
+ * TanStack Query hooks over `api`. The query of a path without init has the
+ * key `[method, path]`, which is the start of the key of every query of the
+ * path, so invalidateQueries with it reaches each of them.
  */
 export const $api = createQueryHooks(api)
 
@@ -64,29 +64,6 @@ export function errorMessage(error: unknown): string {
 
 export function isApiError(error: unknown, status?: number): error is ApiError {
   return error instanceof ApiError && (status === undefined || error.status === status)
-}
-
-/**
- * fieldErrors for the `errors` prop of a Base UI Form. The Form puts its errors
- * back whenever it gets a new object, so this keeps one object until `error`
- * changes; then a field's message goes away when the user edits that field, and
- * the form can be sent again.
- */
-export function useFieldErrors(error: unknown): Record<string, string> {
-  return useMemo(() => fieldErrors(error), [error])
-}
-
-/**
- * Field messages of a validation problem, keyed by request body field. Huma
- * reports a field as "body.new_password".
- */
-export function fieldErrors(error: unknown): Record<string, string> {
-  const errors: Record<string, string> = {}
-  if (!isApiError(error)) return errors
-  for (const item of error.errors ?? []) {
-    if (item.location?.startsWith('body.') && item.message) errors[item.location.slice(5)] = item.message
-  }
-  return errors
 }
 
 function parseProblem(text: string): Problem | undefined {

@@ -1,25 +1,22 @@
-import { useQuery, useSuspenseQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
 import { errorMessage, isApiError } from '~/api/client'
-import { sessionQuery } from '~/api/queries'
+import { imagesQuery } from '~/api/images'
+import { sandboxesQuery } from '~/api/sandboxes'
+import { serverQuery, useDoctor } from '~/api/servers'
+import { useIsAdmin } from '~/api/session'
 import { SectionHeader } from '~/components/app/section-header'
 import { TextButton } from '~/components/app/text-button'
 import { LiveRunnersTable } from '~/components/pages/runners/live-runners-table'
-import { imagesQuery, sandboxesQuery } from '~/components/pages/runners/queries'
 import { Button, buttonClassName } from '~/components/ui/button'
 import { Skeleton } from '~/components/ui/skeleton'
 import { DoctorSection } from './doctor-section'
 import { ImagesTable } from './images-table'
-import { serverQuery, useDoctor } from './queries'
 import { ServerFacts, ServerUsage } from './server-facts'
 import type { Server } from './server-format'
 import { ServerHeader } from './server-header'
 
-/**
- * The Server detail design: facts and usage of one server, the doctor checks,
- * its runners, and its images. server.state, host.stats, sandbox.state, and
- * image.state events keep it current.
- */
+/** The Server detail design: facts and usage of one server, the doctor checks, its runners, and its images. */
 export function ServerPage() {
   const { serverId } = useParams({ from: '/_app/servers/$serverId' })
   const query = useQuery(serverQuery(serverId))
@@ -31,7 +28,7 @@ export function ServerPage() {
 }
 
 function ServerDetail({ server }: { server: Server }) {
-  const admin = useSuspenseQuery(sessionQuery).data?.role === 'admin'
+  const admin = useIsAdmin()
   const sandboxes = useQuery(sandboxesQuery(server.id))
   const images = useQuery(imagesQuery)
   const doctor = useDoctor(server.id)

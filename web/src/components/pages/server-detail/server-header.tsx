@@ -2,10 +2,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { CirclePause, CirclePlay, Ellipsis, Pencil, Stethoscope, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { $api, errorMessage, useFieldErrors } from '~/api/client'
+import { $api, errorMessage } from '~/api/client'
+import { applyChange, dropServer } from '~/api/events'
+import { useFormProblems } from '~/api/form-problems'
+import type { Doctor } from '~/api/servers'
 import { BreadcrumbLink, BreadcrumbPage, Breadcrumbs } from '~/components/app/breadcrumbs'
 import { StatusDot } from '~/components/app/status-dot'
-import { dropServer } from '~/components/pages/servers/queries'
 import { removeDescription } from '~/components/pages/servers/server-info'
 import { UpdateAgentItem } from '~/components/pages/servers/update-agent-item'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
@@ -15,7 +17,6 @@ import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
-import { putServer, serverQuery, type Doctor } from './queries'
 import { canRunDoctor, type Server } from './server-format'
 
 type ServerHeaderProps = {
@@ -61,7 +62,7 @@ function DrainButton({ server }: { server: Server }) {
   const update = $api.useMutation('patch', '/api/servers/{id}', {
     onSuccess: (updated) => {
       setConfirming(false)
-      void putServer(client, updated)
+      void applyChange(client, 'server.state', updated)
     },
     onError: (error) => {
       if (paused) toastManager.add({ title: `Could not resume ${server.name}`, description: errorMessage(error) })
@@ -137,23 +138,23 @@ function RenameDialog({ server, open, onOpenChange }: DialogProps) {
   const rename = $api.useMutation('patch', '/api/servers/{id}', {
     onSuccess: (updated) => {
       onOpenChange(false)
-      void putServer(client, updated)
+      void applyChange(client, 'server.state', updated)
     },
   })
-  const errors = useFieldErrors(rename.error)
+  const problems = useFormProblems(rename.error)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={(isOpen) => !isOpen && rename.reset()}>
       <DialogPopup title="Rename server">
         <Form
-          errors={errors}
+          errors={problems.fields}
           onFormSubmit={(values) => rename.mutate({ params: { path: { id: server.id } }, body: { name: String(values.name).trim() } })}
           className="gap-l"
         >
           <Field name="name" label="Name" validate={(value) => (String(value).trim() ? null : 'Enter a name.')}>
             <Input defaultValue={server.name} maxLength={64} autoComplete="off" spellCheck={false} />
           </Field>
-          {rename.error && Object.keys(errors).length === 0 && <ErrorText error={rename.error} />}
+          {problems.alert && <ErrorText error={problems.alert} />}
           <DialogFooter>
             <DialogClose render={<Button />}>Cancel</DialogClose>
             <Button type="submit" variant="primary" loading={rename.isPending}>
@@ -172,10 +173,7 @@ function RemoveDialog({ server, open, onOpenChange }: DialogProps) {
   const remove = $api.useMutation('delete', '/api/servers/{id}', {
     onSuccess: () => {
       toastManager.add({ title: `Removed ${server.name}` })
-      void navigate({ to: '/servers' }).then(() => {
-        client.removeQueries({ queryKey: serverQuery(server.id).queryKey })
-        void dropServer(client, server.id)
-      })
+      void navigate({ to: '/servers' }).then(() => dropServer(client, server.id))
     },
   })
 

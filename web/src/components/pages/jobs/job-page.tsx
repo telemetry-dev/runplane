@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
 import { errorMessage, isApiError, type Schemas } from '~/api/client'
+import { jobQuery } from '~/api/jobs'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { Button, buttonClassName } from '~/components/ui/button'
@@ -12,14 +13,12 @@ import { JobCharts } from './job-charts'
 import { queueTime, runTime, trigger } from './job-format'
 import { JobHeader } from './job-header'
 import { JobLog } from './job-log'
-import { jobQuery } from './job-queries'
 import { shownStep } from './job-steps'
 import { JobStepsList } from './job-steps-list'
 
 /**
  * The "Job detail" design: header with re-run actions, facts of the run, the
  * debug sandbox of a debug run, steps, CPU and memory, and the log.
- * job.state events refetch the job.
  */
 export function JobPage() {
   const { jobId } = useParams({ from: '/_app/jobs/$jobId' })

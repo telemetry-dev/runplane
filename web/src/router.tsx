@@ -1,6 +1,8 @@
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createRouter } from '@tanstack/react-router'
+import { auditQuery } from './api/audit'
 import { isApiError } from './api/client'
+import { sessionQuery } from './api/session'
 import { RouteError } from './components/route-error'
 import { routeTree } from './routeTree.gen'
 
@@ -10,7 +12,7 @@ export function getRouter() {
     mutationCache: new MutationCache({
       onError: signInAgain,
       // Most changes add an entry to the audit log, which Settings · Members shows.
-      onSuccess: () => queryClient.invalidateQueries({ queryKey: ['get', '/api/audit'] }),
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: auditQuery().queryKey }),
     }),
     defaultOptions: {
       queries: {
@@ -48,7 +50,7 @@ export function getRouter() {
   function signInAgain(error: Error) {
     if (!isApiError(error, 401)) return
     if (!router.state.matches.some((match) => match.routeId === '/_app')) return
-    queryClient.setQueryData(['get', '/api/session'], null)
+    queryClient.setQueryData(sessionQuery.queryKey, null)
     void router.navigate({ to: '/login', search: { redirect: router.state.location.href } })
   }
 

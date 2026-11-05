@@ -1,124 +1,111 @@
-import { skipToken, useQuery, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { hashKey, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
+import { useEffect, useEffectEvent } from 'react'
+import { backupsQuery } from './backups'
 import type { Schemas } from './client'
+import { putGitHub } from './github'
+import { imagesQuery } from './images'
+import { jobQuery, jobsQuery, metricsQuery } from './jobs'
+import { overviewQuery, putOverviewHostStats } from './overview'
+import { poolsQuery, putPoolStats } from './pools'
+import { runnerVersionsQuery } from './runner-versions'
+import { sandboxesQuery, sandboxQuery } from './sandboxes'
+import type { paths } from './schema'
+import { putHostStats, putServer, serverQuery, serversQuery } from './servers'
+import { statusQuery } from './session'
 
-/** SSE event names of GET /api/events. */
-const liveEvents = [
-  'sandbox.state',
-  'job.state',
-  'pool.stats',
-  'server.state',
-  'host.stats',
-  'runner.version',
-  'image.state',
-  'github.state',
-  'backup.state',
-] as const
-
-export type LiveEvent = (typeof liveEvents)[number]
-
-export type PoolStats = {
-  pool_id: string
-  idle: number
-  busy: number
-  starting: number
-  queued: number
-  assigned: number
-}
-
-export type HostStats = {
-  server_id: string
-  cpu_percent: number
-  memory_percent: number
-  disk_percent: number
-  at: string
-}
+/** An event of GET /api/events: its name, and the API object of the name as data. */
+type LiveEvent = paths['/api/events']['get']['responses'][200]['content']['text/event-stream'][number]
+type LiveEventName = LiveEvent['event']
+type LiveEventData<N extends LiveEventName> = Extract<LiveEvent, { event: N }>['data']
 
 /**
- * Opens the one EventSource of the app and keeps the TanStack Query cache current.
- * After a dropped stream it reconnects with backoff and refetches all API queries,
- * because events may have been missed in the gap.
+ * What each event changes in the cache: each function writes the payload into
+ * the cached queries that hold it, and returns the queries that it makes stale.
  */
-export function useLiveEvents() {
-  const client = useQueryClient()
-
-  useEffect(() => {
-    const handle = createEventHandler(client)
-    let source: EventSource | undefined
-    let retry: ReturnType<typeof setTimeout> | undefined
-    let failures = 0
-    let missed = false
-
-    function connect() {
-      source = new EventSource('/api/events')
-      source.onopen = () => {
-        if (missed) void client.invalidateQueries({ queryKey: ['get'] })
-        missed = false
-        failures = 0
-      }
-      source.onerror = () => {
-        // Close to stop the browser's fixed-interval retry; ours backs off.
-        disconnect()
-        retry = setTimeout(connect, reconnectDelay(failures++))
-      }
-      for (const name of liveEvents) {
-        source.addEventListener(name, (event) => handle(name, JSON.parse(event.data)))
-      }
-    }
-
-    function disconnect() {
-      clearTimeout(retry)
-      source?.close()
-      missed = true
-    }
-
-    // A page in the back/forward cache keeps its stream open otherwise, and
-    // browsers allow only six connections to one host over HTTP/1.1.
-    function onPageShow(event: PageTransitionEvent) {
-      if (event.persisted) connect()
-    }
-
-    connect()
-    addEventListener('pagehide', disconnect)
-    addEventListener('pageshow', onPageShow)
-    return () => {
-      removeEventListener('pagehide', disconnect)
-      removeEventListener('pageshow', onPageShow)
-      disconnect()
-    }
-  }, [client])
+const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData<N>) => QueryKey[] } = {
+  'job.state': (client, job) => {
+    // The event has the list fields; the detail adds steps, log state, and metrics.
+    client.setQueryData<object>(jobQuery(job.id).queryKey, (old) => old && { ...old, ...job })
+    // The status tells whether runplane has a job.
+    return [jobQuery(job.id).queryKey, metricsQuery(job.id).queryKey, jobsQuery().queryKey, overviewQuery().queryKey, statusQuery.queryKey]
+  },
+  'sandbox.state': (_client, sandbox) => [
+    sandboxesQuery().queryKey,
+    sandboxQuery(sandbox.id).queryKey,
+    // The pools count their runners, and each server counts its busy sandboxes as running jobs.
+    poolsQuery.queryKey,
+    serversQuery.queryKey,
+    serverQuery(sandbox.server_id).queryKey,
+    // A job's detail carries the state and ssh command of its debug sandbox.
+    ...(sandbox.job_id ? [jobQuery(sandbox.job_id).queryKey] : []),
+  ],
+  'pool.stats': (client, stats) => {
+    putPoolStats(client, stats)
+    return []
+  },
+  'server.state': (client, server) => (putServer(client, server) ? serverCounts() : [serversQuery.queryKey, ...serverCounts()]),
+  'host.stats': (client, stats) => {
+    putHostStats(client, stats)
+    putOverviewHostStats(client, stats)
+    return []
+  },
+  'runner.version': () => [runnerVersionsQuery.queryKey],
+  'image.state': () => [imagesQuery.queryKey],
+  'github.state': (client, status) => {
+    putGitHub(client, status)
+    return []
+  },
+  'backup.state': () => [backupsQuery.queryKey],
 }
 
-/** The latest pool.stats event of a pool, or undefined until one arrives. */
-export function usePoolStats(poolId: string): PoolStats | undefined {
-  return useQuery<PoolStats>({ queryKey: liveKey('pool.stats', poolId), queryFn: skipToken }).data
+/** The queries that count servers: the overview, and the pools by the servers that can place their runners. */
+function serverCounts(): QueryKey[] {
+  return [overviewQuery().queryKey, poolsQuery.queryKey]
 }
 
-/** The latest host.stats event of a server (each 10 seconds), or undefined until one arrives. */
-export function useHostStats(serverId: string): HostStats | undefined {
-  return useQuery<HostStats>({ queryKey: liveKey('host.stats', serverId), queryFn: skipToken }).data
+const eventNames = Object.keys(changes) as LiveEventName[]
+
+/** Writes an event into the cache and returns the queries that it makes stale. */
+function applyEvent<N extends LiveEventName>(client: QueryClient, name: N, data: LiveEventData<N>): QueryKey[] {
+  return changes[name](client, data)
+}
+
+/** Changes the cache as an event would, for a mutation whose answer is the object of the event. */
+export function applyChange<N extends LiveEventName>(client: QueryClient, name: N, data: LiveEventData<N>) {
+  return refetch(client, applyEvent(client, name, data))
+}
+
+/** Refetches the server list and the queries that count servers, as for a server that the list does not have yet. */
+export function refreshServers(client: QueryClient) {
+  return refetch(client, [serversQuery.queryKey, ...serverCounts()])
+}
+
+/** Removes a server from the cache, and refetches the queries that count servers. */
+export function dropServer(client: QueryClient, id: string) {
+  client.removeQueries({ queryKey: serverQuery(id).queryKey })
+  client.setQueryData<Schemas['Server'][]>(serversQuery.queryKey, (list) => list?.filter((item) => item.id !== id))
+  return refetch(client, serverCounts())
+}
+
+function refetch(client: QueryClient, keys: QueryKey[]) {
+  return Promise.all(keys.map((queryKey) => client.invalidateQueries({ queryKey })))
 }
 
 /**
- * Returns a function that applies one event to the cache. Objects in the event
- * payload go straight into cached queries. Queries that the event makes stale
- * are refetched once per 300ms, so a burst of events causes one request each.
+ * Returns a function that applies one event to the cache. The queries that the
+ * events make stale are refetched once per 300ms, so a burst of events causes
+ * one request each.
  */
 export function createEventHandler(client: QueryClient) {
-  const stale = new Map<string, Stale>()
+  const stale = new Map<string, QueryKey>()
   let timer: ReturnType<typeof setTimeout> | undefined
 
-  return (name: LiveEvent, data: unknown) => {
-    for (const target of applyEvent(client, name, data)) stale.set(`${target.path} ${target.id ?? ''}`, target)
+  return (name: LiveEventName, data: unknown) => {
+    for (const key of applyEvent(client, name, data as LiveEventData<typeof name>)) stale.set(hashKey(key), key)
     if (timer || stale.size === 0) return
     timer = setTimeout(() => {
       timer = undefined
-      for (const { path, id } of stale.values()) {
-        void client.invalidateQueries({
-          queryKey: ['get', path],
-          predicate: id === undefined ? undefined : (query) => pathId(query.queryKey) === id,
-        })
-      }
+      void refetch(client, [...stale.values()])
       stale.clear()
     }, 300)
   }
@@ -129,95 +116,89 @@ export function reconnectDelay(failures: number): number {
   return Math.min(30_000, 1_000 * 2 ** failures)
 }
 
-/** The queries of an API path, or only those for one path `id`. */
-type Stale = { path: string; id?: string }
+/**
+ * Keeps the one EventSource of the app open while the component is mounted,
+ * so the events keep the cache current. `onOpen` runs each time the stream
+ * opens: it sends no past events.
+ */
+export function useLiveEvents({ onOpen }: { onOpen?: () => void } = {}) {
+  const client = useQueryClient()
+  const opened = useEffectEvent(() => onOpen?.())
+  useEffect(() => listen(client, () => opened()), [client])
+}
 
-/** Writes the event payload into the cache and returns the queries whose data it changes. */
-function applyEvent(client: QueryClient, name: LiveEvent, data: unknown): Stale[] {
-  switch (name) {
-    case 'job.state': {
-      // The event has the list fields; the detail adds steps, log state, and metrics.
-      const { id } = data as Item
-      mergeDetail(client, '/api/jobs/{id}', data as Item)
-      return [{ path: '/api/jobs/{id}', id }, { path: '/api/jobs/{id}/metrics', id }, { path: '/api/jobs' }, { path: '/api/overview' }]
-    }
-    case 'sandbox.state': {
-      // A job's detail carries the state and ssh command of its debug sandbox.
-      // The server list counts the busy sandboxes of each server as its running jobs.
-      const { id, job_id, server_id } = data as Sandbox
-      const stale: Stale[] = [
-        { path: '/api/sandboxes' },
-        { path: '/api/sandboxes/{id}', id },
-        { path: '/api/pools' },
-        { path: '/api/servers' },
-        { path: '/api/servers/{id}', id: server_id },
-      ]
-      if (job_id) stale.push({ path: '/api/jobs/{id}', id: job_id })
-      return stale
-    }
-    case 'pool.stats':
-      client.setQueryData(liveKey(name, (data as PoolStats).pool_id), data)
-      return []
-    case 'server.state': {
-      // The event has the Server object of GET /api/servers and GET /api/servers/{id}.
-      // The pools count the online servers that can place their runners.
-      const server = data as Schemas['Server']
-      mergeDetail(client, '/api/servers/{id}', server)
-      const stale: Stale[] = [{ path: '/api/overview' }, { path: '/api/pools' }]
-      if (!replaceInLists(client, '/api/servers', server)) stale.push({ path: '/api/servers' })
-      return stale
-    }
-    case 'host.stats':
-      client.setQueryData(liveKey(name, (data as HostStats).server_id), data)
-      return []
-    case 'runner.version':
-      return [{ path: '/api/runner-versions' }]
-    case 'image.state':
-      return [{ path: '/api/images' }]
-    case 'github.state':
-      // The event carries the whole GET /api/github answer.
-      client.setQueriesData({ queryKey: ['get', '/api/github'] }, data)
-      return []
-    case 'backup.state':
-      return [{ path: '/api/backups' }]
+type Stream = { listeners: Set<() => void>; close: () => void }
+
+const streams = new WeakMap<QueryClient, Stream>()
+
+/** Adds an open listener to the stream of `client`, and opens the stream for the first one. Returns the function that removes it. */
+function listen(client: QueryClient, onOpen: () => void): () => void {
+  let stream = streams.get(client)
+  if (!stream) {
+    stream = openStream(client)
+    streams.set(client, stream)
+  }
+  stream.listeners.add(onOpen)
+  return () => {
+    stream.listeners.delete(onOpen)
+    if (stream.listeners.size > 0) return
+    stream.close()
+    streams.delete(client)
   }
 }
 
-type Item = { id: string }
-
-type Sandbox = Pick<Schemas['Sandbox'], 'id' | 'job_id' | 'server_id'>
-
-// List payloads lack detail fields (job steps, for example), so merge instead of replace.
-function mergeDetail(client: QueryClient, path: string, item: Item) {
-  client.setQueriesData<object>(
-    { queryKey: ['get', path], predicate: (query) => pathId(query.queryKey) === item.id },
-    (old) => old && { ...old, ...item },
-  )
-}
-
 /**
- * Puts the item in place of the item with its ID in each cached list of the path.
- * Returns false if a cached list lacks the item, as for a new server.
+ * The event stream of one cache. After a dropped stream it reconnects with
+ * backoff and refetches all queries, because events may have been missed in
+ * the gap.
  */
-function replaceInLists(client: QueryClient, path: string, item: Item): boolean {
-  let found = true
-  client.setQueriesData<Item[]>({ queryKey: ['get', path] }, (list) => {
-    if (!list) return list
-    const index = list.findIndex((listed) => listed.id === item.id)
-    if (index < 0) {
-      found = false
-      return list
+function openStream(client: QueryClient): Stream {
+  const handle = createEventHandler(client)
+  const listeners = new Set<() => void>()
+  let source: EventSource | undefined
+  let retry: ReturnType<typeof setTimeout> | undefined
+  let failures = 0
+  let missed = false
+
+  function connect() {
+    source = new EventSource('/api/events')
+    source.onopen = () => {
+      if (missed) void client.invalidateQueries()
+      missed = false
+      failures = 0
+      for (const listener of listeners) listener()
     }
-    return list.with(index, item)
-  })
-  return found
-}
+    source.onerror = () => {
+      // Close to stop the browser's fixed-interval retry; ours backs off.
+      disconnect()
+      retry = setTimeout(connect, reconnectDelay(failures++))
+    }
+    for (const name of eventNames) {
+      source.addEventListener(name, (event) => handle(name, JSON.parse(event.data)))
+    }
+  }
 
-function pathId(key: QueryKey): unknown {
-  const init = key[2] as { params?: { path?: { id?: unknown } } } | undefined
-  return init?.params?.path?.id
-}
+  function disconnect() {
+    clearTimeout(retry)
+    source?.close()
+    missed = true
+  }
 
-function liveKey(name: 'pool.stats' | 'host.stats', id: string): QueryKey {
-  return ['live', name, id]
+  // A page in the back/forward cache keeps its stream open otherwise, and
+  // browsers allow only six connections to one host over HTTP/1.1.
+  function onPageShow(event: PageTransitionEvent) {
+    if (event.persisted) connect()
+  }
+
+  connect()
+  addEventListener('pagehide', disconnect)
+  addEventListener('pageshow', onPageShow)
+  return {
+    listeners,
+    close: () => {
+      removeEventListener('pagehide', disconnect)
+      removeEventListener('pageshow', onPageShow)
+      disconnect()
+    },
+  }
 }

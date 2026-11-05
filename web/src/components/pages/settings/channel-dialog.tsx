@@ -5,6 +5,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Send } from 'lucide-react'
 import { useId, useRef, useState, type Ref } from 'react'
 import { $api, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { notificationsQuery } from '~/api/notifications'
 import { Button } from '~/components/ui/button'
 import { Checkbox } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogPopup } from '~/components/ui/dialog'
@@ -14,8 +16,7 @@ import { SegmentedControl } from '~/components/ui/segmented'
 import { toastManager } from '~/components/ui/toast'
 import { channelEvents, channelKinds, defaultEvents, type ChannelEvent, type ChannelKind } from './channel-info'
 import { quietAction } from './parts'
-import { notificationsQuery, useSendTest } from './notifications-api'
-import { useFormErrors } from './settings-api'
+import { useSendTest } from './send-test'
 
 type Channel = Schemas['NotificationChannel']
 
@@ -66,13 +67,13 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
     else create.mutate({ body: { ...body, url: url.trim() } })
   }
 
-  const errors = useFormErrors(save.error)
+  const problems = useFormProblems(save.error, { fields: formFields })
   const ready = name.trim() !== '' && (channel !== undefined || url.trim() !== '')
 
   return (
     <>
       <SegmentedControl aria-label="Kind" value={kind} onValueChange={setKind} options={channelKinds} />
-      <Form id={formId} errors={errors.fields} onFormSubmit={submit} className="gap-l">
+      <Form id={formId} errors={problems.fields} onFormSubmit={submit} className="gap-l">
         <Field name="name" label="Name">
           <Input
             ref={nameInput}
@@ -107,9 +108,9 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
             ))}
           </CheckboxGroup>
         </Fieldset.Root>
-        {errors.other && (
+        {problems.alert && (
           <p role="alert" className="text-s text-error">
-            {errors.other}
+            {problems.alert}
           </p>
         )}
       </Form>
@@ -138,3 +139,6 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
     </>
   )
 }
+
+// The kind and the events have no Field, so their problems go to the alert.
+const formFields = ['name', 'url']

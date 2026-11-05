@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { overviewQuery } from '~/api/overview'
 import { isRange, type Range } from '~/components/pages/overview/data'
-import { OverviewPage, overviewQuery } from '~/components/pages/overview/overview-page'
+import { OverviewPage } from '~/components/pages/overview/overview-page'
 import { pageHead } from '~/lib/head'
 
 export const Route = createFileRoute('/_app/')({

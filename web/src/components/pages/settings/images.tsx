@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Ellipsis, RefreshCw, Star, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { dropImage, imagesQuery, putImage } from '~/api/images'
 import {
   DataTable,
   DataTableCell,
@@ -13,8 +15,7 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
-import { StatusIcon } from '~/components/app/status-icon'
-import { imagesQuery } from '~/components/pages/runners/queries'
+import { buildStateNames, buildStatus, StatusIcon } from '~/components/app/status-icon'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
@@ -25,8 +26,7 @@ import { toastManager } from '~/components/ui/toast'
 import { formatBytes } from '~/lib/format'
 import { cx } from '~/lib/cx'
 import { Badge, CardTitle, ErrorHint, LoadError, SettingsCard, SettingsSection } from './parts'
-import { buildLabel, buildStatus, buildSummary, usedBy } from './runner-info'
-import { useFormErrors } from './settings-api'
+import { buildSummary, usedBy } from './runner-info'
 
 type Image = Schemas['Image']
 
@@ -146,7 +146,7 @@ function ImageRows({ image, admin, shown }: ImageRowsProps) {
                 </ErrorHint>
                 <span className="min-w-0 flex-1 truncate text-neutral-10">{build.server_name}</span>
                 <span className="w-[56px] shrink-0 text-neutral-7">{build.arch || '—'}</span>
-                <span className="w-[124px] shrink-0 text-neutral-8">{buildLabel(build.status)}</span>
+                <span className="w-[124px] shrink-0 text-neutral-8">{buildStateNames[build.status]}</span>
                 <span className="w-[72px] shrink-0 text-right text-neutral-8 tabular-nums">
                   {build.size_bytes > 0 ? formatBytes(build.size_bytes) : '—'}
                 </span>
@@ -214,10 +214,7 @@ function RemoveImage({ image, open, onOpenChange }: { image: Image; open: boolea
       onOpenChangeComplete={(isOpen) => {
         if (isOpen) return
         // Drop the row only after the close animation; the dialog lives in it.
-        if (remove.isSuccess) {
-          client.setQueryData<Image[]>(imagesQuery.queryKey, (list) => list?.filter((item) => item.id !== image.id))
-          void client.invalidateQueries({ queryKey: ['get', '/api/pools'] })
-        }
+        if (remove.isSuccess) void dropImage(client, image.id)
         remove.reset()
       }}
     >
@@ -250,21 +247,21 @@ function AddImage() {
   const [formKey, setFormKey] = useState(0)
   const add = $api.useMutation('post', '/api/images', {
     onSuccess: (image) => {
-      client.setQueryData<Image[]>(imagesQuery.queryKey, (list) => [...(list ?? []).filter((item) => item.id !== image.id), image])
+      putImage(client, image)
       setName('')
       setRef('')
       setFormKey((key) => key + 1)
       toastManager.add({ title: `${image.name} added` })
     },
   })
-  const errors = useFormErrors(add.error)
+  const problems = useFormProblems(add.error)
 
   return (
     <SettingsCard className="gap-m">
       <CardTitle title="Add image">Build it FROM a runplane base image. Each server pulls it once.</CardTitle>
       <Form
         key={formKey}
-        errors={errors.fields}
+        errors={problems.fields}
         onFormSubmit={() => add.mutate({ body: { name: name.trim(), ref: ref.trim() } })}
         className="gap-s"
       >
@@ -296,9 +293,9 @@ function AddImage() {
             Add image
           </Button>
         </div>
-        {errors.other && (
+        {problems.alert && (
           <p role="alert" className="text-s text-error">
-            {errors.other}
+            {problems.alert}
           </p>
         )}
       </Form>

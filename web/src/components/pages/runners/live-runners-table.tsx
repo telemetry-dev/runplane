@@ -14,13 +14,13 @@ import {
 } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
-import { RunnerStateIcon } from '~/components/app/runner-state-icon'
+import { RunnerStateIcon, sandboxStateNames } from '~/components/app/runner-state-icon'
 import { workflowFile } from '~/components/pages/jobs/job-format'
 import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { useNow } from '~/lib/use-now'
 import { Code } from './code'
-import { formatUptime, sortSandboxes, stateNames, type Sandbox } from './runner-format'
+import { formatUptime, sortSandboxes, type Sandbox } from './runner-format'
 import { RunnerLogDrawer } from './runner-log'
 import { SkeletonRows } from './skeleton-rows'
 import { StopRunnerDialog } from './stop-runner-dialog'
@@ -37,10 +37,10 @@ type LiveRunnersTableProps = {
 }
 
 /**
- * The Live runners table of the Runners design and of Server detail.
- * sandbox.state events refetch the list; the uptimes tick each second. A narrow
- * table drops Label (the runner name starts with it), then Server, then Job,
- * whose name then follows the state under the runner.
+ * The Live runners table of the Runners design and of Server detail. The
+ * uptimes tick each second. A narrow table drops Label (the runner name starts
+ * with it), then Server, then Job, whose name then follows the state under the
+ * runner.
  */
 export function LiveRunnersTable({ sandboxes, showServer = true, empty, failed }: LiveRunnersTableProps) {
   const now = useNow(1000)
@@ -126,7 +126,7 @@ type RunnerRowProps = {
 } & RunnerMenuProps
 
 function RunnerRow({ sandbox, shown, now, onViewLog, onStop }: RunnerRowProps) {
-  const state = stateNames[sandbox.state]
+  const state = sandboxStateNames[sandbox.state]
   return (
     <DataTableRow>
       <DataTableCell>

@@ -1,12 +1,14 @@
 import { Check } from 'lucide-react'
 import { useEffect, useId, useMemo, useState } from 'react'
-import { $api, errorMessage, useFieldErrors, type Schemas } from '~/api/client'
+import { $api, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
 import { Button } from '~/components/ui/button'
 import { Field } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { GithubIcon } from '~/components/ui/icons'
 import { RadioCard, RadioGroup } from '~/components/ui/radio-group'
 import { cx } from '~/lib/cx'
+import { usePageShows } from '~/lib/use-page-shows'
 import { OrganizationSearch } from './organization-search'
 import { borderedList, borderedRow } from './parts'
 
@@ -42,16 +44,15 @@ export function ConnectForm() {
 
   // Back from GitHub, the browser may restore this page with the button still busy.
   const { reset } = manifest
+  const shows = usePageShows()
   useEffect(() => {
-    const onPageShow = (event: PageTransitionEvent) => event.persisted && reset()
-    window.addEventListener('pageshow', onPageShow)
-    return () => window.removeEventListener('pageshow', onPageShow)
-  }, [reset])
+    if (shows > 0) reset()
+  }, [shows, reset])
 
-  const serverErrors = useFieldErrors(manifest.error)
+  const problems = useFormProblems(manifest.error, { fields: formFields })
   const errors = useMemo(
-    () => (unselected ? { ...serverErrors, organization: 'Select the organization in the list.' } : serverErrors),
-    [unselected, serverErrors],
+    () => (unselected ? { ...problems.fields, organization: 'Select the organization in the list.' } : problems.fields),
+    [unselected, problems.fields],
   )
   const busy = manifest.isPending || manifest.isSuccess
 
@@ -135,15 +136,17 @@ export function ConnectForm() {
           </Button>
           <p className="text-s text-neutral-7">Next, GitHub asks which repositories the app can access.</p>
         </div>
-        {manifest.error && Object.keys(errors).length === 0 && (
+        {problems.alert && (
           <p role="alert" className="text-s text-error">
-            {errorMessage(manifest.error)}
+            {problems.alert}
           </p>
         )}
       </div>
     </Form>
   )
 }
+
+const formFields = ['organization']
 
 function postToGitHub({ action_url, manifest }: Schemas['ManifestForm']) {
   const form = document.createElement('form')

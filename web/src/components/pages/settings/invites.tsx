@@ -2,6 +2,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Copy, RotateCw } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, errorMessage, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { membersQuery } from '~/api/users'
 import { copyText } from '~/components/app/copy-button'
 import { DataTable, DataTableCell, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
 import { Button } from '~/components/ui/button'
@@ -9,11 +11,9 @@ import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Select, SelectItem, SelectPopup, SelectTrigger } from '~/components/ui/select'
 import { toastManager } from '~/components/ui/toast'
-import { formatDate } from '~/lib/format'
-import { relativeTime } from './format'
-import { membersQuery, roles, type Members, type Role } from './members-api'
+import { formatDate, formatRelativeTime } from '~/lib/format'
+import { roles, type Members, type Role } from './member-info'
 import { quietAction, SettingsCard, SettingsSection } from './parts'
-import { useFormErrors } from './settings-api'
 
 type Invite = Schemas['Invite']
 
@@ -82,11 +82,11 @@ function InviteForm({ onCreated }: { onCreated: (invite: Invite, url: string) =>
       return copyLink(url, 'Invite link copied')
     },
   })
-  const errors = useFormErrors(create.error)
+  const problems = useFormProblems(create.error)
 
   return (
     <SettingsCard className="gap-m">
-      <Form key={formKey} errors={errors.fields} onFormSubmit={() => create.mutate({ body: { email: email.trim(), role } })}>
+      <Form key={formKey} errors={problems.fields} onFormSubmit={() => create.mutate({ body: { email: email.trim(), role } })}>
         <div className="flex flex-col gap-s @min-[480px]:flex-row @min-[480px]:items-start">
           <Field name="email" label="Email" className="min-w-0 flex-1">
             <Input type="email" value={email} onValueChange={setEmail} placeholder="name@example.com" required autoComplete="off" />
@@ -108,9 +108,9 @@ function InviteForm({ onCreated }: { onCreated: (invite: Invite, url: string) =>
             Create invite
           </Button>
         </div>
-        {errors.other && (
+        {problems.alert && (
           <p role="alert" className="text-s text-error">
-            {errors.other}
+            {problems.alert}
           </p>
         )}
         <p className="text-xs text-pretty text-neutral-7">
@@ -164,7 +164,7 @@ function InviteRow({ invite, invitedBy, link, onNewLink, shown }: InviteRowProps
         </span>
       </DataTableCell>
       {shown.role && <DataTableCell>{roles.find((role) => role.value === invite.role)?.label}</DataTableCell>}
-      {shown.expires && <DataTableCell>{relativeTime(invite.expires_at)}</DataTableCell>}
+      {shown.expires && <DataTableCell>{formatRelativeTime(invite.expires_at, Date.now(), { long: true })}</DataTableCell>}
       <DataTableCell align="end">
         <div className="flex items-center gap-l">
           {link ? (

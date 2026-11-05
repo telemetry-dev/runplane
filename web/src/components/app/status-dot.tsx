@@ -1,6 +1,7 @@
+import type { Schemas } from '~/api/client'
 import { Spinner } from '~/components/ui/spinner'
 
-export type ServerStatus = 'online' | 'installing' | 'unreachable' | 'draining' | 'disabled'
+export type ServerStatus = Schemas['Server']['status']
 
 type StatusDotProps = {
   status: ServerStatus
@@ -15,9 +16,9 @@ type StatusDotProps = {
  * while installing. Pair it with the state in words; the dot alone is not enough.
  */
 export function StatusDot({ status, size = 16, className }: StatusDotProps) {
-  if (status === 'installing') return <Spinner size={size} label={labels.installing} className={className} />
+  if (status === 'installing') return <Spinner size={size} label={serverStatusNames.installing} className={className} />
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" role="img" aria-label={labels[status]} className={className} style={{ flexShrink: 0 }}>
+    <svg width={size} height={size} viewBox="0 0 16 16" role="img" aria-label={serverStatusNames[status]} className={className} style={{ flexShrink: 0 }}>
       {status === 'online' && <circle cx="8" cy="8" r="4" fill="var(--neutral-10)" />}
       {status === 'draining' && (
         <>
@@ -32,7 +33,7 @@ export function StatusDot({ status, size = 16, className }: StatusDotProps) {
   )
 }
 
-const labels: Record<ServerStatus, string> = {
+export const serverStatusNames: Record<ServerStatus, string> = {
   online: 'Online',
   installing: 'Installing',
   unreachable: 'Unreachable',

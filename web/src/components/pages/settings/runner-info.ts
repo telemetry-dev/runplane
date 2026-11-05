@@ -1,40 +1,19 @@
 import type { Schemas } from '~/api/client'
-import type { JobStatus } from '~/components/app/status-icon'
+import { buildStateNames, type JobStatus } from '~/components/app/status-icon'
 
 type Build = Schemas['ImageBuild']
-type BuildState = Build['status']
 type RunnerVersion = Schemas['RunnerVersion']
 
-/** Labels of the build states, in the order of the "Servers" summary. */
-const buildLabels: [BuildState, string][] = [
-  ['ready', 'ready'],
-  ['pulling', 'pulling'],
-  ['building', 'building'],
-  ['converting', 'converting'],
-  ['pending', 'waiting'],
-  ['failed', 'failed'],
-]
+/** The build states in the order of the "Servers" summary. */
+const summaryOrder: Build['status'][] = ['ready', 'pulling', 'building', 'converting', 'pending', 'failed']
 
 /** The "Servers" cell of an image: "5 ready · 1 pulling". */
 export function buildSummary(builds: Build[]): string {
-  return buildLabels
-    .map(([state, label]) => [builds.filter((build) => build.status === state).length, label] as const)
+  return summaryOrder
+    .map((state) => [builds.filter((build) => build.status === state).length, buildStateNames[state].toLowerCase()] as const)
     .filter(([count]) => count > 0)
     .map(([count, label]) => `${count} ${label}`)
     .join(' · ')
-}
-
-/** "Ready", "Waiting", …, for one server's row of an image. */
-export function buildLabel(state: BuildState): string {
-  const label = buildLabels.find(([key]) => key === state)![1]
-  return label[0]!.toUpperCase() + label.slice(1)
-}
-
-export function buildStatus(state: BuildState): JobStatus {
-  if (state === 'ready') return 'succeeded'
-  if (state === 'pending') return 'queued'
-  if (state === 'failed') return 'failed'
-  return 'running'
 }
 
 /** The "Used by" cell: "5 labels", "1 label", or "No labels". */

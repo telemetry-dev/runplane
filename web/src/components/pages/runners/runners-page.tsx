@@ -2,21 +2,22 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { useSearch } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import { useState } from 'react'
-import { sessionQuery } from '~/api/queries'
+import { poolsQuery } from '~/api/pools'
+import { sandboxesQuery } from '~/api/sandboxes'
+import { useIsAdmin } from '~/api/session'
 import { SectionHeader } from '~/components/app/section-header'
 import { Button } from '~/components/ui/button'
 import { PageHeader } from '~/components/ui/page-header'
 import { LabelDialog } from './label-dialog'
 import { LabelsTable } from './labels-table'
 import { LiveRunnersTable } from './live-runners-table'
-import { poolsQuery, sandboxesQuery } from './queries'
 import type { Pool } from './runner-format'
 
 /** The Runners design: the labels (pools) with their live counts, and the runners that live now. */
 export function RunnersPage() {
   const { data: pools } = useSuspenseQuery(poolsQuery)
   const { data: sandboxes } = useSuspenseQuery(sandboxesQuery())
-  const admin = useSuspenseQuery(sessionQuery).data?.role === 'admin'
+  const admin = useIsAdmin()
   const marked = useSearch({ from: '/_app/runners', select: (search) => search.label })
   // The pool stays while the dialog closes, so its content does not change during the animation.
   const [dialog, setDialog] = useState<{ open: boolean; pool?: Pool }>({ open: false })
