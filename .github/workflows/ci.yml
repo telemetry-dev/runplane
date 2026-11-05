@@ -53,6 +53,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # The committed spec, types, and limits must match the Go API.
+      - run: pnpm gen:api && git diff --exit-code -- src/api
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

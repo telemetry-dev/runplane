@@ -10,6 +10,7 @@
           },
           "password": {
             "maxLength": 1024,
+            "minLength": 10,
             "type": "string"
           }
         },
@@ -507,6 +508,7 @@
           },
           "label": {
             "description": "The runs-on label. Unique.",
+            "maxLength": 63,
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "patternDescription": "lowercase letters, digits, and dashes",
             "type": "string"
@@ -3438,6 +3440,8 @@
         "properties": {
           "code": {
             "description": "Setup code from the install script, for example ABCD-EFGH-JKLM.",
+            "pattern": "^[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}$",
+            "patternDescription": "a setup code such as ABCD-EFGH-JKLM",
             "type": "string"
           },
           "email": {
@@ -3450,6 +3454,7 @@
           },
           "password": {
             "maxLength": 1024,
+            "minLength": 10,
             "type": "string"
           }
         },
@@ -3596,6 +3601,7 @@
           "new_password": {
             "description": "Logs out the other sessions of the user.",
             "maxLength": 1024,
+            "minLength": 10,
             "type": "string"
           }
         },
@@ -3669,6 +3675,7 @@
             "type": "string"
           },
           "label": {
+            "maxLength": 63,
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "patternDescription": "lowercase letters, digits, and dashes",
             "type": "string"
@@ -7413,6 +7420,8 @@
             "required": true,
             "schema": {
               "description": "The setup code.",
+              "pattern": "^[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}$",
+              "patternDescription": "a setup code such as ABCD-EFGH-JKLM",
               "type": "string"
             }
           }

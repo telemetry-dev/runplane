@@ -50,10 +50,10 @@ func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], er
 }
 
 type SetupRequest struct {
-	Code     string `json:"code" doc:"Setup code from the install script, for example ABCD-EFGH-JKLM."`
+	Code     string `json:"code" pattern:"^[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}$" patternDescription:"a setup code such as ABCD-EFGH-JKLM" doc:"Setup code from the install script, for example ABCD-EFGH-JKLM."`
 	Name     string `json:"name" maxLength:"100"`
 	Email    string `json:"email" maxLength:"254"`
-	Password string `json:"password" maxLength:"1024"`
+	Password string `json:"password" minLength:"10" maxLength:"1024"`
 }
 
 func (h *Handler) setup(ctx context.Context, in *body[SetupRequest]) (*sessionOutput, error) {
@@ -91,7 +91,7 @@ type Check struct {
 }
 
 type setupHostInput struct {
-	Code string `query:"code" required:"true" doc:"The setup code."`
+	Code string `query:"code" required:"true" pattern:"^[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}$" patternDescription:"a setup code such as ABCD-EFGH-JKLM" doc:"The setup code."`
 }
 
 func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*body[HostCheck], error) {
