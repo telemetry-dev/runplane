@@ -8,10 +8,8 @@ import (
 	"net/netip"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
@@ -29,7 +27,7 @@ type hostOps interface {
 	// stopJobs returns the VM scopes that systemd is about to stop, as at
 	// a host shutdown.
 	stopJobs() (map[string]bool, error)
-	// probe fetches url with the network of a VM on lease l (Probe).
+	// probe fetches url with the network of a VM on lease l.
 	probe(ctx context.Context, l netrules.Lease, dns netip.Addr, url string) error
 	close() error
 }
@@ -44,7 +42,7 @@ func (h systemHost) addTap(l netrules.Lease, uid, gid int) error {
 	if err := netrules.CreateTap(l.Tap, uid, gid, l.HostCIDR()); err != nil {
 		return err
 	}
-	return h.net.AddTap(l.Tap, l.Guest, l.Host)
+	return h.keepTap(l)
 }
 
 func (h systemHost) keepTap(l netrules.Lease) error { return h.net.AddTap(l.Tap, l.Guest, l.Host) }
@@ -84,67 +82,3 @@ func parseStopJobs(out []byte) map[string]bool {
 }
 
 func (h systemHost) close() error { return h.net.Close() }
-
-// eventQueue delivers events in order without blocking the sender.
-type eventQueue struct {
-	out  chan sandbox.Event
-	wake chan struct{}
-	quit chan struct{}
-	done chan struct{}
-
-	mu   sync.Mutex
-	list []sandbox.Event
-}
-
-func newEventQueue() *eventQueue {
-	q := &eventQueue{
-		out:  make(chan sandbox.Event),
-		wake: make(chan struct{}, 1),
-		quit: make(chan struct{}),
-		done: make(chan struct{}),
-	}
-	go q.run()
-	return q
-}
-
-func (q *eventQueue) push(ev sandbox.Event) {
-	q.mu.Lock()
-	q.list = append(q.list, ev)
-	q.mu.Unlock()
-	select {
-	case q.wake <- struct{}{}:
-	default:
-	}
-}
-
-func (q *eventQueue) run() {
-	defer close(q.done)
-	defer close(q.out)
-	for {
-		q.mu.Lock()
-		batch := q.list
-		q.list = nil
-		q.mu.Unlock()
-		for _, ev := range batch {
-			select {
-			case q.out <- ev:
-			case <-q.quit:
-				return
-			}
-		}
-		if len(batch) > 0 {
-			continue
-		}
-		select {
-		case <-q.wake:
-		case <-q.quit:
-			return
-		}
-	}
-}
-
-// close ends the delivery and closes the channel.
-func (q *eventQueue) close() {
-	close(q.quit)
-	<-q.done
-}

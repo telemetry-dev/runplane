@@ -7,25 +7,23 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
-type apiRequest struct {
-	Method, Path string
-	Body         any
-}
+type apiRequest struct{ method, path, body string }
 
 // fakeAPI serves the Firecracker API on a Unix socket. It records each
 // request and answers 400 with a fault message for the paths in fail.
 func fakeAPI(t *testing.T, fail map[string]string) (*apiClient, func() []apiRequest) {
 	t.Helper()
-	dir := shortTempDir(t)
-	sock := filepath.Join(dir, "api.sock")
+	sock := filepath.Join(shortTempDir(t), "api.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -34,12 +32,8 @@ func fakeAPI(t *testing.T, fail map[string]string) (*apiClient, func() []apiRequ
 	var got []apiRequest
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		var body any
-		if err := json.Unmarshal(b, &body); err != nil {
-			t.Errorf("%s %s: body is not JSON: %q", r.Method, r.URL.Path, b)
-		}
 		mu.Lock()
-		got = append(got, apiRequest{r.Method, r.URL.Path, body})
+		got = append(got, apiRequest{r.Method, r.URL.Path, string(b)})
 		mu.Unlock()
 		if msg, ok := fail[r.URL.Path]; ok {
 			w.WriteHeader(http.StatusBadRequest)
@@ -53,58 +47,27 @@ func fakeAPI(t *testing.T, fail map[string]string) (*apiClient, func() []apiRequ
 	return newAPIClient(sock), func() []apiRequest {
 		mu.Lock()
 		defer mu.Unlock()
-		return got
+		return slices.Clone(got)
 	}
 }
 
-// shortTempDir is a temp folder with a short path, because Unix socket
-// paths have a limit of about 100 bytes.
-func shortTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "rpfc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
-}
-
-func jsonValue(t *testing.T, s string) any {
-	t.Helper()
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		t.Fatalf("bad JSON in test: %v: %s", err, s)
-	}
-	return v
-}
-
-func checkRequests(t *testing.T, got []apiRequest, want []apiRequest) {
+func checkRequests(t *testing.T, got, want []apiRequest) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Errorf("got %d requests, want %d", len(got), len(want))
 	}
 	for i := range min(len(got), len(want)) {
-		g, w := got[i], want[i]
-		w.Body = jsonValue(t, w.Body.(string))
-		if !reflect.DeepEqual(g, w) {
-			gb, _ := json.Marshal(g.Body)
-			wb, _ := json.Marshal(w.Body)
-			t.Errorf("request %d:\n got %s %s %s\nwant %s %s %s", i, g.Method, g.Path, gb, w.Method, w.Path, wb)
+		if got[i] != want[i] {
+			t.Errorf("request %d:\n got %v\nwant %v", i, got[i], want[i])
 		}
 	}
 }
 
-func TestConfigureBootsTheVM(t *testing.T) {
+var testLease = netrules.Lease{Tap: "rp-3", Host: netip.MustParseAddr("10.214.0.13"), Guest: netip.MustParseAddr("10.214.0.14")}
+
+func TestBoot(t *testing.T) {
 	api, requests := fakeAPI(t, nil)
-	m := machine{
-		vcpu:          2,
-		memoryMB:      4096,
-		tap:           "rp-3",
-		guest:         netip.MustParseAddr("10.214.0.14"),
-		host:          netip.MustParseAddr("10.214.0.13"),
-		bandwidthMbps: 100,
-	}
-	if err := configure(context.Background(), api, m); err != nil {
+	if err := api.boot(context.Background(), sandbox.Spec{VCPU: 2, MemoryMB: 4096}, testLease, 100); err != nil {
 		t.Fatal(err)
 	}
 	limit := `{"bandwidth":{"size":12500000,"refill_time":1000}}`
@@ -122,35 +85,29 @@ func TestConfigureBootsTheVM(t *testing.T) {
 	})
 }
 
-func TestConfigureWithoutBandwidthLimit(t *testing.T) {
+func TestBootWithoutBandwidthLimit(t *testing.T) {
 	api, requests := fakeAPI(t, nil)
-	m := machine{vcpu: 1, memoryMB: 512, tap: "rp-0", guest: netip.MustParseAddr("10.214.0.2"), host: netip.MustParseAddr("10.214.0.1")}
-	if err := configure(context.Background(), api, m); err != nil {
+	if err := api.boot(context.Background(), sandbox.Spec{VCPU: 1, MemoryMB: 512}, testLease, 0); err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range requests() {
-		if r.Path == "/network-interfaces/eth0" {
-			want := jsonValue(t, `{"iface_id":"eth0","host_dev_name":"rp-0","guest_mac":"06:00:0a:d6:00:02"}`)
-			if !reflect.DeepEqual(r.Body, want) {
-				t.Errorf("network interface %v, want %v", r.Body, want)
-			}
-			return
-		}
+	got := requests()
+	i := slices.IndexFunc(got, func(r apiRequest) bool { return r.path == "/network-interfaces/eth0" })
+	if i < 0 {
+		t.Fatal("no network interface request")
 	}
-	t.Error("no network interface request")
+	if want := `{"iface_id":"eth0","host_dev_name":"rp-3","guest_mac":"06:00:0a:d6:00:0e"}`; got[i].body != want {
+		t.Errorf("network interface %s, want %s", got[i].body, want)
+	}
 }
 
-func TestConfigureStopsAtTheFirstError(t *testing.T) {
+func TestBootStopsAtTheFirstError(t *testing.T) {
 	api, requests := fakeAPI(t, map[string]string{"/drives/runner": "Unable to open the block device"})
-	m := machine{vcpu: 1, memoryMB: 512, tap: "rp-0", guest: netip.MustParseAddr("10.214.0.2"), host: netip.MustParseAddr("10.214.0.1")}
-	err := configure(context.Background(), api, m)
+	err := api.boot(context.Background(), sandbox.Spec{VCPU: 1, MemoryMB: 512}, testLease, 0)
 	if err == nil || !strings.Contains(err.Error(), "Unable to open the block device") {
 		t.Fatalf("got error %v, want the fault message", err)
 	}
-	for _, r := range requests() {
-		if r.Path == "/actions" {
-			t.Fatal("the VM booted after a failed request")
-		}
+	if slices.ContainsFunc(requests(), func(r apiRequest) bool { return r.path == "/actions" }) {
+		t.Fatal("the VM booted after a failed request")
 	}
 }
 

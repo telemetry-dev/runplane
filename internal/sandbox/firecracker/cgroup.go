@@ -1,7 +1,6 @@
 package firecracker
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"os"
@@ -17,6 +16,8 @@ const (
 	slice        = "runplane.slice"
 	metricsEvery = 5 * time.Second
 )
+
+func unitName(id string) string { return "runplane-vm-" + id }
 
 // serviceUnit returns the systemd service in a /proc/self/cgroup file, for
 // example "runplane.service", or "" when the process is not in a service.
@@ -54,6 +55,36 @@ func (d *Driver) scopeIDs() []string {
 	return ids
 }
 
+// sampleLoop sends the metrics of the busy VMs.
+func (d *Driver) sampleLoop() {
+	t := time.NewTicker(metricsEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-d.quit:
+			return
+		case now := <-t.C:
+			d.sample(now)
+		}
+	}
+}
+
+func (d *Driver) sample(now time.Time) {
+	for _, v := range d.all() {
+		if v.getState() != sandbox.StateBusy {
+			continue
+		}
+		u, err := readUsage(d.scopeDir(v.id))
+		if err != nil {
+			d.log.Debug("read VM usage", "sandbox", v.id, "err", err)
+			continue
+		}
+		if m, ok := v.metrics(u, now); ok {
+			d.emit(sandbox.Event{SandboxID: v.id, Type: sandbox.EventMetrics, Metrics: &m})
+		}
+	}
+}
+
 // usage is one reading of the cgroup of a VM.
 type usage struct {
 	cpuUsec  uint64 // CPU time since the start
@@ -85,23 +116,18 @@ func readUsage(dir string) (usage, error) {
 
 // readKeyed reads a cgroup file of "key value" lines.
 func readKeyed(path string) (map[string]uint64, error) {
-	f, err := os.Open(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	m := map[string]uint64{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		k, v, ok := strings.Cut(sc.Text(), " ")
-		if !ok {
-			continue
-		}
+	for line := range strings.Lines(string(b)) {
+		k, v, _ := strings.Cut(strings.TrimSpace(line), " ")
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
 			m[k] = n
 		}
 	}
-	return m, sc.Err()
+	return m, nil
 }
 
 // cpuSample is the CPU time of a VM at one moment.
@@ -121,36 +147,6 @@ func (v *vm) metrics(u usage, now time.Time) (sandbox.Metrics, bool) {
 	if prev.at.IsZero() || wall <= 0 || u.cpuUsec < prev.usec {
 		return sandbox.Metrics{}, false
 	}
-	pct := float64(u.cpuUsec-prev.usec) * 100 / float64(wall*int64(v.spec.VCPU))
+	pct := float64(u.cpuUsec-prev.usec) * 100 / float64(wall*int64(v.Spec.VCPU))
 	return sandbox.Metrics{CPUPercent: min(pct, 100), MemoryMB: int(u.memBytes >> 20)}, true
-}
-
-// sampleLoop sends the metrics of the busy VMs.
-func (d *Driver) sampleLoop() {
-	t := time.NewTicker(metricsEvery)
-	defer t.Stop()
-	for {
-		select {
-		case <-d.quit:
-			return
-		case now := <-t.C:
-			d.sample(now)
-		}
-	}
-}
-
-func (d *Driver) sample(now time.Time) {
-	for _, v := range d.all() {
-		if v.getState() != sandbox.StateBusy {
-			continue
-		}
-		u, err := readUsage(d.scopeDir(v.id))
-		if err != nil {
-			d.log.Debug("read VM usage", "sandbox", v.id, "err", err)
-			continue
-		}
-		if m, ok := v.metrics(u, now); ok {
-			d.emit(sandbox.Event{SandboxID: v.id, Type: sandbox.EventMetrics, Metrics: &m})
-		}
-	}
 }

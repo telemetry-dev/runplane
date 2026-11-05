@@ -1,70 +1,33 @@
 package firecracker
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"net"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/hashicorp/yamux"
 
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
-// guestClient dials a control socket as runplane-init does through vsock.
-func guestClient(t *testing.T, socket string) *http.Client {
-	t.Helper()
-	conn, err := net.Dial("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sess, err := yamux.Client(conn, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sess.Close() })
-	return &http.Client{Transport: &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
-	}}
-}
-
 func TestRecoverAfterRestart(t *testing.T) {
-	defer func(old time.Duration) { scopePoll = old }(scopePoll)
-	scopePoll = 10 * time.Millisecond
-
 	root := shortTempDir(t)
 	data := filepath.Join(root, "data")
-	scope := func(id string) string {
-		return filepath.Join(root, "cgroup", "runplane.slice", "runplane-vm-"+id+".scope", "cgroup.procs")
-	}
-	record := func(id string, tap int, state sandbox.State) {
-		spec := sandbox.Spec{ID: id, PoolID: "pool1", VCPU: 2, MemoryMB: 2048, DiskGB: 10, TimeLimit: time.Hour}
-		b, _ := json.Marshal(record{Spec: spec, Tap: tap, CreatedAt: time.Now().UTC(), State: state})
-		writeFile(t, filepath.Join(data, "sandboxes", id, "vm.json"), string(b))
-		writeFile(t, filepath.Join(data, "jail", "firecracker", id, "root", "scratch.ext4"), "")
-	}
 	// A VM that still operates.
-	record("live", 3, sandbox.StateBusy)
-	writeFile(t, scope("live"), "4242\n")
+	writeVM(t, root, "live", 3, sandbox.StateBusy, time.Now().UTC())
 	// A VM that stopped while runplane was down.
-	record("dead", 5, sandbox.StateIdle)
+	writeVM(t, root, "dead", 5, sandbox.StateIdle, time.Now().UTC())
+	writeFile(t, scopeProcs(root, "dead"), "")
 	// A start that runplane did not complete: a scope and a chroot without a record.
-	writeFile(t, scope("lost"), "999\n")
+	writeFile(t, scopeProcs(root, "lost"), "999\n")
 	writeFile(t, filepath.Join(data, "jail", "firecracker", "lost", "root", "rootfs.ext4"), "")
 	// A sandbox folder of another driver.
 	writeFile(t, filepath.Join(data, "sandboxes", "other", "console.log"), "")
 
 	sys := &fakeHost{}
-	d := testDriver(t, root, sys)
-	if err := d.recover(); err != nil {
-		t.Fatal(err)
-	}
-
+	d := recovered(t, root, sys)
 	list, _ := d.List(context.Background())
 	if len(list) != 1 {
 		t.Fatalf("listed %d sandboxes, want only the live one: %+v", len(list), list)
@@ -96,8 +59,8 @@ func TestRecoverAfterRestart(t *testing.T) {
 
 	// The guest of the live VM, which has its config, connects again on the
 	// same socket.
-	guest := guestClient(t, filepath.Join(data, "jail", "firecracker", "live", "root", "v.sock_1024"))
-	resp, err := guest.Post("http://host/v1/events", "application/json", bytes.NewReader([]byte(`{"kind":"exited","exit_code":0}`)))
+	guest := dialGuest(t, filepath.Join(data, "jail", "firecracker", "live", "root", "v.sock_1024"), func() {})
+	resp, err := guest.Post("http://host/v1/events", "application/json", strings.NewReader(`{"kind":"exited","exit_code":0}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +70,7 @@ func TestRecoverAfterRestart(t *testing.T) {
 	}
 
 	// The VM powers off: its scope empties.
-	writeFile(t, scope("live"), "")
+	writeFile(t, scopeProcs(root, "live"), "")
 	ev := nextEvent(t, d)
 	if ev.SandboxID != "live" || ev.State != sandbox.StateGone || ev.Reason != "the runner exited with code 0" {
 		t.Errorf("got %+v, want gone after the runner exit", ev)
@@ -127,37 +90,21 @@ func TestRecoverAfterRestart(t *testing.T) {
 // limit counts, and the runner exit. Then a VM that powers off later, for
 // example at the end of a debug hold, ends as gone and not as failed.
 func TestRestartKeepsTheJobStartAndTheRunnerExit(t *testing.T) {
-	defer func(old time.Duration) { scopePoll = old }(scopePoll)
-	scopePoll = 10 * time.Millisecond
-
 	root := shortTempDir(t)
-	data := filepath.Join(root, "data")
-	scope := filepath.Join(root, "cgroup", "runplane.slice", "runplane-vm-vm1.scope", "cgroup.procs")
-	writeFile(t, scope, "4242\n")
-	spec := sandbox.Spec{ID: "vm1", PoolID: "pool1", VCPU: 1, MemoryMB: 512, DiskGB: 1, TimeLimit: time.Hour}
 	// The warm VM waited 30 minutes for its job.
-	b, _ := json.Marshal(record{Spec: spec, CreatedAt: time.Now().UTC().Add(-30 * time.Minute), State: sandbox.StateIdle})
-	writeFile(t, filepath.Join(data, "sandboxes", "vm1", recordFile), string(b))
-	writeFile(t, filepath.Join(data, "jail", "firecracker", "vm1", "root", scratchFile), "")
-
-	before := testDriver(t, root, &fakeHost{})
-	if err := before.recover(); err != nil {
-		t.Fatal(err)
-	}
+	writeVM(t, root, "vm1", 0, sandbox.StateIdle, time.Now().UTC().Add(-30*time.Minute))
+	before := recovered(t, root, &fakeHost{})
 	v := before.vms["vm1"]
 	v.OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerJobStarted, JobName: "build"})
 	v.OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerExited})
 	before.Close()
 
-	after := testDriver(t, root, &fakeHost{})
-	if err := after.recover(); err != nil {
-		t.Fatal(err)
-	}
+	after := recovered(t, root, &fakeHost{})
 	// The job has its full hour, not the 30 minutes that remain from the VM start.
 	if end, min := after.vms["vm1"].deadline(), time.Now().Add(time.Hour); end.Before(min) {
 		t.Errorf("deadline after the restart %v, want after %v", end, min)
 	}
-	writeFile(t, scope, "")
+	writeFile(t, scopeProcs(root, "vm1"), "")
 	if ev := nextEvent(t, after); ev.State != sandbox.StateGone || ev.Reason != "the runner exited with code 0" {
 		t.Errorf("got %s %q, want gone after the runner exit", ev.State, ev.Reason)
 	}
@@ -166,30 +113,14 @@ func TestRestartKeepsTheJobStartAndTheRunnerExit(t *testing.T) {
 // A runner that exits before it connects to GitHub fails its VM, also with
 // exit code 0 and after a restart of runplane before the VM powers off.
 func TestRunnerErrorFailsTheVM(t *testing.T) {
-	defer func(old time.Duration) { scopePoll = old }(scopePoll)
-	scopePoll = 10 * time.Millisecond
-
 	root := shortTempDir(t)
-	data := filepath.Join(root, "data")
-	scope := filepath.Join(root, "cgroup", "runplane.slice", "runplane-vm-vm1.scope", "cgroup.procs")
-	writeFile(t, scope, "4242\n")
-	spec := sandbox.Spec{ID: "vm1", PoolID: "pool1", VCPU: 1, MemoryMB: 512, DiskGB: 1, TimeLimit: time.Hour}
-	b, _ := json.Marshal(record{Spec: spec, CreatedAt: time.Now().UTC(), State: sandbox.StateStarting})
-	writeFile(t, filepath.Join(data, "sandboxes", "vm1", recordFile), string(b))
-	writeFile(t, filepath.Join(data, "jail", "firecracker", "vm1", "root", scratchFile), "")
-
-	before := testDriver(t, root, &fakeHost{})
-	if err := before.recover(); err != nil {
-		t.Fatal(err)
-	}
+	writeVM(t, root, "vm1", 0, sandbox.StateStarting, time.Now().UTC())
+	before := recovered(t, root, &fakeHost{})
 	before.vms["vm1"].OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, Error: "the runner did not connect to GitHub"})
 	before.Close()
 
-	after := testDriver(t, root, &fakeHost{})
-	if err := after.recover(); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, scope, "")
+	after := recovered(t, root, &fakeHost{})
+	writeFile(t, scopeProcs(root, "vm1"), "")
 	if ev := nextEvent(t, after); ev.State != sandbox.StateFailed || ev.Reason != "the runner did not connect to GitHub" {
 		t.Errorf("got %s %q, want failed because the runner did not connect", ev.State, ev.Reason)
 	}
@@ -199,23 +130,11 @@ func TestRunnerErrorFailsTheVM(t *testing.T) {
 // after a restart can never run a job, so the driver stops it, and the VM
 // ends as gone, not as failed.
 func TestLostConfigStopsTheVM(t *testing.T) {
-	defer func(old time.Duration) { scopePoll = old }(scopePoll)
-	scopePoll = 10 * time.Millisecond
-
 	root := shortTempDir(t)
-	data := filepath.Join(root, "data")
-	scope := filepath.Join(root, "cgroup", "runplane.slice", "runplane-vm-vm1.scope", "cgroup.procs")
-	writeFile(t, scope, "4242\n")
-	spec := sandbox.Spec{ID: "vm1", PoolID: "pool1", VCPU: 1, MemoryMB: 512, DiskGB: 1, TimeLimit: time.Hour}
-	b, _ := json.Marshal(record{Spec: spec, CreatedAt: time.Now().UTC(), State: sandbox.StateStarting})
-	writeFile(t, filepath.Join(data, "sandboxes", "vm1", recordFile), string(b))
-	writeFile(t, filepath.Join(data, "jail", "firecracker", "vm1", "root", scratchFile), "")
-	d := testDriver(t, root, &fakeHost{})
-	if err := d.recover(); err != nil {
-		t.Fatal(err)
-	}
+	writeVM(t, root, "vm1", 0, sandbox.StateStarting, time.Now().UTC())
+	d := recovered(t, root, &fakeHost{})
 
-	guest := guestClient(t, filepath.Join(data, "jail", "firecracker", "vm1", "root", "v.sock_1024"))
+	guest := dialGuest(t, filepath.Join(d.chroot("vm1"), controlSocket), func() {})
 	resp, err := guest.Get("http://host/v1/config")
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +146,7 @@ func TestLostConfigStopsTheVM(t *testing.T) {
 	if ev := nextEvent(t, d); ev.State != sandbox.StateStopping {
 		t.Fatalf("got %+v, want the stop of the VM", ev)
 	}
-	writeFile(t, scope, "") // the VM powers off
+	writeFile(t, scopeProcs(root, "vm1"), "") // the VM powers off
 	if ev := nextEvent(t, d); ev.State != sandbox.StateGone || ev.Reason != "runplane restarted before the VM got its config" {
 		t.Errorf("got %s %q, want gone because runplane restarted before the VM got its config", ev.State, ev.Reason)
 	}

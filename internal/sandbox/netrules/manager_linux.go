@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+// refreshEvery is how often the Manager resolves the allowlist names again
+// and repairs the iptables rules.
+const refreshEvery = time.Minute
+
 var errNoSetup = errors.New("netrules: call Setup first")
 
 // Manager owns the nftables tables "inet runplane" and "bridge runplane",
@@ -61,9 +65,6 @@ func New(log *slog.Logger) *Manager {
 // already have, so a restart of runplane does not cut off sandboxes that
 // still operate.
 func (m *Manager) Setup(ctx context.Context, cfg Config) error {
-	if err := cfg.check(); err != nil {
-		return err
-	}
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o644); err != nil {
 		return fmt.Errorf("enable ip forwarding: %w", err)
 	}
@@ -75,18 +76,18 @@ func (m *Manager) Setup(ctx context.Context, cfg Config) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	links := m.links
+	links, ports := m.links, m.ports
 	if !m.ready {
 		var err error
 		if links, err = readLinks(); err != nil {
 			return err
 		}
-		if m.ports, err = readPorts(); err != nil {
+		if ports, err = readPorts(); err != nil {
 			return err
 		}
 	}
 	m.remember(cfg, found, errs, time.Now())
-	if err := m.write(cfg, links); err != nil {
+	if err := m.write(cfg, links, ports); err != nil {
 		return err
 	}
 	m.ready = true
@@ -94,7 +95,7 @@ func (m *Manager) Setup(ctx context.Context, cfg Config) error {
 		m.stop, m.done = make(chan struct{}), make(chan struct{})
 		go m.loop(m.stop, m.done)
 	}
-	return syncIptables(ctx, m.iptablesRules(), true)
+	return syncIptables(ctx, iptablesRules(m.cfg, m.links), true)
 }
 
 // AddTap lets a VM TAP through: the guest may send from guest only and may
@@ -113,7 +114,7 @@ func (m *Manager) AddTap(iface string, guest, host netip.Addr) error {
 	}
 	links := maps.Clone(m.links)
 	links[iface] = link{src: netip.PrefixFrom(guest, 32), gateway: host}
-	return m.write(m.cfg, links)
+	return m.write(m.cfg, links, m.ports)
 }
 
 // RemoveTap removes the rules of a VM TAP. Traffic through a TAP without
@@ -129,7 +130,7 @@ func (m *Manager) RemoveTap(iface string) error {
 	}
 	links := maps.Clone(m.links)
 	delete(links, iface)
-	return m.write(m.cfg, links)
+	return m.write(m.cfg, links, m.ports)
 }
 
 // Bridge applies the rules to the runplane Docker bridge: containers may
@@ -149,10 +150,10 @@ func (m *Manager) Bridge(name string, subnet netip.Prefix, gateway netip.Addr) e
 	}
 	links := maps.Clone(m.links)
 	links[name] = link{src: subnet, gateway: gateway}
-	if err := m.write(m.cfg, links); err != nil {
+	if err := m.write(m.cfg, links, m.ports); err != nil {
 		return err
 	}
-	return syncIptables(context.Background(), m.iptablesRules(), true)
+	return syncIptables(context.Background(), iptablesRules(m.cfg, m.links), true)
 }
 
 // Close stops the allowlist loop. The rules stay.
@@ -179,35 +180,24 @@ func (m *Manager) Teardown() error {
 	return errors.Join(deleteTable(), syncIptables(context.Background(), nil, true))
 }
 
-// write writes the tables for cfg and links, and keeps them if that worked.
-func (m *Manager) write(cfg Config, links map[string]link) error {
-	if err := writeTable(m.policy(cfg, links, m.ports)); err != nil {
+// write writes the tables, and keeps cfg, links, and ports if that worked.
+func (m *Manager) write(cfg Config, links map[string]link, ports map[string]port) error {
+	if err := writeTable(policy{cfg: cfg, links: links, ports: ports, allowed: m.allowed(cfg)}); err != nil {
 		return err
 	}
-	m.cfg, m.links = cfg, links
+	m.cfg, m.links, m.ports = cfg, links, ports
 	return nil
-}
-
-func (m *Manager) policy(cfg Config, links map[string]link, ports map[string]port) policy {
-	return policy{cfg: cfg, links: links, ports: ports, allowed: m.allowed(cfg)}
-}
-
-func (m *Manager) iptablesRules() map[string][][]string {
-	return iptablesRules(m.cfg, m.links)
 }
 
 func (m *Manager) loop(stop, done chan struct{}) {
 	defer close(done)
 	for {
-		m.mu.Lock()
-		every := m.cfg.Refresh
-		m.mu.Unlock()
 		select {
 		case <-stop:
 			return
-		case <-time.After(every):
+		case <-time.After(refreshEvery):
+			m.refresh()
 		}
-		m.refresh()
 	}
 }
 
@@ -228,11 +218,11 @@ func (m *Manager) refresh() {
 	allowed := m.allowed(m.cfg)
 	m.remember(m.cfg, found, errs, time.Now())
 	if !slices.Equal(allowed, m.allowed(m.cfg)) {
-		if err := m.write(m.cfg, m.links); err != nil {
+		if err := m.write(m.cfg, m.links, m.ports); err != nil {
 			m.log.Error("update the addresses of the allowlist", "err", err)
 		}
 	}
-	if err := syncIptables(context.Background(), m.iptablesRules(), false); err != nil {
+	if err := syncIptables(context.Background(), iptablesRules(m.cfg, m.links), false); err != nil {
 		m.log.Error("repair iptables rules", "err", err)
 	}
 }

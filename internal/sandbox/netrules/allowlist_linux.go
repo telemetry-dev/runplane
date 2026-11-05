@@ -26,11 +26,9 @@ const (
 // that cfg no longer has and addresses older than resolvedTTL.
 func (m *Manager) remember(cfg Config, found map[string][]netip.Addr, errs map[string]error, now time.Time) {
 	_, names, _ := splitAllowlist(cfg.Allowlist)
-	for name := range m.resolved {
-		if !slices.Contains(names, name) {
-			delete(m.resolved, name)
-		}
-	}
+	maps.DeleteFunc(m.resolved, func(name string, _ map[netip.Addr]time.Time) bool {
+		return !slices.Contains(names, name)
+	})
 	for name, err := range errs {
 		if !slices.Contains(names, name) {
 			continue
@@ -68,12 +66,7 @@ func (m *Manager) allowed(cfg Config) []netip.Prefix {
 			}
 		}
 	}
-	slices.SortFunc(prefixes, func(a, b netip.Prefix) int {
-		if c := a.Addr().Compare(b.Addr()); c != 0 {
-			return c
-		}
-		return a.Bits() - b.Bits()
-	})
+	slices.SortFunc(prefixes, netip.Prefix.Compare)
 	return slices.Compact(prefixes)
 }
 

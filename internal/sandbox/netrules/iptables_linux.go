@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,17 +24,29 @@ const (
 	ruleComment = "runplane"
 )
 
-// dockerRules returns the runplane rules for Docker's DOCKER-USER chain, in
-// order. Docker reads this chain first for forwarded traffic.
+// iptablesRules returns the runplane rules of each chain of the iptables
+// filter table, in order.
 //
-// In VM mode they accept the TAP subnet, because Docker sets the FORWARD
-// policy to drop; the nftables table filters that traffic. In container mode
-// they repeat the fixed drops for each bridge. The allowlist stays in
-// nftables only.
-func dockerRules(cfg Config, links map[string]link) [][]string {
-	var rules [][]string
+// A host firewall such as ufw drops in INPUT and FORWARD by default, and in
+// nftables an accept in one base chain does not stop a drop in another. So
+// INPUT accepts the service port from each sandbox interface, and in VM
+// mode FORWARD accepts the traffic from the TAPs and the replies to them.
+// These rules only accept; the table "inet runplane" still applies its
+// drops.
+//
+// Docker reads DOCKER-USER first for forwarded traffic. In VM mode its rules
+// accept the TAP subnet, because Docker sets the FORWARD policy to drop; the
+// nftables table filters that traffic. In container mode they repeat the
+// fixed drops for each bridge. The allowlist stays in nftables only.
+func iptablesRules(cfg Config, links map[string]link) map[string][][]string {
+	port := strconv.Itoa(cfg.ServicePort)
+	var input, forward, docker [][]string
 	if s := cfg.TapSubnet.String(); cfg.TapSubnet.IsValid() {
-		rules = append(rules,
+		input = append(input, []string{"-i", TapPrefix + "+", "-p", "tcp", "--dport", port, "-j", "ACCEPT"})
+		forward = append(forward,
+			[]string{"-i", TapPrefix + "+", "-j", "ACCEPT"},
+			[]string{"-o", TapPrefix + "+", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"})
+		docker = append(docker,
 			[]string{"-s", s, "-j", "ACCEPT"},
 			[]string{"-d", s, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"})
 	}
@@ -41,59 +54,25 @@ func dockerRules(cfg Config, links map[string]link) [][]string {
 		if isTap(name) {
 			continue
 		}
-		rules = append(rules,
+		input = append(input, []string{"-i", name, "-p", "tcp", "--dport", port, "-j", "ACCEPT"})
+		docker = append(docker,
 			[]string{"-i", name, "-o", name, "-j", "DROP"},
 			[]string{"-i", name, "!", "-s", links[name].src.String(), "-j", "DROP"})
 		for _, dns := range cfg.DNS {
 			for _, proto := range []string{"udp", "tcp"} {
-				rules = append(rules, []string{"-i", name, "-d", dns.String(), "-p", proto, "--dport", "53", "-j", "RETURN"})
+				docker = append(docker, []string{"-i", name, "-d", dns.String(), "-p", proto, "--dport", "53", "-j", "RETURN"})
 			}
 		}
 		for _, p := range blockedNets {
-			rules = append(rules, []string{"-i", name, "-d", p.String(), "-j", "DROP"})
+			docker = append(docker, []string{"-i", name, "-d", p.String(), "-j", "DROP"})
 		}
 	}
-	for i := range rules {
-		rules[i] = append(rules[i], "-m", "comment", "--comment", ruleComment)
-	}
-	return rules
-}
-
-// hostRules returns the runplane rules at the top of the INPUT and FORWARD
-// chains of the iptables filter table, in order. A host firewall such as
-// ufw drops in these chains by default, and in nftables an accept in one
-// base chain does not stop a drop in another. These rules only accept;
-// the table "inet runplane" still applies its drops.
-//
-// INPUT accepts the service port from each sandbox interface. In VM mode,
-// FORWARD accepts the traffic from the TAPs and the replies to them.
-func hostRules(cfg Config, links map[string]link) map[string][][]string {
-	port := fmt.Sprint(cfg.ServicePort)
-	var input, forward [][]string
-	if cfg.TapSubnet.IsValid() {
-		input = append(input, []string{"-i", TapPrefix + "+", "-p", "tcp", "--dport", port, "-j", "ACCEPT"})
-		forward = append(forward,
-			[]string{"-i", TapPrefix + "+", "-j", "ACCEPT"},
-			[]string{"-o", TapPrefix + "+", "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"})
-	}
-	for _, name := range slices.Sorted(maps.Keys(links)) {
-		if !isTap(name) {
-			input = append(input, []string{"-i", name, "-p", "tcp", "--dport", port, "-j", "ACCEPT"})
+	rules := map[string][][]string{"INPUT": input, "FORWARD": forward, dockerUser: docker}
+	for _, chain := range rules {
+		for i := range chain {
+			chain[i] = append(chain[i], "-m", "comment", "--comment", ruleComment)
 		}
 	}
-	for _, rules := range [][][]string{input, forward} {
-		for i := range rules {
-			rules[i] = append(rules[i], "-m", "comment", "--comment", ruleComment)
-		}
-	}
-	return map[string][][]string{"INPUT": input, "FORWARD": forward}
-}
-
-// iptablesRules returns the runplane rules of each chain of the iptables
-// filter table.
-func iptablesRules(cfg Config, links map[string]link) map[string][][]string {
-	rules := hostRules(cfg, links)
-	rules[dockerUser] = dockerRules(cfg, links)
 	return rules
 }
 

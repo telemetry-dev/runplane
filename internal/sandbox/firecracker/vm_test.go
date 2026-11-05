@@ -5,6 +5,7 @@ import (
 	"io"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,15 +14,41 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/control"
 )
 
+func TestDeadline(t *testing.T) {
+	d := testDriver(t, t.TempDir(), &fakeHost{})
+	created := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		limit      time.Duration
+		jobStarted time.Time
+		hold       time.Time
+		want       time.Time
+	}{
+		// Without a job: the limit, the idle grace of 5 minutes, and the 1 minute for init.
+		{"a warm VM", time.Hour, time.Time{}, time.Time{}, created.Add(66 * time.Minute)},
+		// A VM that waited 3 hours for its job gets the full hour for it.
+		{"a job after a long wait", time.Hour, created.Add(3 * time.Hour), time.Time{}, created.Add(4*time.Hour + time.Minute)},
+		{"a debug hold past the limit", time.Hour, created.Add(10 * time.Minute), created.Add(2 * time.Hour), created.Add(121 * time.Minute)},
+		{"a hold inside the limit", time.Hour, created.Add(10 * time.Minute), created.Add(20 * time.Minute), created.Add(71 * time.Minute)},
+		{"no time limit", 0, created.Add(10 * time.Minute), time.Time{}, time.Time{}},
+	}
+	for _, tt := range tests {
+		v := newVM(d, sandbox.Spec{ID: "vm1", TimeLimit: tt.limit}, d.taps.Lease(0), created)
+		v.JobStarted, v.HoldUntil = tt.jobStarted, tt.hold
+		if got := v.deadline(); !got.Equal(tt.want) {
+			t.Errorf("%s: deadline %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 // A VM that dies before runplane-init connects fails with the end of its
 // console as the reason, and its console is in the sandbox log.
 func TestConsoleOfAFailedVM(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Go polls FIFOs on Linux only")
 	}
-	root := shortTempDir(t)
 	sys := &fakeHost{}
-	d := testDriver(t, root, sys)
+	d := testDriver(t, shortTempDir(t), sys)
 	v := newVM(d, sandbox.Spec{ID: "vm1", VCPU: 1}, d.taps.Lease(7), time.Now())
 	dir := d.sandboxDir(v.id)
 	writeFile(t, filepath.Join(dir, recordFile), "{}")
@@ -60,13 +87,13 @@ func TestConsoleOfAFailedVM(t *testing.T) {
 		}
 		texts = append(texts, f[2])
 	}
-	if want := []string{"Linux version 6.1.0", "Kernel panic - not syncing: VFS: Unable to mount root fs", "---[ end Kernel panic"}; strings.Join(texts, "\n") != strings.Join(want, "\n") {
+	if want := []string{"Linux version 6.1.0", "Kernel panic - not syncing: VFS: Unable to mount root fs", "---[ end Kernel panic"}; !slices.Equal(texts, want) {
 		t.Errorf("log %q, want %q", texts, want)
 	}
 	if exists(dir) {
 		t.Error("the sandbox folder remains")
 	}
-	if got := sys.calls(&sys.dropped); len(got) != 1 || got[0] != "rp-7" {
+	if got := sys.calls(&sys.dropped); !slices.Equal(got, []string{"rp-7"}) {
 		t.Errorf("TAPs removed: %v, want rp-7", got)
 	}
 }

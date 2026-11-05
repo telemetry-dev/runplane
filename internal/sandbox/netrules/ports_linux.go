@@ -57,7 +57,7 @@ func (m *Manager) AddPort(iface string, mac net.HardwareAddr, ip netip.Addr) err
 	}
 	ports := maps.Clone(m.ports)
 	ports[iface] = port{mac: mac, ip: ip}
-	return m.writePorts(ports)
+	return m.write(m.cfg, m.links, ports)
 }
 
 // RemovePort removes the binding of a bridge port.
@@ -69,15 +69,7 @@ func (m *Manager) RemovePort(iface string) error {
 	}
 	ports := maps.Clone(m.ports)
 	delete(ports, iface)
-	return m.writePorts(ports)
-}
-
-func (m *Manager) writePorts(ports map[string]port) error {
-	if err := writeTable(m.policy(m.cfg, m.links, ports)); err != nil {
-		return err
-	}
-	m.ports = ports
-	return nil
+	return m.write(m.cfg, m.links, ports)
 }
 
 // HostPeer returns the name of the host end of the veth pair whose other
@@ -122,15 +114,10 @@ func HostPeer(nsPath, ifname string) (string, error) {
 // The hook runs before the bridge learns the source MAC, so a dropped frame
 // also cannot move the MAC of a sandbox to another port.
 func addBridgeTable(c *nftables.Conn, p policy) error {
-	t := &nftables.Table{Family: nftables.TableFamilyBridge, Name: tableName}
-	exists, err := tableExists(c, nftables.TableFamilyBridge)
-	if err != nil {
+	if _, err := dropTable(c, nftables.TableFamilyBridge); err != nil {
 		return err
 	}
-	if exists {
-		c.DelTable(t)
-	}
-	c.AddTable(t)
+	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyBridge, Name: tableName})
 
 	bridges := &nftables.Set{Table: t, Name: "bridges", KeyType: nftables.TypeIFName}
 	bound := &nftables.Set{Table: t, Name: "bound", KeyType: nftables.TypeIFName}

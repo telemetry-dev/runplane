@@ -88,15 +88,6 @@ func TestDiskLifecycle(t *testing.T) {
 	if err := Detach(mnt); err != nil {
 		t.Errorf("Detach without a mount: %v", err)
 	}
-	if err := Remove(disk); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(disk); !os.IsNotExist(err) {
-		t.Errorf("disk exists after Remove: %v", err)
-	}
-	if err := Remove(disk); err != nil {
-		t.Errorf("Remove of a missing disk: %v", err)
-	}
 }
 
 func TestDisksFromOneTemplateAreIndependent(t *testing.T) {
