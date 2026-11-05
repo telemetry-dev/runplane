@@ -14,7 +14,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +39,7 @@ func LoadOrCreateKey(path string) (ssh.Signer, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("parse ssh key %s: %w", path, err)
 	}
-	return signer, authorizedKey(signer.PublicKey()) + " runplane", nil
+	return signer, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))) + " runplane", nil
 }
 
 func newKey(path string) ([]byte, error) {
@@ -81,64 +80,53 @@ func newKey(path string) ([]byte, error) {
 	return data, nil
 }
 
-// Target is the SSH address of a server.
 type Target struct {
-	Host string
-	Port int
+	Addr string // host:port
 	User string
 }
 
 // Install connects to the target, runs command with stdin as its input, and
-// calls onLine for each line of stdout and stderr. It returns the host key of
-// the server in authorized_keys format, or "" if the key was not accepted.
+// calls onLine for each line of stdout and stderr. The onLine calls never
+// overlap, and they end before Install returns. Install returns the host key
+// of the server, or nil if it did not accept the key.
 //
-// If knownHostKey is empty, Install accepts the key that the server shows
-// (trust on first use). Otherwise the server must show the same key.
+// If known is nil, Install accepts the key that the server shows (trust on
+// first use). Otherwise the server must show the same key.
 //
 // A command that exits with a status other than 0 gives an error that wraps
 // *ssh.ExitError.
-func Install(ctx context.Context, t Target, signer ssh.Signer, knownHostKey string, command string, stdin io.Reader, onLine func(string)) (hostKey string, err error) {
-	addr := net.JoinHostPort(t.Host, strconv.Itoa(t.Port))
-
+func Install(ctx context.Context, t Target, signer ssh.Signer, known ssh.PublicKey, command string, stdin io.Reader, onLine func(string)) (hostKey ssh.PublicKey, err error) {
 	config := &ssh.ClientConfig{
 		User: t.User,
 		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			hostKey = authorizedKey(key)
+			if known != nil && !bytes.Equal(key.Marshal(), known.Marshal()) {
+				return fmt.Errorf("host key %s does not match the known key %s", ssh.FingerprintSHA256(key), ssh.FingerprintSHA256(known))
+			}
+			hostKey = key
 			return nil
 		},
 	}
-	if knownHostKey != "" {
-		known, _, _, _, err := ssh.ParseAuthorizedKey([]byte(knownHostKey))
-		if err != nil {
-			return "", fmt.Errorf("parse known host key: %w", err)
-		}
+	if known != nil {
 		// Ask for the known key type; else a server with several host keys
 		// can show a different one and fail the check.
 		config.HostKeyAlgorithms = hostKeyAlgorithms(known.Type())
-		config.HostKeyCallback = func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			if !bytes.Equal(key.Marshal(), known.Marshal()) {
-				return fmt.Errorf("host key %s does not match the known key %s", ssh.FingerprintSHA256(key), ssh.FingerprintSHA256(known))
-			}
-			hostKey = authorizedKey(key)
-			return nil
-		}
 	}
 
 	dialer := net.Dialer{Timeout: 15 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, err := dialer.DialContext(ctx, "tcp", t.Addr)
 	if err != nil {
-		return "", fmt.Errorf("connect to %s: %w", addr, err)
+		return nil, fmt.Errorf("connect to %s: %w", t.Addr, err)
 	}
 	// Closing the connection stops the handshake or the command when ctx ends.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
+	c, chans, reqs, err := ssh.NewClientConn(conn, t.Addr, config)
 	if err != nil {
 		conn.Close()
-		return hostKey, fmt.Errorf("ssh handshake with %s: %w", addr, ctxErr(ctx, err))
+		return hostKey, fmt.Errorf("ssh handshake with %s: %w", t.Addr, ctxErr(ctx, err))
 	}
 	conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(c, chans, reqs)
@@ -153,12 +141,12 @@ func Install(ctx context.Context, t Target, signer ssh.Signer, knownHostKey stri
 	}
 	defer session.Close()
 
-	lines := &lineSplitter{onLine: onLine}
-	session.Stdin = stdin
-	session.Stdout = lines.writer()
-	session.Stderr = lines.writer()
+	var mu sync.Mutex
+	stdout, stderr := &lineWriter{mu: &mu, onLine: onLine}, &lineWriter{mu: &mu, onLine: onLine}
+	session.Stdin, session.Stdout, session.Stderr = stdin, stdout, stderr
 	err = session.Run(command)
-	lines.flush()
+	stdout.flush()
+	stderr.flush()
 	if err != nil {
 		return hostKey, fmt.Errorf("run install command: %w", ctxErr(ctx, err))
 	}
@@ -184,10 +172,6 @@ func keepAlive(client *ssh.Client, done <-chan struct{}) {
 	}
 }
 
-func authorizedKey(key ssh.PublicKey) string {
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
-}
-
 func hostKeyAlgorithms(keyType string) []string {
 	if keyType == ssh.KeyAlgoRSA {
 		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
@@ -204,49 +188,36 @@ func ctxErr(ctx context.Context, err error) error {
 	return err
 }
 
-// lineSplitter turns stdout and stderr into lines. Each stream has its own
-// partial line; onLine calls never overlap.
-type lineSplitter struct {
-	mu      sync.Mutex
-	onLine  func(string)
-	streams []*bytes.Buffer
+// lineWriter splits a stream into lines for onLine. The writers of one
+// session share mu, so that the onLine calls do not overlap.
+type lineWriter struct {
+	mu     *sync.Mutex
+	onLine func(string)
+	buf    bytes.Buffer
 }
 
-func (s *lineSplitter) writer() io.Writer {
-	buf := &bytes.Buffer{}
-	s.streams = append(s.streams, buf)
-	return writerFunc(func(p []byte) (int, error) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		buf.Write(p)
-		for {
-			i := bytes.IndexByte(buf.Bytes(), '\n')
-			if i < 0 {
-				break
-			}
-			s.emit(buf.Next(i + 1))
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf.Write(p)
+	for {
+		i := bytes.IndexByte(w.buf.Bytes(), '\n')
+		if i < 0 {
+			return len(p), nil
 		}
-		return len(p), nil
-	})
-}
-
-// flush sends the last line of each stream if it has no newline.
-func (s *lineSplitter) flush() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, buf := range s.streams {
-		if buf.Len() > 0 {
-			s.emit(buf.Next(buf.Len()))
-		}
+		w.emit(w.buf.Next(i + 1))
 	}
 }
 
-func (s *lineSplitter) emit(line []byte) {
-	if s.onLine != nil {
-		s.onLine(strings.TrimRight(string(line), "\r\n"))
+// flush sends the last line if it has no newline.
+func (w *lineWriter) flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.buf.Len() > 0 {
+		w.emit(w.buf.Next(w.buf.Len()))
 	}
 }
 
-type writerFunc func([]byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+func (w *lineWriter) emit(line []byte) {
+	w.onLine(strings.TrimRight(string(line), "\r\n"))
+}

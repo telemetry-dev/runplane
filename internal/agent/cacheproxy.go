@@ -32,7 +32,6 @@ type CacheProxy struct {
 }
 
 func NewCacheProxy(driver sandbox.Driver, log *slog.Logger) *CacheProxy {
-	log = orDiscard(log)
 	p := &CacheProxy{driver: driver}
 	p.transport = &http.Transport{
 		DialContext:         p.dial,

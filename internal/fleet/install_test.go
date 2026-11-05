@@ -4,13 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +20,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,20 +28,17 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/runplane/runplane"
-	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/api"
+	"github.com/runplane/runplane/internal/sshinstall/sshtest"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/update"
-	"github.com/runplane/runplane/internal/version"
 )
 
-// flagScript is install.sh that parses its flags and prints the values
-// that an agent install uses, in the place of the install.
-func flagScript(script []byte) ([]byte, error) {
-	return replaceMain(script, `parse_flags "$@"
+// printValues parses the flags of install.sh and prints the values that an
+// agent install uses.
+const printValues = `parse_flags "$@"
 printf '%s\n' "REPO=$REPO" "VERSION=$VERSION" "PRIMARY=$PRIMARY" "FINGERPRINT=$FINGERPRINT" "TOKEN=$TOKEN" "ROLE=$ROLE"
-`)
-}
+`
 
 // replaceMain returns install.sh with body in the place of the call of main.
 func replaceMain(script []byte, body string) ([]byte, error) {
@@ -56,9 +49,18 @@ func replaceMain(script []byte, body string) ([]byte, error) {
 	return []byte(src + body), nil
 }
 
-func values(out []byte) (map[string]string, error) {
+// sh runs a shell with stdin and the environment, and returns its output.
+func sh(stdin []byte, env []string, args ...string) (string, error) {
+	cmd := exec.Command("sh", args...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func values(out string) (map[string]string, error) {
 	m := map[string]string{}
-	for line := range strings.Lines(string(out)) {
+	for line := range strings.Lines(out) {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
 			return nil, fmt.Errorf("unexpected output line %q in:\n%s", line, out)
@@ -68,50 +70,74 @@ func values(out []byte) (map[string]string, error) {
 	return m, nil
 }
 
-func TestInstallScriptValues(t *testing.T) {
+// TestInstallValues runs install commands with a curl that serves
+// install.sh and a sudo that only runs its command: the commands that
+// NewToken makes, and the command that runs the install.sh of the primary
+// with only a token.
+func TestInstallValues(t *testing.T) {
 	h := newHarness(t, newFakeNode("arm64"))
 	h.run()
 	_, port, _ := net.SplitHostPort(h.cfg.AgentListen)
-	repo, ver := version.Repo, version.Version
-	t.Cleanup(func() { version.Repo, version.Version = repo, ver })
-	version.Repo = "acme/runplane-fork"
-
 	tests := []struct {
-		name        string
-		version     string
-		host        string // of the request
-		wantVersion string
-		wantPrimary string
+		name, version string
+		base          string // of NewToken; "": install.sh of the primary with a token
+		url           string // that curl gets
+		wantVersion   string
+		wantPrimary   string
 	}{
-		{"release", "v1.4.2", "ci.example.com:8484", "v1.4.2", "ci.example.com:" + port},
-		{"development build", "dev", "ci.example.com", "latest", "ci.example.com:" + port},
-		{"IPv6 address", "v1.4.2", "[2001:db8::5]:8484", "v1.4.2", "[2001:db8::5]:" + port},
-		{"SSH tunnel", "v1.4.2", "localhost:9000", "v1.4.2", "203.0.113.7:" + port},
+		{"script of a release", "v1.4.2", "", "http://ci.example.com:8484/install.sh", "v1.4.2", "ci.example.com:" + port},
+		{"script of a development build", "dev", "", "http://ci.example.com/install.sh", "latest", "ci.example.com:" + port},
+		{"script over IPv6", "v1.4.2", "", "http://[2001:db8::5]:8484/install.sh", "v1.4.2", "[2001:db8::5]:" + port},
+		{"script over an SSH tunnel", "v1.4.2", "", "http://localhost:9000/install.sh", "v1.4.2", "203.0.113.7:" + port},
+		{"command with a public URL", "v1.4.2", "https://ci.example.com", "https://ci.example.com/install.sh", "v1.4.2", "ci.example.com:" + port},
+		// Plain HTTP carries no proof of the primary, so the script comes from GitHub.
+		{"command over an SSH tunnel", "v1.4.2", "http://localhost:9000",
+			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "v1.4.2", "203.0.113.7:" + port},
+		{"command with no domain", "v1.4.2", "http://203.0.113.7:8484",
+			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "v1.4.2", "203.0.113.7:" + port},
+		{"command of a development build", "dev", "http://203.0.113.7:8484",
+			"https://github.com/acme/runplane-fork/releases/latest/download/install.sh", "latest", "203.0.113.7:" + port},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			version.Version = tt.version
-			r := httptest.NewRequest("GET", "http://"+tt.host+"/install.sh", nil)
-			script, err := flagScript(h.f.Script(r))
+			setRelease(t, "acme/runplane-fork", tt.version)
+			command, token := "curl -fsSL '"+tt.url+"' | sudo sh -s -- --token rp_srv_TEST", "rp_srv_TEST"
+			if tt.base != "" {
+				tok, err := h.f.NewToken(t.Context(), tt.base, "build-1", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				command, token = tok.Command, tok.Token
+			}
+			// The release script on GitHub has no values of this primary.
+			served := runplane.InstallScript
+			if !strings.HasPrefix(tt.url, "https://github.com/") {
+				served = h.f.Script(httptest.NewRequest("GET", tt.url, nil))
+			}
+			script, err := replaceMain(served, printValues)
 			if err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command("sh", "-s", "--", "--token", "rp_srv_TEST")
-			cmd.Stdin = bytes.NewReader(script)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("install.sh: %v\n%s", err, out)
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "install.sh"), script, 0o600); err != nil {
+				t.Fatal(err)
 			}
-			want := map[string]string{
-				"REPO": "acme/runplane-fork", "VERSION": tt.wantVersion, "PRIMARY": tt.wantPrimary,
-				"FINGERPRINT": h.fp, "TOKEN": "rp_srv_TEST", "ROLE": "agent",
+			out, err := sh(nil, []string{"DIR=" + dir}, "-c", `curl() { printf '%s\n' "$*" >"$DIR/curl-args"; cat "$DIR/install.sh"; }
+sudo() { "$@"; }
+`+command)
+			if err != nil {
+				t.Fatalf("command %q: %v\n%s", command, err, out)
+			}
+			if args, _ := os.ReadFile(filepath.Join(dir, "curl-args")); strings.TrimSpace(string(args)) != "-fsSL "+tt.url {
+				t.Errorf("curl %s, want -fsSL %s", args, tt.url)
 			}
 			got, err := values(out)
-			if err != nil {
-				t.Fatal(err)
+			want := map[string]string{
+				"REPO": "acme/runplane-fork", "VERSION": tt.wantVersion, "PRIMARY": tt.wantPrimary,
+				"FINGERPRINT": h.fp, "TOKEN": token, "ROLE": "agent",
 			}
-			if !maps.Equal(got, want) {
-				t.Errorf("install.sh values:\n%v\nwant\n%v", got, want)
+			if err != nil || !maps.Equal(got, want) {
+				t.Errorf("command %q gives\n%v, %v\nwant\n%v", command, got, err, want)
 			}
 		})
 	}
@@ -129,95 +155,19 @@ write_config
 		t.Fatal(err)
 	}
 	for _, primary := range []string{"203.0.113.7:8485", "[2001:db8::5]:8485"} {
-		t.Run(primary, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "agent.json")
-			registered := "{\n  \"primary\": \"" + primary + "\",\n  \"fingerprint\": \"sha256:aa\",\n" +
-				"  \"server_id\": \"01jbd5x7k2m4n6p8q9r0s1t2v3\",\n  \"secret\": \"s3cret\"\n}\n"
-			if err := os.WriteFile(path, []byte(registered), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("sh", "-s", "--", dir, primary)
-			cmd.Stdin = bytes.NewReader(script)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("install.sh: %v\n%s", err, out)
-			}
-			if raw, _ := os.ReadFile(path); string(raw) != registered {
-				t.Errorf("agent.json after a second install with the same token:\n%s\nwant it unchanged", raw)
-			}
-		})
-	}
-}
-
-func TestInstallCommand(t *testing.T) {
-	h := newHarness(t, newFakeNode("arm64"))
-	h.run()
-	_, port, _ := net.SplitHostPort(h.cfg.AgentListen)
-	repo, ver := version.Repo, version.Version
-	t.Cleanup(func() { version.Repo, version.Version = repo, ver })
-	version.Repo = "acme/runplane-fork"
-	tests := []struct {
-		name, version, base  string
-		wantURL, wantPrimary string
-		wantVersion          string
-		fromPrimary          bool // the primary serves install.sh, with its values in it
-	}{
-		{"public URL", "v1.4.2", "https://ci.example.com", "https://ci.example.com/install.sh", "ci.example.com:" + port, "v1.4.2", true},
-		// Plain HTTP carries no proof of the primary, so the script comes from GitHub.
-		{"SSH tunnel", "v1.4.2", "http://localhost:9000",
-			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "203.0.113.7:" + port, "v1.4.2", false},
-		{"no domain", "v1.4.2", "http://203.0.113.7:8484",
-			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "203.0.113.7:" + port, "v1.4.2", false},
-		{"development build", "dev", "http://203.0.113.7:8484",
-			"https://github.com/acme/runplane-fork/releases/latest/download/install.sh", "203.0.113.7:" + port, "latest", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			version.Version = tt.version
-			tok, err := h.f.NewToken(t.Context(), tt.base, "build-1", "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Run the command with a curl that serves install.sh and a sudo
-			// that only runs its command. GitHub serves the release script,
-			// which has no values of this primary.
-			served := runplane.InstallScript
-			if tt.fromPrimary {
-				served = h.f.Script(httptest.NewRequest("GET", tt.wantURL, nil))
-			}
-			script, err := flagScript(served)
-			if err != nil {
-				t.Fatal(err)
-			}
-			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "install.sh"), script, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			shell := `curl() { printf '%s\n' "$*" >"$DIR/curl-args"; cat "$DIR/install.sh"; }
-sudo() { "$@"; }
-` + tok.Command
-			cmd := exec.Command("sh", "-c", shell)
-			cmd.Env = append(os.Environ(), "DIR="+dir)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("command %q: %v\n%s", tok.Command, err, out)
-			}
-			args, _ := os.ReadFile(filepath.Join(dir, "curl-args"))
-			if got := strings.TrimSpace(string(args)); got != "-fsSL "+tt.wantURL {
-				t.Errorf("curl %s, want -fsSL %s", got, tt.wantURL)
-			}
-			got, err := values(out)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := map[string]string{
-				"REPO": "acme/runplane-fork", "VERSION": tt.wantVersion, "PRIMARY": tt.wantPrimary,
-				"FINGERPRINT": h.fp, "TOKEN": tok.Token, "ROLE": "agent",
-			}
-			if !maps.Equal(got, want) {
-				t.Errorf("command %q gives\n%v\nwant\n%v", tok.Command, got, want)
-			}
-		})
+		dir := t.TempDir()
+		path := filepath.Join(dir, "agent.json")
+		registered := "{\n  \"primary\": \"" + primary + "\",\n  \"fingerprint\": \"sha256:aa\",\n" +
+			"  \"server_id\": \"01jbd5x7k2m4n6p8q9r0s1t2v3\",\n  \"secret\": \"s3cret\"\n}\n"
+		if err := os.WriteFile(path, []byte(registered), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := sh(script, nil, "-s", "--", dir, primary); err != nil {
+			t.Fatalf("install.sh: %v\n%s", err, out)
+		}
+		if raw, _ := os.ReadFile(path); string(raw) != registered {
+			t.Errorf("agent.json of %s after a second install with the same token:\n%s\nwant it unchanged", primary, raw)
+		}
 	}
 }
 
@@ -239,10 +189,10 @@ func TestInstallScriptSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publicKey, repo, ver := update.PublicKey, version.Repo, version.Version
-	t.Cleanup(func() { update.PublicKey, version.Repo, version.Version = publicKey, repo, ver })
+	publicKey := update.PublicKey
+	t.Cleanup(func() { update.PublicKey = publicKey })
 	update.PublicKey = base64.StdEncoding.EncodeToString(pub)
-	version.Repo, version.Version = "acme/runplane", "v1.4.2"
+	setRelease(t, "acme/runplane", "v1.4.2")
 	// curl takes the files from $RELEASES: install.sh calls it with
 	// "-o <file> <url>" at the end.
 	script, err := replaceMain(h.f.Script(httptest.NewRequest("GET", "http://ci.example.com/install.sh", nil)), `
@@ -293,18 +243,15 @@ cat "$TMP/runplane"
 					t.Fatal(err)
 				}
 			}
-			cmd := exec.Command("sh", "-s")
-			cmd.Stdin = bytes.NewReader(script)
-			cmd.Env = append(os.Environ(), "RELEASES="+releases, "WORK="+t.TempDir())
-			out, err := cmd.CombinedOutput()
+			out, err := sh(script, []string{"RELEASES=" + releases, "WORK=" + t.TempDir()}, "-s")
 			if tt.wantErr == "" {
-				if err != nil || !strings.HasSuffix(string(out), "\nrelease binary") {
-					t.Fatalf("install.sh: %v; want the release binary:\n%s", err, out)
+				if err != nil || !strings.HasSuffix(out, "\nrelease binary") {
+					t.Errorf("install.sh: %v; want the release binary:\n%s", err, out)
 				}
 				return
 			}
-			if err == nil || !strings.Contains(string(out), tt.wantErr) || strings.Contains(string(out), "changed binary") {
-				t.Fatalf("install.sh: %v; want the error %q and no binary:\n%s", err, tt.wantErr, out)
+			if err == nil || !strings.Contains(out, tt.wantErr) || strings.Contains(out, "changed binary") {
+				t.Errorf("install.sh: %v; want the error %q and no binary:\n%s", err, tt.wantErr, out)
 			}
 		})
 	}
@@ -319,10 +266,7 @@ func releaseArchive(t *testing.T, text string) []byte {
 	if err == nil {
 		_, err = tw.Write([]byte(text))
 	}
-	if err == nil {
-		err = errors.Join(tw.Close(), gz.Close())
-	}
-	if err != nil {
+	if err = errors.Join(err, tw.Close(), gz.Close()); err != nil {
 		t.Fatal(err)
 	}
 	return b.Bytes()
@@ -344,16 +288,9 @@ func TestInstallSSH(t *testing.T) {
 	}
 
 	// The SSH server does what install.sh does for an agent: it reads its
-	// flags, writes agent.json, and starts the agent.
-	agentCtx, stopAgent := context.WithCancel(context.Background())
-	var agentDone sync.WaitGroup
-	t.Cleanup(func() {
-		stopAgent()
-		agentDone.Wait()
-	})
-	agentPath := filepath.Join(t.TempDir(), "agent.json")
+	// flags and starts the agent.
 	var sawOutput atomic.Bool
-	srv := newSSHServer(t, clientKey, func(command string, stdin []byte, out io.Writer) uint32 {
+	srv := sshtest.NewServer(t, clientKey, func(command string, stdin []byte, out, _ io.Writer) uint32 {
 		fmt.Fprintln(out, "==> Check the host")
 		// A real install takes minutes before the agent starts. Wait until
 		// the dashboard shows the line.
@@ -368,46 +305,29 @@ func TestInstallSSH(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		args, ok := strings.CutPrefix(command, "sudo -n sh -s -- ")
-		if !ok {
-			fmt.Fprintf(out, "Error: the command %q does not run the script with sudo\n", command)
+		script, err := replaceMain(stdin, printValues)
+		if !ok || err != nil {
+			fmt.Fprintf(out, "Error: the command %q does not run install.sh with sudo: %v\n", command, err)
 			return 1
 		}
-		script, err := flagScript(stdin)
-		if err != nil {
-			fmt.Fprintf(out, "Error: %v\n", err)
+		res, err := sh(script, nil, append([]string{"-s", "--"}, strings.Fields(args)...)...)
+		v, verr := values(res)
+		if err != nil || verr != nil {
+			fmt.Fprintf(out, "Error: %v %v\n%s", err, verr, res)
 			return 1
 		}
-		cmd := exec.Command("sh", append([]string{"-s", "--"}, strings.Fields(args)...)...)
-		cmd.Stdin = bytes.NewReader(script)
-		res, err := cmd.Output()
-		if err != nil {
-			fmt.Fprintf(out, "Error: %v\n", err)
-			return 1
-		}
-		v, err := values(res)
-		if err != nil {
-			fmt.Fprintf(out, "Error: %v\n", err)
-			return 1
-		}
-		b, _ := json.Marshal(agentFile{Primary: v["PRIMARY"], Fingerprint: v["FINGERPRINT"], Token: v["TOKEN"]})
-		if err := os.WriteFile(agentPath, b, 0o600); err != nil {
-			fmt.Fprintf(out, "Error: %v\n", err)
-			return 1
-		}
-		agentDone.Go(func() {
-			agent.Run(agentCtx, agent.Config{Path: agentPath, Node: newFakeNode("x64"), Logger: testLogger(t, "agent")})
-		})
+		h.startAgent(map[string]string{"primary": v["PRIMARY"], "fingerprint": v["FINGERPRINT"], "token": v["TOKEN"]}, newFakeNode("x64"))
 		fmt.Fprintln(out, "==> Done")
 		return 0
 	})
 
-	id, err := h.f.InstallSSH(ctx, "http://localhost:8484", api.SSHInstall{Name: "build-2", Host: "127.0.0.1", Port: srv.port(), User: "deploy"})
+	id, err := h.f.InstallSSH(ctx, "http://localhost:8484", api.SSHInstall{Name: "build-2", Host: "127.0.0.1", Port: port(srv.Addr), User: "deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the new server online", func() bool { return h.server(id).Status == store.ServerOnline && h.f.Driver(id) != nil })
-	if v := h.server(id); v.Name != "build-2" || v.Kind != store.ServerAgent || v.Arch != "x64" || h.f.Driver(id) == nil {
-		t.Errorf("installed server %+v, connected %v; want build-2, an x64 agent, connected", v, h.f.Driver(id) != nil)
+	if v := h.server(id); v.Name != "build-2" || v.Kind != store.ServerAgent || v.Arch != "x64" {
+		t.Errorf("installed server %+v, want build-2, an x64 agent", v)
 	}
 	if !sawOutput.Load() {
 		t.Error("the status detail did not show the install output during the install")
@@ -416,22 +336,21 @@ func TestInstallSSH(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := trusted(srv.addr, srv.tcpAddr(), srv.hostKey.PublicKey()); err != nil {
+	tcpAddr, _ := net.ResolveTCPAddr("tcp", srv.Addr)
+	if err := trusted(srv.Addr, tcpAddr, srv.HostKey); err != nil {
 		t.Errorf("known_hosts does not trust the host key of the server: %v", err)
 	}
 
 	// A server at a known address with another host key: runplane does not
 	// send the script.
-	srv2 := newSSHServer(t, clientKey, func(string, []byte, io.Writer) uint32 { return 0 })
-	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	otherKey, _ := ssh.NewSignerFromKey(priv)
+	srv2 := sshtest.NewServer(t, clientKey, func(string, []byte, io.Writer, io.Writer) uint32 { return 0 })
 	f, err := os.OpenFile(filepath.Join(h.cfg.DataDir, "known_hosts"), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Fprintln(f, knownhosts.Line([]string{srv2.addr}, otherKey.PublicKey()))
+	fmt.Fprintln(f, knownhosts.Line([]string{srv2.Addr}, clientKey))
 	f.Close()
-	id2, err := h.f.InstallSSH(ctx, "http://localhost:8484", api.SSHInstall{Name: "build-3", Host: "127.0.0.1", Port: srv2.port(), User: "deploy"})
+	id2, err := h.f.InstallSSH(ctx, "http://localhost:8484", api.SSHInstall{Name: "build-3", Host: "127.0.0.1", Port: port(srv2.Addr), User: "deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,104 +358,13 @@ func TestInstallSSH(t *testing.T) {
 	if d := h.server(id2).StatusDetail; !strings.Contains(d, "does not match") || !strings.Contains(d, "known_hosts") {
 		t.Errorf("status detail %q, want the host key mismatch and the known_hosts file", d)
 	}
-	if got := srv2.commandCount(); got != 0 {
-		t.Errorf("the server with the other host key got %d commands", got)
+	if got := srv2.Commands(); len(got) != 0 {
+		t.Errorf("the server with the other host key got the commands %q", got)
 	}
 }
 
-// sshServer is an in-process SSH server that accepts one client key for the
-// user deploy and answers each exec request with reply.
-type sshServer struct {
-	addr    string
-	hostKey ssh.Signer
-	reply   func(command string, stdin []byte, out io.Writer) uint32
-
-	mu       sync.Mutex
-	commands int
-}
-
-func newSSHServer(t *testing.T, clientKey ssh.PublicKey, reply func(string, []byte, io.Writer) uint32) *sshServer {
-	t.Helper()
-	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	hostKey, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := &sshServer{hostKey: hostKey, reply: reply}
-	config := &ssh.ServerConfig{
-		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if meta.User() == "deploy" && bytes.Equal(key.Marshal(), clientKey.Marshal()) {
-				return nil, nil
-			}
-			return nil, errors.New("unknown key")
-		},
-	}
-	config.AddHostKey(hostKey)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	s.addr = ln.Addr().String()
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go s.handle(conn, config)
-		}
-	}()
-	return s
-}
-
-func (s *sshServer) handle(conn net.Conn, config *ssh.ServerConfig) {
-	defer conn.Close()
-	_, chans, reqs, err := ssh.NewServerConn(conn, config)
-	if err != nil {
-		return
-	}
-	go ssh.DiscardRequests(reqs)
-	for nc := range chans {
-		ch, reqs, err := nc.Accept()
-		if err != nil {
-			return
-		}
-		go func() {
-			defer ch.Close()
-			for req := range reqs {
-				if req.Type != "exec" {
-					req.Reply(false, nil)
-					continue
-				}
-				var payload struct{ Command string }
-				ssh.Unmarshal(req.Payload, &payload)
-				req.Reply(true, nil)
-				s.mu.Lock()
-				s.commands++
-				s.mu.Unlock()
-				stdin, _ := io.ReadAll(ch)
-				status := s.reply(payload.Command, stdin, ch)
-				ch.SendRequest("exit-status", false, binary.BigEndian.AppendUint32(nil, status))
-				return
-			}
-		}()
-	}
-}
-
-func (s *sshServer) port() int {
-	_, p, _ := net.SplitHostPort(s.addr)
+func port(addr string) int {
+	_, p, _ := net.SplitHostPort(addr)
 	n, _ := strconv.Atoi(p)
 	return n
-}
-
-func (s *sshServer) tcpAddr() net.Addr {
-	addr, _ := net.ResolveTCPAddr("tcp", s.addr)
-	return addr
-}
-
-func (s *sshServer) commandCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.commands
 }

@@ -119,7 +119,7 @@ func (f *Fleet) failUpdate(ctx context.Context, serverID, why string) {
 	if err != nil {
 		return
 	}
-	detail := truncate(why+" Run sudo runplane update on this server.", 500)
+	detail := truncate(why + " Run sudo runplane update on this server.")
 	if err := f.st.SetServerStatus(ctx, serverID, v.Status, detail); err != nil {
 		f.log.Warn("set server status", "server_id", serverID, "err", err)
 	}

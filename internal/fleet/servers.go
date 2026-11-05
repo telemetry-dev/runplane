@@ -54,7 +54,7 @@ func (f *Fleet) startLocal(ctx context.Context) error {
 	f.mu.Lock()
 	f.localID, f.localAddr = v.ID, info.IPv4
 	f.mu.Unlock()
-	f.add(&node{Node: f.local, id: v.ID, name: v.Name, arch: facts.Arch, status: v.Status})
+	f.add(&node{Node: f.local, id: v.ID, version: version.Version, name: v.Name, arch: facts.Arch, status: v.Status})
 	f.publishServer(ctx, v.ID)
 	f.log.Info("local server ready", "server_id", v.ID, "name", v.Name, "arch", facts.Arch, "mode", facts.Mode)
 	return nil
@@ -220,7 +220,6 @@ func (f *Fleet) setStatusIf(ctx context.Context, id, from, to, detail string) bo
 	return ok
 }
 
-// refreshFacts reads the facts of each connected server again.
 func (f *Fleet) refreshFacts(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, n := range f.connected() {
@@ -234,7 +233,6 @@ func (f *Fleet) refreshFacts(ctx context.Context) {
 			}
 			facts := serverFacts(info, n.Driver().Mode(), n.version, n.addr)
 			if n.sess == nil {
-				facts.Version, facts.Address = version.Version, info.IPv4
 				f.mu.Lock()
 				f.localAddr = info.IPv4
 				f.mu.Unlock()
@@ -311,7 +309,6 @@ func (f *Fleet) Remove(ctx context.Context, serverID string) error {
 	return nil
 }
 
-// Doctor runs the doctor checks on a connected server.
 func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]api.Check, error) {
 	n := f.node(serverID)
 	if n == nil {

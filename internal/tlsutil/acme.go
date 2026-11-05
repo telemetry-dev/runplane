@@ -1,7 +1,6 @@
 package tlsutil
 
 import (
-	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -13,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -22,13 +22,10 @@ import (
 // one domain. Port 80 answers HTTP-01 challenges and sends all other requests
 // to HTTPS. Start and Stop can be called at any time when the settings change.
 type ACME struct {
-	// HTTPSAddr and HTTPAddr default to ":443" and ":80".
-	HTTPSAddr string
-	HTTPAddr  string
-
-	cacheDir   string
-	log        *slog.Logger
-	retryEvery time.Duration
+	cacheDir            string
+	log                 *slog.Logger
+	httpsAddr, httpAddr string
+	retryEvery          time.Duration
 
 	mu      sync.Mutex
 	manager *autocert.Manager
@@ -38,9 +35,9 @@ type ACME struct {
 	portErr string      // why the ports did not open
 	retry   *time.Timer // the next try to open the ports
 
-	// errMu is apart from mu, because Stop holds mu while handshakes end.
-	errMu   sync.Mutex
-	lastErr string // of the last certificate request for the domain
+	// lastErr is the error text of the last certificate request for the
+	// domain. It is apart from mu, because Stop holds mu while handshakes end.
+	lastErr atomic.Value
 }
 
 type server struct {
@@ -51,7 +48,9 @@ type server struct {
 // NewACME returns an ACME server that keeps its account key and certificates
 // in cacheDir.
 func NewACME(cacheDir string, log *slog.Logger) *ACME {
-	return &ACME{cacheDir: cacheDir, log: log, retryEvery: time.Minute}
+	a := &ACME{cacheDir: cacheDir, log: log, httpsAddr: ":443", httpAddr: ":80", retryEvery: time.Minute}
+	a.setErr(nil)
+	return a
 }
 
 // Start serves handler over HTTPS for domain. If the servers already run,
@@ -85,11 +84,11 @@ func (a *ACME) start(domain, email string, handler http.Handler) error {
 		a.setErr(nil)
 	}
 
-	httpsLn, err := net.Listen("tcp", cmp.Or(a.HTTPSAddr, ":443"))
+	httpsLn, err := net.Listen("tcp", a.httpsAddr)
 	if err != nil {
 		return a.retryLater(err, domain, email, handler)
 	}
-	httpLn, err := net.Listen("tcp", cmp.Or(a.HTTPAddr, ":80"))
+	httpLn, err := net.Listen("tcp", a.httpAddr)
 	if err != nil {
 		httpsLn.Close()
 		return a.retryLater(err, domain, email, handler)
@@ -179,9 +178,7 @@ func (a *ACME) Status(ctx context.Context) CertStatus {
 	if !on {
 		return CertStatus{State: CertNone}
 	}
-	a.errMu.Lock()
-	s := CertStatus{State: CertRequesting, Error: a.lastErr}
-	a.errMu.Unlock()
+	s := CertStatus{State: CertRequesting, Error: a.lastErr.Load().(string)}
 	if data, err := manager.Cache.Get(ctx, domain); err == nil {
 		if leaf := leafOf(data); leaf != nil && time.Now().Before(leaf.NotAfter) {
 			s.State, s.NotAfter = CertValid, leaf.NotAfter
@@ -195,12 +192,11 @@ func (a *ACME) Status(ctx context.Context) CertStatus {
 }
 
 func (a *ACME) setErr(err error) {
-	a.errMu.Lock()
-	defer a.errMu.Unlock()
-	a.lastErr = ""
+	msg := ""
 	if err != nil {
-		a.lastErr = err.Error()
+		msg = err.Error()
 	}
+	a.lastErr.Store(msg)
 }
 
 // leafOf returns the first certificate of an autocert cache entry: a PEM

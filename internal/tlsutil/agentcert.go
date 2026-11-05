@@ -127,22 +127,20 @@ func writeFile(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
+	_, err = tmp.Write(data)
+	if err == nil {
+		err = tmp.Chmod(mode)
 	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
+	if err == nil {
+		err = tmp.Sync()
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

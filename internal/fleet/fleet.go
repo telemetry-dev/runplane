@@ -2,16 +2,13 @@
 // agents. It records their state and host stats, makes images and runner
 // bundles ready on them, installs agents, and tells the scheduler which
 // servers can take sandboxes.
-//
-// Fleet implements scheduler.Fleet, the api services Servers, InstallScript,
-// HostChecker, and SettingsHook (Images through Fleet.Images), and the
-// Bundles interface of the github package.
 package fleet
 
 import (
 	"cmp"
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +17,7 @@ import (
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -55,7 +53,7 @@ type Config struct {
 	Bus    *events.Bus
 	Log    *slog.Logger
 	Config config.Config
-	// Local is the server of the primary itself. Required.
+	// Local is the server of the primary itself.
 	Local agent.Node
 	// AgentFingerprint is the fingerprint of the agent certificate. The
 	// install commands and install.sh carry it.
@@ -67,22 +65,22 @@ type Config struct {
 	// or gets its first image or runner: the CapacityChanged method of the
 	// scheduler.
 	CapacityChanged func()
-	Notifier        Notifier         // optional
+	Notifier        Notifier
 	Now             func() time.Time // nil: time.Now
 }
 
 // Fleet is the set of servers of the primary.
 type Fleet struct {
-	st       *store.Store
-	bus      *events.Bus
-	log      *slog.Logger
-	cfg      config.Config
-	local    agent.Node
-	fp       string
-	onEvent  func(string, sandbox.Event)
-	changed  func()
-	notifier Notifier
-	now      func() time.Time
+	st              *store.Store
+	bus             *events.Bus
+	log             *slog.Logger
+	cfg             config.Config
+	local           agent.Node
+	fp              string
+	onEvent         func(string, sandbox.Event)
+	capacityChanged func()
+	notifier        Notifier
+	now             func() time.Time
 
 	// bg is the context of the work that outlives a call. Run cancels it.
 	bg     context.Context
@@ -118,7 +116,7 @@ type node struct {
 	sess    *agent.Session // nil for the server of the primary
 	arch    string
 	addr    string // agents: the IP address that the primary sees
-	version string // agents: the runplane version of the agent
+	version string // of runplane on the server
 
 	// Guarded by Fleet.mu.
 	name         string
@@ -140,28 +138,28 @@ type readyImage struct {
 func New(c Config) *Fleet {
 	bg, stop := context.WithCancel(context.Background())
 	f := &Fleet{
-		st:        c.Store,
-		bus:       c.Bus,
-		log:       cmp.Or(c.Log, slog.New(slog.DiscardHandler)),
-		cfg:       c.Config,
-		local:     c.Local,
-		fp:        c.AgentFingerprint,
-		onEvent:   c.OnEvent,
-		changed:   c.CapacityChanged,
-		notifier:  c.Notifier,
-		now:       c.Now,
-		bg:        bg,
-		stopBg:    stop,
-		wake:      make(chan struct{}, 1),
-		nodes:     map[string]*node{},
-		downSince: map[string]time.Time{},
-		removed:   map[string]bool{},
-		installs:  map[string]context.CancelFunc{},
-		tokens:    map[string]usedToken{},
-		images:    map[string]store.Image{},
-		dropped:   map[string]bool{},
-		updates:   map[string]agentUpdate{},
-		diskLow:   map[string]bool{},
+		st:              c.Store,
+		bus:             c.Bus,
+		log:             c.Log,
+		cfg:             c.Config,
+		local:           c.Local,
+		fp:              c.AgentFingerprint,
+		onEvent:         c.OnEvent,
+		capacityChanged: c.CapacityChanged,
+		notifier:        c.Notifier,
+		now:             c.Now,
+		bg:              bg,
+		stopBg:          stop,
+		wake:            make(chan struct{}, 1),
+		nodes:           map[string]*node{},
+		downSince:       map[string]time.Time{},
+		removed:         map[string]bool{},
+		installs:        map[string]context.CancelFunc{},
+		tokens:          map[string]usedToken{},
+		images:          map[string]store.Image{},
+		dropped:         map[string]bool{},
+		updates:         map[string]agentUpdate{},
+		diskLow:         map[string]bool{},
 	}
 	if f.now == nil {
 		f.now = time.Now
@@ -255,12 +253,6 @@ func (f *Fleet) kick() {
 	}
 }
 
-func (f *Fleet) capacityChanged() {
-	if f.changed != nil {
-		f.changed()
-	}
-}
-
 // Online returns the connected servers with the status online.
 func (f *Fleet) Online() []sandbox.Host {
 	f.mu.Lock()
@@ -324,48 +316,25 @@ func (f *Fleet) node(id string) *node {
 func (f *Fleet) connected() []*node {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	list := make([]*node, 0, len(f.nodes))
-	for _, n := range f.nodes {
-		list = append(list, n)
-	}
-	return list
+	return slices.Collect(maps.Values(f.nodes))
 }
 
-// add makes n the connected node of its server and starts its pump.
+// add makes n the connected node of its server and passes its driver
+// events and host stats on. The channels of an agent close when its
+// session ends.
 func (f *Fleet) add(n *node) {
 	n.images, n.pulls, n.failed = map[string]readyImage{}, map[string]string{}, map[string]time.Time{}
 	f.mu.Lock()
 	f.nodes[n.id] = n
 	delete(f.downSince, n.id)
 	f.mu.Unlock()
-	f.goBg(func(ctx context.Context) { f.pump(ctx, n) })
-}
-
-// pump passes the driver events and the host stats of a node on. For an
-// agent, it ends when the session ends.
-func (f *Fleet) pump(ctx context.Context, n *node) {
-	events, stats := n.Driver().Events(), n.Stats()
-	for events != nil || stats != nil {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-events:
-			if !ok {
-				events = nil
-				continue
-			}
-			if f.onEvent != nil {
-				f.onEvent(n.id, ev)
-			}
-		case s, ok := <-stats:
-			if !ok {
-				stats = nil
-				continue
-			}
-			f.addStats(n, s)
+	f.goBg(func(ctx context.Context) {
+		onEvent := func(ev sandbox.Event) { f.onEvent(n.id, ev) }
+		onStats := func(s host.Stats) { f.addStats(n, s) }
+		if agent.Forward(ctx, n, onEvent, onStats) == nil {
+			f.down(ctx, n)
 		}
-	}
-	f.down(ctx, n)
+	})
 }
 
 // down drops the session of an agent that ended, unless a newer session
@@ -434,9 +403,6 @@ func (f *Fleet) serverChanged(v store.Server) {
 
 // notify sends an event to the notification channels in the background.
 func (f *Fleet) notify(build func(dashboard string) notify.Event) {
-	if f.notifier == nil {
-		return
-	}
 	f.goBg(func(ctx context.Context) {
 		st, err := f.st.GetSettings(ctx)
 		if err != nil {

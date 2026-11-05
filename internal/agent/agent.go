@@ -3,7 +3,9 @@ package agent
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,8 +38,7 @@ type Config struct {
 	// CacheProxy, if not nil, sends its requests through the connection
 	// that Run keeps.
 	CacheProxy *CacheProxy
-	// Mirror returns the stats of the registry mirror of the agent. Nil:
-	// zero stats.
+	// Mirror returns the stats of the registry mirror of the agent.
 	Mirror func() mirror.Stats
 	Logger *slog.Logger
 }
@@ -48,28 +52,23 @@ const (
 )
 
 // Run connects the agent to the primary and serves the agent routes from
-// cfg.Node until ctx ends. It connects again after each
-// disconnect, and the sandboxes keep operating in the meantime. Run
-// returns nil when ctx ends, ErrUpdated after an update, or an error if
-// agent.json is not valid.
+// cfg.Node until ctx ends. It connects again after each disconnect, and the
+// sandboxes keep operating in the meantime. Run returns nil when ctx ends,
+// ErrUpdated after an update, or an error if agent.json is not valid.
 func Run(ctx context.Context, cfg Config) error {
 	f, err := readAgentFile(cfg.Path)
 	if err != nil {
 		return err
 	}
 	a := &agent{
-		path:    cfg.Path,
+		Config:  cfg,
 		file:    f,
 		saved:   f,
-		node:    cfg.Node,
-		proxy:   cfg.CacheProxy,
-		mirror:  cfg.Mirror,
-		log:     orDiscard(cfg.Logger),
 		out:     &outbox{ready: make(chan struct{}, 1)},
 		updated: make(chan struct{}),
 	}
 	a.routes = a.newRoutes()
-	go a.pump(ctx)
+	go Forward(ctx, cfg.Node, a.out.addEvent, a.out.setStats)
 
 	delay := minBackoff
 	for {
@@ -84,9 +83,9 @@ func Run(ctx context.Context, cfg Config) error {
 		case ctx.Err() != nil:
 			return nil
 		case err != nil:
-			a.log.Warn("no connection to the primary", "primary", a.file.Primary, "retry_in", delay, "err", err)
+			a.Logger.Warn("no connection to the primary", "primary", a.file.Primary, "retry_in", delay, "err", err)
 		default:
-			a.log.Warn("connection to the primary ended", "primary", a.file.Primary)
+			a.Logger.Warn("connection to the primary ended", "primary", a.file.Primary)
 		}
 		select {
 		case <-ctx.Done():
@@ -98,13 +97,9 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 type agent struct {
-	path   string
+	Config
 	file   agentFile // what the agent uses
 	saved  agentFile // what agent.json holds
-	node   Node
-	proxy  *CacheProxy
-	mirror func() mirror.Stats
-	log    *slog.Logger
 	out    *outbox
 	routes http.Handler
 
@@ -114,9 +109,9 @@ type agent struct {
 
 // connect dials the primary, runs the handshake, and starts yamux.
 func (a *agent) connect(ctx context.Context) (*yamux.Session, error) {
-	info, err := a.node.Facts(ctx)
+	info, err := a.Node.Facts(ctx)
 	if err != nil {
-		a.log.Warn("read host facts", "err", err)
+		a.Logger.Warn("read host facts", "err", err)
 	}
 	d := tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: handshakeTimeout, KeepAlive: 15 * time.Second},
@@ -136,10 +131,12 @@ func (a *agent) connect(ctx context.Context) (*yamux.Session, error) {
 
 func (a *agent) handshake(conn net.Conn, info host.Info) (*yamux.Session, error) {
 	conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	hello := a.file.credentials()
-	hello.Version = version.Version
-	hello.Mode = a.node.Driver().Mode()
-	hello.Host = info
+	hello := Hello{Version: version.Version, Mode: a.Node.Driver().Mode(), Host: info}
+	if a.file.registered() {
+		hello.ServerID, hello.Secret = a.file.ServerID, a.file.Secret
+	} else {
+		hello.Token = a.file.Token
+	}
 	if err := writeJSONLine(conn, hello); err != nil {
 		return nil, fmt.Errorf("send hello: %w", err)
 	}
@@ -155,7 +152,7 @@ func (a *agent) handshake(conn net.Conn, info host.Info) (*yamux.Session, error)
 		return nil, err
 	}
 	conn.SetDeadline(time.Time{})
-	sess, err := yamux.Server(&bufConn{conn, br}, yamuxConfig(a.log))
+	sess, err := yamux.Server(&bufConn{conn, br}, yamuxConfig(a.Logger))
 	if err != nil {
 		return nil, fmt.Errorf("start yamux: %w", err)
 	}
@@ -177,7 +174,7 @@ func (a *agent) remember(r reply) error {
 	}
 	f.Token = ""
 	if f != a.file {
-		a.log.Info("registered with the primary", "server_id", f.ServerID)
+		a.Logger.Info("registered with the primary", "server_id", f.ServerID)
 	}
 	a.file = f
 	if a.saved == f {
@@ -185,8 +182,8 @@ func (a *agent) remember(r reply) error {
 	}
 	// Keep the identity in memory when the write fails: the token is used,
 	// so the agent cannot register again. The next connection tries again.
-	if err := f.write(a.path); err != nil {
-		a.log.Error("save the server ID and secret; the agent cannot connect after a restart until this works", "err", err)
+	if err := f.write(a.Path); err != nil {
+		a.Logger.Error("save the server ID and secret; the agent cannot connect after a restart until this works", "err", err)
 		return nil
 	}
 	a.saved = f
@@ -196,12 +193,12 @@ func (a *agent) remember(r reply) error {
 // serve operates one connection until it ends.
 func (a *agent) serve(ctx context.Context, sess *yamux.Session) error {
 	defer sess.Close()
-	a.log.Info("connected to the primary", "primary", a.file.Primary, "server_id", a.file.ServerID)
-	if a.proxy != nil {
-		a.proxy.attach(sess)
-		defer a.proxy.detach(sess)
+	a.Logger.Info("connected to the primary", "primary", a.file.Primary, "server_id", a.file.ServerID)
+	if a.CacheProxy != nil {
+		a.CacheProxy.attach(sess)
+		defer a.CacheProxy.detach(sess)
 	}
-	go serveStreams(sess, a.routes, a.log)
+	go serveStreams(sess, a.routes, a.Logger)
 	go a.sendEvents(sess)
 	select {
 	case <-ctx.Done():
@@ -213,37 +210,13 @@ func (a *agent) serve(ctx context.Context, sess *yamux.Session) error {
 	}
 }
 
-// pump moves the driver events and host stats to the outbox for the life
-// of the agent, also while it has no connection.
-func (a *agent) pump(ctx context.Context) {
-	events, stats := a.node.Driver().Events(), a.node.Stats()
-	for events != nil || stats != nil {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-events:
-			if !ok {
-				events = nil
-				continue
-			}
-			a.out.addEvent(ev)
-		case st, ok := <-stats:
-			if !ok {
-				stats = nil
-				continue
-			}
-			a.out.setStats(st)
-		}
-	}
-}
-
 // sendEvents streams the outbox to POST /v1/events. When the stream
 // breaks, it closes the session, because the primary would miss state
 // changes; the agent then connects again.
 func (a *agent) sendEvents(sess *yamux.Session) {
 	defer sess.Close()
 	if n := a.out.takeDropped(); n > 0 {
-		a.log.Warn("dropped events while not connected", "count", n)
+		a.Logger.Warn("dropped events while not connected", "count", n)
 	}
 	pr, pw := io.Pipe()
 	go func() {
@@ -265,7 +238,7 @@ func (a *agent) sendEvents(sess *yamux.Session) {
 		}
 		if err := enc.Encode(it); err != nil {
 			a.out.putBack(it)
-			a.log.Debug("event stream ended", "err", err)
+			a.Logger.Debug("event stream ended", "err", err)
 			return
 		}
 	}
@@ -355,4 +328,82 @@ func (o *outbox) signal() {
 	case o.ready <- struct{}{}:
 	default:
 	}
+}
+
+// agentFile is /etc/runplane/agent.json. install.sh writes the primary,
+// the fingerprint, and the token. After the agent registers, the file has
+// the server ID and the secret, and no token.
+type agentFile struct {
+	Primary     string `json:"primary"`     // host:port of the agent listener
+	Fingerprint string `json:"fingerprint"` // sha256:<hex> of the primary certificate
+	Token       string `json:"token,omitempty"`
+	ServerID    string `json:"server_id"`
+	Secret      string `json:"secret"`
+}
+
+func readAgentFile(path string) (agentFile, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return agentFile{}, fmt.Errorf("read agent config: %w", err)
+	}
+	var f agentFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return agentFile{}, fmt.Errorf("read agent config %s: %w", path, err)
+	}
+	if err := f.validate(); err != nil {
+		return agentFile{}, fmt.Errorf("agent config %s: %w", path, err)
+	}
+	return f, nil
+}
+
+func (f agentFile) validate() error {
+	if _, _, err := net.SplitHostPort(f.Primary); err != nil {
+		return fmt.Errorf("primary %q is not host:port", f.Primary)
+	}
+	digest, ok := strings.CutPrefix(f.Fingerprint, "sha256:")
+	if b, err := hex.DecodeString(digest); !ok || err != nil || len(b) != sha256.Size {
+		return fmt.Errorf("fingerprint %q is not sha256:<64 hex digits>", f.Fingerprint)
+	}
+	if !f.registered() && f.Token == "" {
+		return errors.New("no token, and no server_id and secret")
+	}
+	return nil
+}
+
+func (f agentFile) registered() bool { return f.ServerID != "" && f.Secret != "" }
+
+// write replaces the file atomically, with mode 0600.
+func (f agentFile) write(path string) error {
+	b, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return fmt.Errorf("write agent config: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	_, err = tmp.Write(append(b, '\n'))
+	if err == nil {
+		err = tmp.Chmod(0o600)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		return fmt.Errorf("write agent config: %w", err)
+	}
+	// The used token cannot register again, so make the rename durable.
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
 }

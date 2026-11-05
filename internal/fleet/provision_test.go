@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -32,6 +33,15 @@ func addPool(t *testing.T, st *store.Store, label, arch, imageID string, enabled
 	if err := st.CreatePool(context.Background(), p); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestFirstStartHasDefaultImage(t *testing.T) {
+	h := newHarness(t, newFakeNode("arm64"))
+	h.run()
+	waitFor(t, "the default image", func() bool {
+		ref, ok := h.f.Image(h.localID(), "")
+		return ok && ref.Ref == "builtin:ubuntu-24.04" && ref.Digest == "sha256:b0b0"
+	})
 }
 
 func TestProvisionImagesAndRunner(t *testing.T) {
@@ -127,8 +137,8 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 	// failure does not mark the bundles of the other server as failed.
 	agentNode := newFakeNode("arm64")
 	_, agentID := h.connectAgent("arm-2", agentNode)
-	waitFor(t, "the runner downloads on the agent", func() bool { return len(agentNode.runnerCalls()) == 2 })
-	if got := agentNode.runnerCalls(); !slices.Equal(got, []string{"2.330.0", "2.329.0"}) {
+	waitFor(t, "the runner downloads on the agent", func() bool { return len(agentNode.args("EnsureRunner")) == 2 })
+	if got := agentNode.args("EnsureRunner"); !slices.Equal(got, []any{"2.330.0", "2.329.0"}) {
 		t.Errorf("runner versions tried on the agent %v, want the newest, then the older ready one", got)
 	}
 	if v, ok := h.f.RunnerVersion(agentID); ok {
@@ -168,13 +178,13 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	if err := images.Refresh(ctx, app); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the second pull", func() bool { return countRef(local.pulls(), "registry.example.com/app:1") == 2 })
+	waitFor(t, "the second pull", func() bool { return count(local.args("EnsureImage"), "registry.example.com/app:1") == 2 })
 	if got := digest(); got != "sha256:a001" {
 		t.Errorf("digest during the pull %q, want the old sha256:a001", got)
 	}
 	close(gate)
 	waitFor(t, "the new digest", func() bool { return digest() == "sha256:a002" })
-	if got := local.gcCalls(); !slices.ContainsFunc(got, func(keep []string) bool { return !slices.Contains(keep, "sha256:a001") }) {
+	if got := local.args("GCImages"); !slices.ContainsFunc(got, func(keep any) bool { return !slices.Contains(keep.([]string), "sha256:a001") }) {
 		t.Errorf("image GC calls %v after the new digest, want one that drops sha256:a001", got)
 	}
 
@@ -213,25 +223,25 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, agentBefore := len(local.gcCalls()), len(agentNode.gcCalls())
+	before, agentBefore := len(local.args("GCImages")), len(agentNode.args("GCImages"))
 	if err := images.Remove(ctx, app); err != nil {
 		t.Fatal(err)
 	}
 	if got := digest(); got != "" {
 		t.Errorf("digest %q after Remove, want none", got)
 	}
-	if kept := local.gcCalls()[before:]; len(kept) != 1 || !slices.Equal(kept[0], []string{"sha256:b0b0", "sha256:in-use"}) {
+	if kept := local.args("GCImages")[before:]; !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0", "sha256:in-use"}}) {
 		t.Errorf("image GC on the primary kept %v, want one GC that keeps sha256:b0b0 and sha256:in-use", kept)
 	}
-	if kept := agentNode.gcCalls()[agentBefore:]; len(kept) != 1 || !slices.Equal(kept[0], []string{"sha256:b0b0"}) {
+	if kept := agentNode.args("GCImages")[agentBefore:]; !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0"}}) {
 		t.Errorf("image GC on the agent kept %v, want one GC that keeps sha256:b0b0", kept)
 	}
 }
 
-func countRef(list []string, ref string) int {
+func count(list []any, v any) int {
 	n := 0
-	for _, r := range list {
-		if r == ref {
+	for _, x := range list {
+		if x == v {
 			n++
 		}
 	}
@@ -260,9 +270,9 @@ func TestNewRunnerPrunesOldBundlesOnAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "a prune on the agent that keeps the live version", func() bool {
-		return slices.ContainsFunc(agentNode.pruneCalls(), func(keep []string) bool { return slices.Equal(keep, []string{"2.328.0"}) })
+		return slices.ContainsFunc(agentNode.args("PruneRunners"), func(keep any) bool { return slices.Equal(keep.([]string), []string{"2.328.0"}) })
 	})
-	if len(local.pruneCalls()) == 0 {
+	if len(local.args("PruneRunners")) == 0 {
 		t.Error("no prune on the primary")
 	}
 }
@@ -290,7 +300,7 @@ func TestTaggedImagesArePulledAgainEachDay(t *testing.T) {
 	h.clock.add(23 * time.Hour)
 	h.f.provision(ctx)
 	time.Sleep(50 * time.Millisecond)
-	if n := countRef(local.pulls(), "builtin:ubuntu-24.04"); n != 1 {
+	if n := count(local.args("EnsureImage"), "builtin:ubuntu-24.04"); n != 1 {
 		t.Errorf("%d pulls of the default image after 23 hours, want 1", n)
 	}
 
@@ -309,7 +319,7 @@ func TestTaggedImagesArePulledAgainEachDay(t *testing.T) {
 	if b, _ := h.st.GetImageBuild(ctx, def, id); b.Status != store.BuildReady {
 		t.Errorf("default image build %q after a failed pull again, want ready", b.Status)
 	}
-	if n := countRef(local.pulls(), pinnedRef); n != 1 {
+	if n := count(local.args("EnsureImage"), pinnedRef); n != 1 {
 		t.Errorf("%d pulls of the image with a digest, want 1", n)
 	}
 }
