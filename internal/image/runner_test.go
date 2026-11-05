@@ -21,34 +21,6 @@ import (
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
-func TestPatchResultsURL(t *testing.T) {
-	url := utf16Bytes("ACTIONS_RESULTS_URL")
-	orl := utf16Bytes("ACTIONS_RESULTS_ORL")
-	join := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
-	tests := []struct {
-		name string
-		in   []byte
-		want []byte
-		n    int
-	}{
-		{"each UTF-16 match", join([]byte{0x4d, 0x5a}, url, []byte{0, 0, 7}, url), join([]byte{0x4d, 0x5a}, orl, []byte{0, 0, 7}, orl), 2},
-		{"adjacent matches", join(url, url), join(orl, orl), 2},
-		{"ASCII is not a match", []byte("xxACTIONS_RESULTS_URLxx"), []byte("xxACTIONS_RESULTS_URLxx"), 0},
-		{"cut match at the end", join([]byte{1}, url[:len(url)-2]), join([]byte{1}, url[:len(url)-2]), 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			b := bytes.Clone(tt.in)
-			if n := patchResultsURL(b); n != tt.n {
-				t.Errorf("count = %d, want %d", n, tt.n)
-			}
-			if !bytes.Equal(b, tt.want) {
-				t.Errorf("bytes = %q, want %q", b, tt.want)
-			}
-		})
-	}
-}
-
 func TestRelease(t *testing.T) {
 	release, err := os.ReadFile("testdata/runner-release-2.338.2.json")
 	if err != nil {

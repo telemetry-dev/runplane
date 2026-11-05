@@ -19,28 +19,25 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
-const (
-	scratchDir = "/mnt/scratch" // scratch disk: overlay upper layers and Docker data
-	runnerHome = "/home/runner/actions-runner"
-	stopGrace  = 10 * time.Second // for the runner and dockerd to stop after SIGTERM
-)
+const stopGrace = 10 * time.Second // for the runner and dockerd to stop after SIGTERM
 
 // prepareRunnerDir makes the writable runner folder: an overlay with the
 // read-only bundle as the lower layer and the upper layer on scratch. When
 // the overlay mount fails, for example because scratch is not a separate
 // disk, it copies the bundle.
-func (g *guest) prepareRunnerDir(bundle string, acct account) error {
-	upper, work := scratchDir+"/runner/upper", scratchDir+"/runner/work"
-	err := mkdirs(runnerHome, upper, work)
+func (g *guestInit) prepareRunnerDir(bundle string, acct account) error {
+	scratch := filepath.Join(guest.ScratchDir, guest.ScratchRunner)
+	upper, work := scratch+"/upper", scratch+"/work"
+	err := mkdirs(guest.RunnerHome, upper, work)
 	if err == nil {
-		err = mount("overlay", runnerHome, "overlay", 0, "lowerdir="+bundle+",upperdir="+upper+",workdir="+work)
+		err = mount("overlay", guest.RunnerHome, "overlay", 0, "lowerdir="+bundle+",upperdir="+upper+",workdir="+work)
 	}
 	if err != nil {
 		g.log.Warn("cannot put an overlay on the runner bundle, copying it", "err", err)
-		cmd := exec.Command("cp", "-a", bundle+"/.", runnerHome)
+		cmd := exec.Command("cp", "-a", bundle+"/.", guest.RunnerHome)
 		cmd.Stderr = os.Stderr
 		code, err := g.reaper.run(cmd)
 		if err == nil && code != 0 {
@@ -51,21 +48,21 @@ func (g *guest) prepareRunnerDir(bundle string, acct account) error {
 		}
 	}
 	// The runner writes its config, _diag, and _work into its folder.
-	pages := filepath.Join(runnerHome, "_diag", "pages")
+	pages := filepath.Join(guest.RunnerHome, "_diag", "pages")
 	if err := mkdirs(pages); err != nil {
 		return err
 	}
-	for _, dir := range []string{runnerHome, filepath.Dir(pages), pages} {
+	for _, dir := range []string{guest.RunnerHome, filepath.Dir(pages), pages} {
 		if err := os.Lchown(dir, int(acct.uid), int(acct.gid)); err != nil {
 			return err
 		}
 	}
-	if _, ok := g.cfg.Env["ACTIONS_RESULTS_URL"]; !ok {
-		if err := unpatchWorker(filepath.Join(runnerHome, "bin", "Runner.Worker.dll")); err != nil {
+	if !g.cfg.ActionsCache {
+		if err := guest.Unpatch(guest.RunnerHome); err != nil {
 			return fmt.Errorf("give the runner the GitHub results URL: %w", err)
 		}
 	}
-	envFile := filepath.Join(runnerHome, ".env")
+	envFile := filepath.Join(guest.RunnerHome, ".env")
 	if err := writeEnvFile(envFile, g.cfg.Env, g.log); err != nil {
 		return fmt.Errorf("write runner .env: %w", err)
 	}
@@ -84,8 +81,8 @@ var writablePaths = []string{"/home", "/root", "/opt", "/usr/local"}
 // on the host disk with no limit. Without a scratch disk it does nothing.
 // The sysbox driver stops a sandbox whose writes outside scratch pass its
 // disk size, so a failed overlay leaves the host disk safe.
-func (g *guest) overlayWritablePaths() {
-	if !isMountPoint(scratchDir) {
+func (g *guestInit) overlayWritablePaths() {
+	if !isMountPoint(guest.ScratchDir) {
 		return
 	}
 	for _, p := range writablePaths {
@@ -103,7 +100,7 @@ func overlayOnScratch(path string) error {
 	} else if err != nil {
 		return err
 	}
-	base := filepath.Join(scratchDir, "root", strings.ReplaceAll(strings.Trim(path, "/"), "/", "-"))
+	base := filepath.Join(guest.ScratchDir, guest.ScratchRoot, strings.ReplaceAll(strings.Trim(path, "/"), "/", "-"))
 	upper, work := base+"/upper", base+"/work"
 	if err := mkdirs(upper, work); err != nil {
 		return err
@@ -118,7 +115,7 @@ func overlayOnScratch(path string) error {
 	return mount("overlay", path, "overlay", 0, "lowerdir="+path+",upperdir="+upper+",workdir="+work)
 }
 
-func (g *guest) startDockerd() *child {
+func (g *guestInit) startDockerd() *child {
 	path, err := exec.LookPath("dockerd")
 	if err != nil {
 		g.log.Info("no dockerd in the image, so no Docker in this sandbox")
@@ -127,14 +124,14 @@ func (g *guest) startDockerd() *child {
 	if err := dockerDataRoot(); err != nil {
 		g.log.Warn("put Docker data on scratch", "err", err)
 	}
-	args := []string{"--storage-driver", "overlay2", "--data-root", "/var/lib/docker"}
+	args := []string{"--storage-driver", "overlay2", "--data-root", guest.DockerDir}
 	if m := g.cfg.RegistryMirror; m != "" {
 		args = append(args, "--registry-mirror", m)
 		if u, err := url.Parse(m); err == nil && u.Scheme == "http" {
 			args = append(args, "--insecure-registry", u.Host)
 		}
 	}
-	c, err := g.startLogged(exec.Command(path, args...), "dockerd", nil)
+	c, err := g.startLogged(exec.Command(path, args...), guest.SourceDockerd, nil)
 	if err != nil {
 		g.log.Error("start dockerd", "err", err)
 		return nil
@@ -142,17 +139,17 @@ func (g *guest) startDockerd() *child {
 	return c
 }
 
-// dockerDataRoot puts /var/lib/docker on scratch unless something is mounted
-// there already. overlay2 does not work on top of an overlay.
+// dockerDataRoot puts guest.DockerDir on scratch unless something is
+// mounted there already.
 func dockerDataRoot() error {
-	if isMountPoint("/var/lib/docker") || !isMountPoint(scratchDir) {
+	if isMountPoint(guest.DockerDir) || !isMountPoint(guest.ScratchDir) {
 		return nil
 	}
-	src := scratchDir + "/docker"
-	if err := mkdirs(src, "/var/lib/docker"); err != nil {
+	src := filepath.Join(guest.ScratchDir, guest.ScratchDocker)
+	if err := mkdirs(src, guest.DockerDir); err != nil {
 		return err
 	}
-	return mount(src, "/var/lib/docker", "", unix.MS_BIND, "")
+	return mount(src, guest.DockerDir, "", unix.MS_BIND, "")
 }
 
 // Why a runner failed, for the exited event.
@@ -169,9 +166,9 @@ const (
 //
 // A runner that exits by itself before "Listening for Jobs" failed, also
 // with exit code 0: the runner exits with 0 after a bad JIT config.
-func (g *guest) runRunner(acct account) (int, string) {
+func (g *guestInit) runRunner(acct account) (int, string) {
 	cmd := exec.Command("./run.sh", "--jitconfig", g.cfg.JITConfig)
-	cmd.Dir = runnerHome
+	cmd.Dir = guest.RunnerHome
 	// With this variable, run.sh passes SIGTERM on to the runner as SIGINT
 	// and exits with the runner's exit code.
 	cmd.Env = acct.env("RUNNER_MANUALLY_TRAP_SIG=1")
@@ -179,7 +176,7 @@ func (g *guest) runRunner(acct account) (int, string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Credential: acct.credential()}
 	jobStarted := make(chan struct{}, 1)
 	var listened atomic.Bool
-	r, err := g.startLogged(cmd, "runner", func(line string) {
+	r, err := g.startLogged(cmd, guest.SourceRunner, func(line string) {
 		if ev, ok := parseRunnerLine(line); ok {
 			g.link.event(ev)
 			switch ev.Kind {
@@ -204,7 +201,7 @@ func (g *guest) runRunner(acct account) (int, string) {
 	pagesDone := make(chan struct{})
 	go func() {
 		defer close(pagesDone)
-		err := tailPages(pagesCtx, filepath.Join(runnerHome, "_diag", "pages"), func(line string) { g.logs.push("diag", line) })
+		err := tailPages(pagesCtx, filepath.Join(guest.RunnerHome, "_diag", "pages"), func(line string) { g.logs.push(guest.SourceDiag, line) })
 		if err != nil {
 			g.log.Warn("tail runner pages", "err", err)
 		}
@@ -273,7 +270,7 @@ type child struct {
 
 // startLogged starts cmd with its output in the log stream under source.
 // onLine also gets each output line.
-func (g *guest) startLogged(cmd *exec.Cmd, source string, onLine func(string)) (*child, error) {
+func (g *guestInit) startLogged(cmd *exec.Cmd, source string, onLine func(string)) (*child, error) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -289,7 +286,7 @@ func (g *guest) startLogged(cmd *exec.Cmd, source string, onLine func(string)) (
 	go func() {
 		defer close(c.output)
 		defer pr.Close()
-		control.ReadLines(pr, func(line string) {
+		guest.ReadLines(pr, func(line string) {
 			g.logs.push(source, line)
 			if onLine != nil {
 				onLine(line)

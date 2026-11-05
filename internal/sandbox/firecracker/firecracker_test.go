@@ -15,9 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
@@ -96,28 +95,24 @@ func scopeProcs(root, id string) string {
 }
 
 // dialGuest connects to a control socket as runplane-init does through
-// vsock. It returns a client for the host, and calls onShutdown when the
-// host asks the guest to power off.
-func dialGuest(t *testing.T, socket string, onShutdown func()) *http.Client {
+// vsock. It calls onShutdown when the host asks the guest to power off.
+func dialGuest(t *testing.T, socket string, onShutdown func()) *guest.Client {
 	t.Helper()
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := yamux.Client(conn, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sess.Close() })
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST "+guest.PathShutdown, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		onShutdown()
 	})
-	go http.Serve(sess, mux)
-	return &http.Client{Transport: &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
-	}}
+	c, err := guest.NewClient(conn, mux, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
 }
 
 func nextEvent(t *testing.T, d *Driver) sandbox.Event {

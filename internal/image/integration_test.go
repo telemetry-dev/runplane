@@ -15,6 +15,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/version"
 )
 
@@ -87,8 +88,8 @@ func TestDockerBuildsBuiltinImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Config == nil || info.Config.Labels[labelManaged] != "true" {
-		t.Errorf("image labels = %v, want %s=true", info.Config, labelManaged)
+	if info.Config == nil || info.Config.Labels[guest.LabelManaged] != "true" {
+		t.Errorf("image labels = %v, want %s=true", info.Config, guest.LabelManaged)
 	}
 }
 

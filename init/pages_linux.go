@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // tailPages streams the lines of the job log pages that the runner writes
@@ -138,7 +138,7 @@ func (p *page) read(emit func(string)) {
 			emit(string(bytes.TrimSuffix(p.partial[:i], []byte("\r"))))
 			p.partial = p.partial[i+1:]
 		}
-		if len(p.partial) >= control.MaxLine {
+		if len(p.partial) >= guest.MaxLine {
 			emit(string(p.partial))
 			p.partial = nil
 		}

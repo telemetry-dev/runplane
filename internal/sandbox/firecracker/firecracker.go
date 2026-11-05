@@ -36,13 +36,11 @@ type Options struct {
 	ServicePort int // cache server and registry mirror on the gateway of each VM
 	// RootDisk returns the ext4 root disk of a ready image.
 	RootDisk func(digest string) (string, error)
-	// RunnerDrive returns the ext4 drive of a ready runner bundle.
-	RunnerDrive func(ctx context.Context, version, arch string) (string, error)
-	// CacheEnv returns the runner environment for the Actions cache at
-	// serviceURL.
-	CacheEnv func(serviceURL string) map[string]string
-	Settings sandbox.Settings
-	Logger   *slog.Logger
+	// RunnerDrive returns the ext4 drive of a ready runner bundle, and if
+	// the bundle has the runner patch (guest.Patch).
+	RunnerDrive func(ctx context.Context, version, arch string) (drive string, patched bool, err error)
+	Settings    sandbox.Settings
+	Logger      *slog.Logger
 }
 
 // Driver operates the microVMs of this server.

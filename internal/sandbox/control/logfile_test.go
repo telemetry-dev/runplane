@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // bigText makes lines of about 64 KiB, so that 1025 lines pass the 64 MiB cap.
@@ -19,7 +21,7 @@ func writeLines(t *testing.T, l *LogFile, from, to int) {
 	t.Helper()
 	at := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	for i := from; i < to; i++ {
-		if err := l.Write(LogLine{Time: at, Source: "runner", Text: fmt.Sprintf("%05d %s", i, bigText)}); err != nil {
+		if err := l.Write(guest.LogLine{Time: at, Source: "runner", Text: fmt.Sprintf("%05d %s", i, bigText)}); err != nil {
 			t.Fatal(err)
 		}
 	}

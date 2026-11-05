@@ -6,13 +6,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 const logMax = 64 << 20 // at this size, console.log moves to console.log.1
 
+const logTime = "2006-01-02T15:04:05.000Z07:00"
+
 // LogFile is the console log of one sandbox: <dir>/console.log and the older
-// part console.log.1. Each line is "<RFC 3339 UTC time> <source> <text>".
+// part console.log.1. Each line is "<RFC 3339 UTC time> <source> <text>"
+// (ParseLogFileLine).
 type LogFile struct {
 	path string
 
@@ -38,9 +45,9 @@ func OpenLogFile(dir string) (*LogFile, error) {
 	return &LogFile{path: path, f: f, size: st.Size(), written: make(chan struct{})}, nil
 }
 
-func (l *LogFile) Write(line LogLine) error {
+func (l *LogFile) Write(line guest.LogLine) error {
 	b := make([]byte, 0, 32+len(line.Source)+len(line.Text))
-	b = line.Time.UTC().AppendFormat(b, "2006-01-02T15:04:05.000Z07:00")
+	b = line.Time.UTC().AppendFormat(b, logTime)
 	b = append(b, ' ')
 	b = append(b, line.Source...)
 	b = append(b, ' ')
@@ -65,6 +72,18 @@ func (l *LogFile) Write(line LogLine) error {
 		return fmt.Errorf("write console log: %w", err)
 	}
 	return nil
+}
+
+// ParseLogFileLine reads a line of a console log. It reports false for a
+// line in another form.
+func ParseLogFileLine(line string) (guest.LogLine, bool) {
+	stamp, rest, ok1 := strings.Cut(line, " ")
+	source, text, ok2 := strings.Cut(rest, " ")
+	t, err := time.Parse(logTime, stamp)
+	if !ok1 || !ok2 || err != nil {
+		return guest.LogLine{}, false
+	}
+	return guest.LogLine{Time: t, Source: source, Text: text}, true
 }
 
 func (l *LogFile) rotate() error {

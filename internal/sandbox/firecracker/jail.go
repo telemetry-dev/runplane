@@ -11,18 +11,23 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // Files in the chroot. Firecracker sees them at its root.
 const (
-	kernelFile    = "vmlinux"
-	rootFile      = "rootfs.ext4"
-	runnerFile    = "runner.ext4"
-	scratchFile   = "scratch.ext4"
-	apiSocket     = "api.sock"
-	vsockFile     = "v.sock"
-	controlSocket = "v.sock_1024" // Firecracker forwards guest vsock port 1024 here
+	kernelFile  = "vmlinux"
+	rootFile    = "rootfs.ext4"
+	runnerFile  = "runner.ext4"
+	scratchFile = "scratch.ext4"
+	apiSocket   = "api.sock"
+	vsockFile   = "v.sock"
 )
+
+// Firecracker forwards the connections of the guest to vsock port
+// guest.VsockPort to controlSocket.
+var controlSocket = vsockFile + "_" + strconv.Itoa(guest.VsockPort)
 
 func (d *Driver) chrootBase() string { return filepath.Join(d.opts.DataDir, "jail") }
 

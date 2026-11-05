@@ -18,31 +18,33 @@ import (
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 func TestControlChannel(t *testing.T) {
 	sock := socketPath(t)
 	log := slog.New(slog.DiscardHandler)
-	cfg := control.GuestConfig{
+	cfg := guest.Config{
 		SandboxID:        "01jbz3x0000000000000000000",
 		Hostname:         "ubuntu-24-04-01jbz3x0",
 		JITConfig:        "eyJqaXQiOiJjb25maWcifQ==",
 		RunnerDir:        "/opt/runplane/runner",
 		Env:              map[string]string{"ACTIONS_RESULTS_URL": "http://10.0.0.1:8486/"},
+		ActionsCache:     true,
 		DNS:              []string{"1.1.1.1", "8.8.8.8"},
 		RegistryMirror:   "http://10.0.0.1:8486",
 		TimeLimitSeconds: 3600,
 		Debug:            true,
 	}
 	rec1 := &recorder{}
-	host1, err := control.Listen(sock, cfg, rec1, log)
+	host1, err := control.Listen(sock, &cfg, rec1, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	sent := &syncBuffer{}
 	dial := func(ctx context.Context) (net.Conn, error) {
-		c, err := dialHost(ctx, sock)
+		c, err := dialHost(ctx, filepath.Dir(sock))
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +68,7 @@ func TestControlChannel(t *testing.T) {
 	link.event(sandbox.RunnerEvent{Kind: "listening"})
 	logs.push("runner", "√ Connected to GitHub")
 	logs.push("dockerd", "")
-	long := strings.Repeat("x", control.MaxLine+10)
+	long := strings.Repeat("x", guest.MaxLine+10)
 	logs.push("diag", long)
 	waitFor(t, "first events and logs", func() bool {
 		return len(rec1.eventList()) == 1 && len(rec1.logList()) == 4
@@ -97,7 +99,7 @@ func TestControlChannel(t *testing.T) {
 	link.event(sandbox.RunnerEvent{Kind: "job.started", JobName: "build"})
 	logs.push("runner", "while the host was away")
 	rec2 := &recorder{}
-	host2, err := control.Listen(sock, control.GuestConfig{}, rec2, log)
+	host2, err := control.Listen(sock, nil, rec2, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func TestControlChannel(t *testing.T) {
 		t.Errorf("events after the restart = %+v, want %+v", ev, want)
 	}
 	waitFor(t, "the log line from the outage", func() bool {
-		return slices.ContainsFunc(rec2.logList(), func(l control.LogLine) bool { return l.Text == "while the host was away" })
+		return slices.ContainsFunc(rec2.logList(), func(l guest.LogLine) bool { return l.Text == "while the host was away" })
 	})
 	// HTTP requests travel as plain text inside yamux frames.
 	if n := strings.Count(sent.String(), "GET /v1/config "); n != 1 {
@@ -170,7 +172,7 @@ func TestControlChannel(t *testing.T) {
 func TestDialHostTCPAfterRestart(t *testing.T) {
 	sock := socketPath(t)
 	log := slog.New(slog.DiscardHandler)
-	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, sock) },
+	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, filepath.Dir(sock)) },
 		log, newLogQueue(1<<20), guestMux(newHostRequests(), newShellServer(log)))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -179,7 +181,7 @@ func TestDialHostTCPAfterRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		host, err := tcp.Listen(filepath.Dir(sock), control.GuestConfig{SandboxID: "01jbz3x0000000000000000000"}, &recorder{}, log)
+		host, err := tcp.Listen(filepath.Dir(sock), "01jbz3x0000000000000000000", nil, &recorder{}, log)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -238,7 +240,7 @@ func socketPath(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	return filepath.Join(dir, "control.sock")
+	return filepath.Join(dir, guest.SocketFile)
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -261,14 +263,14 @@ func TestShutdownWhileWaitingForConfig(t *testing.T) {
 	var host *control.Server
 	shutdown := make(chan error, 1)
 	rec := &recorder{lost: func() { shutdown <- host.Shutdown(context.Background()) }}
-	host, err := control.Listen(sock, control.GuestConfig{SandboxID: "s"}, rec, log)
+	host, err := control.Listen(sock, nil, rec, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer host.Close()
 
 	req := newHostRequests()
-	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, sock) },
+	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, filepath.Dir(sock)) },
 		log, newLogQueue(1<<20), guestMux(req, newShellServer(log)))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -305,7 +307,7 @@ func TestShutdownWhileWaitingForConfig(t *testing.T) {
 type recorder struct {
 	mu     sync.Mutex
 	events []sandbox.RunnerEvent
-	logs   []control.LogLine
+	logs   []guest.LogLine
 	lost   func() // OnLostConfig, if set
 }
 
@@ -321,7 +323,7 @@ func (r *recorder) OnLostConfig() {
 	}
 }
 
-func (r *recorder) OnLog(l control.LogLine) {
+func (r *recorder) OnLog(l guest.LogLine) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.logs = append(r.logs, l)
@@ -333,7 +335,7 @@ func (r *recorder) eventList() []sandbox.RunnerEvent {
 	return slices.Clone(r.events)
 }
 
-func (r *recorder) logList() []control.LogLine {
+func (r *recorder) logList() []guest.LogLine {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.logs)

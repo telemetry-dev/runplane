@@ -11,7 +11,6 @@ import (
 	"github.com/moby/moby/api/types/mount"
 
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -102,65 +101,6 @@ func TestCreateOptionsDevMode(t *testing.T) {
 	}
 	if !slices.Equal(h.ExtraHosts, []string{"host.docker.internal:host-gateway"}) {
 		t.Errorf("extra hosts = %v, want host.docker.internal on the Docker host", h.ExtraHosts)
-	}
-}
-
-func TestGuestConfig(t *testing.T) {
-	const url = "http://10.213.0.1:8486"
-	cases := []struct {
-		name       string
-		settings   sandbox.Settings
-		patched    bool
-		env        map[string]string
-		wantEnv    map[string]string
-		wantMirror string
-	}{
-		{
-			name:       "cache and mirror",
-			settings:   sandbox.Settings{ActionsCache: true, RegistryMirror: true},
-			patched:    true,
-			env:        map[string]string{"FOO": "bar"},
-			wantEnv:    map[string]string{"FOO": "bar", "ACTIONS_RESULTS_URL": "http://10.213.0.1:8486/", "ACTIONS_CACHE_SERVICE_V2": "true"},
-			wantMirror: url,
-		},
-		{
-			name:     "unpatched runner keeps the GitHub cache",
-			settings: sandbox.Settings{ActionsCache: true},
-			env:      map[string]string{"FOO": "bar"},
-			wantEnv:  map[string]string{"FOO": "bar"},
-		},
-		{
-			name:     "cache off",
-			settings: sandbox.Settings{},
-			patched:  true,
-			wantEnv:  map[string]string{},
-		},
-		{
-			name:     "the spec env wins",
-			settings: sandbox.Settings{ActionsCache: true},
-			patched:  true,
-			env:      map[string]string{"ACTIONS_RESULTS_URL": "http://other/"},
-			wantEnv:  map[string]string{"ACTIONS_RESULTS_URL": "http://other/", "ACTIONS_CACHE_SERVICE_V2": "true"},
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			spec := testSpec
-			spec.Env = c.env
-			spec.Debug = true
-			got := guestConfig(spec, c.settings, image.Bundle{Patched: c.patched}, url)
-			if !maps.Equal(got.Env, c.wantEnv) {
-				t.Errorf("env = %v, want %v", got.Env, c.wantEnv)
-			}
-			if got.RegistryMirror != c.wantMirror {
-				t.Errorf("registry mirror = %q, want %q", got.RegistryMirror, c.wantMirror)
-			}
-			// The container mounts the bundle at /.runplane/runner.
-			if got.JITConfig != "jit" || got.TimeLimitSeconds != 3600 || !got.Debug || got.SandboxID != spec.ID ||
-				got.Hostname != "runplane-aaaaaaaa" || got.RunnerDir != "/.runplane/runner" {
-				t.Errorf("config = %+v", got)
-			}
-		})
 	}
 }
 

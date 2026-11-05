@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -18,7 +17,7 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
-	"github.com/runplane/runplane/internal/sandbox/netrules"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // runnerDir is where runplane-init mounts the runner drive in the guest.
@@ -41,7 +40,7 @@ func (d *Driver) Start(ctx context.Context, spec sandbox.Spec) error {
 	if err != nil {
 		return fmt.Errorf("start sandbox %s: %w", spec.ID, err)
 	}
-	runner, err := d.opts.RunnerDrive(ctx, spec.RunnerVersion, spec.Arch)
+	runner, patched, err := d.opts.RunnerDrive(ctx, spec.RunnerVersion, spec.Arch)
 	if err != nil {
 		return fmt.Errorf("start sandbox %s: %w", spec.ID, err)
 	}
@@ -66,7 +65,7 @@ func (d *Driver) Start(ctx context.Context, spec sandbox.Spec) error {
 		return err
 	}
 
-	cmd, err := d.launch(ctx, v, spec, settings, root, runner)
+	cmd, err := d.launch(ctx, v, spec, settings, root, runner, patched)
 	if err != nil {
 		d.abort(v, cmd)
 		return fmt.Errorf("start sandbox %s: %w", spec.ID, v.withConsole(err))
@@ -103,7 +102,7 @@ func (d *Driver) check(spec sandbox.Spec) error {
 
 // launch does the work of Start. It returns the jailer command once that
 // started, also with an error.
-func (d *Driver) launch(ctx context.Context, v *vm, spec sandbox.Spec, s sandbox.Settings, root, runner string) (*exec.Cmd, error) {
+func (d *Driver) launch(ctx context.Context, v *vm, spec sandbox.Spec, s sandbox.Settings, root, runner string, patched bool) (*exec.Cmd, error) {
 	dir := d.sandboxDir(v.id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create sandbox folder: %w", err)
@@ -131,8 +130,10 @@ func (d *Driver) launch(ctx context.Context, v *vm, spec sandbox.Spec, s sandbox
 	}
 	v.console = console
 	defer w.Close()
-	cfg := d.guestConfig(spec, v.lease, s)
-	if v.ctl, err = control.Listen(filepath.Join(chroot, controlSocket), cfg, v, d.log.With("sandbox", v.id)); err != nil {
+	// The services listen on the host end of the TAP, the gateway of the guest.
+	service := fmt.Sprintf("http://%s:%d", v.lease.Host, d.opts.ServicePort)
+	cfg := guest.NewConfig(spec, s, service, runnerDir, patched)
+	if v.ctl, err = control.Listen(filepath.Join(chroot, controlSocket), &cfg, v, d.log.With("sandbox", v.id)); err != nil {
 		return nil, err
 	}
 
@@ -160,40 +161,6 @@ func (d *Driver) launch(ctx context.Context, v *vm, spec sandbox.Spec, s sandbox
 	defer cancel()
 	return cmd, v.api.boot(ctx, spec, v.lease, s.BandwidthMbps)
 }
-
-// guestConfig is what runplane-init gets on the control channel.
-func (d *Driver) guestConfig(spec sandbox.Spec, lease netrules.Lease, s sandbox.Settings) control.GuestConfig {
-	service := fmt.Sprintf("http://%s:%d", lease.Host, d.opts.ServicePort)
-	env := map[string]string{}
-	if s.ActionsCache {
-		maps.Copy(env, d.opts.CacheEnv(service))
-	}
-	maps.Copy(env, spec.Env)
-	var mirror string
-	if s.RegistryMirror {
-		mirror = service
-	}
-	var dns []string
-	for _, a := range s.IPv4DNS() {
-		dns = append(dns, a.String())
-	}
-	return control.GuestConfig{
-		SandboxID:        spec.ID,
-		Hostname:         hostname(spec.ID),
-		JITConfig:        spec.JITConfig,
-		RunnerDir:        runnerDir,
-		Env:              env,
-		DNS:              dns,
-		RegistryMirror:   mirror,
-		TimeLimitSeconds: int(spec.TimeLimit / time.Second),
-		Debug:            spec.Debug,
-	}
-}
-
-// hostname uses the random end of the ULID, as the runner name and the
-// container mode host name do. The start is the time, which sandboxes of
-// the same second share.
-func hostname(id string) string { return "runplane-" + id[max(len(id)-8, 0):] }
 
 // waitForSocket waits until the Firecracker API socket takes connections.
 func waitForSocket(ctx context.Context, path string, exited <-chan struct{}) error {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestShell(t *testing.T) {
 	}
 	sock := socketPath(t)
 	log := slog.New(slog.DiscardHandler)
-	host, err := control.Listen(sock, control.GuestConfig{}, &recorder{}, log)
+	host, err := control.Listen(sock, nil, &recorder{}, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +32,7 @@ func TestShell(t *testing.T) {
 	shells := newShellServer(log)
 	acct := account{name: "root", home: t.TempDir(), shell: "/bin/sh"}
 	shells.setStart(shellStarter(acct, newReaper()))
-	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, sock) },
+	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, filepath.Dir(sock)) },
 		log, newLogQueue(1<<20), guestMux(newHostRequests(), shells))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

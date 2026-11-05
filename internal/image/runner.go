@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/update"
 )
 
@@ -68,11 +69,9 @@ type Bundle struct {
 }
 
 // Ensure makes the runner of version and arch ready in the runners folder. It
-// downloads the release, checks its SHA-256, extracts it, and patches
-// bin/Runner.Worker.dll: each UTF-16 "ACTIONS_RESULTS_URL" becomes
-// "ACTIONS_RESULTS_ORL". Then the runner writes the GitHub value to that
-// name, and ACTIONS_RESULTS_URL from the .env file stays. If the patch does
-// not apply, the bundle stays unpatched and jobs use the GitHub cache.
+// downloads the release, checks its SHA-256, extracts it, and applies the
+// runner patch (guest.Patch). If the patch does not apply, the bundle stays
+// unpatched and jobs use the GitHub cache.
 func (b *Bundles) Ensure(ctx context.Context, version, arch string) (Bundle, error) {
 	if !versionRE.MatchString(version) || !slices.Contains(runnerArches, arch) {
 		return Bundle{}, fmt.Errorf("ensure runner: bad version %q or arch %q", version, arch)
@@ -166,7 +165,7 @@ func (b *Bundles) fetch(ctx context.Context, version, arch, dir string) (stamp, 
 	if err := extract(archive, root); err != nil {
 		return stamp{}, err
 	}
-	n, err := patchWorker(filepath.Join(root, "bin", "Runner.Worker.dll"))
+	n, err := guest.Patch(root)
 	if err != nil {
 		return stamp{}, err
 	}
@@ -365,55 +364,6 @@ func openDirs(dir string) error {
 		}
 		return os.Chmod(p, 0o755)
 	})
-}
-
-var (
-	resultsURL = utf16le("ACTIONS_RESULTS_URL")
-	resultsORL = utf16le("ACTIONS_RESULTS_ORL")
-)
-
-// patchWorker applies patchResultsURL to the file and returns the count.
-// A missing file has no match.
-func patchWorker(file string) (int, error) {
-	b, err := os.ReadFile(file)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	n := patchResultsURL(b)
-	if n == 0 {
-		return 0, nil
-	}
-	if err := os.WriteFile(file, b, 0o644); err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
-// patchResultsURL changes each UTF-16LE "ACTIONS_RESULTS_URL" in b to
-// "ACTIONS_RESULTS_ORL" in place, and returns the count. .NET keeps string
-// literals in UTF-16LE.
-func patchResultsURL(b []byte) int {
-	n := 0
-	for i := 0; ; n++ {
-		j := bytes.Index(b[i:], resultsURL)
-		if j < 0 {
-			return n
-		}
-		i += j
-		i += copy(b[i:], resultsORL)
-	}
-}
-
-// utf16le encodes an ASCII string as UTF-16LE.
-func utf16le(s string) []byte {
-	b := make([]byte, 0, 2*len(s))
-	for i := range len(s) {
-		b = append(b, s[i], 0)
-	}
-	return b
 }
 
 // Prune removes the bundles of each arch except the two newest and the
