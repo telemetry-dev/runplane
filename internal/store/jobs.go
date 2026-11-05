@@ -199,8 +199,9 @@ func scanJob(sc scanner) (Job, error) {
 
 // UpsertJob records a job message. It is safe to call again with the same
 // message. The state only moves forward (queued, assigned, running,
-// completed), and a completed job keeps its state, result, and finish time.
-// A message can still fill fields that the job does not have yet.
+// completed), and a completed job keeps its state, result, and finish time,
+// except in the two cases that mergeJob describes. A message can still fill
+// fields that the job does not have yet.
 func (s *Store) UpsertJob(ctx context.Context, m JobMessage) (Job, error) {
 	if stateRank(m.State) < 0 {
 		return Job{}, fmt.Errorf("upsert job: unknown state %q", m.State)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,8 +55,25 @@ func TestReplaceRepositories(t *testing.T) {
 	if app, err := s.GetGitHubApp(ctx); err != nil || app.ID != "b" {
 		t.Fatalf("app = %q, %v", app.ID, err)
 	}
-	if n, _ := s.CountRepositories(ctx); n != 0 {
-		t.Fatalf("repositories of the old app = %d, want 0", n)
+	if got := names(); len(got) != 0 {
+		t.Fatalf("repositories of the old app = %v, want none", got)
+	}
+}
+
+func TestDashboardURL(t *testing.T) {
+	tests := []struct {
+		name string
+		s    Settings
+		want string
+	}{
+		{"the public URL wins", Settings{PublicURL: "https://ci.example.com", Domain: "runplane.example.com"}, "https://ci.example.com"},
+		{"the domain gets HTTPS", Settings{Domain: "runplane.example.com"}, "https://runplane.example.com"},
+		{"no URL", Settings{}, ""},
+	}
+	for _, tt := range tests {
+		if got := tt.s.DashboardURL(); got != tt.want {
+			t.Errorf("%s: DashboardURL() = %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
 
@@ -72,17 +90,31 @@ func TestSetDefaultImage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	defaultImage := func() string {
+		t.Helper()
+		list, err := s.ListImages(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, img := range list {
+			if img.IsDefault {
+				ids = append(ids, img.ID)
+			}
+		}
+		return strings.Join(ids, ",")
+	}
 	if err := s.SetDefaultImage(ctx, "i2"); err != nil {
 		t.Fatal(err)
 	}
-	if img, err := s.GetDefaultImage(ctx); err != nil || img.ID != "i2" {
-		t.Fatalf("default = %q, %v", img.ID, err)
+	if id := defaultImage(); id != "i2" {
+		t.Fatalf("default = %q", id)
 	}
 	if err := s.SetDefaultImage(ctx, "missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown image: err = %v", err)
 	}
-	if img, _ := s.GetDefaultImage(ctx); img.ID != "i2" {
-		t.Fatalf("a failed change lost the default: %q", img.ID)
+	if id := defaultImage(); id != "i2" {
+		t.Fatalf("a failed change lost the default: %q", id)
 	}
 
 	// A pool with a deleted image changes to the default image.
@@ -93,7 +125,7 @@ func TestSetDefaultImage(t *testing.T) {
 	if err := s.DeleteImage(ctx, "i1"); err != nil {
 		t.Fatal(err)
 	}
-	if p, err := s.GetPoolByLabel(ctx, "RunPlane"); err != nil || p.ImageID != "" {
+	if p, err := s.GetPool(ctx, "p"); err != nil || p.ImageID != "" {
 		t.Fatalf("pool image = %q, %v; want empty", p.ImageID, err)
 	}
 }

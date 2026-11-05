@@ -29,8 +29,10 @@ func TestSlowSubscriberDoesNotBlock(t *testing.T) {
 	if e := <-slow; e.Data != 0 {
 		t.Errorf("slow got %v, want the first event", e.Data)
 	}
-	if n := b.Dropped(); n != 4 {
-		t.Errorf("dropped = %d, want 4", n)
+	select {
+	case e := <-slow:
+		t.Errorf("slow got %v, want the other events dropped", e.Data)
+	default:
 	}
 	for i := range 5 {
 		if e := <-fast; e.Data != i || e.Type != JobState {
@@ -47,9 +49,6 @@ func TestCancel(t *testing.T) {
 	b.Publish(Event{Type: SandboxState})
 	if _, ok := <-ch; ok {
 		t.Fatal("the channel is open after cancel")
-	}
-	if b.Dropped() != 0 {
-		t.Fatal("an event was sent to a cancelled subscriber")
 	}
 }
 

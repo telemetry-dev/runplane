@@ -2,11 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"strings"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -118,7 +114,7 @@ func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*struct
 	if users > 0 {
 		return nil, huma.Error409Conflict("The setup is done.")
 	}
-	ok, err := h.setupCodeValid(ctx, in.Code)
+	ok, err := h.d.Auth.SetupCodeValid(ctx, in.Code)
 	if err != nil {
 		return nil, h.internal(err)
 	}
@@ -140,18 +136,4 @@ func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*struct
 		}
 	}
 	return &struct{ Body HostCheck }{hc}, nil
-}
-
-// setupCodeValid reports whether code is an unused setup code that has not
-// expired. auth has no method that checks a code without using it, so this
-// repeats its hash: SHA-256 in hex of the code in uppercase without dashes
-// and spaces.
-func (h *Handler) setupCodeValid(ctx context.Context, code string) (bool, error) {
-	code = strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(strings.TrimSpace(code)))
-	sum := sha256.Sum256([]byte(code))
-	var n int
-	err := h.d.Store.DB().QueryRowContext(ctx,
-		"SELECT count(*) FROM setup_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
-		hex.EncodeToString(sum[:]), time.Now().UnixMilli()).Scan(&n)
-	return n > 0, err
 }

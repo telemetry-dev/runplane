@@ -54,7 +54,7 @@ type harness struct {
 	cfg      config.Config
 }
 
-func newHarness(t *testing.T, local *fakeNode, opts ...func(*Config)) *harness {
+func newHarness(t *testing.T, local *fakeNode) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "runplane.db"))
@@ -83,14 +83,10 @@ func newHarness(t *testing.T, local *fakeNode, opts ...func(*Config)) *harness {
 		t: t, st: st, bus: &events.Bus{}, local: local, notes: &notes{}, fp: fp, cfg: cfg,
 		clock: &clock{at: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)},
 	}
-	c := Config{
+	h.f = New(Config{
 		Store: st, Bus: h.bus, Log: testLogger(t, "fleet"), Config: cfg, Local: local, AgentFingerprint: fp,
 		CapacityChanged: func() { h.capacity.Add(1) }, Notifier: h.notes, Now: h.clock.now,
-	}
-	for _, opt := range opts {
-		opt(&c)
-	}
-	h.f = New(c)
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &agent.Listener{Cert: cert, Authenticate: h.f.Authenticate, OnSession: h.f.AddSession, Logger: testLogger(t, "listener")}
 	served := make(chan struct{})

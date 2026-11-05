@@ -2,7 +2,7 @@ import { cx } from '~/lib/cx'
 import { CopyButton } from './copy-button'
 
 /** A line of code. `added` and `removed` lines get a + or − marker and a highlighted row. */
-export type CodeLine = string | { text: string; change?: 'added' | 'removed'; highlight?: boolean }
+export type CodeLine = string | { text: string; change?: 'added' | 'removed' }
 
 type CodeBlockProps = {
   /** The code, as one string or as lines. */
@@ -41,7 +41,7 @@ export function CodeBlock({ code, title, lineNumbers = false, copyable = false, 
             className={cx(
               'flex gap-s',
               title && 'px-m',
-              (line.change || line.highlight) && 'bg-(--code-highlight,var(--neutral-3))',
+              line.change && 'bg-(--code-highlight,var(--neutral-3))',
               // A diff dims its unchanged lines next to the added ones.
               line.change === 'removed' ? 'text-neutral-6' : diff && !line.change ? 'text-neutral-8' : 'text-neutral-10',
             )}

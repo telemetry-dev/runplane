@@ -292,8 +292,19 @@ func TestSessionConflictIsClearError(t *testing.T) {
 func TestSuspendedInstallationPausesListener(t *testing.T) {
 	e, f, row := listeningEnv(t)
 	ctx := context.Background()
+	suspend := func(at *time.Time) {
+		t.Helper()
+		inst, err := e.st.GetInstallation(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inst.SuspendedAt = at
+		if err := e.st.UpsertInstallation(ctx, inst); err != nil {
+			t.Fatal(err)
+		}
+	}
 	now := time.Now()
-	e.st.SetInstallationSuspended(ctx, 10, &now)
+	suspend(&now)
 	e.svc.reconcileNow(ctx)
 
 	got, err := e.st.GetScaleSet(ctx, row.ID)
@@ -307,7 +318,7 @@ func TestSuspendedInstallationPausesListener(t *testing.T) {
 		t.Errorf("sessions = %v, scale sets = %d; want the session closed and the scale set kept", st.sessions, len(st.sets))
 	}
 
-	e.st.SetInstallationSuspended(ctx, 10, nil)
+	suspend(nil)
 	e.svc.reconcileNow(ctx)
 	if again := waitListening(t, e); again.GitHubID != row.GitHubID {
 		t.Errorf("github_id = %d after the suspension, want %d", again.GitHubID, row.GitHubID)

@@ -29,7 +29,7 @@ type bridgeNet struct {
 func (d *Driver) ensureNetwork(ctx context.Context) (bridgeNet, error) {
 	res, err := d.docker.NetworkInspect(ctx, networkName, client.NetworkInspectOptions{})
 	if cerrdefs.IsNotFound(err) {
-		subnet := d.opts.Subnet.Masked()
+		subnet := defaultSubnet
 		gateway := subnet.Addr().Next()
 		_, err = d.docker.NetworkCreate(ctx, networkName, client.NetworkCreateOptions{
 			Driver: "bridge",

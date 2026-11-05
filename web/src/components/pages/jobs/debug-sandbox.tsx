@@ -3,11 +3,11 @@ import { TerminalIcon } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import type { Schemas } from '~/api/client'
 import { CodeBlock } from '~/components/app/code-block'
+import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogPopup, DialogTrigger } from '~/components/ui/dialog'
 import { Spinner } from '~/components/ui/spinner'
 import { formatDuration } from '~/lib/format'
-import { settingsQuery } from './job-queries'
 
 // xterm is large; load it when a terminal opens.
 const SandboxTerminal = lazy(() => import('./sandbox-terminal'))

@@ -187,11 +187,10 @@ type fakeNode struct {
 	driver *fakeDriver
 	stats  chan host.Stats
 
-	mu         sync.Mutex
-	settings   []sandbox.Settings
-	updates    []string
-	gcKeeps    [][]string
-	pruneKeeps [][]string
+	mu       sync.Mutex
+	settings []sandbox.Settings
+	updates  []string
+	gcKeeps  [][]string
 }
 
 var testInfo = host.Info{
@@ -239,12 +238,7 @@ func (n *fakeNode) GCImages(_ context.Context, keep []string) error {
 	return nil
 }
 
-func (n *fakeNode) PruneRunners(_ context.Context, keep []string) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.pruneKeeps = append(n.pruneKeeps, keep)
-	return nil
-}
+func (n *fakeNode) PruneRunners(context.Context, []string) error { return nil }
 
 var testMirror = mirror.Stats{Hits: 41, Misses: 3, HitBytes: 9 << 30, MissBytes: 700 << 20, SizeBytes: 12 << 30}
 

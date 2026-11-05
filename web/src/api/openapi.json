@@ -641,7 +641,7 @@
             "type": "array"
           },
           "server_addresses": {
-            "description": "Public IP addresses of this server, for the DNS record. Empty when runplane cannot find one, for example behind NAT.",
+            "description": "Public IP addresses of this server for the DNS record, IPv4 first. Empty when runplane cannot find one, for example behind NAT.",
             "items": {
               "type": "string"
             },
@@ -2776,7 +2776,7 @@
             "type": "integer"
           },
           "disk_kind": {
-            "description": "For example nvme, ssd, or hdd.",
+            "description": "NVMe, SSD, HDD, or empty if unknown.",
             "type": "string"
           },
           "disk_percent": {

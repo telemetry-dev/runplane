@@ -39,17 +39,9 @@ func (e *APIError) Error() string {
 	return msg
 }
 
-func isStatus(err error, status ...int) bool {
+func isStatus(err error, status int) bool {
 	var e *APIError
-	if !errors.As(err, &e) {
-		return false
-	}
-	for _, s := range status {
-		if e.Status == s {
-			return true
-		}
-	}
-	return false
+	return errors.As(err, &e) && e.Status == status
 }
 
 // auth gives the Authorization header of a request.

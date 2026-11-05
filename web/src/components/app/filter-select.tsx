@@ -24,7 +24,7 @@ export function FilterSelect<T extends string>({ label, value, onValueChange, op
     [allLabel, options],
   )
   return (
-    <BaseSelect.Root items={items} value={value} onValueChange={(next) => onValueChange(next as T | null)}>
+    <BaseSelect.Root items={items} value={value} onValueChange={onValueChange}>
       <BaseSelect.Trigger
         aria-label={props['aria-label'] ?? label}
         className={cx(

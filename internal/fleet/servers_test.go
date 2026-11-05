@@ -196,6 +196,13 @@ func TestHostStats(t *testing.T) {
 	seen := watch(t, h.bus)
 	id := h.localID()
 	at := h.clock.now().Add(-time.Second)
+	// With a domain and no public URL, the links go to the domain.
+	if _, err := h.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.Domain = "ci.example.com"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	sample := func(diskPercent float64) {
 		local.stats <- host.Stats{At: at, CPUPercent: 52, MemoryPercent: 38, DiskPercent: diskPercent, Resources: host.Resources{DiskBytes: 500e9}}
@@ -213,12 +220,12 @@ func TestHostStats(t *testing.T) {
 	sample(90)
 	waitFor(t, "the host.stats event", func() bool { return statsEvents() == 1 })
 	h.f.flushStats(ctx)
-	list, err := h.st.ListServerStats(ctx, id, at.Add(-time.Minute))
+	latest, err := h.st.LatestServerStats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].CPUPercent != 52 || list[0].MemoryPercent != 38 || list[0].DiskPercent != 90 {
-		t.Errorf("stored samples %+v, want the one sample", list)
+	if st := latest[id]; st.CPUPercent != 52 || st.MemoryPercent != 38 || st.DiskPercent != 90 {
+		t.Errorf("stored sample %+v, want the one sample", st)
 	}
 
 	// 10% free is below the 15% minimum. A second low sample sends nothing;
@@ -232,6 +239,9 @@ func TestHostStats(t *testing.T) {
 	for _, e := range h.notes.events() {
 		if e.Type != notify.DiskLow || e.Data["server_id"] != id {
 			t.Errorf("notification %+v, want disk.low for %s", e, id)
+		}
+		if want := "https://ci.example.com/servers/" + id; e.URL != want {
+			t.Errorf("notification link %q, want %q", e.URL, want)
 		}
 		free = append(free, e.Data["free_percent"].(float64))
 	}
@@ -345,7 +355,7 @@ func TestUpdateAgentOnConnect(t *testing.T) {
 		agentNode.updates = nil
 		agentNode.mu.Unlock()
 		n := &node{Node: agentNode, id: tt.id, version: tt.agent}
-		if h.f.beginUpdate(n, false) {
+		if h.f.beginUpdate(n.id, n.version, false) {
 			h.f.runUpdate(ctx, n)
 		}
 		agentNode.mu.Lock()

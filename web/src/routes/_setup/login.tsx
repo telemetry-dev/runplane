@@ -35,7 +35,7 @@ function LoginPage() {
   const password = useRef<HTMLInputElement>(null)
   const login = $api.useMutation('post', '/api/session', {
     onSuccess: async (user) => {
-      queryClient.setQueryData(sessionQuery.queryKey, user ?? null)
+      queryClient.setQueryData(sessionQuery.queryKey, user)
       const path = safeRedirectPath(search.redirect)
       // The GitHub callbacks are API routes, which the router cannot open.
       if (path.startsWith('/api/')) window.location.assign(path)

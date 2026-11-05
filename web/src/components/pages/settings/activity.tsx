@@ -9,14 +9,16 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { Avatar } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
+import { Skeleton } from '~/components/ui/skeleton'
 import { Tooltip } from '~/components/ui/tooltip'
 import { auditActor, auditChange, auditTarget, auditTime, type AuditEntry } from './audit-format'
 import { fullDateTime } from './format'
 import { auditQuery } from './members-api'
-import { Bar, LoadError, SettingsSection } from './parts'
+import { LoadError, SettingsSection } from './parts'
 
 /** The Activity section of Settings · Members: the audit log in pages, newest first. For admins. */
 export function Activity() {
@@ -92,7 +94,7 @@ function AuditRow({ entry, target }: { entry: AuditEntry; target: boolean }) {
       {target && (
         <DataTableCell>
           {!object ? (
-            <span className="text-neutral-6">—</span>
+            <None />
           ) : object.label ? (
             <RunnerLabel className="leading-s">{object.name}</RunnerLabel>
           ) : (
@@ -108,15 +110,15 @@ function SkeletonRows({ target }: { target: boolean }) {
   return Array.from({ length: 3 }, (_, index) => (
     <DataTableRow key={index}>
       <DataTableCell>
-        <Bar className="my-[3px] h-[12px] w-[64px] rounded-xs" />
+        <Skeleton className="my-[3px] h-[12px] w-[64px]" />
       </DataTableCell>
       <DataTableCell className="gap-s">
-        <Bar className="size-[24px] rounded-full" />
-        <Bar className="my-[3px] h-[12px] w-[240px] max-w-full rounded-xs" />
+        <Skeleton className="size-[24px] rounded-full" />
+        <Skeleton className="my-[3px] h-[12px] w-[240px] max-w-full" />
       </DataTableCell>
       {target && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[80px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[80px]" />
         </DataTableCell>
       )}
     </DataTableRow>

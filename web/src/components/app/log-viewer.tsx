@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { IconButton } from '~/components/ui/button'
 import { SearchInput } from '~/components/ui/input'
 import { cx } from '~/lib/cx'
-import { parseAnsi, type AnsiColor, type AnsiStyle } from './ansi'
+import { isPlain, parseAnsi, type AnsiColor, type AnsiStyle } from './ansi'
 import { findLines, groupsWithProblems, markSpans, matchRanges, parseLog, visibleLines, type LogLine, type ParsedLog } from './log'
 
 type LogViewerProps = {
@@ -298,7 +298,7 @@ function LineText({ line, query }: { line: LogLine; query: string }) {
 }
 
 function ansiCss(style: AnsiStyle, withColor: boolean): CSSProperties | undefined {
-  if (Object.keys(style).length === 0) return undefined
+  if (isPlain(style)) return undefined
   return {
     color: withColor && style.fg !== undefined ? ansiColor(style.fg) : undefined,
     // A tint of the color keeps the text on it readable in both modes.

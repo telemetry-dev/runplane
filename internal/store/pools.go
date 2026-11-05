@@ -56,15 +56,6 @@ func (s *Store) GetPool(ctx context.Context, id string) (Pool, error) {
 	return p, nil
 }
 
-// GetPoolByLabel matches the label without regard to case, as GitHub does.
-func (s *Store) GetPoolByLabel(ctx context.Context, label string) (Pool, error) {
-	p, err := scanPool(s.r.QueryRowContext(ctx, "SELECT "+poolCols+" FROM pools WHERE label = ?", label))
-	if err != nil {
-		return Pool{}, fmt.Errorf("get pool: %w", dbErr(err))
-	}
-	return p, nil
-}
-
 func (s *Store) ListPools(ctx context.Context) ([]Pool, error) {
 	rows, err := s.r.QueryContext(ctx, "SELECT "+poolCols+" FROM pools ORDER BY created_at, id")
 	list, err := scanAll(rows, err, scanPool)

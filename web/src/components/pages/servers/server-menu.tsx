@@ -9,7 +9,7 @@ import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } f
 import { toastManager } from '~/components/ui/toast'
 import { DoctorDialog } from './doctor-dialog'
 import { dropServer, updateServer } from './queries'
-import type { Server } from './server-info'
+import { removeDescription, type Server } from './server-info'
 import { UpdateAgentItem } from './update-agent-item'
 
 /** The ⋯ menu of a server row: Open, Drain or Resume, Run doctor, Update agent, Remove. For admins only. */
@@ -97,10 +97,4 @@ function RemoveDialog({ server, open, onOpenChange }: RemoveDialogProps) {
       </AlertDialogPopup>
     </AlertDialog>
   )
-}
-
-function removeDescription(runningJobs: number): string {
-  if (runningJobs === 0) return 'runplane stops its sandboxes and disconnects the agent.'
-  const jobs = runningJobs === 1 ? 'Its running job is' : `Its ${runningJobs} running jobs are`
-  return `${jobs} cancelled, and runplane disconnects the agent.`
 }

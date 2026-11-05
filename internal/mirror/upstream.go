@@ -19,8 +19,6 @@ import (
 type upstream struct {
 	base   string // for example https://registry-1.docker.io
 	client *http.Client
-	user   string
-	pass   string
 
 	mu     sync.Mutex
 	tokens map[string]bearer // by repository name
@@ -81,7 +79,7 @@ func (u *upstream) cachedToken(name string) string {
 }
 
 // fetchToken gets a pull token for name from the realm of the Bearer
-// challenge, with the Docker Hub credentials if they are set.
+// challenge.
 func (u *upstream) fetchToken(ctx context.Context, challenge, name string) (string, error) {
 	params, ok := parseChallenge(challenge)
 	if !ok || params["realm"] == "" {
@@ -101,9 +99,6 @@ func (u *upstream) fetchToken(ctx context.Context, challenge, name string) (stri
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, realm.String(), nil)
 	if err != nil {
 		return "", fmt.Errorf("get token: %w", err)
-	}
-	if u.user != "" {
-		req.SetBasicAuth(u.user, u.pass)
 	}
 	resp, err := u.client.Do(req)
 	if err != nil {

@@ -1,6 +1,6 @@
 // Package firecracker is the VM mode driver: each sandbox is a Firecracker
 // microVM in the jailer, with its own TAP device, scratch disk, and vsock
-// control channel (docs/architecture.md section 4).
+// control channel.
 //
 // Each VM operates in its own systemd scope, so VMs continue when runplane
 // restarts. New finds them again and listens on their control sockets.
@@ -41,7 +41,6 @@ type Options struct {
 	// JailerUser has the ID ranges of the VMs in /etc/subuid and
 	// /etc/subgid. The default is runplane-vm.
 	JailerUser  string
-	TapSubnet   netip.Prefix
 	ServicePort int // cache server and registry mirror on the gateway of each VM; default 8486
 
 	// RootDisk returns the ext4 root disk of a ready image.
@@ -140,9 +139,6 @@ func withDefaults(opts Options) Options {
 	set(&opts.Jailer, "/usr/local/bin/jailer")
 	set(&opts.Kernel, filepath.Join(opts.DataDir, "kernel", "vmlinux"))
 	set(&opts.JailerUser, "runplane-vm")
-	if !opts.TapSubnet.IsValid() {
-		opts.TapSubnet = netrules.DefaultTapSubnet
-	}
 	if opts.ServicePort == 0 {
 		opts.ServicePort = 8486
 	}
@@ -162,7 +158,7 @@ func settingsDefaults(s sandbox.Settings) sandbox.Settings {
 
 // newDriver makes a driver that has not touched the host yet.
 func newDriver(opts Options, ids idRange, sys hostOps) (*Driver, error) {
-	taps, err := netrules.NewAllocator(opts.TapSubnet)
+	taps, err := netrules.NewAllocator(netrules.DefaultTapSubnet)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +335,7 @@ func (d *Driver) netConfig(s sandbox.Settings) netrules.Config {
 		d.log.Warn("sandboxes use only the IPv4 DNS servers", "servers", s.DNS)
 	}
 	return netrules.Config{
-		TapSubnet:   d.opts.TapSubnet,
+		TapSubnet:   netrules.DefaultTapSubnet,
 		ServicePort: d.opts.ServicePort,
 		DNS:         dns,
 		Allowlist:   s.EgressAllowlist,

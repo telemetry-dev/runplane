@@ -91,11 +91,8 @@ type Options struct {
 	// CgroupParent of the containers. Empty means runplane.slice in
 	// container mode and the Docker default in dev mode.
 	CgroupParent string
-	// Subnet of the runplane network when the driver makes it. Zero means
-	// 10.213.0.0/16.
-	Subnet   netip.Prefix
-	Settings sandbox.Settings
-	Logger   *slog.Logger
+	Settings     sandbox.Settings
+	Logger       *slog.Logger
 }
 
 // owned limits a Docker filter to the objects of this driver.
@@ -169,9 +166,6 @@ func New(opts Options) (*Driver, error) {
 	}
 	if opts.CgroupParent == "" && opts.Mode == sandbox.ModeContainer {
 		opts.CgroupParent = "runplane.slice"
-	}
-	if !opts.Subnet.IsValid() {
-		opts.Subnet = defaultSubnet
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Driver{

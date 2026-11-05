@@ -1,3 +1,5 @@
+import { formatDate } from '~/lib/format'
+
 // Date and time formats of the settings designs that ~/lib/format does not have.
 
 const minute = 60_000
@@ -16,7 +18,7 @@ export function relativeTime(time: string | Date, now = Date.now()): string {
   const hours = Math.round(distance / hour)
   const days = Math.round(distance / day)
   if (minutes === 0) return 'just now'
-  if (days >= 30) return dateWithYear.format(new Date(time))
+  if (days >= 30) return formatDate(time)
 
   const amount = minutes < 60 ? `${minutes} min` : hours < 24 ? plural(hours, 'hour') : plural(days, 'day')
   return diff < 0 ? `${amount} ago` : `in ${amount}`
@@ -36,7 +38,6 @@ function plural(n: number, unit: string): string {
   return `${n} ${unit}${n === 1 ? '' : 's'}`
 }
 
-const dateWithYear = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 const dateTime = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 const full = new Intl.DateTimeFormat('en-US', {
   month: 'short',

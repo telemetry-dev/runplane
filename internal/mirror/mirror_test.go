@@ -59,30 +59,6 @@ func TestPullCachesManifestsAndBlobs(t *testing.T) {
 	}
 }
 
-func TestCredentialsReachTokenEndpoint(t *testing.T) {
-	tests := []struct {
-		name       string
-		pass       string
-		wantStatus int
-	}{
-		{"right token", "dckr_pat_right", 200},
-		{"wrong token", "dckr_pat_wrong", 502},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hub := newHub(t)
-			hub.user, hub.pass = "ci", "dckr_pat_right"
-			hub.push("library/alpine", "latest", "a")
-			_, url := newMirror(t, hub, Config{Username: "ci", Token: tt.pass})
-
-			resp, _ := get(t, url+"/v2/library/alpine/manifests/latest")
-			if resp.StatusCode != tt.wantStatus {
-				t.Errorf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
-			}
-		})
-	}
-}
-
 func TestCorruptBlobIsNotCached(t *testing.T) {
 	hub := newHub(t)
 	img := hub.push("library/alpine", "latest", "a")
@@ -396,10 +372,7 @@ func TestParsePath(t *testing.T) {
 // fakeHub is a registry with the token flow of Docker Hub: a request without
 // a pull token for its repository gets 401 and a Bearer challenge.
 type fakeHub struct {
-	t    *testing.T
 	srv  *httptest.Server
-	user string // if set, the token endpoint wants these credentials
-	pass string
 	gate chan struct{} // if set, a blob response waits for it after half of the body
 
 	mu        sync.Mutex
@@ -422,7 +395,6 @@ type testImage struct {
 
 func newHub(t *testing.T) *fakeHub {
 	h := &fakeHub{
-		t:         t,
 		tags:      map[string]string{},
 		manifests: map[string]fakeManifest{},
 		blobs:     map[string][]byte{},
@@ -566,12 +538,6 @@ func (h *fakeHub) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *fakeHub) serveToken(w http.ResponseWriter, r *http.Request) {
-	if h.user != "" {
-		if user, pass, ok := r.BasicAuth(); !ok || user != h.user || pass != h.pass {
-			http.Error(w, "bad credentials", http.StatusUnauthorized)
-			return
-		}
-	}
 	if r.URL.Query().Get("service") != "registry.docker.io" {
 		http.Error(w, "unknown service", http.StatusBadRequest)
 		return

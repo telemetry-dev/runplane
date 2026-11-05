@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "mock-api": "node scripts/mock-api.mjs 8499",
     "build": "vite build",
     "build:embed": "pnpm build && node scripts/embed.mjs",
     "typecheck": "tsc --noEmit",

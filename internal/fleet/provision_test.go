@@ -201,7 +201,11 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	agentNode := newFakeNode("arm64")
 	agentNode.set(func(n *fakeNode) { n.digests["registry.example.com/app:2"] = "sha256:b001" })
 	_, agentID := h.connectAgent("arm-2", agentNode)
-	waitFor(t, "the image on the agent", func() bool { _, ok := h.f.Image(agentID, app); return ok })
+	waitFor(t, "the images on the agent", func() bool {
+		_, def := h.f.Image(agentID, "")
+		_, pool := h.f.Image(agentID, app)
+		return def && pool
+	})
 	err := h.st.InsertSandbox(ctx, store.Sandbox{
 		ID: ids.New(), PoolID: "p1", ServerID: id, Mode: sandbox.ModeContainer, State: sandbox.StateBusy,
 		ImageDigest: "sha256:in-use", CreatedAt: time.Now(),
@@ -282,14 +286,11 @@ func TestTaggedImagesArePulledAgainEachDay(t *testing.T) {
 		_, a := h.f.Image(id, app)
 		return d && a
 	})
-	count := func(ref string) int {
-		return len(slices.DeleteFunc(local.pulls(), func(r string) bool { return r != ref }))
-	}
 
 	h.clock.add(23 * time.Hour)
 	h.f.provision(ctx)
 	time.Sleep(50 * time.Millisecond)
-	if n := count("builtin:ubuntu-24.04"); n != 1 {
+	if n := countRef(local.pulls(), "builtin:ubuntu-24.04"); n != 1 {
 		t.Errorf("%d pulls of the default image after 23 hours, want 1", n)
 	}
 
@@ -308,7 +309,7 @@ func TestTaggedImagesArePulledAgainEachDay(t *testing.T) {
 	if b, _ := h.st.GetImageBuild(ctx, def, id); b.Status != store.BuildReady {
 		t.Errorf("default image build %q after a failed pull again, want ready", b.Status)
 	}
-	if n := count(pinnedRef); n != 1 {
+	if n := countRef(local.pulls(), pinnedRef); n != 1 {
 		t.Errorf("%d pulls of the image with a digest, want 1", n)
 	}
 }
@@ -322,7 +323,7 @@ func TestDefaultPoolFitsTheServer(t *testing.T) {
 		wantVCPU, wantMem int
 		wantMax           int
 	}{
-		{"12 threads and 64 GB, the BACKEND.md example", 11, 63488, 2, 8192, 5},
+		{"12 threads and 64 GB", 11, 63488, 2, 8192, 5},
 		{"8 vCPU and 16 GB", 7, 14336, 2, 4096, 3},
 		{"2 vCPU and 4 GB", 1, 2048, 1, 2048, 1},
 	}

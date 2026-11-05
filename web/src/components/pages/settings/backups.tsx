@@ -12,16 +12,18 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { StatusIcon } from '~/components/app/status-icon'
 import { Button, IconButton } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
+import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { Tooltip } from '~/components/ui/tooltip'
 import { formatBytes } from '~/lib/format'
 import { backupStatus, storedOn } from './backup-info'
 import { fullDateTime, shortDateTime } from './format'
-import { Bar, CardTitle, ErrorHint, LoadError, SettingRows, SettingsCard, SettingsSection } from './parts'
+import { CardTitle, ErrorHint, LoadError, SettingRows, SettingsCard, SettingsSection } from './parts'
 import { NumberSetting, SwitchSetting } from './setting-controls'
 import { showSaved, useFormErrors, useSaveSettings, type Settings } from './settings-api'
 
@@ -218,7 +220,7 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
       </DataTableCell>
       {shown.size && (
         <DataTableCell align="end" className="tabular-nums">
-          {backup.size_bytes > 0 ? formatBytes(backup.size_bytes) : <span className="text-neutral-6">—</span>}
+          {backup.size_bytes > 0 ? formatBytes(backup.size_bytes) : <None />}
         </DataTableCell>
       )}
       {shown.place && (
@@ -228,7 +230,7 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
               <span className="truncate">{place}</span>
             </ErrorHint>
           ) : (
-            <span className="truncate">{place || <span className="text-neutral-6">—</span>}</span>
+            <span className="truncate">{place || <None />}</span>
           )}
         </DataTableCell>
       )}
@@ -256,19 +258,19 @@ function SkeletonRows({ shown }: { shown: Shown }) {
   return Array.from({ length: 3 }, (_, index) => (
     <DataTableRow key={index}>
       <DataTableCell>
-        <Bar className="size-[16px] rounded-full" />
+        <Skeleton className="size-[16px] rounded-full" />
       </DataTableCell>
       <DataTableCell>
-        <Bar className="my-[3px] h-[12px] w-[96px] rounded-xs" />
+        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
       </DataTableCell>
       {shown.size && (
         <DataTableCell align="end">
-          <Bar className="my-[3px] h-[12px] w-[48px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[48px]" />
         </DataTableCell>
       )}
       {shown.place && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[112px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[112px]" />
         </DataTableCell>
       )}
       <DataTableCell />

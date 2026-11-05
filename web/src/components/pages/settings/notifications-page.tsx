@@ -7,6 +7,7 @@ import { CheckIcon } from '~/components/app/status-icon'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
+import { Skeleton } from '~/components/ui/skeleton'
 import { Switch } from '~/components/ui/switch'
 import { toastManager } from '~/components/ui/toast'
 import { ChannelDialog } from './channel-dialog'
@@ -14,7 +15,7 @@ import { ChannelTile } from './channel-icons'
 import { eventsSummary } from './channel-info'
 import { notificationsQuery, useSendTest } from './notifications-api'
 import { relativeTime } from './format'
-import { Bar, ErrorHint, LoadError, ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
+import { ErrorHint, LoadError, ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
 import { useIsAdmin } from './settings-api'
 
 type Channel = Schemas['NotificationChannel']
@@ -228,20 +229,20 @@ function SkeletonRows({ shown }: { shown: Shown }) {
     <DataTableRow key={index}>
       {shown.icon && (
         <DataTableCell>
-          <Bar className="size-[28px] rounded-s" />
+          <Skeleton className="size-[28px] rounded-s" />
         </DataTableCell>
       )}
       <DataTableCell className="flex-col items-start gap-0">
-        <Bar className="my-[3px] h-[12px] w-[96px] rounded-xs" />
-        <Bar className="my-[2px] h-[10px] w-[180px] max-w-full rounded-xs" />
+        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
+        <Skeleton className="my-[2px] h-[10px] w-[180px] max-w-full" />
       </DataTableCell>
       {shown.events && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[200px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[200px]" />
         </DataTableCell>
       )}
       <DataTableCell>
-        <Bar className="h-[18px] w-[32px] rounded-full" />
+        <Skeleton className="h-[18px] w-[32px] rounded-full" />
       </DataTableCell>
       <DataTableCell />
     </DataTableRow>

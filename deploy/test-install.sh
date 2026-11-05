@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs install.sh in Docker containers with --dry-run and checks what the
 # install would do on each distribution. CI runs it. It needs Docker and
-# network access (install.sh reads the Sysbox and Firecracker releases).
+# network access (install.sh reads the Sysbox releases).
 #
 # Usage: deploy/test-install.sh
 set -eu
@@ -40,7 +40,7 @@ main() {
 		"Wants=docker.service"
 	refuse "VM mode does not install Sysbox" "$out" "sysbox"
 	# A sysctl file would turn on IP forwarding before Docker starts, and
-	# Docker then keeps the FORWARD policy ACCEPT (docs/architecture.md, 4.4).
+	# Docker then keeps the FORWARD policy ACCEPT.
 	refuse "VM mode writes no sysctl file" "$out" "sysctl.d"
 
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 \

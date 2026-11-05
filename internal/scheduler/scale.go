@@ -158,10 +158,6 @@ func (h *scaleSet) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessag
 	if msg != nil {
 		if msg.Statistics != nil {
 			h.stats = statsOf(*msg.Statistics)
-			err := s.st.SetScaleSetStats(ctx, h.set.ID, h.stats, s.now())
-			if err != nil && !errors.Is(err, store.ErrNotFound) {
-				s.log.Warn("save scale set stats", "scale_set", h.set.ID, "err", err)
-			}
 		}
 		if err := h.handle(ctx, msg); err != nil {
 			return err

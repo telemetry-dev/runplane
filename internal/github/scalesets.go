@@ -103,8 +103,8 @@ func (s *Service) targets(ctx context.Context) (map[string]target, world, error)
 		return nil, w, err
 	}
 	// The scheduler takes a public job only if each runner of its pool is in
-	// a VM (BACKEND.md, Security). The setting mode does not tell that: each
-	// server runs its own mode, and a mode change applies after a restart.
+	// a VM. The setting mode does not tell that: each server runs its own
+	// mode, and a mode change applies after a restart.
 	public := settings.AllowPublicRepos
 	byInst := map[int64][]store.Repository{}
 	for _, inst := range insts {
@@ -160,7 +160,7 @@ func (s *Service) reconcileSets(ctx context.Context) error {
 	}
 	if _, err := s.creds(ctx); errors.Is(err, ErrNotConnected) {
 		for _, row := range rows {
-			s.stopListener(row.ID, true)
+			s.stopListener(row.ID)
 			if err := s.st.DeleteScaleSet(ctx, row.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return err
 			}
@@ -211,7 +211,7 @@ func (s *Service) reconcileSets(ctx context.Context) error {
 // is suspended, and renames it after a label change.
 func (s *Service) keepSet(ctx context.Context, row store.ScaleSet, t target) {
 	if t.inst.SuspendedAt != nil {
-		s.stopListener(row.ID, true)
+		s.stopListener(row.ID)
 		msg := "GitHub suspended the app installation on " + t.inst.AccountLogin +
 			". runplane listens again when the installation is active."
 		if row.Status != store.ScaleSetError || row.Error != msg {
@@ -249,7 +249,7 @@ func (s *Service) rename(ctx context.Context, l *setListener, row store.ScaleSet
 // the row. When runplane can no longer reach the scale set (installation or
 // repository gone), it only deletes the row.
 func (s *Service) removeSet(ctx context.Context, row store.ScaleSet, reachable bool) {
-	s.stopListener(row.ID, true)
+	s.stopListener(row.ID)
 	if reachable {
 		if row.Status != store.ScaleSetDeleting {
 			s.setStatus(ctx, row.ID, store.ScaleSetDeleting, "")

@@ -321,7 +321,6 @@ func (f *Fleet) node(id string) *node {
 	return f.nodes[id]
 }
 
-// connected returns the connected servers.
 func (f *Fleet) connected() []*node {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -402,12 +401,12 @@ func (f *Fleet) publishServer(ctx context.Context, id string) {
 func (f *Fleet) handleBus(e events.Event) {
 	switch e.Type {
 	case events.ServerState:
-		if v, ok := as[store.Server](e.Data); ok {
+		if v, ok := events.As[store.Server](e.Data); ok {
 			f.serverChanged(v)
 		}
 	case events.ImageState:
 		// The API sends the image row after a new image or a new default.
-		if _, ok := as[store.Image](e.Data); ok {
+		if _, ok := events.As[store.Image](e.Data); ok {
 			f.kick()
 		}
 	}
@@ -433,20 +432,6 @@ func (f *Fleet) serverChanged(v store.Server) {
 	}
 }
 
-// as returns v as a T, also when v is a *T.
-func as[T any](v any) (T, bool) {
-	switch x := v.(type) {
-	case T:
-		return x, true
-	case *T:
-		if x != nil {
-			return *x, true
-		}
-	}
-	var zero T
-	return zero, false
-}
-
 // notify sends an event to the notification channels in the background.
 func (f *Fleet) notify(build func(dashboard string) notify.Event) {
 	if f.notifier == nil {
@@ -457,7 +442,7 @@ func (f *Fleet) notify(build func(dashboard string) notify.Event) {
 		if err != nil {
 			f.log.Warn("read settings for a notification", "err", err)
 		}
-		e := build(st.PublicURL)
+		e := build(st.DashboardURL())
 		if err := f.notifier.Notify(ctx, e); err != nil {
 			f.log.Warn("send notification", "type", e.Type, "err", err)
 		}

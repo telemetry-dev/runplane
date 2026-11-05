@@ -2,10 +2,7 @@
 // the events to the browser over SSE.
 package events
 
-import (
-	"sync"
-	"sync/atomic"
-)
+import "sync"
 
 // Event types. All except SettingsChanged are SSE event names.
 const (
@@ -30,11 +27,24 @@ type Event struct {
 	Data any
 }
 
+// As returns the data of an event as a T, also when the data is a *T.
+func As[T any](data any) (T, bool) {
+	switch x := data.(type) {
+	case T:
+		return x, true
+	case *T:
+		if x != nil {
+			return *x, true
+		}
+	}
+	var zero T
+	return zero, false
+}
+
 // Bus delivers each event to all subscribers. The zero value is ready to use.
 type Bus struct {
-	mu      sync.RWMutex
-	subs    map[chan Event]struct{}
-	dropped atomic.Uint64
+	mu   sync.RWMutex
+	subs map[chan Event]struct{}
 }
 
 // Publish never blocks. A subscriber with a full buffer loses the event.
@@ -45,7 +55,6 @@ func (b *Bus) Publish(e Event) {
 		select {
 		case ch <- e:
 		default:
-			b.dropped.Add(1)
 		}
 	}
 }
@@ -72,6 +81,3 @@ func (b *Bus) Subscribe(buffer int) (<-chan Event, func()) {
 	}
 	return ch, cancel
 }
-
-// Dropped is the count of events that subscribers lost because their buffers were full.
-func (b *Bus) Dropped() uint64 { return b.dropped.Load() }

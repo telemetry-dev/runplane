@@ -12,12 +12,13 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { RunnerStateIcon } from '~/components/app/runner-state-icon'
 import { workflowFile } from '~/components/pages/jobs/job-format'
-import { useNow } from '~/components/pages/jobs/use-now'
 import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
+import { useNow } from '~/lib/use-now'
 import { Code } from './code'
 import { formatUptime, sortSandboxes, stateNames, type Sandbox } from './runner-format'
 import { RunnerLogDrawer } from './runner-log'
@@ -195,10 +196,6 @@ function RunnerMenu({ sandbox, onViewLog, onStop }: { sandbox: Sandbox } & Runne
       </MenuPopup>
     </Menu>
   )
-}
-
-function None() {
-  return <span className="text-neutral-6">—</span>
 }
 
 const inlineLink = 'truncate rounded-xs underline-offset-2 hover:underline'

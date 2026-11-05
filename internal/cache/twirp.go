@@ -82,7 +82,6 @@ type twirpError struct {
 var twirpStatus = map[string]int{
 	"invalid_argument":  http.StatusBadRequest,
 	"malformed":         http.StatusBadRequest,
-	"unauthenticated":   http.StatusUnauthorized,
 	"permission_denied": http.StatusForbidden,
 	"not_found":         http.StatusNotFound,
 	"bad_route":         http.StatusNotFound,
@@ -275,9 +274,6 @@ func (s *Server) commit(r *http.Request, req request, in *finalizeRequest) (fina
 }
 
 func (s *Server) downloadURL(r *http.Request, req request, in *downloadRequest) (any, error) {
-	if err := checkKeys(in.Key, in.Version); err != nil {
-		return nil, err
-	}
 	keys := dedupe(append([]string{in.Key}, in.RestoreKeys...))
 	if len(keys) > maxKeys {
 		return nil, twirpErr("invalid_argument", "more than %d keys", maxKeys)

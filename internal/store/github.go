@@ -199,15 +199,6 @@ func (s *Store) ListInstallations(ctx context.Context) ([]Installation, error) {
 }
 
 // SetInstallationSuspended sets or clears (nil) the suspension time.
-func (s *Store) SetInstallationSuspended(ctx context.Context, id int64, suspendedAt *time.Time) error {
-	err := exec1(ctx, s.w, "UPDATE installations SET suspended_at = ?, updated_at = ? WHERE id = ?",
-		msPtr(suspendedAt), ms(time.Now()), id)
-	if err != nil {
-		return fmt.Errorf("set installation suspended: %w", err)
-	}
-	return nil
-}
-
 // DeleteInstallation also deletes its repositories.
 func (s *Store) DeleteInstallation(ctx context.Context, id int64) error {
 	if err := exec1(ctx, s.w, "DELETE FROM installations WHERE id = ?", id); err != nil {
@@ -268,14 +259,6 @@ func (s *Store) GetRepositoryByName(ctx context.Context, fullName string) (Repos
 	return r, nil
 }
 
-func (s *Store) CountRepositories(ctx context.Context) (int, error) {
-	var n int
-	if err := s.r.QueryRowContext(ctx, "SELECT count(*) FROM repositories").Scan(&n); err != nil {
-		return 0, fmt.Errorf("count repositories: %w", err)
-	}
-	return n, nil
-}
-
 const scaleSetCols = "id, pool_id, installation_id, repository_id, github_id, runner_group_id, name, status, error, last_poll_at, stats_json, updated_at"
 
 func scanScaleSet(sc scanner) (ScaleSet, error) {
@@ -312,15 +295,6 @@ func (s *Store) GetScaleSet(ctx context.Context, id string) (ScaleSet, error) {
 
 func (s *Store) ListScaleSets(ctx context.Context) ([]ScaleSet, error) {
 	rows, err := s.r.QueryContext(ctx, "SELECT "+scaleSetCols+" FROM scale_sets ORDER BY name, id")
-	list, err := scanAll(rows, err, scanScaleSet)
-	if err != nil {
-		return nil, fmt.Errorf("list scale sets: %w", err)
-	}
-	return list, nil
-}
-
-func (s *Store) ListPoolScaleSets(ctx context.Context, poolID string) ([]ScaleSet, error) {
-	rows, err := s.r.QueryContext(ctx, "SELECT "+scaleSetCols+" FROM scale_sets WHERE pool_id = ? ORDER BY name, id", poolID)
 	list, err := scanAll(rows, err, scanScaleSet)
 	if err != nil {
 		return nil, fmt.Errorf("list scale sets: %w", err)

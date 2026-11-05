@@ -13,9 +13,6 @@ export function sandboxesQuery(serverId?: string) {
 /** image.state events refetch it. */
 export const imagesQuery = $api.queryOptions('get', '/api/images')
 
-/** The host reserve and overcommit for the size hint, and the default time limit. */
-export const settingsQuery = $api.queryOptions('get', '/api/settings')
-
 /** Puts a pool from a mutation response into the cached list at once, as a new row if it is new. */
 export function putPool(client: QueryClient, pool: Pool) {
   client.setQueryData<Pool[]>(poolsQuery.queryKey, (list) => {

@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { imagesQuery, poolsQuery, sandboxesQuery, settingsQuery } from '~/components/pages/runners/queries'
+import { imagesQuery, poolsQuery, sandboxesQuery } from '~/components/pages/runners/queries'
 import { RunnersPage, RunnersSkeleton } from '~/components/pages/runners/runners-page'
 import { serversQuery } from '~/components/pages/servers/queries'
+import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { pageHead } from '~/lib/head'
 
 export const Route = createFileRoute('/_app/runners')({

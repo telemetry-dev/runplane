@@ -74,7 +74,7 @@ func TestRegisterThenReconnect(t *testing.T) {
 		t.Errorf("agent.json mode %v, want 0600", st.Mode().Perm())
 	}
 	// install.sh keeps a registered agent.json when it finds these lines.
-	if !regexp.MustCompile(`"server_id": *"[^"]`).Match(raw) || !regexp.MustCompile(`"primary": *"`+regexp.QuoteMeta(p.addr)+`"`).Match(raw) {
+	if !regexp.MustCompile(`"server_id": *"[^"]`).Match(raw) || !bytes.Contains(raw, []byte(`"primary": "`+p.addr+`"`)) {
 		t.Errorf("install.sh would not find the registration in:\n%s", raw)
 	}
 

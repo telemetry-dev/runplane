@@ -5,8 +5,8 @@ import (
 	"strconv"
 )
 
-// The control API under /_fake/ gives QueueJob, CancelJob, Jobs, Runners,
-// and ScaleSets to tests and demos outside the process.
+// The control API under /_fake/ gives Queue, CancelJob, Jobs, Runners, and
+// ScaleSets to tests and demos outside the process.
 
 func (s *Server) controlRoutes() {
 	s.mux.HandleFunc("POST /_fake/jobs", s.postJob)

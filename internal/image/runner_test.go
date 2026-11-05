@@ -16,7 +16,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 	"unicode/utf16"
 
 	"github.com/runplane/runplane/internal/sandbox"
@@ -71,7 +70,7 @@ func TestPatchResultsURL(t *testing.T) {
 	}
 }
 
-func TestLatest(t *testing.T) {
+func TestRelease(t *testing.T) {
 	release, err := os.ReadFile("testdata/runner-release-2.338.2.json")
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +83,7 @@ func TestLatest(t *testing.T) {
 		HTTP:  gh.Client(),
 		Token: func(context.Context) (string, error) { return "ghs_test", nil },
 	})
-	rel, err := b.Latest(context.Background())
+	rel, err := b.release(context.Background(), "/releases/latest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,9 +92,6 @@ func TestLatest(t *testing.T) {
 	}
 	if rel.Version != "2.338.2" {
 		t.Errorf("version = %q", rel.Version)
-	}
-	if want := time.Date(2026, 10, 26, 14, 45, 12, 0, time.UTC); !rel.PublishedAt.Equal(want) {
-		t.Errorf("published at = %v, want %v", rel.PublishedAt, want)
 	}
 	want := map[string]string{
 		"x64":   "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40",
@@ -111,14 +107,14 @@ func TestLatest(t *testing.T) {
 	}
 }
 
-func TestLatestUsesAssetDigestWithoutMarkers(t *testing.T) {
+func TestReleaseUsesAssetDigestWithoutMarkers(t *testing.T) {
 	release, err := os.ReadFile("testdata/runner-release-2.338.2.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	release = bytes.ReplaceAll(release, []byte("BEGIN SHA"), []byte("BEGIN XXX"))
 	gh := fakeGitHub(t, map[string][]byte{"api.github.com/repos/actions/runner/releases/latest": release}, nil)
-	rel, err := NewBundles(BundleConfig{HTTP: gh.Client()}).Latest(context.Background())
+	rel, err := NewBundles(BundleConfig{HTTP: gh.Client()}).release(context.Background(), "/releases/latest")
 	if err != nil {
 		t.Fatal(err)
 	}

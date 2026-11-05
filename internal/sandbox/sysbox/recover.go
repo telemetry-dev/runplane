@@ -76,9 +76,7 @@ func (d *Driver) recover(ctx context.Context) error {
 }
 
 // bindAdopted binds the bridge port of a sandbox that operates since before
-// the restart. The bridge table usually has the binding already; a runplane
-// from before the bridge table has none, and its sandboxes then have no
-// network until the binding.
+// the restart. The bridge table usually has the binding already.
 func (d *Driver) bindAdopted(ctx context.Context, id, containerID string) {
 	b := d.get(id)
 	info, err := d.docker.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})

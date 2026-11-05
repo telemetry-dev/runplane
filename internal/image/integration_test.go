@@ -25,11 +25,11 @@ func TestRealRunnerBundle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: t.TempDir(), Logger: testLogger(t)})
-	rel, err := b.Latest(ctx)
+	rel, err := b.release(ctx, "/releases/latest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("latest runner %s, published %s", rel.Version, rel.PublishedAt)
+	t.Logf("latest runner %s", rel.Version)
 	bundle, err := b.Ensure(ctx, rel.Version, "arm64")
 	if err != nil {
 		t.Fatal(err)

@@ -1215,7 +1215,7 @@ export interface components {
             error: string;
             /** @description The addresses of the A and AAAA records of the domain. */
             records: string[];
-            /** @description Public IP addresses of this server, for the DNS record. Empty when runplane cannot find one, for example behind NAT. */
+            /** @description Public IP addresses of this server for the DNS record, IPv4 first. Empty when runplane cannot find one, for example behind NAT. */
             server_addresses: string[];
             /**
              * @description none: no domain is set. ok: each record is an address of this server. missing: the domain has no A or AAAA record. other: a record is not an address of this server. unknown: runplane knows no public address of this server to compare. error: the DNS lookup failed.
@@ -2028,7 +2028,7 @@ export interface components {
             created_at: string;
             /** Format: int64 */
             disk_bytes: number;
-            /** @description For example nvme, ssd, or hdd. */
+            /** @description NVMe, SSD, HDD, or empty if unknown. */
             disk_kind: string;
             /** Format: double */
             disk_percent: number | null;

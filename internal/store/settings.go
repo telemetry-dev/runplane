@@ -39,6 +39,18 @@ type Settings struct {
 	BackupS3                BackupS3     `json:"backup_s3"`
 }
 
+// DashboardURL is the browser URL of runplane for links in notifications, or
+// "" if runplane cannot know it without a request.
+func (s Settings) DashboardURL() string {
+	switch {
+	case s.PublicURL != "":
+		return s.PublicURL
+	case s.Domain != "":
+		return "https://" + s.Domain
+	}
+	return ""
+}
+
 type BackupS3 struct {
 	Endpoint     string `json:"endpoint,omitempty"`
 	Region       string `json:"region,omitempty"`

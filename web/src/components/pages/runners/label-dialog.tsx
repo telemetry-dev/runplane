@@ -4,7 +4,8 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
 import { serversQuery } from '~/components/pages/servers/queries'
-import { serverSize, sortServers } from '~/components/pages/servers/server-info'
+import { serverSize, sortServers, statusNames } from '~/components/pages/servers/server-info'
+import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { Button } from '~/components/ui/button'
 import { Checkbox } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
@@ -18,7 +19,7 @@ import { Spinner } from '~/components/ui/spinner'
 import { toastManager } from '~/components/ui/toast'
 import { cx } from '~/lib/cx'
 import { draftFrom, labelPattern, labelProblems, poolRequest, poolUpdate, type Arch, type Draft } from './label-form'
-import { imagesQuery, putPool, refreshRunners, settingsQuery } from './queries'
+import { imagesQuery, putPool, refreshRunners } from './queries'
 import { formatTimeLimit, type Pool } from './runner-format'
 
 type Server = Schemas['Server']
@@ -437,14 +438,6 @@ function serverDetail(server: Server): string {
   const size = serverSize(server)
   if (server.status === 'online') return size
   return [statusNames[server.status], size].filter(Boolean).join(' · ')
-}
-
-const statusNames: Record<Server['status'], string> = {
-  online: 'Online',
-  installing: 'Installing',
-  unreachable: 'Unreachable',
-  draining: 'Draining',
-  disabled: 'Disabled',
 }
 
 const archOptions = [

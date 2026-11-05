@@ -56,9 +56,6 @@ func (m *Manager) AddPort(iface string, mac net.HardwareAddr, ip netip.Addr) err
 		return nil
 	}
 	ports := maps.Clone(m.ports)
-	if ports == nil {
-		ports = map[string]port{}
-	}
 	ports[iface] = port{mac: mac, ip: ip}
 	return m.writePorts(ports)
 }

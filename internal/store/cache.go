@@ -74,15 +74,6 @@ func (s *Store) GetCacheEntryByKey(ctx context.Context, repository, ref, key, ve
 	return e, nil
 }
 
-// FinalizeCacheEntry marks the upload complete with its size.
-func (s *Store) FinalizeCacheEntry(ctx context.Context, id string, size int64) error {
-	err := exec1(ctx, s.w, "UPDATE cache_entries SET finalized = 1, size_bytes = ? WHERE id = ?", size, id)
-	if err != nil {
-		return fmt.Errorf("finalize cache entry: %w", err)
-	}
-	return nil
-}
-
 // MatchCacheEntry finds a finalized entry of the repository with this
 // version. It looks in refs in order and takes the newest entry of the first
 // ref that has one. With prefix, the key of the entry must start with key;

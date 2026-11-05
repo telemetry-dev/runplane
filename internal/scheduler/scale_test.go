@@ -158,13 +158,6 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 	if n := len(e.sandboxes(pool.ID, runnerStates...)); n != 3 {
 		t.Errorf("%d runners with one assigned job, want 3", n)
 	}
-	row, err := e.st.GetScaleSet(e.ctx, set.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if row.Stats.AssignedJobs != 1 || row.Stats.RunningJobs != 1 {
-		t.Errorf("stored stats %+v, want 1 assigned and 1 running job", row.Stats)
-	}
 }
 
 func TestCompletedJobKeepsWarmSandbox(t *testing.T) {

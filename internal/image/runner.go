@@ -19,11 +19,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/update"
 )
 
 // runnerArches are the runner arch names that runplane uses.
@@ -70,9 +69,8 @@ func NewBundles(cfg BundleConfig) *Bundles {
 
 // Release is a release of actions/runner.
 type Release struct {
-	Version     string            `json:"version"`
-	PublishedAt time.Time         `json:"published_at"`
-	SHA256      map[string]string `json:"sha256"` // hex, by arch ("x64", "arm64")
+	Version string            `json:"version"`
+	SHA256  map[string]string `json:"sha256"` // hex, by arch ("x64", "arm64")
 }
 
 // Bundle is a runner that is ready on this server.
@@ -85,15 +83,6 @@ type Bundle struct {
 	Patched  bool   `json:"patched"`
 	Dir      string `json:"dir"`
 	Ext4Path string `json:"ext4_path,omitempty"` // VM mode: the read-only drive
-}
-
-// Latest reads the latest runner release.
-func (b *Bundles) Latest(ctx context.Context) (Release, error) {
-	rel, err := b.release(ctx, "/releases/latest")
-	if err != nil {
-		return Release{}, fmt.Errorf("read latest runner release: %w", err)
-	}
-	return rel, nil
 }
 
 // Ensure makes the runner of version and arch ready in the runners folder. It
@@ -245,10 +234,9 @@ func (b *Bundles) release(ctx context.Context, path string) (Release, error) {
 		return Release{}, fmt.Errorf("GET %s: %s: %s", path, resp.Status, bytes.TrimSpace(msg))
 	}
 	var body struct {
-		TagName     string    `json:"tag_name"`
-		PublishedAt time.Time `json:"published_at"`
-		Body        string    `json:"body"`
-		Assets      []struct {
+		TagName string `json:"tag_name"`
+		Body    string `json:"body"`
+		Assets  []struct {
 			Name   string `json:"name"`
 			Digest string `json:"digest"`
 		} `json:"assets"`
@@ -257,9 +245,8 @@ func (b *Bundles) release(ctx context.Context, path string) (Release, error) {
 		return Release{}, fmt.Errorf("GET %s: %w", path, err)
 	}
 	rel := Release{
-		Version:     strings.TrimPrefix(body.TagName, "v"),
-		PublishedAt: body.PublishedAt,
-		SHA256:      map[string]string{},
+		Version: strings.TrimPrefix(body.TagName, "v"),
+		SHA256:  map[string]string{},
 	}
 	for _, arch := range runnerArches {
 		sum := markedSHA(body.Body, "linux-"+arch)
@@ -480,7 +467,7 @@ func (b *Bundles) prune(keep []string) error {
 		}
 	}
 	for arch, list := range versions {
-		slices.SortFunc(list, func(x, y string) int { return compareVersions(y, x) })
+		slices.SortFunc(list, func(x, y string) int { return update.Compare(y, x) })
 		for i, version := range list {
 			if i < 2 || slices.Contains(keep, version) {
 				continue
@@ -496,19 +483,6 @@ func (b *Bundles) prune(keep []string) error {
 		}
 	}
 	return nil
-}
-
-// compareVersions compares two valid versions "x.y.z" by number.
-func compareVersions(x, y string) int {
-	xs, ys := strings.Split(x, "."), strings.Split(y, ".")
-	for i := range xs {
-		a, _ := strconv.Atoi(xs[i])
-		b, _ := strconv.Atoi(ys[i])
-		if a != b {
-			return a - b
-		}
-	}
-	return 0
 }
 
 // writeJSON writes v to file through a temp file and a rename.

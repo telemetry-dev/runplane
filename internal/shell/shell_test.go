@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sshinstall"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -77,9 +78,10 @@ func newSigner(t *testing.T) ssh.Signer {
 func startGateway(t *testing.T, targets map[string]Target, keys map[string][]ssh.PublicKey, admin []ssh.PublicKey) *gateway {
 	t.Helper()
 	g := &gateway{opens: make(fakeOpener, 4), audits: make(chan store.AuditEntry, 4)}
+	hostKeyPath := filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
 	srv, err := New(Config{
 		Addr:        "127.0.0.1:0",
-		HostKeyPath: filepath.Join(t.TempDir(), "ssh_host_ed25519_key"),
+		HostKeyPath: hostKeyPath,
 		Opener:      g.opens,
 		Lookup: func(_ context.Context, name string) (Target, error) {
 			if t, ok := targets[name]; ok {
@@ -105,7 +107,11 @@ func startGateway(t *testing.T, targets map[string]Target, keys map[string][]ssh
 			t.Errorf("Serve: %v", err)
 		}
 	})
-	g.addr, g.hostKey = srv.Addr().String(), srv.HostKey()
+	hostKey, _, err := sshinstall.LoadOrCreateKey(hostKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.addr, g.hostKey = srv.Addr().String(), hostKey.PublicKey()
 	return g
 }
 
