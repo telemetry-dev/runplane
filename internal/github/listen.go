@@ -97,8 +97,7 @@ func (s *Service) stopListeners() {
 	}
 }
 
-// run listens until ctx ends. After a failure it waits 1 second, then
-// twice as long after each further failure, up to 1 minute.
+// run listens until ctx ends.
 func (l *setListener) run(ctx context.Context) {
 	defer close(l.done)
 	wait := time.Second
@@ -146,8 +145,6 @@ func (l *setListener) client() *scaleset.Client {
 	return l.cl
 }
 
-// listen makes the scale set on GitHub if necessary, opens a session, and
-// runs the listener on it.
 func (l *setListener) listen(ctx context.Context) error {
 	id, err := l.ensureRemote(ctx)
 	if err != nil {
@@ -250,7 +247,6 @@ func (l *setListener) rename(ctx context.Context, row store.ScaleSet, label stri
 	l.report(ctx)
 }
 
-// Scale gives the message to the scheduler in runplane types.
 func (l *setListener) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) error {
 	m, offered := message(l.log, msg)
 	l.mu.Lock()

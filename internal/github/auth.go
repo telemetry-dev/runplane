@@ -57,7 +57,6 @@ func (s *Service) creds(ctx context.Context) (*creds, error) {
 	return s.cred, nil
 }
 
-// dropCreds drops the cached app and its installation tokens.
 func (s *Service) dropCreds() {
 	s.credMu.Lock()
 	s.cred = nil
