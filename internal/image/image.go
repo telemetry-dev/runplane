@@ -1,4 +1,4 @@
-// Package image makes sandbox images and runner bundles ready on a server.
+// Package image makes sandbox images ready on a server.
 //
 // In container and dev mode, Docker pulls or builds each image. In VM mode,
 // each image becomes a read-only ext4 root disk that holds runplane-init, so
@@ -25,6 +25,7 @@ import (
 
 	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/blob"
+	"github.com/runplane/runplane/internal/keylock"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -74,7 +75,7 @@ type Manager struct {
 	cfg  Config
 	log  *slog.Logger
 	init func() (initFile, error)
-	work keyLock
+	work keylock.Map
 
 	freshMu sync.Mutex
 	fresh   map[string]bool // digests that Ensure returned since the last GC
@@ -142,7 +143,7 @@ func (m *Manager) ensure(ctx context.Context, ref string, r *reporter) (Image, e
 	if err != nil {
 		return Image{}, err
 	}
-	unlock, err := m.work.lock(ctx, ref)
+	unlock, err := m.work.Lock(ctx, ref)
 	if err != nil {
 		return Image{}, err
 	}
@@ -172,7 +173,7 @@ func (m *Manager) RootDisk(digest string) (string, error) {
 // does nothing while Ensure operates.
 func (m *Manager) GC(ctx context.Context, keep []string) error {
 	var err error
-	ran := m.work.idle(func() {
+	ran := m.work.Idle(func() {
 		m.freshMu.Lock()
 		set := m.fresh
 		m.fresh = map[string]bool{}

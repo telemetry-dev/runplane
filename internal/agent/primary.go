@@ -21,6 +21,7 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -265,8 +266,8 @@ func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(ima
 	}
 }
 
-func (s *Session) EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error) {
-	var b image.Bundle
+func (s *Session) EnsureRunner(ctx context.Context, version, arch string) (runner.Bundle, error) {
+	var b runner.Bundle
 	err := s.call(ctx, http.MethodPost, "/v1/runners/ensure", runnerRequest{Version: version, Arch: arch}, &b)
 	return b, err
 }

@@ -3,17 +3,15 @@
 package image
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/moby/moby/client"
 
+	"github.com/runplane/runplane/internal/ext4/ext4test"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/version"
@@ -21,34 +19,6 @@ import (
 
 // These tests use the network, and the Docker tests use the Docker daemon
 // from the environment: go test -tags integration ./internal/image/
-
-func TestRealRunnerBundle(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: t.TempDir(), Logger: testLogger(t)})
-	version, _, err := b.release(ctx, "/releases/latest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("latest runner %s", version)
-	bundle, err := b.Ensure(ctx, version, "arm64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bundle.Patched {
-		t.Fatalf("runner %s is not patched", version)
-	}
-	dll, err := os.ReadFile(filepath.Join(bundle.Dir, "bin", "Runner.Worker.dll"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := bytes.Count(dll, utf16Bytes("ACTIONS_RESULTS_URL")); n != 0 {
-		t.Errorf("%d matches are left", n)
-	}
-	t.Logf("Runner.Worker.dll: %d bytes, %d patches", len(dll), bytes.Count(dll, utf16Bytes("ACTIONS_RESULTS_ORL")))
-	assertExt4(t, bundle.Ext4Path)
-	debugfs(t, bundle.Ext4Path, "ls -l /bin/", "Runner.Worker.dll")
-}
 
 func TestRealRootDisk(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -59,9 +29,9 @@ func TestRealRootDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("root disk %s, %d bytes", img.Path, img.Size)
-	assertExt4(t, img.Path)
-	debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
-	debugfs(t, img.Path, "ls -l /bin/", "busybox")
+	ext4test.Check(t, img.Path)
+	ext4test.Debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
+	ext4test.Debugfs(t, img.Path, "ls -l /bin/", "busybox")
 }
 
 func TestDockerBuildsBuiltinImage(t *testing.T) {
@@ -107,9 +77,9 @@ func TestDockerBuildsBuiltinRootDisk(t *testing.T) {
 		t.Errorf("statuses = %s", s)
 	}
 	t.Logf("root disk %s, %d bytes", img.Path, img.Size)
-	assertExt4(t, img.Path)
-	debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
-	debugfs(t, img.Path, "stat /.dockerenv", "File not found")
+	ext4test.Check(t, img.Path)
+	ext4test.Debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
+	ext4test.Debugfs(t, img.Path, "stat /.dockerenv", "File not found")
 }
 
 func vmManager(t *testing.T, docker *client.Client) *Manager {

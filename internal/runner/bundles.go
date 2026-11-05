@@ -1,4 +1,8 @@
-package image
+// Package runner makes the GitHub Actions runner ready on a server. It reads
+// the releases of actions/runner, downloads and examines the archive,
+// applies the runner patch (guest.Patch), and makes the ext4 drive of VM
+// mode. The subpackage versions keeps the runner versions of all servers.
+package runner
 
 import (
 	"archive/tar"
@@ -6,56 +10,42 @@ import (
 	"cmp"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/runplane/runplane/internal/atomicfile"
-	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/ext4"
+	"github.com/runplane/runplane/internal/keylock"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/version"
 )
 
-var runnerArches = []string{"x64", "arm64"}
-
-var versionRE = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
-
 type BundleConfig struct {
-	Mode sandbox.Mode // in VM mode, each bundle also gets an ext4 drive
-	Dir  string       // the runners folder
-	// Token, if not nil, gives a GitHub token for the API calls.
-	Token  func(context.Context) (string, error)
-	Logger *slog.Logger
+	Mode     sandbox.Mode // in VM mode, each bundle also gets an ext4 drive
+	Dir      string       // the runners folder
+	Releases Releases
+	Logger   *slog.Logger
 }
 
 // Bundles downloads and patches the GitHub Actions runner.
 type Bundles struct {
 	cfg  BundleConfig
 	log  *slog.Logger
-	work keyLock
-	api  ghrest.Client
-	web  string // the GitHub URL; tests point it and api at a fake
+	work keylock.Map
 }
 
 func NewBundles(cfg BundleConfig) *Bundles {
-	return &Bundles{
-		cfg: cfg,
-		log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)),
-		web: ghrest.Web,
-	}
+	return &Bundles{cfg: cfg, log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler))}
 }
 
 // Bundle is a runner that is ready on this server.
@@ -71,36 +61,37 @@ type Bundle struct {
 }
 
 // Ensure makes the runner of version and arch ready in the runners folder. It
-// downloads the release, checks its SHA-256, extracts it, and applies the
+// downloads the release, examines its SHA-256, extracts it, and applies the
 // runner patch (guest.Patch). If the patch does not apply, the bundle stays
 // unpatched and jobs use the GitHub cache.
 func (b *Bundles) Ensure(ctx context.Context, version, arch string) (Bundle, error) {
-	if !versionRE.MatchString(version) || !slices.Contains(runnerArches, arch) {
+	if !versionRE.MatchString(version) || !slices.Contains(arches, arch) {
 		return Bundle{}, fmt.Errorf("ensure runner: bad version %q or arch %q", version, arch)
 	}
-	name := version + "-" + arch
-	unlock, err := b.work.lock(ctx, name)
+	bundle := Bundle{Version: version, Arch: arch, Dir: b.dir(version, arch)}
+	unlock, err := b.work.Lock(ctx, bundle.Dir)
 	if err != nil {
 		return Bundle{}, err
 	}
 	defer unlock()
-	bundle, err := b.ensure(ctx, version, arch)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("ensure runner %s: %w", name, err)
+	if err := b.ensure(ctx, &bundle); err != nil {
+		return Bundle{}, fmt.Errorf("ensure runner %s-%s: %w", version, arch, err)
 	}
 	return bundle, nil
 }
 
-// stamp is the file <name>.json next to a bundle folder. It exists only for
-// a complete folder.
+// dir is the folder of a bundle. Next to it are the stamp <dir>.json, which
+// exists only for a complete folder, and in VM mode the drive <dir>.ext4.
+func (b *Bundles) dir(version, arch string) string {
+	return filepath.Join(b.cfg.Dir, version+"-"+arch)
+}
+
 type stamp struct {
 	SHA256  string `json:"sha256"`
 	Patched bool   `json:"patched"`
 }
 
-func (b *Bundles) ensure(ctx context.Context, version, arch string) (Bundle, error) {
-	name := version + "-" + arch
-	bundle := Bundle{Version: version, Arch: arch, Dir: filepath.Join(b.cfg.Dir, name)}
+func (b *Bundles) ensure(ctx context.Context, bundle *Bundle) error {
 	stampPath := bundle.Dir + ".json"
 	var st stamp
 	data, err := os.ReadFile(stampPath)
@@ -111,15 +102,15 @@ func (b *Bundles) ensure(ctx context.Context, version, arch string) (Bundle, err
 		_, err = os.Stat(bundle.Dir)
 	}
 	if err != nil {
-		if st, err = b.fetch(ctx, version, arch, bundle.Dir); err != nil {
-			return Bundle{}, err
+		if st, err = b.fetch(ctx, bundle.Version, bundle.Arch, bundle.Dir); err != nil {
+			return err
 		}
 		data, err := json.Marshal(st)
 		if err != nil {
-			return Bundle{}, err
+			return err
 		}
 		if err := atomicfile.Write(stampPath, bytes.NewReader(data), 0o644); err != nil {
-			return Bundle{}, err
+			return err
 		}
 	}
 	bundle.SHA256, bundle.Patched = st.SHA256, st.Patched
@@ -127,23 +118,23 @@ func (b *Bundles) ensure(ctx context.Context, version, arch string) (Bundle, err
 	if b.cfg.Mode == sandbox.ModeVM {
 		bundle.Ext4Path = bundle.Dir + ".ext4"
 		if _, err := os.Stat(bundle.Ext4Path); err != nil {
-			_, err = writeExt4(bundle.Ext4Path, func(w io.Writer) error { return tarDir(w, bundle.Dir) })
+			_, err = ext4.Write(bundle.Ext4Path, func(w io.Writer) error { return ext4.TarDir(w, bundle.Dir) })
 			if err != nil {
-				return Bundle{}, err
+				return err
 			}
 		}
 	}
-	return bundle, nil
+	return nil
 }
 
-// fetch downloads and checks the release archive, then extracts and patches
-// it into dir.
+// fetch downloads the release archive into dir, then extracts and patches
+// it.
 func (b *Bundles) fetch(ctx context.Context, version, arch, dir string) (stamp, error) {
-	_, sums, err := b.release(ctx, "/releases/tags/v"+version)
+	rel, err := b.cfg.Releases.Get(ctx, version)
 	if err != nil {
 		return stamp{}, fmt.Errorf("read release: %w", err)
 	}
-	want := sums[arch]
+	want := rel.SHA256[arch]
 	if want == "" {
 		return stamp{}, fmt.Errorf("release v%s has no SHA-256 for linux-%s", version, arch)
 	}
@@ -157,7 +148,7 @@ func (b *Bundles) fetch(ctx context.Context, version, arch, dir string) (stamp, 
 	defer os.RemoveAll(tmp)
 
 	archive := filepath.Join(tmp, "runner.tar.gz")
-	got, err := b.download(ctx, b.web+"/actions/runner/releases/download/v"+version+"/"+archiveName(version, arch), archive)
+	got, err := b.cfg.Releases.download(ctx, version, arch, archive)
 	if err != nil {
 		return stamp{}, err
 	}
@@ -189,98 +180,6 @@ func (b *Bundles) fetch(ctx context.Context, version, arch, dir string) (stamp, 
 	}
 	b.log.Info("runner bundle ready", "version", version, "arch", arch, "patches", n)
 	return stamp{SHA256: want, Patched: n > 0}, nil
-}
-
-func archiveName(version, arch string) string {
-	return "actions-runner-linux-" + arch + "-" + version + ".tar.gz"
-}
-
-// release reads a release of actions/runner and returns its version and the
-// hex SHA-256 of the archive of each arch.
-func (b *Bundles) release(ctx context.Context, path string) (string, map[string]string, error) {
-	var a ghrest.Auth
-	if b.cfg.Token != nil {
-		a = tokenAuth(b.cfg.Token)
-	}
-	var body struct {
-		TagName string `json:"tag_name"`
-		Body    string `json:"body"`
-		Assets  []struct {
-			Name   string `json:"name"`
-			Digest string `json:"digest"`
-		} `json:"assets"`
-	}
-	if err := b.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: "/repos/actions/runner" + path, Auth: a}, &body); err != nil {
-		return "", nil, err
-	}
-	version := strings.TrimPrefix(body.TagName, "v")
-	sums := map[string]string{}
-	for _, arch := range runnerArches {
-		sum := markedSHA(body.Body, "linux-"+arch)
-		if sum == "" {
-			// GitHub also gives the digest of each asset.
-			for _, a := range body.Assets {
-				if a.Name == archiveName(version, arch) {
-					sum, _ = strings.CutPrefix(a.Digest, "sha256:")
-				}
-			}
-		}
-		if isHex(sum, 64) {
-			sums[arch] = sum
-		}
-	}
-	return version, sums, nil
-}
-
-// markedSHA reads the SHA-256 between the markers that the runner release
-// notes have for each platform:
-// <!-- BEGIN SHA linux-x64 -->hex<!-- END SHA linux-x64 -->
-func markedSHA(body, platform string) string {
-	_, rest, ok := strings.Cut(body, "<!-- BEGIN SHA "+platform+" -->")
-	if !ok {
-		return ""
-	}
-	sum, _, ok := strings.Cut(rest, "<!-- END SHA "+platform+" -->")
-	if !ok {
-		return ""
-	}
-	return strings.ToLower(strings.TrimSpace(sum))
-}
-
-// tokenAuth sends the token that the function gives, if it gives one.
-type tokenAuth func(context.Context) (string, error)
-
-func (t tokenAuth) Header(ctx context.Context) (string, error) {
-	token, err := t(ctx)
-	if err != nil {
-		return "", fmt.Errorf("get GitHub token: %w", err)
-	}
-	if token == "" {
-		return "", nil
-	}
-	return "Bearer " + token, nil
-}
-
-// download writes the file at url to dst and returns its SHA-256 in hex.
-func (b *Bundles) download(ctx context.Context, url, dst string) (string, error) {
-	resp, err := b.api.Download(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	f, err := os.Create(dst)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(f, h), resp.Body); err != nil {
-		return "", fmt.Errorf("GET %s: %w", url, err)
-	}
-	if err := f.Close(); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // extract unpacks the runner archive into dir. os.Root keeps each path of
@@ -363,7 +262,7 @@ func openDirs(dir string) error {
 // versions in keep. It does nothing while Ensure operates.
 func (b *Bundles) Prune(keep []string) error {
 	var err error
-	if !b.work.idle(func() { err = b.prune(keep) }) {
+	if !b.work.Idle(func() { err = b.prune(keep) }) {
 		b.log.Debug("runner prune skipped, a bundle is in progress")
 	}
 	return err
@@ -387,24 +286,24 @@ func (b *Bundles) prune(keep []string) error {
 			continue
 		}
 		version, arch, _ := strings.Cut(e.Name(), "-")
-		if e.IsDir() && versionRE.MatchString(version) && slices.Contains(runnerArches, arch) {
+		if e.IsDir() && versionRE.MatchString(version) && slices.Contains(arches, arch) {
 			versions[arch] = append(versions[arch], version)
 		}
 	}
 	for arch, list := range versions {
 		slices.SortFunc(list, func(x, y string) int { return version.Compare(y, x) })
-		for i, version := range list {
-			if i < 2 || slices.Contains(keep, version) {
+		for i, v := range list {
+			if i < 2 || slices.Contains(keep, v) {
 				continue
 			}
-			dir := filepath.Join(b.cfg.Dir, version+"-"+arch)
+			dir := b.dir(v, arch)
 			// The stamp goes first, so that a partial removal is not a bundle.
 			for _, p := range []string{dir + ".json", dir + ".ext4", dir} {
 				if err := os.RemoveAll(p); err != nil {
 					return err
 				}
 			}
-			b.log.Info("removed old runner bundle", "version", version, "arch", arch)
+			b.log.Info("removed old runner bundle", "version", v, "arch", arch)
 		}
 	}
 	return nil

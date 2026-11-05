@@ -13,6 +13,7 @@ import (
 
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/update"
 )
@@ -26,7 +27,7 @@ type Node interface {
 	// EnsureImage makes an image ready on the server. progress, if not nil,
 	// gets each step.
 	EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error)
-	EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error)
+	EnsureRunner(ctx context.Context, version, arch string) (runner.Bundle, error)
 	// GCImages removes the images whose digest is not in keep.
 	GCImages(ctx context.Context, keep []string) error
 	// PruneRunners removes the runner bundles except the two newest and the
@@ -69,7 +70,7 @@ func Forward(ctx context.Context, n Node, onEvent func(sandbox.Event), onStats f
 type LocalConfig struct {
 	Driver  sandbox.Driver
 	Images  *image.Manager
-	Bundles *image.Bundles
+	Bundles *runner.Bundles
 	Updater *update.Updater
 	// Doctor holds the doctor options of this server. Its DataDir also
 	// selects the disk for the facts and the stats. Configure sets
@@ -130,7 +131,7 @@ func (n *LocalNode) EnsureImage(ctx context.Context, ref string, progress func(i
 	return sandbox.ImageRef{Ref: img.Ref, Digest: img.Digest}, nil
 }
 
-func (n *LocalNode) EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error) {
+func (n *LocalNode) EnsureRunner(ctx context.Context, version, arch string) (runner.Bundle, error) {
 	return n.cfg.Bundles.Ensure(ctx, version, arch)
 }
 

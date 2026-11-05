@@ -119,7 +119,7 @@ dev: init
 # the .NET libraries must be in the image, and a bad JIT config must end the
 # runner.
 runner-smoke:
-	go test -tags integration -count=1 -timeout 20m -v -run TestRealRunnerInBaseImage ./internal/image/
+	go test -tags integration -count=1 -timeout 20m -v -run TestRealRunnerInBaseImage ./internal/runner/
 
 # clean keeps the other files in .dev, such as notes.
 clean:

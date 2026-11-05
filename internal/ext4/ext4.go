@@ -1,4 +1,6 @@
-package image
+// Package ext4 writes the read-only ext4 drives of VM mode: the root disks
+// of the images and the runner bundles.
+package ext4
 
 import (
 	"archive/tar"
@@ -17,9 +19,9 @@ import (
 // reserves 256 bytes of metadata for each GiB.
 const maxDiskSize = 256 << 30
 
-// writeExt4 writes the tar stream from fill as an ext4 file at dst. It
-// returns the file size.
-func writeExt4(dst string, fill func(w io.Writer) error) (int64, error) {
+// Write writes the tar stream from fill as an ext4 file at dst. It returns
+// the file size.
+func Write(dst string, fill func(w io.Writer) error) (int64, error) {
 	f, err := atomicfile.Create(dst, 0o644)
 	if err != nil {
 		return 0, err
@@ -56,9 +58,9 @@ func writeExt4(dst string, fill func(w io.Writer) error) (int64, error) {
 	return st.Size(), nil
 }
 
-// tarDir writes the files in dir as a tar stream. All files belong to root,
+// TarDir writes the files in dir as a tar stream. All files belong to root,
 // as in the read-only bind mount of container mode.
-func tarDir(w io.Writer, dir string) error {
+func TarDir(w io.Writer, dir string) error {
 	tw := tar.NewWriter(w)
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

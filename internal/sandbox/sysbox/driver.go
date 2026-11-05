@@ -19,7 +19,7 @@ import (
 
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
 	"github.com/runplane/runplane/internal/sandbox/guest"
@@ -64,7 +64,7 @@ type Options struct {
 	// Privileged lets dockerd and the overlay mounts operate under runc.
 	Privileged bool
 	Scratch    Scratch
-	Bundle     func(ctx context.Context, version, arch string) (image.Bundle, error)
+	Bundle     func(ctx context.Context, version, arch string) (runner.Bundle, error)
 	// InitPath returns the runplane-init binary. The driver asks at each
 	// start, because a temp folder cleaner can remove the file.
 	InitPath func() (string, error)

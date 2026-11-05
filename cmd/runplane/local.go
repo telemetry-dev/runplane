@@ -20,6 +20,7 @@ import (
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/initbin"
 	"github.com/runplane/runplane/internal/mirror"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/devdocker"
 	"github.com/runplane/runplane/internal/sandbox/firecracker"
@@ -65,8 +66,9 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	if err != nil {
 		return nil, fmt.Errorf("start the image manager: %w", err)
 	}
-	bundles := image.NewBundles(image.BundleConfig{
-		Mode: lc.mode, Dir: cfg.RunnersDir(), Token: lc.token, Logger: log.With("component", "runners"),
+	bundles := runner.NewBundles(runner.BundleConfig{
+		Mode: lc.mode, Dir: cfg.RunnersDir(), Releases: runner.Releases{Auth: runner.TokenAuth(lc.token)},
+		Logger: log.With("component", "runners"),
 	})
 
 	var probe func(context.Context) error
