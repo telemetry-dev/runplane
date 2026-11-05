@@ -12,8 +12,13 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// GitHub can need some time after a job before its log is ready.
-var logWaits = []time.Duration{0, 10 * time.Second, 30 * time.Second, 2 * time.Minute}
+var (
+	// GitHub can need some time after a job before its log is ready.
+	logWaits = []time.Duration{0, 10 * time.Second, 30 * time.Second, 2 * time.Minute}
+	// stepsEvery is how often the scheduler reads the steps of a running job.
+	// Each read is one GitHub request.
+	stepsEvery = 30 * time.Second
+)
 
 // finish starts the steps after a job completes, unless they already run
 // for the job: the debug hold, the run data and the log from GitHub, and the
@@ -113,10 +118,6 @@ func (s *Scheduler) enrich(job store.Job) {
 		}
 	})
 }
-
-// stepsEvery is how often the scheduler reads the steps of a running job.
-// Each read is one GitHub request.
-var stepsEvery = 30 * time.Second
 
 // watchSteps reads the steps of a running job from GitHub each stepsEvery
 // until finish starts for the job, so that the job page shows its progress.

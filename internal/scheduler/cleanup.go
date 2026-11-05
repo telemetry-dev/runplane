@@ -293,8 +293,6 @@ func (s *Scheduler) closeUnclaimedJobs(ctx context.Context) {
 	}
 }
 
-// dropExpired drops the old CheckJob results, debug re-runs, and runner
-// results.
 func (s *Scheduler) dropExpired() {
 	now := s.now()
 	s.mu.Lock()

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -76,27 +77,25 @@ func (s *Scheduler) Detach(scaleSetID string) {
 	}
 }
 
-// errDetached is the error of a client call after Detach.
 var errDetached = errors.New("the scale set has no listener")
 
 // guardedClient passes calls to the client of a scale set until detach.
 type guardedClient struct {
-	mu       sync.RWMutex
-	c        ScaleSetClient
-	detached bool
+	mu sync.RWMutex
+	c  ScaleSetClient // nil after detach
 }
 
 // detach waits for the calls in progress. Later calls do nothing.
 func (g *guardedClient) detach() {
 	g.mu.Lock()
-	g.detached = true
+	g.c = nil
 	g.mu.Unlock()
 }
 
 func (g *guardedClient) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if g.detached {
+	if g.c == nil {
 		return nil, errDetached
 	}
 	return g.c.AcquireJobs(ctx, requestIDs)
@@ -105,7 +104,7 @@ func (g *guardedClient) AcquireJobs(ctx context.Context, requestIDs []int64) ([]
 func (g *guardedClient) GenerateJITConfig(ctx context.Context, runnerName string) (JITConfig, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if g.detached {
+	if g.c == nil {
 		return JITConfig{}, errDetached
 	}
 	return g.c.GenerateJITConfig(ctx, runnerName)
@@ -114,7 +113,7 @@ func (g *guardedClient) GenerateJITConfig(ctx context.Context, runnerName string
 func (g *guardedClient) RemoveRunner(ctx context.Context, runnerID int64) error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if g.detached {
+	if g.c == nil {
 		return errDetached
 	}
 	return g.c.RemoveRunner(ctx, runnerID)
@@ -123,7 +122,7 @@ func (g *guardedClient) RemoveRunner(ctx context.Context, runnerID int64) error 
 func (g *guardedClient) ListRunners(ctx context.Context) ([]Runner, error) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if g.detached {
+	if g.c == nil {
 		return nil, errDetached
 	}
 	return g.c.ListRunners(ctx)
@@ -132,7 +131,7 @@ func (g *guardedClient) ListRunners(ctx context.Context) ([]Runner, error) {
 func (g *guardedClient) SetMaxRunners(n int) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if !g.detached {
+	if g.c != nil {
 		g.c.SetMaxRunners(n)
 	}
 }
@@ -140,11 +139,7 @@ func (g *guardedClient) SetMaxRunners(n int) {
 func (s *Scheduler) attached() []*scaleSet {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	list := make([]*scaleSet, 0, len(s.sets))
-	for _, h := range s.sets {
-		list = append(list, h)
-	}
-	return list
+	return slices.Collect(maps.Values(s.sets))
 }
 
 // Scale handles one listener message: it records the jobs, acquires the
@@ -275,10 +270,13 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []*scaleset.JobAvai
 		return nil
 	}
 
-	room, err := h.room(ctx, pool, st)
+	// The room is the runners that the scale set can have now, less the jobs
+	// that GitHub assigned to it.
+	live, err := h.live(ctx)
 	if err != nil {
 		return err
 	}
+	room := min(pool.MaxRunners, len(live)+s.fits(s.hosts(ctx), *pool, st)) - h.stats.AssignedJobs
 	wanted = wanted[:max(0, min(room, len(wanted)))]
 	if len(wanted) == 0 {
 		return nil
@@ -358,29 +356,16 @@ func (h *scaleSet) check(ctx context.Context, pool *store.Pool, st store.Setting
 // the online servers. The setting mode does not count, because a server
 // runs its own mode, and a mode change applies only after a restart.
 func (h *scaleSet) vmOnly(ctx context.Context, pool store.Pool) (bool, error) {
-	if !h.s.serversVM(pool) {
-		return false, nil
+	for _, host := range h.s.fleet.Online() {
+		if canHost(host, pool) && host.Driver.Mode() != sandbox.ModeVM {
+			return false, nil
+		}
 	}
 	live, err := h.live(ctx)
 	if err != nil {
 		return false, err
 	}
-	return allVM(live), nil
-}
-
-// serversVM tells if each online server that can take sandboxes of the pool
-// runs VM mode.
-func (s *Scheduler) serversVM(pool store.Pool) bool {
-	for _, host := range s.fleet.Online() {
-		if canHost(host, pool) && host.Driver.Mode() != sandbox.ModeVM {
-			return false
-		}
-	}
-	return true
-}
-
-func allVM(list []store.Sandbox) bool {
-	return !slices.ContainsFunc(list, func(b store.Sandbox) bool { return b.Mode != sandbox.ModeVM })
+	return !slices.ContainsFunc(live, func(b store.Sandbox) bool { return b.Mode != sandbox.ModeVM }), nil
 }
 
 // checkJob calls GitHub.CheckJob one time for each run in checkTTL. It
@@ -401,16 +386,6 @@ func (s *Scheduler) checkJob(ctx context.Context, repository string, runID int64
 	s.checks[key] = checkEntry{c, err, s.now()}
 	s.mu.Unlock()
 	return c, err
-}
-
-// room is the count of jobs that the scale set can still take: the runners
-// that it can have now, less the jobs that GitHub assigned to it.
-func (h *scaleSet) room(ctx context.Context, pool *store.Pool, st store.Settings) (int, error) {
-	live, err := h.live(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return min(pool.MaxRunners, len(live)+h.s.fits(h.s.hosts(ctx), *pool, st)) - h.stats.AssignedJobs, nil
 }
 
 func (h *scaleSet) handleStarted(ctx context.Context, m *scaleset.JobStarted) error {
@@ -541,7 +516,6 @@ func jobKey(m scaleset.JobMessageBase) int64 {
 	return -int64(h.Sum64()>>1) - 1
 }
 
-// jobResult maps the result of a JobCompleted message to a job result.
 func jobResult(r string) string {
 	switch strings.ToLower(r) {
 	case "succeeded", "succeededwithissues":

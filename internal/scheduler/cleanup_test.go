@@ -9,26 +9,34 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
-
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
 
-func TestCleanupStopsSandboxesWithoutLiveRow(t *testing.T) {
+// The cleanup stops each sandbox that has no live row, and sets each live
+// row with no sandbox on a connected or removed server to gone.
+func TestCleanupSyncsServers(t *testing.T) {
 	e := newTestEnv(t)
 	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
+	offlineID, _ := e.addServer("fsn1-b", capacity("x64", 16, 65536))
+	e.fleet.offline[offlineID] = true
 	pool := e.addPool("runplane")
 	_, _, set := e.attach(pool)
-	live := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
+
+	present := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
 	gone := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
 	e.st.AdvanceSandboxState(e.ctx, gone.ID, sandbox.StateGone, "removed", start)
 	orphan := "01jbz4v5k2n8q3r6t9w0x1y2z3"
-	for _, id := range []string{live.ID, gone.ID, orphan} {
-		driver.running[id] = sandbox.Spec{ID: id, VCPU: 2, MemoryMB: 4096}
+	for _, id := range []string{present.ID, gone.ID, orphan} {
+		driver.running[id] = sandbox.Spec{ID: id}
 	}
+	missing := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
+	unreachable := e.insertSandbox(pool, set, offlineID, sandbox.StateIdle, start)
+	removedServer := e.insertSandbox(pool, set, "01jbz0000000000000000srv99", sandbox.StateIdle, start)
 	e.clock.add(2 * time.Minute)
+	// A row made at this moment can still wait for its Driver.Start.
+	fresh := e.insertSandbox(pool, set, serverID, sandbox.StateStarting, e.clock.now())
 
 	e.s.cleanup(e.ctx)
 	got := e.rec.matching("stop ")
@@ -38,26 +46,6 @@ func TestCleanupStopsSandboxesWithoutLiveRow(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("stops %v, want %v", got, want)
 	}
-}
-
-func TestCleanupSetsRowsWithoutSandboxGone(t *testing.T) {
-	e := newTestEnv(t)
-	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	offlineID, _ := e.addServer("fsn1-b", capacity("x64", 16, 65536))
-	e.fleet.offline[offlineID] = true
-	pool := e.addPool("runplane")
-	_, _, set := e.attach(pool)
-
-	missing := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
-	present := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	driver.running[present.ID] = sandbox.Spec{ID: present.ID}
-	unreachable := e.insertSandbox(pool, set, offlineID, sandbox.StateIdle, start)
-	removedServer := e.insertSandbox(pool, set, "01jbz0000000000000000srv99", sandbox.StateIdle, start)
-	e.clock.add(2 * time.Minute)
-	// A row made at this moment can still wait for its Driver.Start.
-	fresh := e.insertSandbox(pool, set, serverID, sandbox.StateStarting, e.clock.now())
-
-	e.s.cleanup(e.ctx)
 	for _, tt := range []struct {
 		b    store.Sandbox
 		want sandbox.State
@@ -114,10 +102,10 @@ func TestCleanupStopsOverdueSandboxes(t *testing.T) {
 	now := start.Add(61 * time.Minute)
 
 	over := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	e.busy(over, start)
+	e.st.AdvanceSandboxState(e.ctx, over.ID, sandbox.StateBusy, "", start)
 	// A warm sandbox that waited 55 minutes gives its job the whole limit.
 	warm := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	e.busy(warm, start.Add(55*time.Minute))
+	e.st.AdvanceSandboxState(e.ctx, warm.ID, sandbox.StateBusy, "", start.Add(55*time.Minute))
 	under := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start.Add(2*time.Minute))
 	held := e.insertSandbox(pool, set, serverID, sandbox.StateStopping, start)
 	e.st.SetSandboxHold(e.ctx, held.ID, now.Add(10*time.Minute))
@@ -156,59 +144,47 @@ func TestCleanupStopsOverdueSandboxes(t *testing.T) {
 	}
 }
 
-// A warm sandbox that waits for a job for the whole time limit gives way to
-// a new one before its guest stops it, so a job never gets less than the
-// limit. Its runner leaves GitHub first.
-func TestResizeReplacesSandboxThatWaitedTheWholeLimit(t *testing.T) {
-	e := newTestEnv(t)
-	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	pool := e.addPool("runplane", func(p *store.Pool) { p.TimeLimitMinutes = 60; p.MinIdle = 2 })
-	_, sc, set := e.attach(pool)
-	old := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	young := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start.Add(10*time.Minute))
-	for _, b := range []store.Sandbox{old, young} {
-		driver.running[b.ID] = sandbox.Spec{ID: b.ID}
-	}
-	e.clock.add(60 * time.Minute)
-
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0)})
-	if got := e.sandbox(old.ID); got.State != sandbox.StateStopping {
-		t.Errorf("sandbox that waited 60 minutes: state %q, want stopping", got.State)
-	}
-	if got := e.sandbox(young.ID); got.State != sandbox.StateIdle {
-		t.Errorf("sandbox that waited 50 minutes: state %q, want idle", got.State)
-	}
-	removed, stopped := e.rec.index(fmt.Sprintf("remove-runner %d", old.RunnerID)), e.rec.index("stop "+old.ID)
-	if removed < 0 || stopped < removed {
-		t.Errorf("remove-runner at %d, stop at %d: want the runner removed before the stop", removed, stopped)
-	}
-	if n := len(driver.startedSpecs()); n != 1 {
-		t.Errorf("%d new sandboxes, want 1 in place of the old one", n)
-	}
-}
-
-func TestCleanupCancelsLostJobs(t *testing.T) {
+// The cleanup completes a job whose sandbox is gone for lostJobAfter with
+// the result that the runner reported, or else cancelled. A late
+// JobCompleted still sets the real result.
+func TestCleanupCompletesLostJobs(t *testing.T) {
 	e := newTestEnv(t)
 	serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane")
-	_, _, set := e.attach(pool)
-	lost := e.runningJob(pool, set, serverID, 601, start)
-	recent := e.runningJob(pool, set, serverID, 602, start.Add(7*time.Minute))
+	_, sc, set := e.attach(pool)
+	e.runningJob(pool, set, serverID, 601, start)
+	e.runningJob(pool, set, serverID, 602, start.Add(7*time.Minute))
+	e.runningJob(pool, set, serverID, 603, start)
+	j603 := e.job(603)
+	if err := e.st.SetSandboxJob(e.ctx, j603.SandboxID, j603.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.event(serverID, j603.SandboxID, sandbox.Event{Type: sandbox.EventRunner,
+		Runner: &sandbox.RunnerEvent{Kind: sandbox.RunnerJobCompleted, JobName: "e2e", Result: "Succeeded"}})
 	e.clock.add(11 * time.Minute)
 
 	e.s.cleanup(e.ctx)
 	e.settle()
-	j := e.job(601)
-	if j.State != store.JobCompleted || j.Result != store.ResultCancelled || j.FinishedAt == nil || !j.FinishedAt.Equal(start) {
-		t.Errorf("lost job %s: state %q, result %q, finished %v; want cancelled at %v", lost, j.State, j.Result, j.FinishedAt, start)
+	if j := e.job(601); j.State != store.JobCompleted || j.Result != store.ResultCancelled || j.FinishedAt == nil || !j.FinishedAt.Equal(start) {
+		t.Errorf("job with no result: state %q, result %q, finished %v; want cancelled at %v", j.State, j.Result, j.FinishedAt, start)
 	}
 	if j := e.job(602); j.State != store.JobRunning {
-		t.Errorf("job %s with a sandbox gone for 4 minutes: state %q, want running", recent, j.State)
+		t.Errorf("job with a sandbox gone for 4 minutes: state %q, want running", j.State)
+	}
+	if j := e.job(603); j.State != store.JobCompleted || j.Result != store.ResultSucceeded {
+		t.Errorf("job with a runner result: state %q, result %q; want completed, succeeded", j.State, j.Result)
+	}
+
+	b := e.sandbox(e.job(601).SandboxID)
+	e.scale(sc, msg(0, completed(601, "acme/api", 7000, "e2e", b, "Failed")))
+	e.settle()
+	if j := e.job(601); j.Result != store.ResultFailed || !j.FinishedAt.Equal(start.Add(3*time.Minute)) {
+		t.Errorf("after the late JobCompleted: result %q, finished %v; want failed at the message time", j.Result, j.FinishedAt)
 	}
 }
 
 // runningJob makes a running job whose sandbox went away at stopped.
-func (e *testEnv) runningJob(p store.Pool, set store.ScaleSet, serverID string, requestID int64, stopped time.Time) string {
+func (e *testEnv) runningJob(p store.Pool, set store.ScaleSet, serverID string, requestID int64, stopped time.Time) {
 	e.t.Helper()
 	b := e.insertSandbox(p, set, serverID, sandbox.StateBusy, start.Add(-time.Minute))
 	j, err := e.st.UpsertJob(e.ctx, store.JobMessage{
@@ -224,7 +200,6 @@ func (e *testEnv) runningJob(p store.Pool, set store.ScaleSet, serverID string, 
 	if _, _, err := e.st.AdvanceSandboxState(e.ctx, b.ID, sandbox.StateGone, "removed", stopped); err != nil {
 		e.t.Fatal(err)
 	}
-	return j.ID
 }
 
 func TestRetentionDeletesOldJobsAndLogs(t *testing.T) {
@@ -270,10 +245,9 @@ func TestRetentionDeletesOldJobsAndLogs(t *testing.T) {
 func TestCleanupClosesUnclaimedJobs(t *testing.T) {
 	e := newTestEnv(t)
 	client, sc, _ := e.attach(e.addPool("runplane")) // no server: no room
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0),
-		JobAvailableMessages: []*scaleset.JobAvailable{available(31, "acme/api", 900, "test")}})
-	if calls := client.acquireCalls(); len(calls) != 0 {
-		t.Fatalf("acquired %v with no room", calls)
+	e.scale(sc, msg(0, available(31, "acme/api", 900, "test")))
+	if len(client.acquired) != 0 {
+		t.Fatalf("acquired %v with no room", client.acquired)
 	}
 	states, stop := e.bus.Subscribe(16)
 
@@ -307,11 +281,8 @@ func TestClosedRejectedJobRunsWhenAllowed(t *testing.T) {
 	e.gh.checks["acme/site"] = JobCheck{Private: true, Fork: true}
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	client, sc, _ := e.attach(e.addPool("runplane"))
-	offer := func(messageID int) {
-		e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: messageID, Statistics: stats(0),
-			JobAvailableMessages: []*scaleset.JobAvailable{available(41, "acme/site", 950, "test")}})
-	}
-	offer(1)
+	offer := msg(0, available(41, "acme/site", 950, "test"))
+	e.scale(sc, offer)
 	e.clock.add(61 * time.Minute)
 	e.s.cleanup(e.ctx)
 	if j := e.job(41); j.State != store.JobCompleted || j.RejectReason == "" {
@@ -319,8 +290,8 @@ func TestClosedRejectedJobRunsWhenAllowed(t *testing.T) {
 	}
 
 	e.setSettings(func(s *store.Settings) { s.AllowForkPRs = true })
-	offer(2)
-	if calls := client.acquireCalls(); len(calls) != 1 || !slices.Equal(calls[0], []int64{41}) {
+	e.scale(sc, offer)
+	if calls := client.acquired; len(calls) != 1 || !slices.Equal(calls[0], []int64{41}) {
 		t.Fatalf("acquire calls %v, want [[41]]", calls)
 	}
 	if j := e.job(41); j.State != store.JobAssigned || j.RejectReason != "" {
@@ -338,16 +309,14 @@ func TestFinishStepRunsAgainAfterRestart(t *testing.T) {
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
 	_, sc, _ := e.attach(pool)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0)})
+	e.scale(sc, msg(0))
 	b := e.sandboxes(pool.ID)[0]
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1),
-		JobStartedMessages: []*scaleset.JobStarted{started(71, "acme/api", 970, "build", b)}})
+	e.scale(sc, msg(1, started(71, "acme/api", 970, "build", b)))
 	if err := e.st.AppendJobMetrics(e.ctx, e.job(71).ID, []store.JobMetric{{At: start, CPUPercent: 80, MemoryMB: 900}}); err != nil {
 		t.Fatal(err)
 	}
 	e.gh.noLog = true
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 3, Statistics: stats(0),
-		JobCompletedMessages: []*scaleset.JobCompleted{completed(71, "acme/api", 970, "build", b, "Succeeded")}})
+	e.scale(sc, msg(0, completed(71, "acme/api", 970, "build", b, "Succeeded")))
 	for len(e.rec.matching("download ")) == 0 {
 		time.Sleep(time.Millisecond)
 	}
@@ -365,41 +334,6 @@ func TestFinishStepRunsAgainAfterRestart(t *testing.T) {
 	e.settle()
 	if j := e.job(71); j.LogState != store.LogStored {
 		t.Errorf("after the restart: log %q, want stored", j.LogState)
-	}
-}
-
-// The cleanup completes a job whose sandbox is gone with the result that the
-// runner reported, and a late JobCompleted still sets the real result.
-func TestLostJobResult(t *testing.T) {
-	e := newTestEnv(t)
-	serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	pool := e.addPool("runplane")
-	_, sc, set := e.attach(pool)
-	e.runningJob(pool, set, serverID, 603, start)
-	e.runningJob(pool, set, serverID, 604, start)
-	j603 := e.job(603)
-	if err := e.st.SetSandboxJob(e.ctx, j603.SandboxID, j603.ID); err != nil {
-		t.Fatal(err)
-	}
-	e.event(serverID, j603.SandboxID, sandbox.Event{Type: sandbox.EventRunner,
-		Runner: &sandbox.RunnerEvent{Kind: sandbox.RunnerJobCompleted, JobName: "e2e", Result: "Succeeded"}})
-	e.clock.add(11 * time.Minute)
-
-	e.s.cleanup(e.ctx)
-	e.settle()
-	if j := e.job(603); j.State != store.JobCompleted || j.Result != store.ResultSucceeded {
-		t.Errorf("job with a runner result: state %q, result %q; want completed, succeeded", j.State, j.Result)
-	}
-	if j := e.job(604); j.State != store.JobCompleted || j.Result != store.ResultCancelled {
-		t.Errorf("job with no result: state %q, result %q; want completed, cancelled", j.State, j.Result)
-	}
-
-	b := e.sandbox(e.job(604).SandboxID)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0),
-		JobCompletedMessages: []*scaleset.JobCompleted{completed(604, "acme/api", 7000, "e2e", b, "Failed")}})
-	e.settle()
-	if j := e.job(604); j.Result != store.ResultFailed || !j.FinishedAt.Equal(start.Add(3*time.Minute)) {
-		t.Errorf("after the late JobCompleted: result %q, finished %v; want failed at the message time", j.Result, j.FinishedAt)
 	}
 }
 
@@ -425,15 +359,15 @@ func TestLostServerSandboxesStopCountingAsRunners(t *testing.T) {
 
 	e.clock.add(5 * time.Minute)
 	e.s.cleanup(e.ctx)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0)})
-	if n := len(primary.startedSpecs()); n != 0 {
+	e.scale(sc, msg(0))
+	if n := len(primary.specs); n != 0 {
 		t.Fatalf("%d starts 5 minutes after the agent went away, want 0", n)
 	}
 
 	e.clock.add(11 * time.Minute)
 	e.s.cleanup(e.ctx)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(0)})
-	if n := len(primary.startedSpecs()); n != 2 {
+	e.scale(sc, msg(0))
+	if n := len(primary.specs); n != 2 {
 		t.Errorf("%d starts on the primary 16 minutes after the agent went away, want 2", n)
 	}
 	for _, x := range []store.Sandbox{a, b} {

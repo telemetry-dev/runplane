@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,13 +37,7 @@ func (r *recorder) add(format string, args ...any) {
 func (r *recorder) matching(prefix string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var out []string
-	for _, c := range r.calls {
-		if strings.HasPrefix(c, prefix) {
-			out = append(out, c)
-		}
-	}
-	return out
+	return slices.DeleteFunc(slices.Clone(r.calls), func(c string) bool { return !strings.HasPrefix(c, prefix) })
 }
 
 func (r *recorder) index(call string) int {
@@ -54,8 +47,10 @@ func (r *recorder) index(call string) int {
 }
 
 // fakeDriver counts a sandbox in its capacity from the moment Start
-// returns, as the real drivers do.
+// returns, as the real drivers do. The scheduler calls no method of the nil
+// sandbox.Driver.
 type fakeDriver struct {
+	sandbox.Driver
 	rec  *recorder
 	base sandbox.Capacity
 
@@ -121,30 +116,12 @@ func (d *fakeDriver) Capacity(ctx context.Context) (sandbox.Capacity, error) {
 	return c, nil
 }
 
-func (d *fakeDriver) Events() <-chan sandbox.Event { return nil }
-
-func (d *fakeDriver) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
-	return nil, errors.New("no logs")
-}
-
-func (d *fakeDriver) Shell(ctx context.Context, id string, size sandbox.TermSize) (sandbox.Terminal, error) {
-	return nil, errors.New("no shell")
-}
-
 func (d *fakeDriver) Hold(ctx context.Context, id string, until time.Time) error {
 	d.rec.add("hold %s", id)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.holds[id] = until
 	return nil
-}
-
-func (d *fakeDriver) Close() error { return nil }
-
-func (d *fakeDriver) startedSpecs() []sandbox.Spec {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return slices.Clone(d.specs)
 }
 
 type fakeFleet struct {
@@ -159,20 +136,12 @@ type fakeFleet struct {
 func (f *fakeFleet) Online() []sandbox.Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var list []sandbox.Host
-	for _, h := range f.hosts {
-		if !f.offline[h.ServerID] {
-			list = append(list, h)
-		}
-	}
-	return list
+	return slices.DeleteFunc(slices.Clone(f.hosts), func(h sandbox.Host) bool { return f.offline[h.ServerID] })
 }
 
 func (f *fakeFleet) Driver(serverID string) sandbox.Driver {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, h := range f.hosts {
-		if h.ServerID == serverID && !f.offline[serverID] {
+	for _, h := range f.Online() {
+		if h.ServerID == serverID {
 			return h.Driver
 		}
 	}
@@ -252,18 +221,6 @@ func (c *fakeClient) SetMaxRunners(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.max = n
-}
-
-func (c *fakeClient) acquireCalls() [][]int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return slices.Clone(c.acquired)
-}
-
-func (c *fakeClient) maxRunners() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.max
 }
 
 type fakeGitHub struct {
@@ -414,13 +371,11 @@ func (e *testEnv) addServer(name string, c sandbox.Capacity) (string, *fakeDrive
 	return id, d
 }
 
-type poolOpt func(*store.Pool)
-
-func (e *testEnv) addPool(label string, opts ...poolOpt) store.Pool {
+func (e *testEnv) addPool(label string, opts ...func(*store.Pool)) store.Pool {
 	e.t.Helper()
 	p := store.Pool{
 		ID: ids.New(), Name: label, Label: label, Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 64,
-		MinIdle: 0, MaxRunners: 5, Enabled: true, CreatedAt: start, UpdatedAt: start,
+		MaxRunners: 5, Enabled: true, CreatedAt: start, UpdatedAt: start,
 	}
 	for _, o := range opts {
 		o(&p)
@@ -511,18 +466,32 @@ func (e *testEnv) insertSandbox(p store.Pool, set store.ScaleSet, serverID strin
 	return b
 }
 
-// busy moves the sandbox to busy at t, as a job start does.
-func (e *testEnv) busy(b store.Sandbox, t time.Time) {
-	e.t.Helper()
-	if _, _, err := e.st.AdvanceSandboxState(e.ctx, b.ID, sandbox.StateBusy, "", t); err != nil {
-		e.t.Fatal(err)
+// msg makes a listener message with the job messages, and with
+// assignedJobs assigned and running jobs in its statistics.
+func msg(assignedJobs int, jobs ...any) *scaleset.RunnerScaleSetMessage {
+	m := &scaleset.RunnerScaleSetMessage{
+		Statistics: &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: assignedJobs, TotalRunningJobs: assignedJobs},
 	}
+	for _, j := range jobs {
+		switch j := j.(type) {
+		case *scaleset.JobAvailable:
+			m.JobAvailableMessages = append(m.JobAvailableMessages, j)
+		case *scaleset.JobAssigned:
+			m.JobAssignedMessages = append(m.JobAssignedMessages, j)
+		case *scaleset.JobStarted:
+			m.JobStartedMessages = append(m.JobStartedMessages, j)
+		case *scaleset.JobCompleted:
+			m.JobCompletedMessages = append(m.JobCompletedMessages, j)
+		default:
+			panic(fmt.Sprintf("msg: %T is no job message", j))
+		}
+	}
+	return m
 }
 
-func base(requestID int64, repo string, runID int64, jobName string, typ scaleset.MessageType) scaleset.JobMessageBase {
+func base(requestID int64, repo string, runID int64, jobName string) scaleset.JobMessageBase {
 	owner, name, _ := strings.Cut(repo, "/")
 	return scaleset.JobMessageBase{
-		JobMessageType:  scaleset.JobMessageType{MessageType: typ},
 		RunnerRequestID: requestID,
 		RepositoryName:  name,
 		OwnerName:       owner,
@@ -537,33 +506,24 @@ func base(requestID int64, repo string, runID int64, jobName string, typ scalese
 }
 
 func available(requestID int64, repo string, runID int64, jobName string) *scaleset.JobAvailable {
-	return &scaleset.JobAvailable{
-		AcquireJobURL:  fmt.Sprintf("https://broker.actions.githubusercontent.com/acquirejob/%d", requestID),
-		JobMessageBase: base(requestID, repo, runID, jobName, scaleset.MessageTypeJobAvailable),
-	}
+	return &scaleset.JobAvailable{JobMessageBase: base(requestID, repo, runID, jobName)}
 }
 
 func assigned(requestID int64, repo string, runID int64, jobName string) *scaleset.JobAssigned {
-	b := base(requestID, repo, runID, jobName, scaleset.MessageTypeJobAssigned)
+	b := base(requestID, repo, runID, jobName)
 	b.ScaleSetAssignTime = start.Add(time.Second)
 	return &scaleset.JobAssigned{JobMessageBase: b}
 }
 
 func started(requestID int64, repo string, runID int64, jobName string, runner store.Sandbox) *scaleset.JobStarted {
-	b := base(requestID, repo, runID, jobName, scaleset.MessageTypeJobStarted)
+	b := base(requestID, repo, runID, jobName)
 	b.ScaleSetAssignTime = start.Add(time.Second)
 	b.RunnerAssignTime = start.Add(5 * time.Second)
 	return &scaleset.JobStarted{RunnerID: int(runner.RunnerID), RunnerName: runner.RunnerName, JobMessageBase: b}
 }
 
 func completed(requestID int64, repo string, runID int64, jobName string, runner store.Sandbox, result string) *scaleset.JobCompleted {
-	b := base(requestID, repo, runID, jobName, scaleset.MessageTypeJobCompleted)
-	b.ScaleSetAssignTime = start.Add(time.Second)
-	b.RunnerAssignTime = start.Add(5 * time.Second)
-	b.FinishTime = start.Add(3 * time.Minute)
-	return &scaleset.JobCompleted{Result: result, RunnerID: int(runner.RunnerID), RunnerName: runner.RunnerName, JobMessageBase: b}
-}
-
-func stats(assignedJobs int) *scaleset.RunnerScaleSetStatistic {
-	return &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: assignedJobs, TotalRunningJobs: assignedJobs}
+	s := started(requestID, repo, runID, jobName, runner)
+	s.FinishTime = start.Add(3 * time.Minute)
+	return &scaleset.JobCompleted{Result: result, RunnerID: s.RunnerID, RunnerName: s.RunnerName, JobMessageBase: s.JobMessageBase}
 }
