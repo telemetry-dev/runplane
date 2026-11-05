@@ -22,9 +22,6 @@ import (
 // one line is "tcp://<host:port> <sandbox-id> <token>".
 const AddrFile = "control.addr"
 
-// handshakeTimeout limits the wait for the first line of a TCP connection.
-const handshakeTimeout = 5 * time.Second
-
 // TCPListener serves the control channels of all sandboxes on one TCP port.
 // Dev mode uses it, because a Unix socket in a bind mount does not cross the
 // VM of Docker Desktop or OrbStack. Each connection starts with the line
@@ -92,9 +89,6 @@ func (t *TCPListener) Listen(ctlDir string, cfg GuestConfig, h Handler, log *slo
 	return s, nil
 }
 
-// Addr is the address that the listener listens on.
-func (t *TCPListener) Addr() net.Addr { return t.ln.Addr() }
-
 // Close stops new connections. Connections that a Server took stay until
 // that Server closes.
 func (t *TCPListener) Close() error {
@@ -121,7 +115,7 @@ func (t *TCPListener) accept() {
 }
 
 func (t *TCPListener) handshake(conn net.Conn) {
-	conn.SetDeadline(time.Now().Add(handshakeTimeout))
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	line, err := readHello(conn)
 	var srv *Server
 	if err == nil {

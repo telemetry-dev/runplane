@@ -137,7 +137,6 @@ func (r *queueReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// writer returns a writer that queues each line written to it.
 func (q *logQueue) writer(source string) io.Writer {
 	return lineWriter{q: q, source: source}
 }

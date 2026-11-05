@@ -55,19 +55,15 @@ func TestLogFileRotates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
-
 	writeLines(t, l, 0, 1100)
-	cur, err := os.Stat(filepath.Join(dir, "console.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	old, err := os.Stat(filepath.Join(dir, "console.log.1"))
-	if err != nil {
-		t.Fatal("no console.log.1 after 68 MB of lines:", err)
-	}
-	if old.Size() > 64<<20 || cur.Size() > 64<<20 {
-		t.Errorf("sizes %d and %d pass the 64 MiB cap", old.Size(), cur.Size())
+	for _, name := range []string{"console.log", "console.log.1"} {
+		st, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Size() > 64<<20 {
+			t.Errorf("%s has %d bytes, more than the 64 MiB cap", name, st.Size())
+		}
 	}
 	r := l.Reader(context.Background(), false)
 	if err := checkLines(r, 0, 1100); err != nil {
@@ -75,8 +71,15 @@ func TestLogFileRotates(t *testing.T) {
 	}
 	r.Close()
 
-	// A second rotation drops the oldest part.
+	// The follower must see every line, also across a second rotation, and
+	// stop at the end when the log closes.
+	follower := l.Reader(context.Background(), true)
+	defer follower.Close()
+	done := make(chan error)
+	go func() { done <- checkLines(follower, 0, 2200) }()
 	writeLines(t, l, 1100, 2200)
+
+	// The second rotation drops the oldest part.
 	r = l.Reader(context.Background(), false)
 	defer r.Close()
 	sc := bufio.NewScanner(r)
@@ -87,24 +90,7 @@ func TestLogFileRotates(t *testing.T) {
 	if first == 0 {
 		t.Errorf("the oldest part is still there after a second rotation")
 	}
-}
 
-func TestLogFileFollow(t *testing.T) {
-	l, err := OpenLogFile(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeLines(t, l, 0, 10)
-
-	r := l.Reader(context.Background(), true)
-	defer r.Close()
-	done := make(chan error)
-	go func() {
-		// The follower must see every line, also across a rotation, and
-		// stop at the end when the log closes.
-		done <- checkLines(r, 0, 1200)
-	}()
-	writeLines(t, l, 10, 1200)
 	l.Close()
 	select {
 	case err := <-done:

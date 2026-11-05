@@ -3,14 +3,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -33,11 +31,8 @@ func TestShell(t *testing.T) {
 	shells := newShellServer(log)
 	acct := account{name: "root", home: t.TempDir(), shell: "/bin/sh"}
 	shells.setStart(shellStarter(acct, newReaper()))
-	dial := func(ctx context.Context) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "unix", sock)
-	}
-	link := newGuestLink(dial, log, newLogQueue(1<<20), guestMux(newHostRequests(), shells))
+	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, sock) },
+		log, newLogQueue(1<<20), guestMux(newHostRequests(), shells))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go link.run(ctx)
@@ -47,7 +42,10 @@ func TestShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := &output{}
+	out := &syncBuffer{}
+	has := func(s string) func() bool {
+		return func() bool { return strings.Contains(out.String(), s) }
+	}
 	readDone := make(chan error, 1)
 	go func() {
 		_, err := io.Copy(out, term)
@@ -55,12 +53,13 @@ func TestShell(t *testing.T) {
 	}()
 
 	io.WriteString(term, "stty size\n")
-	waitFor(t, "the first size", func() bool { return out.has("30 90") })
+	waitFor(t, "the first size", has("30 90"))
 	if err := term.Resize(sandbox.TermSize{Rows: 40, Cols: 100}); err != nil {
 		t.Fatal(err)
 	}
 	io.WriteString(term, "stty size; echo $HOME\n")
-	waitFor(t, "the new size", func() bool { return out.has("40 100") && out.has(acct.home) })
+	waitFor(t, "the new size", has("40 100"))
+	waitFor(t, "the home folder", has(acct.home))
 
 	// When the shell exits, the stream ends.
 	io.WriteString(term, "exit\n")
@@ -76,30 +75,12 @@ func TestShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "an open session", func() bool { return openSessions(shells) == 1 })
+	openSessions := func() int {
+		shells.mu.Lock()
+		defer shells.mu.Unlock()
+		return len(shells.open)
+	}
+	waitFor(t, "an open session", func() bool { return openSessions() == 1 })
 	term.Close()
-	waitFor(t, "the session to end", func() bool { return openSessions(shells) == 0 })
-}
-
-func openSessions(s *shellServer) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.open)
-}
-
-type output struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (o *output) Write(p []byte) (int, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.buf.Write(p)
-}
-
-func (o *output) has(s string) bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return strings.Contains(o.buf.String(), s)
+	waitFor(t, "the session to end", func() bool { return openSessions() == 0 })
 }

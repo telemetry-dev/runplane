@@ -94,7 +94,7 @@ func createOptions(o Options, spec sandbox.Spec, m mounts, dns []netip.Addr) cli
 			MemorySwap:   memory, // no swap
 			PidsLimit:    &pids,
 			CPUShares:    cpuShares,
-			CgroupParent: o.CgroupParent,
+			CgroupParent: o.cgroupParent(),
 		},
 	}
 	if _, err := netip.ParseAddr(o.ServiceHost); err != nil {

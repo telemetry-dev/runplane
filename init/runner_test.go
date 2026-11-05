@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
+	"os"
+	"path/filepath"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/runplane/runplane/internal/sandbox"
 )
@@ -50,4 +55,39 @@ func TestParseRunnerLine(t *testing.T) {
 			t.Errorf("parseRunnerLine(%q) = %+v, %v; want %+v, %v", tt.line, got, ok, tt.want, tt.ok)
 		}
 	}
+}
+
+// A sandbox without runplane's cache must get GitHub's results URL back, or
+// upload-artifact fails with "Unable to get the ACTIONS_RESULTS_URL env variable".
+func TestUnpatchWorker(t *testing.T) {
+	original := dll("ACTIONS_RESULTS_URL")
+	for _, in := range [][]byte{dll("ACTIONS_RESULTS_ORL"), original} {
+		file := filepath.Join(t.TempDir(), "Runner.Worker.dll")
+		if err := os.WriteFile(file, in, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := unpatchWorker(file); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(file); !bytes.Equal(got, original) {
+			t.Errorf("%q became %q, want %q", in, got, original)
+		}
+	}
+	if err := unpatchWorker(filepath.Join(t.TempDir(), "missing.dll")); err != nil {
+		t.Errorf("missing file: %v", err)
+	}
+}
+
+// dll is a fake Runner.Worker.dll with the name two times in UTF-16LE, as
+// .NET stores string literals, between other bytes.
+func dll(name string) []byte {
+	var b bytes.Buffer
+	b.WriteString("MZ head")
+	for _, s := range []string{name, " and ", name} {
+		for _, u := range utf16.Encode([]rune(s)) {
+			binary.Write(&b, binary.LittleEndian, u)
+		}
+	}
+	b.WriteString("tail")
+	return b.Bytes()
 }

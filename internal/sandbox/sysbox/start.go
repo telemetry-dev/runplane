@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,13 +46,13 @@ func (d *Driver) Start(ctx context.Context, spec sandbox.Spec) error {
 		d.mu.Unlock()
 		return fmt.Errorf("start sandbox %s: it exists", spec.ID)
 	}
-	settings, dns := d.settings, d.dns
+	settings := d.settings
 	d.boxes[spec.ID] = b
 	b.state = sandbox.StateStarting
 	d.emitState(b.id, sandbox.StateStarting, "")
 	d.mu.Unlock()
 
-	if err := d.create(ctx, b, spec, settings, dns); err != nil {
+	if err := d.create(ctx, b, spec, settings); err != nil {
 		d.mu.Lock()
 		if ctx.Err() != nil {
 			// The caller gave up, for example because runplane stops.
@@ -86,7 +85,7 @@ func (d *Driver) check(spec sandbox.Spec) error {
 	return nil
 }
 
-func (d *Driver) create(ctx context.Context, b *box, spec sandbox.Spec, s sandbox.Settings, dns []netip.Addr) error {
+func (d *Driver) create(ctx context.Context, b *box, spec sandbox.Spec, s sandbox.Settings) error {
 	bundle, err := d.opts.Bundle(ctx, spec.RunnerVersion, spec.Arch)
 	if err != nil {
 		return fmt.Errorf("find runner bundle: %w", err)
@@ -129,7 +128,7 @@ func (d *Driver) create(ctx context.Context, b *box, spec sandbox.Spec, s sandbo
 	b.logs = logs
 	d.mu.Unlock()
 	cfg := guestConfig(spec, s, bundle, serviceURL(d.opts.ServiceHost, d.opts.Config.ServicePort))
-	ctl, err := d.listen(b, logs, cfg)
+	ctl, err := d.listen(b, cfg)
 	if err != nil {
 		return err
 	}
@@ -137,7 +136,7 @@ func (d *Driver) create(ctx context.Context, b *box, spec sandbox.Spec, s sandbo
 	b.ctl = ctl
 	d.mu.Unlock()
 
-	res, err := d.docker.ContainerCreate(ctx, createOptions(d.opts, spec, m, dns))
+	res, err := d.docker.ContainerCreate(ctx, createOptions(d.opts, spec, m, s.IPv4DNS()))
 	if err != nil {
 		return fmt.Errorf("create container: %w", err)
 	}
@@ -213,9 +212,9 @@ func (d *Driver) makeScratchDisk(dir string, sizeGB int) (string, error) {
 	return mnt, mkdir(filepath.Join(mnt, "tmp"), 0o777|os.ModeSticky)
 }
 
-func (d *Driver) listen(b *box, logs *control.LogFile, cfg control.GuestConfig) (*control.Server, error) {
+func (d *Driver) listen(b *box, cfg control.GuestConfig) (*control.Server, error) {
 	log := d.log.With("sandbox", b.id)
-	h := handler{d: d, b: b, logs: logs, log: log}
+	h := handler{d: d, b: b, log: log}
 	if d.tcp != nil {
 		return d.tcp.Listen(filepath.Join(b.dir, "ctl"), cfg, h, log)
 	}

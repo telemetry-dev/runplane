@@ -161,7 +161,6 @@ func configureVM(cfg control.GuestConfig) error {
 	return loopbackUp()
 }
 
-// mountBundle mounts the read-only runner bundle drive at dir.
 func mountBundle(dir string) error {
 	if err := mkdirs(dir); err != nil {
 		return err

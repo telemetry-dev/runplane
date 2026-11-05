@@ -91,8 +91,7 @@ func (d *Driver) readEvents(ctx context.Context, res client.EventsResult) {
 	for {
 		select {
 		case msg := <-res.Messages:
-			b := d.get(msg.Actor.Attributes[sandbox.LabelSandbox])
-			if b != nil && d.containerID(b) == msg.Actor.ID {
+			if b := d.byContainer(msg.Actor.ID); b != nil {
 				go d.remove(b)
 			}
 		case err := <-res.Err:
@@ -165,11 +164,10 @@ func (d *Driver) sweep(ctx context.Context) {
 		if c.State != container.StateExited && c.State != container.StateDead {
 			continue
 		}
-		id := c.Labels[sandbox.LabelSandbox]
-		if b := d.get(id); b != nil && d.containerID(b) == c.ID {
+		if b := d.byContainer(c.ID); b != nil {
 			go d.remove(b)
 		} else {
-			d.removeOrphan(ctx, c.ID, id)
+			d.removeOrphan(ctx, c.ID, c.Labels[sandbox.LabelSandbox])
 		}
 	}
 	now := time.Now()
@@ -212,7 +210,7 @@ func (d *Driver) checkDisks(ctx context.Context) {
 			}
 			continue
 		}
-		if !overDisk(used, b.spec.DiskGB) {
+		if used <= int64(b.spec.DiskGB)<<30 {
 			continue
 		}
 		d.mu.Lock()
@@ -225,11 +223,6 @@ func (d *Driver) checkDisks(ctx context.Context) {
 	}
 }
 
-// overDisk tells if used bytes pass a disk size of diskGB.
-func overDisk(used int64, diskGB int) bool { return used > int64(diskGB)<<30 }
-
-// diskUse returns the bytes that a sandbox wrote: the writable layer of its
-// container and its scratch disk or volume.
 func (d *Driver) diskUse(ctx context.Context, b *box) (int64, error) {
 	res, err := d.docker.ContainerInspect(ctx, d.containerID(b), client.ContainerInspectOptions{Size: true})
 	if err != nil {

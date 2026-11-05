@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -82,7 +87,6 @@ func (l *guestLink) run(ctx context.Context) {
 	}
 }
 
-// serve uses one connection until it drops.
 func (l *guestLink) serve(ctx context.Context, sess *yamux.Session) {
 	srv := &http.Server{Handler: l.mux, ErrorLog: slog.NewLogLogger(l.log.Handler(), slog.LevelDebug)}
 	go srv.Serve(sess)
@@ -159,7 +163,6 @@ func getConfig(ctx context.Context, client *http.Client) (control.GuestConfig, e
 	return cfg, err
 }
 
-// wait returns the open connection, or waits for one.
 func (l *guestLink) wait(ctx context.Context) (*linkConn, error) {
 	for {
 		l.mu.Lock()
@@ -176,7 +179,6 @@ func (l *guestLink) wait(ctx context.Context) (*linkConn, error) {
 	}
 }
 
-// event queues a runner event for the host.
 func (l *guestLink) event(ev sandbox.RunnerEvent) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -185,17 +187,12 @@ func (l *guestLink) event(ev sandbox.RunnerEvent) {
 	l.newEvent = make(chan struct{})
 }
 
-// sendEvents sends queued events in order until the connection drops.
 func (l *guestLink) sendEvents(c *linkConn) {
 	for {
 		l.mu.Lock()
-		n, wake := len(l.events), l.newEvent
-		var ev sandbox.RunnerEvent
-		if n > 0 {
-			ev = l.events[0]
-		}
-		l.mu.Unlock()
-		if n == 0 {
+		if len(l.events) == 0 {
+			wake := l.newEvent
+			l.mu.Unlock()
 			select {
 			case <-wake:
 				continue
@@ -203,6 +200,8 @@ func (l *guestLink) sendEvents(c *linkConn) {
 				return
 			}
 		}
+		ev := l.events[0]
+		l.mu.Unlock()
 		status, err := postEvent(c.client, ev)
 		select {
 		case <-c.done:
@@ -230,10 +229,7 @@ func (l *guestLink) sendEvents(c *linkConn) {
 }
 
 func postEvent(client *http.Client, ev sandbox.RunnerEvent) (int, error) {
-	body, err := json.Marshal(ev)
-	if err != nil {
-		return 0, err
-	}
+	body, _ := json.Marshal(ev) // only strings and an int
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://host/v1/events", bytes.NewReader(body))
@@ -249,7 +245,6 @@ func postEvent(client *http.Client, ev sandbox.RunnerEvent) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// flushEvents waits until the host has all queued events, or ctx ends.
 func (l *guestLink) flushEvents(ctx context.Context) {
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
@@ -296,13 +291,44 @@ func (l *guestLink) streamLogs(c *linkConn) {
 	}
 }
 
-// flushLogs closes the log queue and waits until the host has all lines, or ctx ends.
 func (l *guestLink) flushLogs(ctx context.Context) {
 	l.logs.close()
 	select {
 	case <-l.logsDone:
 	case <-ctx.Done():
 	}
+}
+
+// dialHost connects to the host end of the control channel in container and
+// dev mode. In dev mode the ctl folder also holds control.addr: then the
+// guest dials TCP and sends the hello line first. It reads the file at each
+// dial, because the host writes a new token after a restart.
+func dialHost(ctx context.Context, socket string) (net.Conn, error) {
+	// A connect that hangs, for example in the TCP proxy of Docker on
+	// macOS, would otherwise wait for the kernel limit of about 2 minutes.
+	d := net.Dialer{Timeout: 5 * time.Second}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(socket), control.AddrFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return d.DialContext(ctx, "unix", socket)
+	}
+	if err != nil {
+		return nil, err
+	}
+	addr, hello, err := control.ParseAddr(b)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(conn, hello); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	conn.SetWriteDeadline(time.Time{})
+	return conn, nil
 }
 
 func sleep(ctx context.Context, d time.Duration) {

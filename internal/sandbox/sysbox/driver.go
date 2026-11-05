@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/netip"
 	"os"
 	"slices"
 	"sync"
@@ -42,16 +41,14 @@ const (
 const labelManaged = "dev.runplane.managed"
 
 // labelData marks the containers and volumes of a driver with its data
-// folder. Two runplane processes on one Docker, such as `make dev` and the
-// end-to-end test on a developer machine, then leave each other's sandboxes
-// alone.
+// folder, so that two runplane processes on one Docker leave each other's
+// sandboxes alone.
 const labelData = "dev.runplane.data"
 
 // stopTimeout is the time that runplane-init gets after SIGTERM to stop the
 // runner and dockerd and to send its last log lines.
 const stopTimeout = 30 * time.Second
 
-// ErrNotFound means that the driver operates no sandbox with this ID.
 var ErrNotFound = errors.New("sandbox not found")
 
 var (
@@ -61,25 +58,19 @@ var (
 
 type Options struct {
 	Docker *client.Client
-	Config config.Config // data folders and the service port
-	Mode   sandbox.Mode  // sandbox.ModeContainer or sandbox.ModeDev
+	Config config.Config
+	Mode   sandbox.Mode // sandbox.ModeContainer or sandbox.ModeDev
 	// Runtime is the OCI runtime of the containers: "sysbox-runc" in
 	// container mode, "runc" in dev mode.
 	Runtime string
 	// Privileged lets dockerd and the overlay mounts operate under runc.
-	// Dev mode only.
 	Privileged bool
 	Scratch    Scratch
-	// Bundle returns a runner bundle that is ready on this server, for
-	// example (*image.Bundles).Ensure.
-	Bundle func(ctx context.Context, version, arch string) (image.Bundle, error)
-	// InitPath returns the runplane-init binary, for example initbin.Path.
-	// The driver asks at each start, because a temp folder cleaner can
-	// remove the file.
+	Bundle     func(ctx context.Context, version, arch string) (image.Bundle, error)
+	// InitPath returns the runplane-init binary. The driver asks at each
+	// start, because a temp folder cleaner can remove the file.
 	InitPath func() (string, error)
-	// NetRules applies the firewall rules to the runplane bridge. Nil means
-	// no rules (dev mode).
-	NetRules *netrules.Manager
+	NetRules *netrules.Manager // nil means no firewall rules (dev mode)
 	// ServiceHost is the address of the cache server and the registry
 	// mirror for the sandboxes. Empty means the gateway of the runplane
 	// network. A name, such as host.docker.internal, points to the Docker
@@ -88,16 +79,17 @@ type Options struct {
 	// ControlListen is the TCP address of the control channel in dev mode,
 	// for example ":8487". Empty means a Unix socket for each sandbox.
 	ControlListen string
-	// CgroupParent of the containers. Empty means runplane.slice in
-	// container mode and the Docker default in dev mode.
-	CgroupParent string
-	Settings     sandbox.Settings
-	Logger       *slog.Logger
+	Settings      sandbox.Settings
+	Logger        *slog.Logger
 }
 
-// owned limits a Docker filter to the objects of this driver.
-func (d *Driver) owned(f client.Filters) client.Filters {
-	return f.Add("label", labelData+"="+d.opts.Config.DataDir)
+// cgroupParent puts the containers of container mode in runplane.slice.
+// Dev mode uses the Docker default.
+func (o Options) cgroupParent() string {
+	if o.Mode == sandbox.ModeContainer {
+		return "runplane.slice"
+	}
+	return ""
 }
 
 // Driver operates the sandbox containers of one server.
@@ -113,7 +105,6 @@ type Driver struct {
 
 	mu       sync.Mutex
 	settings sandbox.Settings
-	dns      []netip.Addr
 	boxes    map[string]*box
 	closed   bool
 
@@ -155,17 +146,8 @@ type box struct {
 // New sets up the runplane network and its firewall rules, takes over the
 // sandboxes that still operate, and removes the remains of the others.
 func New(opts Options) (*Driver, error) {
-	if opts.Docker == nil || opts.Bundle == nil || opts.InitPath == nil {
-		return nil, errors.New("sysbox: Docker, Bundle, and InitPath are necessary")
-	}
 	if opts.Scratch != ScratchLoop && opts.Scratch != ScratchVolume {
 		return nil, fmt.Errorf("sysbox: unknown scratch kind %q", opts.Scratch)
-	}
-	if opts.Logger == nil {
-		opts.Logger = slog.New(slog.DiscardHandler)
-	}
-	if opts.CgroupParent == "" && opts.Mode == sandbox.ModeContainer {
-		opts.CgroupParent = "runplane.slice"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Driver{
@@ -228,17 +210,8 @@ func (d *Driver) Mode() sandbox.Mode { return d.opts.Mode }
 // Configure takes new settings. New sandboxes get the DNS servers and the
 // cache and mirror settings; the firewall policy changes at once.
 func (d *Driver) Configure(s sandbox.Settings) error {
-	var dns []netip.Addr
-	for _, v := range s.DNS {
-		a, err := netip.ParseAddr(v)
-		if err != nil || !a.Is4() {
-			d.log.Warn("skip DNS server; use an IPv4 address", "dns", v)
-			continue
-		}
-		dns = append(dns, a)
-	}
 	d.mu.Lock()
-	d.settings, d.dns = s, dns
+	d.settings = s
 	d.mu.Unlock()
 	if d.opts.NetRules == nil {
 		return nil
@@ -247,7 +220,7 @@ func (d *Driver) Configure(s sandbox.Settings) error {
 	defer cancel()
 	err := d.opts.NetRules.Setup(ctx, netrules.Config{
 		ServicePort: d.opts.Config.ServicePort,
-		DNS:         dns,
+		DNS:         s.IPv4DNS(),
 		Allowlist:   s.EgressAllowlist,
 	})
 	if err != nil {
@@ -363,7 +336,11 @@ func (d *Driver) get(id string) *box {
 	return d.boxes[id]
 }
 
-// channel returns a sandbox with its log and control channel, or nils.
+// owned limits a Docker filter to the objects of this driver.
+func (d *Driver) owned(f client.Filters) client.Filters {
+	return f.Add("label", labelData+"="+d.opts.Config.DataDir)
+}
+
 func (d *Driver) channel(id string) (*box, *control.LogFile, *control.Server) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -378,6 +355,17 @@ func (d *Driver) containerID(b *box) string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return b.containerID
+}
+
+func (d *Driver) byContainer(containerID string) *box {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, b := range d.boxes {
+		if b.containerID == containerID {
+			return b
+		}
+	}
+	return nil
 }
 
 // setState moves a sandbox forward to st and sends the change. A state
@@ -410,10 +398,9 @@ func forward(cur, next sandbox.State) bool {
 
 // handler takes what runplane-init sends.
 type handler struct {
-	d    *Driver
-	b    *box
-	logs *control.LogFile
-	log  *slog.Logger
+	d   *Driver
+	b   *box
+	log *slog.Logger
 }
 
 func (h handler) OnEvent(ev sandbox.RunnerEvent) {
@@ -438,8 +425,9 @@ func (h handler) OnLostConfig() {
 	h.d.Stop(context.Background(), h.b.id)
 }
 
+// OnLog runs only after listen, so b.logs is set and stays.
 func (h handler) OnLog(line control.LogLine) {
-	if err := h.logs.Write(line); err != nil && !errors.Is(err, os.ErrClosed) {
+	if err := h.b.logs.Write(line); err != nil && !errors.Is(err, os.ErrClosed) {
 		h.log.Warn("write sandbox log", "err", err)
 	}
 }

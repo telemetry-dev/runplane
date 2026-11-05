@@ -139,14 +139,3 @@ func (d *Driver) checkSysboxFS() {
 		go d.remove(b)
 	}
 }
-
-func (d *Driver) byContainer(containerID string) *box {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, b := range d.boxes {
-		if b.containerID == containerID {
-			return b
-		}
-	}
-	return nil
-}

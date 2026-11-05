@@ -18,7 +18,7 @@ type hostRequests struct {
 	hold    time.Time
 	changed chan struct{} // closed and replaced when the hold changes
 
-	stop     chan struct{}
+	stop     chan struct{} // closed at a shutdown
 	stopOnce sync.Once
 }
 
@@ -36,20 +36,6 @@ func (h *hostRequests) setHold(until time.Time) {
 
 func (h *hostRequests) shutdown() {
 	h.stopOnce.Do(func() { close(h.stop) })
-}
-
-// stopped is closed after a shutdown request.
-func (h *hostRequests) stopped() <-chan struct{} {
-	return h.stop
-}
-
-func (h *hostRequests) shuttingDown() bool {
-	select {
-	case <-h.stop:
-		return true
-	default:
-		return false
-	}
 }
 
 // waitHold returns at the hold time or at a shutdown. The host can move the

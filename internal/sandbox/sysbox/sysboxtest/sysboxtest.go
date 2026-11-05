@@ -4,7 +4,9 @@ package sysboxtest
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,18 +17,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 )
-
-// GuestRunnerDir is where the sandbox mounts the bundle.
-const GuestRunnerDir = "/.runplane/runner"
 
 // fakeRunner stands in for the actions runner. It prints what the tests
 // check and the lines that runplane-init watches for. The test starts the
 // job with the file start-<jit config> and ends it with end-<jit config>.
-// The job keeps one CPU busy.
+// The job keeps one CPU busy. The sandbox mounts the bundle at
+// /.runplane/runner.
 const fakeRunner = `#!/bin/bash
-dir=` + GuestRunnerDir + `
+dir=/.runplane/runner
 echo "jit=$2"
 cat .env
 awk '$2=="/mnt/scratch" || $2=="/var/lib/docker" || $2=="/tmp" || $2=="/home" || $2=="/opt" {print "mount " $2 " " $3}' /proc/mounts
@@ -59,6 +60,11 @@ func NewBundle(t *testing.T, dir string) Bundle {
 		t.Fatal(err)
 	}
 	return Bundle{Dir: dir}
+}
+
+// Ensure stands in for (*image.Bundles).Ensure.
+func (b Bundle) Ensure(_ context.Context, version, arch string) (image.Bundle, error) {
+	return image.Bundle{Version: version, Arch: arch, Dir: b.Dir, Patched: true}, nil
 }
 
 // Signal makes the file <name>-<jit config> that the fake runner waits for.
@@ -182,19 +188,15 @@ func ReadAll(r io.Reader) func() string {
 
 // ReadUntil reads r until the output has want or the time is up.
 func ReadUntil(r io.Reader, want string, timeout time.Duration) string {
-	var mu sync.Mutex
-	var out strings.Builder
+	out := &syncBuffer{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
 		for {
 			n, err := r.Read(buf)
-			mu.Lock()
 			out.Write(buf[:n])
-			found := strings.Contains(out.String(), want)
-			mu.Unlock()
-			if found || err != nil {
+			if strings.Contains(out.String(), want) || err != nil {
 				return
 			}
 		}
@@ -203,28 +205,38 @@ func ReadUntil(r io.Reader, want string, timeout time.Duration) string {
 	case <-done:
 	case <-time.After(timeout):
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	return out.String()
 }
 
-// Log is a log destination that the driver can write to from its own
-// goroutines, also after a test ends.
-type Log struct {
+// Logger returns a debug logger for a driver. The test prints the log when
+// it fails.
+func Logger(t *testing.T) *slog.Logger {
+	out := &syncBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("driver log:\n%s", out)
+		}
+	})
+	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// syncBuffer is a bytes.Buffer that goroutines can share, also after a test
+// ends.
+type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
 }
 
-func (l *Log) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.Write(p)
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
 }
 
-func (l *Log) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.String()
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // CheckLines reports each line of want that text does not have.
