@@ -2,9 +2,10 @@ import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { githubQuery, statusQuery } from '~/api/queries'
 import { CodeBlock } from '~/components/app/code-block'
-import { ConnectedAccounts, JobWait, LabelTable, PullRequestForm, workflowDiff } from '~/components/pages/github/first-job'
+import { ConnectedAccounts, JobWait, LabelTable, workflowDiff } from '~/components/pages/github/first-job'
 import { jobRepositories } from '~/components/pages/github/links'
 import { Loading } from '~/components/pages/github/parts'
+import { PullRequestForm } from '~/components/pages/github/pull-request-form'
 import { suggestedLabel } from '~/components/pages/overview/no-jobs'
 import { poolsQuery } from '~/components/pages/runners/queries'
 import { settingsQuery, useIsAdmin } from '~/components/pages/settings/settings-api'
@@ -37,8 +38,7 @@ function FirstJobStep() {
   const settings = useSuspenseQuery(settingsQuery).data
   const labels = pools.filter((pool) => pool.enabled)
   const label = suggestedLabel(pools)
-  // Container mode refuses public repositories whatever the setting says.
-  const repositories = jobRepositories(installations, settings.allow_public_repos && settings.mode !== 'container')
+  const repositories = jobRepositories(installations, settings)
 
   async function openDashboard() {
     // The overview reads has_jobs from the status to leave its empty state.
@@ -52,7 +52,15 @@ function FirstJobStep() {
       <ConnectedAccounts installations={installations} />
       {label && <CodeBlock title=".github/workflows/ci.yml" code={workflowDiff(label)} copyable />}
       {label && admin && repositories.length > 0 && (
-        <PullRequestForm repositories={repositories} label={label} permissionsUrl={app && `${app.settings_url}/permissions`} />
+        <section className="flex flex-col gap-xs">
+          <h2 className="text-s font-medium text-neutral-10">Open a pull request</h2>
+          <PullRequestForm
+            repositories={repositories}
+            labels={[label]}
+            defaultLabel={label}
+            permissionsUrl={app && `${app.settings_url}/permissions`}
+          />
+        </section>
       )}
       <LabelTable pools={labels} />
       <JobWait onJob={() => void openDashboard()} />

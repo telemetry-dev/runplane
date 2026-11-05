@@ -25,14 +25,15 @@ test.each([
 
 // A pull request in a repository that runplane refuses gives jobs that never start.
 test.each([
-  [false, ['kestrel-hq/api']],
-  [true, ['kestrel-hq/api', 'kestrel-hq/site']],
-])('jobRepositories with public repositories %s is %j', (publicRepos, want) => {
+  [false, 'vm', ['kestrel-hq/api']],
+  [true, 'vm', ['kestrel-hq/api', 'kestrel-hq/site']],
+  [true, 'container', ['kestrel-hq/api']],
+] as const)('jobRepositories with allow_public_repos %s in mode %s is %j', (allow, mode, want) => {
   const repositories: Schemas['Repository'][] = [
     { id: 1, full_name: 'kestrel-hq/api', private: true, archived: false },
     { id: 2, full_name: 'kestrel-hq/site', private: false, archived: false },
     { id: 3, full_name: 'kestrel-hq/old', private: true, archived: true },
   ]
   const suspended = { ...organization, id: 2, account_login: 'wren', suspended: true, repositories: [{ id: 4, full_name: 'wren/app', private: true, archived: false }] }
-  expect(jobRepositories([{ ...organization, repositories }, suspended], publicRepos)).toEqual(want)
+  expect(jobRepositories([{ ...organization, repositories }, suspended], { allow_public_repos: allow, mode })).toEqual(want)
 })

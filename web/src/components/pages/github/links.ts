@@ -5,7 +5,12 @@ import { formatCount } from '~/lib/format'
  * owner/name of the repositories whose jobs runplane takes: not archived, in an
  * installation that is not suspended, and private unless public repositories are on.
  */
-export function jobRepositories(installations: readonly Schemas['Installation'][], publicRepos: boolean): string[] {
+export function jobRepositories(
+  installations: readonly Schemas['Installation'][],
+  settings: Pick<Schemas['Settings'], 'allow_public_repos' | 'mode'>,
+): string[] {
+  // Container mode refuses public repositories whatever the setting says.
+  const publicRepos = settings.allow_public_repos && settings.mode !== 'container'
   return installations
     .filter((installation) => !installation.suspended)
     .flatMap((installation) => installation.repositories)
