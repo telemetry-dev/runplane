@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
 	"sync"
 
@@ -102,17 +101,18 @@ func (f *Fleet) AddSession(s *agent.Session) {
 		return
 	}
 	n := &node{Node: s, id: id, sess: s, addr: h.Addr, version: h.Version, name: v.Name, arch: h.Host.Arch, status: v.Status}
+	// The driver gets its settings before the scheduler can start a
+	// sandbox on it.
+	if st, err := f.st.GetSettings(ctx); err != nil {
+		f.log.Warn("read settings for an agent", "err", err)
+	} else {
+		f.configure(ctx, n, DriverSettings(st))
+	}
 	f.add(n)
 	f.endUpdate(ctx, id, h.Version)
 	f.publishServer(ctx, id)
 	f.log.Info("server connected", "server_id", id, "name", v.Name, "addr", h.Addr, "version", h.Version, "arch", n.arch)
 	f.goBg(func(ctx context.Context) {
-		st, err := f.st.GetSettings(ctx)
-		if err != nil {
-			f.log.Warn("read settings for an agent", "err", err)
-		} else {
-			f.configure(ctx, n, DriverSettings(st))
-		}
 		// The scheduler compares the sandboxes of the server with its rows.
 		f.capacityChanged()
 		f.kick()
@@ -154,7 +154,7 @@ func adminStatus(status string) bool {
 func (f *Fleet) configure(ctx context.Context, n *node, s sandbox.Settings) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	if err := n.Configure(ctx, s); err != nil {
+	if err := n.Driver().Configure(ctx, s); err != nil {
 		f.log.Warn("send settings to a server", "server_id", n.id, "err", err)
 	}
 }
@@ -314,7 +314,7 @@ func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]api.Check, error
 	if n == nil {
 		return nil, errors.New("the server is not connected, so its checks cannot run")
 	}
-	checks, err := n.Doctor(ctx)
+	checks, err := n.Doctor(ctx, f.minFreeDiskPercent())
 	if err != nil {
 		return nil, fmt.Errorf("run the doctor: %w", err)
 	}
@@ -328,7 +328,7 @@ func (f *Fleet) Check(ctx context.Context) (api.HostCheck, error) {
 	if err != nil {
 		return api.HostCheck{}, fmt.Errorf("read host facts: %w", err)
 	}
-	checks, err := f.local.Doctor(ctx)
+	checks, err := f.local.Doctor(ctx, f.minFreeDiskPercent())
 	if err != nil {
 		return api.HostCheck{}, fmt.Errorf("run the doctor: %w", err)
 	}
@@ -356,16 +356,18 @@ func (f *Fleet) SettingsChanged(_ context.Context, prev, next store.Settings) {
 // DriverSettings are the settings that the sandbox drivers obey.
 func DriverSettings(st store.Settings) sandbox.Settings {
 	return sandbox.Settings{
-		ReserveVCPU:        st.ReserveVCPU,
-		ReserveMemoryMB:    st.ReserveMemoryMB,
-		Overcommit:         st.CPUOvercommit,
-		MinFreeDiskPercent: int(math.Ceil(st.MinFreeDiskPercent)),
-		DNS:                st.DNSServers,
-		EgressAllowlist:    st.EgressAllowlist,
-		BandwidthMbps:      st.BandwidthMbps,
-		RegistryMirror:     st.RegistryMirror,
-		ActionsCache:       st.ActionsCache,
+		DNS:             st.DNSServers,
+		EgressAllowlist: st.EgressAllowlist,
+		BandwidthMbps:   st.BandwidthMbps,
+		RegistryMirror:  st.RegistryMirror,
+		ActionsCache:    st.ActionsCache,
 	}
+}
+
+func (f *Fleet) minFreeDiskPercent() float64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.minFree
 }
 
 func serverFacts(info host.Info, mode sandbox.Mode, ver, addr string) store.ServerFacts {

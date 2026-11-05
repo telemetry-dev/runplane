@@ -87,6 +87,14 @@ func (s *Session) Hold(ctx context.Context, id string, until time.Time) error {
 	return s.call(ctx, http.MethodPost, sandboxPath(id, "/hold"), holdRequest{Until: until.UTC()}, nil)
 }
 
+func (s *Session) Configure(ctx context.Context, settings sandbox.Settings) error {
+	return s.call(ctx, http.MethodPost, "/v1/settings", settings, nil)
+}
+
+func (s *Session) Probe(ctx context.Context) error {
+	return s.call(ctx, http.MethodPost, "/v1/probe", nil, nil)
+}
+
 func sandboxPath(id, suffix string) string {
 	return "/v1/sandboxes/" + url.PathEscape(id) + suffix
 }

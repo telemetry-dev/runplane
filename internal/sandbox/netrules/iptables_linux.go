@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"os"
 	"os/exec"
 	"slices"
@@ -38,10 +39,10 @@ const (
 // accept the TAP subnet, because Docker sets the FORWARD policy to drop; the
 // nftables table filters that traffic. In container mode they repeat the
 // fixed drops for each bridge. The allowlist stays in nftables only.
-func iptablesRules(cfg Config, links map[string]link) map[string][][]string {
+func iptablesRules(cfg Config, taps netip.Prefix, links map[string]link) map[string][][]string {
 	port := strconv.Itoa(cfg.ServicePort)
 	var input, forward, docker [][]string
-	if s := cfg.TapSubnet.String(); cfg.TapSubnet.IsValid() {
+	if s := taps.String(); taps.IsValid() {
 		input = append(input, []string{"-i", TapPrefix + "+", "-p", "tcp", "--dport", port, "-j", "ACCEPT"})
 		forward = append(forward,
 			[]string{"-i", TapPrefix + "+", "-j", "ACCEPT"},

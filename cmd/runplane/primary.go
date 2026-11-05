@@ -254,7 +254,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.pruneDaily("sessions, setup codes, and invites", d.Auth.Prune)
 	p.pruneDaily("server tokens and host samples", p.fleet.Prune)
 
-	c, err := p.serveCaches(key, mode, local.driver)
+	c, err := p.serveCaches(key, local)
 	if err != nil {
 		return nil, err
 	}
@@ -341,8 +341,8 @@ func (p *primary) stop() {
 
 // serveCaches starts the Actions cache server and the registry mirror, and
 // serves them on the service port.
-func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver) (caches, error) {
-	resolver := cache.NewSandboxResolver(p.st, drv.List)
+func (p *primary) serveCaches(key []byte, l *local) (caches, error) {
+	resolver := cache.NewSandboxResolver(p.st, l.driver.List)
 	space := func() datadisk.Space {
 		st := p.settings.Load()
 		return diskSpace(p.cfg.CacheDir(), datadisk.Settings{CacheMaxGB: st.CacheMaxGB, MinFreePercent: st.MinFreeDiskPercent})
@@ -356,7 +356,7 @@ func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver)
 	}
 	p.run(srv.Run)
 	p.pruneDaily("cache stats", srv.Prune)
-	mir, stopPort, err := serveServicePort(p.cfg, mode, resolver.Allow, srv, space, p.log)
+	mir, stopPort, err := serveServicePort(p.cfg, l.allow(resolver.Allow), srv, space, p.log)
 	if err != nil {
 		return caches{}, err
 	}

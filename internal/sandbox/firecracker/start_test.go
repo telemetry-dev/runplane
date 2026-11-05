@@ -142,7 +142,10 @@ func startDriver(t *testing.T) (*Driver, *fakeHost, string) {
 }
 
 func testSpec() sandbox.Spec {
-	return sandbox.Spec{ID: "vm1", PoolID: "pool1", Arch: host.Arch(), VCPU: 1, MemoryMB: 512, DiskGB: 1, JITConfig: "jit-secret", TimeLimit: time.Hour}
+	return sandbox.Spec{
+		ID: "vm1", PoolID: "pool1", Image: sandbox.ImageRef{Ref: "runner:1", Digest: "sha256:5f1c"}, Arch: host.Arch(),
+		VCPU: 1, MemoryMB: 512, DiskGB: 1, JITConfig: "jit-secret", TimeLimit: time.Hour,
+	}
 }
 
 func TestStartAndStop(t *testing.T) {
@@ -165,7 +168,7 @@ func TestStartAndStop(t *testing.T) {
 	if len(list) != 1 || list[0].State != sandbox.StateIdle || list[0].IP != "10.214.0.2" || list[0].Spec.JITConfig != "" {
 		t.Errorf("listed %+v", list)
 	}
-	record, _ := os.ReadFile(filepath.Join(data, "sandboxes", "vm1", recordFile))
+	record, _ := os.ReadFile(filepath.Join(data, "sandboxes", "vm1", "sandbox.json"))
 	if bytes.Contains(record, []byte("jit-secret")) {
 		t.Error("the JIT config is on disk")
 	}
@@ -190,14 +193,14 @@ func TestStartAndStop(t *testing.T) {
 		ev := nextEvent(t, d)
 		got = append(got, fmt.Sprintf("%s %s %s", ev.Type, ev.State, ev.Reason))
 	}
-	if want := []string{"state stopping stopped", "runner  ", "state gone stopped"}; !slices.Equal(got, want) {
+	if want := []string{"state stopping stopped by runplane", "runner  ", "state gone stopped by runplane"}; !slices.Equal(got, want) {
 		t.Errorf("events after Stop: %q, want %q", got, want)
 	}
 	if exists(filepath.Join(data, "sandboxes", "vm1")) || exists(filepath.Join(data, "jail", "firecracker", "vm1")) {
 		t.Error("the folders of the VM remain")
 	}
-	if !slices.Equal(sys.calls(&sys.added), []string{"rp-0"}) || !slices.Equal(sys.calls(&sys.dropped), []string{"rp-0"}) {
-		t.Errorf("TAPs added %v and removed %v, want rp-0 both", sys.calls(&sys.added), sys.calls(&sys.dropped))
+	if !slices.Equal(sys.calls(&sys.opened), []string{"rp-0"}) || !slices.Equal(sys.calls(&sys.closed), []string{"rp-0"}) {
+		t.Errorf("TAPs opened %v and closed %v, want rp-0 both", sys.calls(&sys.opened), sys.calls(&sys.closed))
 	}
 	if err := d.Stop(ctx, "vm1"); err != nil {
 		t.Errorf("a second Stop: %v", err)
@@ -217,7 +220,7 @@ func TestStartFailureRemovesTheVM(t *testing.T) {
 	if exists(filepath.Join(data, "sandboxes", "vm1")) || exists(filepath.Join(data, "jail", "firecracker", "vm1")) {
 		t.Error("the folders of the failed VM remain")
 	}
-	if !slices.Equal(sys.calls(&sys.dropped), []string{"rp-0"}) {
-		t.Errorf("TAPs removed: %v, want rp-0", sys.calls(&sys.dropped))
+	if !slices.Equal(sys.calls(&sys.closed), []string{"rp-0"}) {
+		t.Errorf("TAPs closed: %v, want rp-0", sys.calls(&sys.closed))
 	}
 }

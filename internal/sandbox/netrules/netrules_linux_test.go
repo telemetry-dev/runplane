@@ -29,7 +29,6 @@ import (
 //	docker run --rm --privileged ... go test ./internal/sandbox/netrules/
 
 var testCfg = Config{
-	TapSubnet:   DefaultTapSubnet,
 	ServicePort: 8486,
 	DNS:         []netip.Addr{netip.MustParseAddr("192.168.77.2")},
 }
@@ -41,7 +40,7 @@ func TestSetupIsIdempotentAndLeavesOtherTablesAlone(t *testing.T) {
 	run(t, "nft", "add rule inet other forward ip daddr 203.0.113.9 counter drop")
 	other := run(t, "nft", "list table inet other")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	first := run(t, "nft", "list table inet runplane")
 	setup(t, m, testCfg)
@@ -72,42 +71,43 @@ func TestSetupIsIdempotentAndLeavesOtherTablesAlone(t *testing.T) {
 	}
 }
 
-func TestAddTapAndRemoveTapChangeTheRules(t *testing.T) {
+func TestKeepTapAndCloseTapChangeTheRules(t *testing.T) {
 	isolate(t)
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	before := run(t, "nft", "list table inet runplane")
 
-	if err := m.AddTap("rp-3", netip.MustParseAddr("10.214.0.14"), netip.MustParseAddr("10.214.0.13")); err != nil {
+	lease := Lease{Index: 3, Tap: "rp-3", Host: mustAddr("10.214.0.13"), Guest: mustAddr("10.214.0.14")}
+	if err := m.KeepTap(lease); err != nil {
 		t.Fatal(err)
 	}
 	added := run(t, "nft", "list table inet runplane")
 	for _, want := range []string{`"rp-3" . 10.214.0.14`, `"rp-3" . 10.214.0.13`} {
 		if !strings.Contains(added, want) {
-			t.Errorf("table after AddTap has no %q:\n%s", want, added)
+			t.Errorf("table after KeepTap has no %q:\n%s", want, added)
 		}
 	}
 
-	if err := m.RemoveTap("rp-3"); err != nil {
+	if err := m.CloseTap(lease); err != nil {
 		t.Fatal(err)
 	}
 	if got := run(t, "nft", "list table inet runplane"); got != before {
-		t.Fatalf("table after RemoveTap:\n%s\nwant the table before AddTap:\n%s", got, before)
+		t.Fatalf("table after CloseTap:\n%s\nwant the table before KeepTap:\n%s", got, before)
 	}
 
-	if err := m.AddTap("rp-4", netip.MustParseAddr("10.99.0.2"), netip.MustParseAddr("10.99.0.1")); err == nil {
-		t.Error("AddTap accepted a guest outside the TAP subnet, which the masquerade rule does not cover")
+	if err := m.KeepTap(Lease{Index: 4, Tap: "rp-4", Host: mustAddr("10.99.0.1"), Guest: mustAddr("10.99.0.2")}); err == nil {
+		t.Error("KeepTap accepted a guest outside the TAP subnet, which the masquerade rule does not cover")
 	}
-	if err := m.AddTap("eth9", netip.MustParseAddr("10.214.0.18"), netip.MustParseAddr("10.214.0.17")); err == nil {
-		t.Error("AddTap accepted a name without the TAP prefix, which the rules do not treat as a sandbox")
+	if err := m.KeepTap(Lease{Index: 4, Tap: "eth9", Host: mustAddr("10.214.0.17"), Guest: mustAddr("10.214.0.18")}); err == nil {
+		t.Error("KeepTap accepted a name without the TAP prefix, which the rules do not treat as a sandbox")
 	}
 }
 
 func TestSetupAfterRestartKeepsTapsAndBridges(t *testing.T) {
 	isolate(t)
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	if err := m.AddTap("rp-0", netip.MustParseAddr("10.214.0.2"), netip.MustParseAddr("10.214.0.1")); err != nil {
+	if err := m.KeepTap(m.taps.lease(0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Bridge("rpbr0", netip.MustParsePrefix("10.215.0.0/16"), netip.MustParseAddr("10.215.0.1")); err != nil {
@@ -116,7 +116,7 @@ func TestSetupAfterRestartKeepsTapsAndBridges(t *testing.T) {
 	want := run(t, "nft", "list table inet runplane")
 	m.Close()
 
-	restarted := newManager(t)
+	restarted := newManager(t, DefaultTapSubnet)
 	setup(t, restarted, testCfg)
 	if got := run(t, "nft", "list table inet runplane"); got != want {
 		t.Fatalf("table after a restart:\n%s\nwant:\n%s", got, want)
@@ -129,7 +129,7 @@ func TestDockerUserRulesInsertOnceAndRemoveCleanly(t *testing.T) {
 	run(t, "iptables-nft", "-A DOCKER-USER -s 203.0.113.0/24 -j DROP")
 	userRule := "-A DOCKER-USER -s 203.0.113.0/24 -j DROP"
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	bridge := func() {
 		t.Helper()
@@ -178,7 +178,7 @@ func TestDockerUserRulesGoToTheLegacyBackendThatHasTheChain(t *testing.T) {
 	isolate(t)
 	run(t, "iptables-legacy", "-N DOCKER-USER")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	if got := run(t, "iptables-legacy", "-S DOCKER-USER"); !strings.Contains(got, "-s 10.214.0.0/16 -m comment --comment runplane -j ACCEPT") {
 		t.Fatalf("legacy DOCKER-USER has no VM subnet rule:\n%s", got)
@@ -206,9 +206,9 @@ func TestHostFirewallWithDropPolicies(t *testing.T) {
 	block(t, host, sb, "198.51.100.2:9000")
 	block(t, host, sb, "10.214.0.1:8486")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	if err := m.AddTap("rp-0", mustAddr("10.214.0.2"), mustAddr("10.214.0.1")); err != nil {
+	if err := m.KeepTap(m.taps.lease(0)); err != nil {
 		t.Fatal(err)
 	}
 	reach(t, host, sb, "198.51.100.2:9000")
@@ -249,9 +249,9 @@ func TestServicePortOnlyForSandboxesAndTheHost(t *testing.T) {
 	reach(t, host, lan, "198.51.100.1:8486")
 	reach(t, host, lan, "10.214.0.1:8486")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	if err := m.AddTap("rp-0", mustAddr("10.214.0.2"), mustAddr("10.214.0.1")); err != nil {
+	if err := m.KeepTap(m.taps.lease(0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Bridge("rpbr0", netip.MustParsePrefix("198.18.0.0/24"), mustAddr("198.18.0.1")); err != nil {
@@ -306,10 +306,10 @@ func TestPackets(t *testing.T) {
 	reach(t, host, sb1, "192.168.77.2:80")
 	reach(t, host, wan, "10.214.0.2:9000")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	for _, l := range []Lease{{Tap: "rp-0", Host: mustAddr("10.214.0.1"), Guest: mustAddr("10.214.0.2")}, {Tap: "rp-1", Host: mustAddr("10.214.0.5"), Guest: mustAddr("10.214.0.6")}} {
-		if err := m.AddTap(l.Tap, l.Guest, l.Host); err != nil {
+	for _, l := range []Lease{{Index: 0, Tap: "rp-0", Host: mustAddr("10.214.0.1"), Guest: mustAddr("10.214.0.2")}, {Index: 1, Tap: "rp-1", Host: mustAddr("10.214.0.5"), Guest: mustAddr("10.214.0.6")}} {
+		if err := m.KeepTap(l); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -341,7 +341,8 @@ func TestPackets(t *testing.T) {
 	reach(t, host, sb1, "198.51.100.3:9000")
 	reach(t, host, sb1, "192.168.77.2:53") // DNS stays open outside the allowlist
 
-	if err := m.RemoveTap("rp-0"); err != nil {
+	// The rules go, and the interface stays: a TAP without rules drops.
+	if err := m.dropTap("rp-0"); err != nil {
 		t.Fatal(err)
 	}
 	block(t, host, sb1, "198.51.100.3:9000")
@@ -391,8 +392,7 @@ func TestBridgePackets(t *testing.T) {
 	run(t, "ip", "neigh flush dev rpbr0")
 
 	cfg := testCfg
-	cfg.TapSubnet = netip.Prefix{}
-	m := newManager(t)
+	m := newManager(t, netip.Prefix{})
 	setup(t, m, cfg)
 	if err := m.Bridge("rpbr0", netip.MustParsePrefix("198.18.0.0/24"), mustAddr("198.18.0.1")); err != nil {
 		t.Fatal(err)
@@ -453,7 +453,7 @@ func TestBridgePackets(t *testing.T) {
 
 	// A new Manager, as after a restart, keeps the bindings.
 	m.Close()
-	restarted := newManager(t)
+	restarted := newManager(t, netip.Prefix{})
 	setup(t, restarted, cfg)
 	if udpArrives(t, host, c1, "198.18.0.3", udp) {
 		t.Error("after a restart: datagram from the address of the other container arrived")
@@ -529,9 +529,12 @@ func sendARP(t *testing.T, host, ns netns.NsHandle, dev string, mac net.Hardware
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
-func TestCreateTapLetsTheOwnerOpenIt(t *testing.T) {
+func TestOpenTapLetsTheOwnerOpenIt(t *testing.T) {
 	isolate(t)
-	if err := CreateTap("rp-7", 4242, 4342, netip.MustParsePrefix("10.214.0.29/30")); err != nil {
+	m := newManager(t, DefaultTapSubnet)
+	setup(t, m, testCfg)
+	lease := Lease{Index: 7, Tap: "rp-7", Host: mustAddr("10.214.0.29"), Guest: mustAddr("10.214.0.30")}
+	if err := m.OpenTap(lease, 4242, 4342); err != nil {
 		t.Fatal(err)
 	}
 	if err := openTapAs(t, 4242, 4342, "rp-7"); err != nil {
@@ -555,32 +558,47 @@ func TestCreateTapLetsTheOwnerOpenIt(t *testing.T) {
 	if l.Attrs().Flags&net.FlagUp == 0 {
 		t.Error("TAP is not up")
 	}
+	if table := run(t, "nft", "list table inet runplane"); !strings.Contains(table, `"rp-7" . 10.214.0.30`) {
+		t.Errorf("table after OpenTap has no rules for rp-7:\n%s", table)
+	}
 
-	if err := DeleteTap("rp-7"); err != nil {
+	if err := m.CloseTap(lease); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := netlink.LinkByName("rp-7"); err == nil {
-		t.Fatal("TAP exists after DeleteTap")
+		t.Fatal("TAP exists after CloseTap")
 	}
-	if err := DeleteTap("rp-7"); err != nil {
-		t.Fatalf("DeleteTap of a missing TAP: %v", err)
+	if err := m.CloseTap(lease); err != nil {
+		t.Fatalf("CloseTap of a closed TAP: %v", err)
 	}
 }
 
-func TestRecoverFindsUsedIndexes(t *testing.T) {
+// A new Manager, as after a restart of runplane, does not give out the
+// leases of the TAPs that the table has.
+func TestSetupKeepsTheLeasesOfTheTable(t *testing.T) {
 	isolate(t)
-	a := NewAllocator(netip.MustParsePrefix("10.214.0.0/27")) // 8 blocks
+	subnet := netip.MustParsePrefix("10.214.0.0/27") // 8 blocks
+	before := newManager(t, subnet)
+	setup(t, before, testCfg)
 	for _, i := range []int{2, 5} {
-		l := a.Lease(i)
-		if err := CreateTap(l.Tap, 0, 0, l.HostCIDR()); err != nil {
+		if err := before.KeepTap(before.taps.lease(i)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := a.Recover(); err != nil {
-		t.Fatal(err)
+	before.Close()
+
+	m := newManager(t, subnet)
+	setup(t, m, testCfg)
+	var got []int
+	for {
+		l, err := m.AcquireTap()
+		if err != nil {
+			break
+		}
+		got = append(got, l.Index)
 	}
-	if got, want := acquireAll(a, 10), []int{6, 7, 0, 1, 3, 4}; !slices.Equal(got, want) {
-		t.Fatalf("free indexes after Recover = %v, want %v", got, want)
+	if want := []int{6, 7, 0, 1, 3, 4}; !slices.Equal(got, want) {
+		t.Fatalf("free indexes after a restart = %v, want %v", got, want)
 	}
 }
 
@@ -618,8 +636,10 @@ func isolate(t *testing.T) netns.NsHandle {
 	return ns
 }
 
-func newManager(t *testing.T) *Manager {
-	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+// newManager makes a Manager with the TAP range of VM mode, or without TAPs
+// for a zero taps.
+func newManager(t *testing.T, taps netip.Prefix) *Manager {
+	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)), taps)
 	t.Cleanup(func() { m.Close() })
 	return m
 }

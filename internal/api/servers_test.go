@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -20,8 +21,17 @@ type fakeServers struct {
 	Servers
 	names   []string
 	checks  []Check
-	states  map[string]string // update state by server ID
-	updated []string          // server IDs of the UpdateAgent calls
+	states  map[string]string           // update state by server ID
+	updated []string                    // server IDs of the UpdateAgent calls
+	caps    map[string]sandbox.Capacity // the connected servers
+}
+
+func (f *fakeServers) Capacity(_ context.Context, id string) (sandbox.Capacity, error) {
+	c, ok := f.caps[id]
+	if !ok {
+		return sandbox.Capacity{}, errors.New("the server is not connected")
+	}
+	return c, nil
 }
 
 func (f *fakeServers) UpdateState(v store.Server) string { return f.states[v.ID] }
@@ -149,6 +159,26 @@ func TestPoolPlacement(t *testing.T) {
 	b.do("GET", "/api/pools/placement?arch=x64&vcpu=6&memory_mb=4096", nil, &got).want(t, 200)
 	if !slices.Equal(got.PlaceableServerIDs, []string{"big"}) {
 		t.Fatalf("placement of 6 vCPUs with overcommit 2 = %+v, want big", got)
+	}
+}
+
+// The placement knows the limits of the driver of each connected server:
+// a VM has at most 32 vCPUs, and each VM takes memory for its process.
+func TestPoolPlacementKnowsTheDriverLimits(t *testing.T) {
+	servers := &fakeServers{caps: map[string]sandbox.Capacity{"vm": {OverheadMB: 64, MaxVCPU: 32}}}
+	e := newEnv(t, func(d *Deps) { d.Servers = servers })
+	b := e.login("ada@example.com", auth.RoleAdmin)
+	e.addServer("vm", "x64", store.ServerOnline, 64, 34816)
+	e.addServer("other", "x64", store.ServerOnline, 64, 34816)
+	var got PoolPlacement
+	b.do("GET", "/api/pools/placement?arch=x64&vcpu=48&memory_mb=4096", nil, &got).want(t, 200)
+	if !slices.Equal(got.PlaceableServerIDs, []string{"other"}) {
+		t.Errorf("placement of 48 vCPUs = %+v, want only the server without a vCPU limit", got)
+	}
+	// The default reserve leaves 32768 MB.
+	b.do("GET", "/api/pools/placement?arch=x64&vcpu=2&memory_mb=32768", nil, &got).want(t, 200)
+	if !slices.Equal(got.PlaceableServerIDs, []string{"other"}) {
+		t.Errorf("placement of 32768 MB = %+v, want only the server without overhead", got)
 	}
 }
 

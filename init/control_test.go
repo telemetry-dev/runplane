@@ -311,6 +311,8 @@ type recorder struct {
 	lost   func() // OnLostConfig, if set
 }
 
+func (r *recorder) OnConnect() {}
+
 func (r *recorder) OnEvent(ev sandbox.RunnerEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

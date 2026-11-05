@@ -13,25 +13,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// CreateTap makes a persistent TAP device that only a process with the uid
-// and the gid can open (the Firecracker process of one VM), gives the host
-// side the address hostCIDR, and sets it up. It replaces a device with the
-// same name.
-func CreateTap(name string, uid, gid int, hostCIDR netip.Prefix) error {
-	if err := DeleteTap(name); err != nil {
+// createTap makes a persistent TAP device that only a process with the uid
+// and the gid can open, gives the host side the address hostCIDR, and sets
+// it up. It replaces a device with the same name.
+func createTap(name string, uid, gid int, hostCIDR netip.Prefix) error {
+	if err := deleteTap(name); err != nil {
 		return err
 	}
 	if err := makeTap(name, uid, gid); err != nil {
 		return fmt.Errorf("create TAP %s: %w", name, err)
 	}
 	if err := configureTap(name, hostCIDR); err != nil {
-		return errors.Join(fmt.Errorf("configure TAP %s: %w", name, err), DeleteTap(name))
+		return errors.Join(fmt.Errorf("configure TAP %s: %w", name, err), deleteTap(name))
 	}
 	return nil
 }
 
-// DeleteTap removes a TAP device. A missing device is not an error.
-func DeleteTap(name string) error {
+// deleteTap removes a TAP device. A missing device is not an error.
+func deleteTap(name string) error {
 	if !isTap(name) || !validIfname(name) {
 		return fmt.Errorf("netrules: %q is not a TAP name", name)
 	}
@@ -45,21 +44,6 @@ func DeleteTap(name string) error {
 	if err := netlink.LinkDel(l); err != nil {
 		return fmt.Errorf("delete TAP %s: %w", name, err)
 	}
-	return nil
-}
-
-// Recover marks the indexes of the TAP devices on the host as used, for
-// example after a restart of runplane while VMs still operate.
-func (a *Allocator) Recover() error {
-	links, err := netlink.LinkList()
-	if err != nil {
-		return fmt.Errorf("list network devices: %w", err)
-	}
-	names := make([]string, len(links))
-	for i, l := range links {
-		names[i] = l.Attrs().Name
-	}
-	a.use(names)
 	return nil
 }
 

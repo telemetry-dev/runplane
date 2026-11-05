@@ -208,8 +208,8 @@ func TestInternetCheck(t *testing.T) {
 		want Status
 	}{
 		{nil, StatusOK},
-		{ErrNoProbe, StatusWarn},
-		{ErrProbeInService, StatusWarn},
+		{sandbox.ErrNoProbe, StatusWarn},
+		{sandbox.ErrProbeInService, StatusWarn},
 		{errors.New("Get \"https://api.github.com\": dial tcp 140.82.112.6:443: i/o timeout"), StatusFail},
 	} {
 		if c := internetCheck(tt.err); c.Status != tt.want || c.Fix == "" && tt.want != StatusOK {

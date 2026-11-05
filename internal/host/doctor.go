@@ -120,14 +120,6 @@ const (
 
 var errNeedRoot = errors.New("needs root")
 
-// ErrNoProbe means that the sandbox internet check cannot run yet.
-var ErrNoProbe = errors.New("this server has no sandbox image yet")
-
-// ErrProbeInService means that only the running service can do the sandbox
-// internet check: in VM mode, the probe needs a firewall rule that only the
-// service can add without a conflict.
-var ErrProbeInService = errors.New("in VM mode, only the running runplane service can do this check, because it owns the firewall rules of the sandboxes")
-
 // scan holds what the doctor reads for a mode, in addition to Info.
 type scan struct {
 	Info
@@ -699,9 +691,9 @@ func (s scan) baseImageCheck(ref string, pullErr error) Check {
 func internetCheck(err error) Check {
 	c := Check{ID: "internet", Name: "Sandbox internet access"}
 	switch {
-	case errors.Is(err, ErrNoProbe):
+	case errors.Is(err, sandbox.ErrNoProbe):
 		return c.warn(fmt.Sprintf("Not checked: %v.", err), "Run runplane doctor again when the default image is ready.")
-	case errors.Is(err, ErrProbeInService):
+	case errors.Is(err, sandbox.ErrProbeInService):
 		return c.warn(fmt.Sprintf("Not checked here: %v.", err), "Open this server in the dashboard and select Run doctor.")
 	case err != nil:
 		return c.fail(fmt.Sprintf("A sandbox cannot reach the internet: %v", err), "Fix the IP forwarding and firewall checks above.")

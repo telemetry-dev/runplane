@@ -356,7 +356,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		runner:   "2.330.0",
 	}
 	e.gh = &fakeGitHub{rec: e.rec, checks: map[string]JobCheck{}, results: map[int64]string{}}
-	e.setSettings(func(s *store.Settings) { s.Mode = sandbox.ModeContainer })
+	e.setSettings(func(s *store.Settings) { s.Mode, s.ReserveVCPU, s.ReserveMemoryMB = sandbox.ModeContainer, 0, 0 })
 	e.s = New(Config{Store: st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, LogsDir: e.logs, Now: e.clock.now})
 	t.Cleanup(e.s.stopBg)
 	return e
@@ -369,11 +369,12 @@ func (e *testEnv) setSettings(fn func(*store.Settings)) {
 	}
 }
 
-// capacity is a server with no host reserve, so that sizes add up simply.
+// capacity is a server. The settings of the test have no host reserve, so
+// that sizes add up simply.
 func capacity(arch string, vcpu, memoryMB int) sandbox.Capacity {
 	return sandbox.Capacity{
 		Mode: sandbox.ModeContainer, Arch: arch, VCPU: vcpu, MemoryMB: memoryMB,
-		DiskBytes: 500 << 30, FreeDiskBytes: 300 << 30, Overcommit: 1,
+		DiskBytes: 500 << 30, FreeDiskBytes: 300 << 30,
 	}
 }
 

@@ -31,6 +31,8 @@ import (
 // Handler gets what the guest sends. The server calls it from its own
 // goroutines; OnLog calls come in the order of the lines.
 type Handler interface {
+	// OnConnect comes with each new connection of the guest.
+	OnConnect()
 	OnEvent(sandbox.RunnerEvent)
 	OnLog(guest.LogLine)
 	// OnLostConfig comes one time when the guest asks for its config, and
@@ -209,6 +211,7 @@ func (s *Server) serve(conn net.Conn) {
 	} else {
 		s.log.Debug("guest connected")
 	}
+	s.h.OnConnect()
 	go func() {
 		srv := &http.Server{
 			Handler:           s.mux,

@@ -115,16 +115,14 @@ func (r *SandboxResolver) byIP(ctx context.Context, remoteIP string) (store.Sand
 	if err != nil {
 		return store.SandboxJob{}, fmt.Errorf("list sandboxes: %w", err)
 	}
-	for _, s := range list {
-		if s.IP != ip {
-			continue
-		}
-		if err := r.st.SetSandboxIP(ctx, serverID, s.ID, ip); err != nil {
-			return store.SandboxJob{}, err
-		}
-		return r.st.LiveSandboxJob(ctx, s.ID)
+	s, ok := sandbox.FindByIP(list, addr)
+	if !ok {
+		return store.SandboxJob{}, fmt.Errorf("no sandbox has address %s: %w", ip, store.ErrNotFound)
 	}
-	return store.SandboxJob{}, fmt.Errorf("no sandbox has address %s: %w", ip, store.ErrNotFound)
+	if err := r.st.SetSandboxIP(ctx, serverID, s.ID, ip); err != nil {
+		return store.SandboxJob{}, err
+	}
+	return r.st.LiveSandboxJob(ctx, s.ID)
 }
 
 func (r *SandboxResolver) localServer(ctx context.Context) (string, error) {

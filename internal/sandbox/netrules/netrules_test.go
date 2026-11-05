@@ -7,7 +7,7 @@ import (
 )
 
 func TestLeaseAddresses(t *testing.T) {
-	a := NewAllocator(DefaultTapSubnet)
+	a := newAllocator(DefaultTapSubnet)
 	for _, tt := range []struct {
 		index       int
 		tap         string
@@ -18,7 +18,7 @@ func TestLeaseAddresses(t *testing.T) {
 		{64, "rp-64", "10.214.1.1", "10.214.1.2"},
 		{16383, "rp-16383", "10.214.255.253", "10.214.255.254"},
 	} {
-		l := a.Lease(tt.index)
+		l := a.lease(tt.index)
 		if l.Tap != tt.tap || l.Host.String() != tt.host || l.Guest.String() != tt.guest {
 			t.Errorf("Lease(%d) = %s %s %s, want %s %s %s", tt.index, l.Tap, l.Host, l.Guest, tt.tap, tt.host, tt.guest)
 		}
@@ -26,9 +26,9 @@ func TestLeaseAddresses(t *testing.T) {
 }
 
 func TestAcquireGoesRoundAndStopsWhenFull(t *testing.T) {
-	a := NewAllocator(netip.MustParsePrefix("10.214.0.0/28")) // 4 blocks
+	a := newAllocator(netip.MustParsePrefix("10.214.0.0/28")) // 4 blocks
 	got := acquireAll(a, 3)
-	a.Release(0)
+	a.release(0)
 	got = append(got, acquireAll(a, 10)...)
 	if want := []int{0, 1, 2, 3, 0}; !slices.Equal(got, want) {
 		t.Fatalf("indexes = %v, want %v (index 0 comes back only after 3)", got, want)
@@ -36,7 +36,7 @@ func TestAcquireGoesRoundAndStopsWhenFull(t *testing.T) {
 }
 
 func TestUseSkipsNamesThatAreNotTaps(t *testing.T) {
-	a := NewAllocator(netip.MustParsePrefix("10.214.0.0/27")) // 8 blocks
+	a := newAllocator(netip.MustParsePrefix("10.214.0.0/27")) // 8 blocks
 	a.use([]string{"rp-1", "rp-4", "eth0", "rp-x", "rp-03", "rp--2", "rp-8", "runplane0"})
 	if got, want := acquireAll(a, 10), []int{5, 6, 7, 0, 2, 3}; !slices.Equal(got, want) {
 		t.Fatalf("free indexes = %v, want %v", got, want)
@@ -44,10 +44,10 @@ func TestUseSkipsNamesThatAreNotTaps(t *testing.T) {
 }
 
 // acquireAll acquires up to n leases and returns their indexes.
-func acquireAll(a *Allocator, n int) []int {
+func acquireAll(a *allocator, n int) []int {
 	var got []int
 	for range n {
-		l, err := a.Acquire()
+		l, err := a.acquire()
 		if err != nil {
 			break
 		}

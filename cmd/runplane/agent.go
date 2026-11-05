@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"net/netip"
-	"slices"
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
@@ -41,12 +40,11 @@ func runAgent(ctx context.Context, args []string) error {
 	proxy := agent.NewCacheProxy(l.driver, log.With("component", "cache"))
 	hasSandbox := func(ip netip.Addr) bool {
 		list, err := l.driver.List(context.Background())
-		return err == nil && slices.ContainsFunc(list, func(b sandbox.Sandbox) bool { return b.IP == ip.String() })
+		_, ok := sandbox.FindByIP(list, ip)
+		return err == nil && ok
 	}
-	space := func() datadisk.Space {
-		return diskSpace(cfg.MirrorDir(), datadisk.Settings{MinFreePercent: float64(l.node.minFree.Load())})
-	}
-	mir, stopPort, err := serveServicePort(cfg, cfg.Mode, hasSandbox, proxy, space, log)
+	space := func() datadisk.Space { return diskSpace(cfg.MirrorDir(), datadisk.Settings{}) }
+	mir, stopPort, err := serveServicePort(cfg, l.allow(hasSandbox), proxy, space, log)
 	if err != nil {
 		return err
 	}

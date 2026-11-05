@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -234,9 +236,10 @@ func (s *Session) Facts(ctx context.Context) (host.Info, error) {
 	return rep.Info, err
 }
 
-func (s *Session) Doctor(ctx context.Context) ([]host.Check, error) {
+func (s *Session) Doctor(ctx context.Context, minFreeDiskPercent float64) ([]host.Check, error) {
 	var rep hostReport
-	err := s.call(ctx, http.MethodGet, "/v1/host?doctor=1", nil, &rep)
+	q := url.Values{"doctor": {"1"}, "min_free_disk_percent": {strconv.FormatFloat(minFreeDiskPercent, 'g', -1, 64)}}
+	err := s.call(ctx, http.MethodGet, "/v1/host?"+q.Encode(), nil, &rep)
 	return rep.Doctor, err
 }
 
@@ -285,10 +288,6 @@ func (s *Session) MirrorStats(ctx context.Context) (mirror.Stats, error) {
 	var m mirror.Stats
 	err := s.call(ctx, http.MethodGet, "/v1/mirror/stats", nil, &m)
 	return m, err
-}
-
-func (s *Session) Configure(ctx context.Context, settings sandbox.Settings) error {
-	return s.call(ctx, http.MethodPost, "/v1/settings", settings, nil)
 }
 
 // Update makes the agent replace its binary and restart. The session then
@@ -347,7 +346,11 @@ func (s *Session) do(req *http.Request) (*http.Response, error) {
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		return nil, fail(responseError(resp))
+		err := responseError(resp)
+		if resp.StatusCode == http.StatusNotFound {
+			err = fmt.Errorf("%w: %w", sandbox.ErrNotFound, err)
+		}
+		return nil, fail(err)
 	}
 	return resp, nil
 }

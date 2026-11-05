@@ -99,13 +99,8 @@ func (p *CacheProxy) sandboxAt(ctx context.Context, remoteAddr string) (string, 
 	if err != nil {
 		return "", err
 	}
-	for _, sb := range list {
-		ip, err := netip.ParseAddr(sb.IP)
-		if err == nil && ip.Unmap() == addrPort.Addr().Unmap() && !sb.State.Done() {
-			return sb.ID, nil
-		}
-	}
-	return "", nil
+	sb, _ := sandbox.FindByIP(list, addrPort.Addr())
+	return sb.ID, nil
 }
 
 func (p *CacheProxy) dial(context.Context, string, string) (net.Conn, error) {

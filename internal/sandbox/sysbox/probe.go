@@ -14,7 +14,7 @@ import (
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
@@ -24,18 +24,17 @@ const labelProbe = "dev.runplane.probe"
 // ProbeOptions are the sandbox settings of a probe container.
 type ProbeOptions struct {
 	Docker  *client.Client
-	Runtime string // the OCI runtime, as in Options
+	Profile Profile // the profile of the mode
 	// DataDir is the data folder of the driver. The probe container carries
 	// it, so that the recovery of another runplane leaves it alone.
-	DataDir      string
-	CgroupParent string
-	DNS          []netip.Addr // empty: the Docker default
+	DataDir string
+	DNS     []netip.Addr // empty: the Docker default
 }
 
 // Probe starts a short container on the runplane network, with the sandbox
 // runtime and the firewall rules, and fetches https://api.github.com. The
 // doctor uses it for the sandbox internet check. It runs curl in the newest
-// runplane image on this server, and returns host.ErrNoProbe while the
+// runplane image on this server, and returns sandbox.ErrNoProbe while the
 // server has none.
 func Probe(ctx context.Context, o ProbeOptions) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
@@ -54,13 +53,13 @@ func Probe(ctx context.Context, o ProbeOptions) error {
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode: container.NetworkMode(networkName),
-			Runtime:     o.Runtime,
+			Runtime:     o.Profile.runtime,
 			DNS:         o.DNS,
 			Resources: container.Resources{
 				NanoCPUs:     1e9,
 				Memory:       256 << 20,
 				PidsLimit:    &pids,
-				CgroupParent: o.CgroupParent,
+				CgroupParent: o.Profile.cgroupParent,
 			},
 		},
 	})
@@ -87,16 +86,6 @@ func Probe(ctx context.Context, o ProbeOptions) error {
 	}
 }
 
-// Probe runs Probe with the settings of the driver.
-func (d *Driver) Probe(ctx context.Context) error {
-	d.mu.Lock()
-	dns := d.settings.IPv4DNS()
-	d.mu.Unlock()
-	return Probe(ctx, ProbeOptions{
-		Docker: d.docker, Runtime: d.opts.Runtime, DataDir: d.opts.Config.DataDir, CgroupParent: d.opts.cgroupParent(), DNS: dns,
-	})
-}
-
 // probeImage is the newest image with the runplane label. The base images
 // have it, and the images FROM them inherit it.
 func probeImage(ctx context.Context, docker *client.Client) (string, error) {
@@ -107,7 +96,7 @@ func probeImage(ctx context.Context, docker *client.Client) (string, error) {
 		return "", fmt.Errorf("list images: %w", err)
 	}
 	if len(res.Items) == 0 {
-		return "", host.ErrNoProbe
+		return "", sandbox.ErrNoProbe
 	}
 	newest := slices.MaxFunc(res.Items, func(a, b image.Summary) int { return cmp.Compare(a.Created, b.Created) })
 	return newest.ID, nil

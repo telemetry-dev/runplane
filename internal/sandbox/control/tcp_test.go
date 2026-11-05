@@ -19,6 +19,7 @@ import (
 
 type nopHandler struct{}
 
+func (nopHandler) OnConnect()                  {}
 func (nopHandler) OnEvent(sandbox.RunnerEvent) {}
 func (nopHandler) OnLog(guest.LogLine)         {}
 func (nopHandler) OnLostConfig()               {}

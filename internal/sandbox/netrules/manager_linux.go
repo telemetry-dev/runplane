@@ -19,18 +19,23 @@ import (
 // and repairs the iptables rules.
 const refreshEvery = time.Minute
 
-var errNoSetup = errors.New("netrules: call Setup first")
+var (
+	errNoSetup = errors.New("netrules: call Setup first")
+	errNoTaps  = errors.New("netrules: this Manager has no TAP range")
+)
 
 // Manager owns the nftables tables "inet runplane" and "bridge runplane",
 // and the runplane rules in the INPUT, FORWARD, and DOCKER-USER chains of
-// the iptables filter table. It changes no other firewall objects. Use one
-// Manager for each host.
+// the iptables filter table. It changes no other firewall objects. In VM
+// mode it also owns the TAP devices and their addresses. Use one Manager
+// for each host.
 //
 // It keeps the sandbox interfaces in memory and writes the whole table again
 // in one atomic batch after each change. Thus the kernel never holds half a
 // ruleset, and Setup twice gives the same table.
 type Manager struct {
-	log *slog.Logger
+	log  *slog.Logger
+	taps *allocator // nil without TAPs (container mode)
 
 	mu       sync.Mutex
 	cfg      Config
@@ -49,8 +54,14 @@ type link struct {
 	gateway netip.Addr   // the host address with the service port
 }
 
-func New(log *slog.Logger) *Manager {
-	return &Manager{log: log, resolved: map[string]map[netip.Addr]time.Time{}, failing: map[string]bool{}}
+// New makes the Manager of this host. tapSubnet is the address range of the
+// VM TAPs; it is zero in container mode, which has no TAPs.
+func New(log *slog.Logger, tapSubnet netip.Prefix) *Manager {
+	m := &Manager{log: log, resolved: map[string]map[netip.Addr]time.Time{}, failing: map[string]bool{}}
+	if tapSubnet.IsValid() {
+		m.taps = newAllocator(tapSubnet)
+	}
+	return m
 }
 
 // Setup writes the tables and the iptables rules for cfg, enables IPv4
@@ -63,7 +74,7 @@ func New(log *slog.Logger) *Manager {
 //
 // The first Setup keeps the TAPs, bridges, and bridge ports that the tables
 // already have, so a restart of runplane does not cut off sandboxes that
-// still operate.
+// still operate, and the TAP leases of these VMs stay theirs.
 func (m *Manager) Setup(ctx context.Context, cfg Config) error {
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0o644); err != nil {
 		return fmt.Errorf("enable ip forwarding: %w", err)
@@ -85,6 +96,9 @@ func (m *Manager) Setup(ctx context.Context, cfg Config) error {
 		if ports, err = readPorts(); err != nil {
 			return err
 		}
+		if m.taps != nil {
+			m.taps.use(slices.Collect(maps.Keys(links)))
+		}
 	}
 	m.remember(cfg, found, errs, time.Now())
 	if err := m.write(cfg, links, ports); err != nil {
@@ -95,42 +109,97 @@ func (m *Manager) Setup(ctx context.Context, cfg Config) error {
 		m.stop, m.done = make(chan struct{}), make(chan struct{})
 		go m.loop(m.stop, m.done)
 	}
-	return syncIptables(ctx, iptablesRules(m.cfg, m.links), true)
+	return syncIptables(ctx, iptablesRules(m.cfg, m.tapSubnet(), m.links), true)
 }
 
-// AddTap lets a VM TAP through: the guest may send from guest only and may
-// reach the service port on host. Both addresses must be in the TAP subnet.
-func (m *Manager) AddTap(iface string, guest, host netip.Addr) error {
-	if !isTap(iface) || !validIfname(iface) {
-		return fmt.Errorf("netrules: %q is not a TAP name", iface)
+// AcquireTap reserves a free TAP lease. OpenTap or KeepTap makes it usable,
+// and CloseTap ends it.
+func (m *Manager) AcquireTap() (Lease, error) {
+	if m.taps == nil {
+		return Lease{}, errNoTaps
 	}
+	return m.taps.acquire()
+}
+
+// TapLeases is the count of leases that the TAP range has.
+func (m *Manager) TapLeases() int {
+	if m.taps == nil {
+		return 0
+	}
+	return m.taps.size()
+}
+
+// OpenTap makes the persistent TAP device of l, which only a process with
+// the uid and the gid can open (the Firecracker process of one VM), and lets
+// it through the firewall as KeepTap does.
+func (m *Manager) OpenTap(l Lease, uid, gid int) error {
+	if err := m.check(l); err != nil {
+		return err
+	}
+	if err := createTap(l.Tap, uid, gid, l.HostCIDR()); err != nil {
+		return err
+	}
+	if err := m.KeepTap(l); err != nil {
+		return errors.Join(err, deleteTap(l.Tap))
+	}
+	return nil
+}
+
+// KeepTap marks l as used and lets the interface of l through: the guest may
+// send from its address only and may reach the service port on the host
+// address. The interface exists already, as after a restart of runplane.
+func (m *Manager) KeepTap(l Lease) error {
+	if err := m.check(l); err != nil {
+		return err
+	}
+	m.taps.use([]string{l.Tap})
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.ready {
 		return errNoSetup
 	}
-	if s := m.cfg.TapSubnet; !s.Contains(guest) || !s.Contains(host) || guest == host {
-		return fmt.Errorf("netrules: TAP addresses %s and %s must be two addresses in %s", guest, host, s)
-	}
 	links := maps.Clone(m.links)
-	links[iface] = link{src: netip.PrefixFrom(guest, 32), gateway: host}
+	links[l.Tap] = link{src: netip.PrefixFrom(l.Guest, 32), gateway: l.Host}
 	return m.write(m.cfg, links, m.ports)
 }
 
-// RemoveTap removes the rules of a VM TAP. Traffic through a TAP without
-// rules drops.
-func (m *Manager) RemoveTap(iface string) error {
-	if !isTap(iface) {
-		return fmt.Errorf("netrules: %q is not a TAP name", iface)
+// CloseTap removes the rules and the device of l and frees the lease.
+// Traffic through a TAP without rules drops.
+func (m *Manager) CloseTap(l Lease) error {
+	if err := m.check(l); err != nil {
+		return err
 	}
+	err := errors.Join(m.dropTap(l.Tap), deleteTap(l.Tap))
+	m.taps.release(l.Index)
+	return err
+}
+
+func (m *Manager) dropTap(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.links[iface]; !ok {
+	if _, ok := m.links[name]; !ok {
 		return nil
 	}
 	links := maps.Clone(m.links)
-	delete(links, iface)
+	delete(links, name)
 	return m.write(m.cfg, links, m.ports)
+}
+
+func (m *Manager) check(l Lease) error {
+	switch {
+	case m.taps == nil:
+		return errNoTaps
+	case !m.taps.owns(l):
+		return fmt.Errorf("netrules: %+v is not a TAP lease of %s", l, m.taps.subnet)
+	}
+	return nil
+}
+
+func (m *Manager) tapSubnet() netip.Prefix {
+	if m.taps == nil {
+		return netip.Prefix{}
+	}
+	return m.taps.subnet
 }
 
 // Bridge applies the rules to the runplane Docker bridge: containers may
@@ -153,7 +222,7 @@ func (m *Manager) Bridge(name string, subnet netip.Prefix, gateway netip.Addr) e
 	if err := m.write(m.cfg, links, m.ports); err != nil {
 		return err
 	}
-	return syncIptables(context.Background(), iptablesRules(m.cfg, m.links), true)
+	return syncIptables(context.Background(), iptablesRules(m.cfg, m.tapSubnet(), m.links), true)
 }
 
 // Close stops the allowlist loop. The rules stay.
@@ -182,7 +251,7 @@ func (m *Manager) Teardown() error {
 
 // write writes the tables, and keeps cfg, links, and ports if that worked.
 func (m *Manager) write(cfg Config, links map[string]link, ports map[string]port) error {
-	if err := writeTable(policy{cfg: cfg, links: links, ports: ports, allowed: m.allowed(cfg)}); err != nil {
+	if err := writeTable(policy{cfg: cfg, taps: m.tapSubnet(), links: links, ports: ports, allowed: m.allowed(cfg)}); err != nil {
 		return err
 	}
 	m.cfg, m.links, m.ports = cfg, links, ports
@@ -222,7 +291,7 @@ func (m *Manager) refresh() {
 			m.log.Error("update the addresses of the allowlist", "err", err)
 		}
 	}
-	if err := syncIptables(context.Background(), iptablesRules(m.cfg, m.links), false); err != nil {
+	if err := syncIptables(context.Background(), iptablesRules(m.cfg, m.tapSubnet(), m.links), false); err != nil {
 		m.log.Error("repair iptables rules", "err", err)
 	}
 }
