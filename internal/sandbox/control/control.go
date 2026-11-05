@@ -185,7 +185,6 @@ func (s *Server) accept(ln net.Listener) {
 	}
 }
 
-// serve starts yamux on a new guest connection. It replaces the old one.
 func (s *Server) serve(conn net.Conn) {
 	sess, err := yamux.Server(conn, guest.YamuxConfig(s.log))
 	if err != nil {
@@ -246,7 +245,6 @@ func (s *Server) call(ctx context.Context, path string, body []byte) error {
 	return g.call(ctx, path, body)
 }
 
-// call sends a POST to the guest and expects 204.
 func (g *guestConn) call(ctx context.Context, path string, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guest"+path, bytes.NewReader(body))
 	if err != nil {

@@ -60,7 +60,6 @@ func (m *Manager) AddPort(iface string, mac net.HardwareAddr, ip netip.Addr) err
 	return m.write(m.cfg, m.links, ports)
 }
 
-// RemovePort removes the binding of a bridge port.
 func (m *Manager) RemovePort(iface string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

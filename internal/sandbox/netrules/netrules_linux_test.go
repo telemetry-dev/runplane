@@ -468,7 +468,6 @@ func TestBridgePackets(t *testing.T) {
 	}
 }
 
-// linkMAC returns the MAC of the link name in ns.
 func linkMAC(t *testing.T, ns netns.NsHandle, name string) net.HardwareAddr {
 	t.Helper()
 	l, err := handleAt(t, ns).LinkByName(name)
@@ -478,7 +477,6 @@ func linkMAC(t *testing.T, ns netns.NsHandle, name string) net.HardwareAddr {
 	return l.Attrs().HardwareAddr
 }
 
-// neighMAC returns the MAC that the host has for ip on dev, or "".
 func neighMAC(t *testing.T, dev, ip string) string {
 	t.Helper()
 	l, err := netlink.LinkByName(dev)
@@ -636,8 +634,6 @@ func isolate(t *testing.T) netns.NsHandle {
 	return ns
 }
 
-// newManager makes a Manager with the TAP range of VM mode, or without TAPs
-// for a zero taps.
 func newManager(t *testing.T, taps netip.Prefix) *Manager {
 	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)), taps)
 	t.Cleanup(func() { m.Close() })
@@ -736,7 +732,6 @@ func peer(t *testing.T, host netns.NsHandle, hostIf, hostCIDR, peerCIDR string) 
 	return ns
 }
 
-// bridgePort makes a namespace behind a veth pair whose host side is a port of br.
 func bridgePort(t *testing.T, host netns.NsHandle, br *netlink.Bridge, name, cidr string) netns.NsHandle {
 	t.Helper()
 	ns := peer(t, host, name, "", cidr)
