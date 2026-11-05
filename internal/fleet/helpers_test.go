@@ -24,6 +24,7 @@ import (
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner"
+	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/tlsutil"
@@ -68,6 +69,7 @@ func newHarness(t *testing.T, local *fakeNode) *harness {
 	h.f = New(Config{
 		Store: st, Bus: h.bus, Log: h.log.With("side", "fleet"), Config: h.cfg, Local: local, AgentFingerprint: fp,
 		OnEvent: func(string, sandbox.Event) {}, CapacityChanged: func() { h.capacity.Add(1) }, Notifier: h.notes, Now: h.clock.now,
+		Runners: versions.New(versions.Config{Store: st, Bus: h.bus}),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &agent.Listener{Cert: cert, Authenticate: h.f.Authenticate, OnSession: h.f.AddSession, Logger: h.log.With("side", "listener")}

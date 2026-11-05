@@ -25,6 +25,7 @@ import (
 	"github.com/runplane/runplane/internal/github"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/notify"
+	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/secret"
@@ -221,19 +222,22 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	if err != nil {
 		return nil, fmt.Errorf("make the agent certificate: %w", err)
 	}
+	ghRef := &githubRef{}
+	runners := versions.New(versions.Config{
+		Store: st, Bus: d.Bus, GitHub: ghRef, Notifier: notifier, Log: log.With("component", "runners"),
+		InUse: func() []string { return p.fleet.RunnerVersions() },
+	})
 	// The fleet calls the scheduler only after Run starts.
 	p.fleet = fleet.New(fleet.Config{
 		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node,
 		AgentFingerprint: fingerprint, OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() },
-		Notifier: notifier,
+		Notifier: notifier, Runners: runners,
 	})
-	ghRef := &githubRef{}
 	p.sched = scheduler.New(scheduler.Config{
 		Store: st, Bus: d.Bus, Fleet: p.fleet, GitHub: ghRef, Log: log.With("component", "scheduler"), LogsDir: cfg.LogsDir(),
 	})
 	p.gh = github.New(github.Config{
 		Store: st, Box: d.Box, Bus: d.Bus, Log: log.With("component", "github"), Scheduler: p.sched,
-		Bundles: p.fleet, Notifier: notifier,
 	})
 	ghRef.Service = p.gh
 	// The scheduler stops after the fleet, so that no driver event comes
@@ -245,6 +249,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 		}
 	})
 	p.run(p.gh.Run)
+	p.run(runners.Run)
 
 	c, err := p.serveCaches(key, mode, local.driver)
 	if err != nil {

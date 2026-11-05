@@ -190,12 +190,10 @@ type RunnerCurrent struct {
 	ARM64 string `json:"arm64"`
 }
 
-const endsSoon = 14 * 24 * time.Hour
-
 func runnerVersion(b store.RunnerBundle, now time.Time) RunnerVersion {
 	return RunnerVersion{
 		Version: b.Version, Arch: b.Arch, Status: b.Status, Patched: b.Patched, SHA256: b.SHA256, Error: b.Error,
-		EndDate: b.EndDate, EndsSoon: b.EndDate != nil && b.EndDate.Sub(now) < endsSoon,
+		EndDate: b.EndDate, EndsSoon: b.EndsSoon(now),
 		ReleasedAt: b.ReleasedAt, CreatedAt: b.CreatedAt,
 	}
 }

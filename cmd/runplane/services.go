@@ -39,8 +39,9 @@ func (p pools) PoolsChanged(ctx context.Context) {
 	p.Scheduler.PoolsChanged(ctx)
 }
 
-// githubRef breaks the construction cycle of the scheduler and the github
-// service: the scheduler gets it first, and the service fills it.
+// githubRef breaks the construction cycle of the github service: the
+// scheduler and the runner versions service get it first, and the github
+// service fills it.
 type githubRef struct{ *github.Service }
 
 // caches is the api Caches service.
