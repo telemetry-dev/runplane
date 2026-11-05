@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/store"
 )
 
 const twirpPrefix = "/twirp/github.actions.results.api.v1.CacheService/"
@@ -111,7 +113,7 @@ func (s *Server) serveTwirp(w http.ResponseWriter, r *http.Request, trusted bool
 	if err != nil {
 		var te *twirpError
 		if !errors.As(err, &te) {
-			s.log.Error("cache: "+method, "err", err)
+			s.cfg.Logger.Error("cache: "+method, "err", err)
 			te = twirpErr("internal", "internal error")
 		}
 		writeJSON(w, twirpStatus[te.Code], te)
@@ -155,39 +157,40 @@ func (s *Server) twirp(r *http.Request, method string, trusted bool) (any, error
 	}
 	req := request{Identity: ident, base: baseURL(r, trusted)}
 
+	ctx := r.Context()
 	switch body := body.(type) {
 	case *createRequest:
-		return s.create(r, req, body)
+		return s.create(ctx, req, body)
 	case *finalizeRequest:
-		return s.finalize(r, req, body)
+		return s.finalize(ctx, req, body)
 	default:
-		return s.downloadURL(r, req, body.(*downloadRequest))
+		return s.downloadURL(ctx, req, body.(*downloadRequest))
 	}
 }
 
-func (s *Server) create(r *http.Request, req request, in *createRequest) (any, error) {
+func (s *Server) create(ctx context.Context, req request, in *createRequest) (any, error) {
 	if err := checkKeys(in.Key, in.Version); err != nil {
 		return nil, err
 	}
 	if req.Ref == "" {
 		return createResponse{Message: noRefMessage}, nil
 	}
-	ctx := r.Context()
 	now := s.now()
-	e := Entry{
-		ID:         ids.New(),
+	id := ids.New()
+	e := store.CacheEntry{
+		ID:         id,
 		Repository: req.Repository,
 		Ref:        req.Ref,
 		Key:        in.Key,
 		Version:    in.Version,
+		Path:       blobPath(id),
 		CreatedAt:  now,
 		LastUsedAt: now,
 	}
-	e.Path = blobPath(e.ID)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	old, err := s.index.Find(ctx, e.Repository, e.Ref, e.Key, e.Version)
+	old, err := s.cfg.Index.GetCacheEntryByKey(ctx, e.Repository, e.Ref, e.Key, e.Version)
 	switch {
 	case err == nil && (old.Finalized || now.Sub(old.LastUsedAt) < activeUpload):
 		return nil, twirpErr("already_exists", "cache entry with the same key, version, and scope already exists")
@@ -198,43 +201,42 @@ func (s *Server) create(r *http.Request, req request, in *createRequest) (any, e
 	case !errors.Is(err, ErrNotFound):
 		return nil, fmt.Errorf("find entry: %w", err)
 	}
-	if !s.uploads.open(e.ID, req.SandboxID) {
+	if !s.uploads.open(id, req.SandboxID) {
 		return createResponse{Message: "cache write denied: too many uploads of this job are in progress"}, nil
 	}
-	err = s.index.Create(ctx, e)
+	err = s.cfg.Index.CreateCacheEntry(ctx, e)
 	if err != nil {
-		s.uploads.drop(e.ID)
+		s.uploads.drop(id)
 	}
-	if errors.Is(err, ErrExists) {
+	if errors.Is(err, store.ErrConflict) {
 		return nil, twirpErr("already_exists", "cache entry with the same key, version, and scope already exists")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("create entry: %w", err)
 	}
-	return createResponse{OK: true, SignedUploadURL: s.signer.url(req.base, "w", e.ID, now.Add(urlTTL))}, nil
+	return createResponse{OK: true, SignedUploadURL: s.sign(req.base, "w", id, now.Add(urlTTL))}, nil
 }
 
-func (s *Server) finalize(r *http.Request, req request, in *finalizeRequest) (any, error) {
+func (s *Server) finalize(ctx context.Context, req request, in *finalizeRequest) (any, error) {
 	if err := checkKeys(in.Key, in.Version); err != nil {
 		return nil, err
 	}
 	if req.Ref == "" {
 		return finalizeResponse{Message: noRefMessage}, nil
 	}
-	resp, err := s.commit(r, req, in)
+	resp, err := s.commit(ctx, req, in)
 	if err == nil && resp.OK {
-		if err := s.evict(r.Context(), 0); err != nil {
-			s.log.Error("cache: evict", "err", err)
+		if err := s.evict(ctx, 0); err != nil {
+			s.cfg.Logger.Error("cache: evict", "err", err)
 		}
 	}
 	return resp, err
 }
 
-func (s *Server) commit(r *http.Request, req request, in *finalizeRequest) (finalizeResponse, error) {
-	ctx := r.Context()
+func (s *Server) commit(ctx context.Context, req request, in *finalizeRequest) (finalizeResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, err := s.index.Find(ctx, req.Repository, req.Ref, in.Key, in.Version)
+	e, err := s.cfg.Index.GetCacheEntryByKey(ctx, req.Repository, req.Ref, in.Key, in.Version)
 	if errors.Is(err, ErrNotFound) {
 		return finalizeResponse{}, twirpErr("not_found", "no upload for this cache entry")
 	}
@@ -245,7 +247,7 @@ func (s *Server) commit(r *http.Request, req request, in *finalizeRequest) (fina
 		return finalizeResponse{OK: true, EntryID: entryID(e)}, nil
 	}
 
-	size, err := s.disk.size(e)
+	size, err := s.disk.size(e.ID)
 	var problem string
 	switch {
 	case errors.Is(err, errNotCommitted):
@@ -260,20 +262,20 @@ func (s *Server) commit(r *http.Request, req request, in *finalizeRequest) (fina
 	if problem != "" {
 		// Drop the upload, so that the job can try again at once.
 		if err := s.remove(ctx, e); err != nil {
-			s.log.Warn("cache: remove failed upload", "id", e.ID, "err", err)
+			s.cfg.Logger.Warn("cache: remove failed upload", "id", e.ID, "err", err)
 		}
 		return finalizeResponse{Message: "cache upload failed: " + problem}, nil
 	}
-	if err := s.index.Finalize(ctx, e.ID, size, s.now()); err != nil {
+	if err := s.cfg.Index.FinishCacheEntry(ctx, e.ID, size, s.now()); err != nil {
 		return finalizeResponse{}, fmt.Errorf("finalize entry: %w", err)
 	}
 	s.uploads.drop(e.ID)
-	s.stats.Add(e.Repository, Counts{BytesWritten: size})
-	s.log.Info("cache: saved", "repository", e.Repository, "ref", e.Ref, "key", e.Key, "bytes", size)
+	s.cfg.Stats.Add(e.Repository, store.CacheCounts{BytesWritten: size})
+	s.cfg.Logger.Info("cache: saved", "repository", e.Repository, "ref", e.Ref, "key", e.Key, "bytes", size)
 	return finalizeResponse{OK: true, EntryID: entryID(e)}, nil
 }
 
-func (s *Server) downloadURL(r *http.Request, req request, in *downloadRequest) (any, error) {
+func (s *Server) downloadURL(ctx context.Context, req request, in *downloadRequest) (any, error) {
 	keys := dedupe(append([]string{in.Key}, in.RestoreKeys...))
 	if len(keys) > maxKeys {
 		return nil, twirpErr("invalid_argument", "more than %d keys", maxKeys)
@@ -286,22 +288,22 @@ func (s *Server) downloadURL(r *http.Request, req request, in *downloadRequest) 
 	if len(req.readRefs()) == 0 {
 		return nil, twirpErr("permission_denied", "cache read denied: runplane knows no ref of this job")
 	}
-	e, err := s.match(r, req, keys, in.Version)
+	e, err := s.match(ctx, req, keys, in.Version)
 	if errors.Is(err, ErrNotFound) {
-		s.stats.Add(req.Repository, Counts{Misses: 1})
+		s.cfg.Stats.Add(req.Repository, store.CacheCounts{Misses: 1})
 		return downloadResponse{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	now := s.now()
-	if err := s.index.Touch(r.Context(), e.ID, now); err != nil {
-		s.log.Warn("cache: touch entry", "id", e.ID, "err", err)
+	if err := s.cfg.Index.TouchCacheEntry(ctx, e.ID, now); err != nil {
+		s.cfg.Logger.Warn("cache: touch entry", "id", e.ID, "err", err)
 	}
-	s.stats.Add(req.Repository, Counts{Hits: 1})
+	s.cfg.Stats.Add(req.Repository, store.CacheCounts{Hits: 1})
 	return downloadResponse{
 		OK:                true,
-		SignedDownloadURL: s.signer.url(req.base, "r", e.ID, now.Add(urlTTL)),
+		SignedDownloadURL: s.sign(req.base, "r", e.ID, now.Add(urlTTL)),
 		MatchedKey:        e.Key,
 	}, nil
 }
@@ -310,39 +312,36 @@ func (s *Server) downloadURL(r *http.Request, req request, in *downloadRequest) 
 // the keys in order; for each key, an exact match, then the newest entry
 // whose key starts with it. An entry with a missing or damaged blob is
 // removed, and the search continues.
-func (s *Server) match(r *http.Request, req request, keys []string, version string) (Entry, error) {
-	ctx := r.Context()
+func (s *Server) match(ctx context.Context, req request, keys []string, version string) (store.CacheEntry, error) {
 	for range 10 {
-		e, err := s.lookup(r, req, keys, version)
+		e, err := s.lookup(ctx, req, keys, version)
 		if err != nil {
-			return Entry{}, err
+			return store.CacheEntry{}, err
 		}
-		size, err := s.disk.size(e)
+		size, err := s.disk.size(e.ID)
 		if err == nil && size == e.SizeBytes {
 			return e, nil
 		}
-		s.log.Warn("cache: remove entry with damaged blob", "id", e.ID, "size", size, "want", e.SizeBytes, "err", err)
+		s.cfg.Logger.Warn("cache: remove entry with damaged blob", "id", e.ID, "size", size, "want", e.SizeBytes, "err", err)
 		if err := s.remove(ctx, e); err != nil {
-			return Entry{}, err
+			return store.CacheEntry{}, err
 		}
 	}
-	return Entry{}, errors.New("too many entries with damaged blobs")
+	return store.CacheEntry{}, errors.New("too many entries with damaged blobs")
 }
 
-func (s *Server) lookup(r *http.Request, req request, keys []string, version string) (Entry, error) {
+func (s *Server) lookup(ctx context.Context, req request, keys []string, version string) (store.CacheEntry, error) {
 	for _, ref := range req.readRefs() {
 		for _, key := range keys {
 			for _, prefix := range []bool{false, true} {
-				e, err := s.index.Lookup(r.Context(), Query{
-					Repository: req.Repository, Ref: ref, Version: version, Key: key, Prefix: prefix,
-				})
+				e, err := s.cfg.Index.MatchCacheEntry(ctx, req.Repository, version, []string{ref}, key, prefix)
 				if !errors.Is(err, ErrNotFound) {
 					return e, err
 				}
 			}
 		}
 	}
-	return Entry{}, ErrNotFound
+	return store.CacheEntry{}, ErrNotFound
 }
 
 // dedupe drops repeated strings and keeps the first of each.
@@ -367,7 +366,7 @@ func checkKeys(key, version string) error {
 }
 
 // entryID returns the int64 entry ID of the protocol. Clients only log it.
-func entryID(e Entry) string {
+func entryID(e store.CacheEntry) string {
 	return strconv.FormatInt(e.CreatedAt.UnixMilli(), 10)
 }
 

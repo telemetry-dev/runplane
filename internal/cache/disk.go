@@ -25,7 +25,11 @@ type disk struct {
 	root string
 }
 
+// blobPath is the path of the blob of an entry, relative to the cache folder.
 func blobPath(id string) string { return filepath.Join("blobs", id) }
+
+func (d disk) blob(id string) string    { return filepath.Join(d.root, blobPath(id)) }
+func (d disk) staging(id string) string { return filepath.Join(d.root, "uploads", id) }
 
 func (d disk) init() error {
 	for _, dir := range []string{d.root, filepath.Join(d.root, "blobs"), filepath.Join(d.root, "uploads")} {
@@ -35,8 +39,6 @@ func (d disk) init() error {
 	}
 	return nil
 }
-
-func (d disk) staging(id string) string { return filepath.Join(d.root, "uploads", id) }
 
 // staged returns the count and the bytes of the staged blocks of an upload.
 func (d disk) staged(id string) (int, int64) {
@@ -62,11 +64,11 @@ func (d disk) putBlock(id, blockID string, body io.Reader, limit int64) error {
 
 // commitBlocks joins staged blocks, in list order, into the blob (Azure Put
 // Block List) and drops the staged blocks.
-func (d disk) commitBlocks(e Entry, blockIDs []string) error {
+func (d disk) commitBlocks(id string, blockIDs []string) error {
 	if len(blockIDs) == 0 {
 		return errEmptyCommit
 	}
-	dir := d.staging(e.ID)
+	dir := d.staging(id)
 	tmp, err := os.CreateTemp(dir, "tmp-")
 	if err != nil {
 		return fmt.Errorf("create blob: %w", err)
@@ -81,7 +83,7 @@ func (d disk) commitBlocks(e Entry, blockIDs []string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("write blob: %w", err)
 	}
-	if err := os.Rename(tmp.Name(), filepath.Join(d.root, e.Path)); err != nil {
+	if err := os.Rename(tmp.Name(), d.blob(id)); err != nil {
 		return fmt.Errorf("commit blob: %w", err)
 	}
 	return os.RemoveAll(dir)
@@ -89,20 +91,20 @@ func (d disk) commitBlocks(e Entry, blockIDs []string) error {
 
 // putBlob writes the whole blob in one request (Azure Put Blob) and drops
 // staged blocks.
-func (d disk) putBlob(e Entry, body io.Reader, limit int64) error {
-	dir := d.staging(e.ID)
+func (d disk) putBlob(id string, body io.Reader, limit int64) error {
+	dir := d.staging(id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("make staging folder: %w", err)
 	}
-	if err := writeFile(dir, filepath.Join(d.root, e.Path), body, limit); err != nil {
+	if err := writeFile(dir, d.blob(id), body, limit); err != nil {
 		return err
 	}
 	return os.RemoveAll(dir)
 }
 
 // size returns the size of the committed blob of an entry.
-func (d disk) size(e Entry) (int64, error) {
-	info, err := os.Stat(filepath.Join(d.root, e.Path))
+func (d disk) size(id string) (int64, error) {
+	info, err := os.Stat(d.blob(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, errNotCommitted
 	}
@@ -112,17 +114,17 @@ func (d disk) size(e Entry) (int64, error) {
 	return info.Size(), nil
 }
 
-func (d disk) open(e Entry) (*os.File, error) {
-	return os.Open(filepath.Join(d.root, e.Path))
+func (d disk) open(id string) (*os.File, error) {
+	return os.Open(d.blob(id))
 }
 
 // remove deletes the blob and the staged blocks of an entry.
-func (d disk) remove(e Entry) error {
-	err := os.Remove(filepath.Join(d.root, e.Path))
+func (d disk) remove(id string) error {
+	err := os.Remove(d.blob(id))
 	if errors.Is(err, os.ErrNotExist) {
 		err = nil
 	}
-	return errors.Join(err, os.RemoveAll(d.staging(e.ID)))
+	return errors.Join(err, os.RemoveAll(d.staging(id)))
 }
 
 // ids returns the entry IDs that have files in a subfolder ("blobs" or "uploads").

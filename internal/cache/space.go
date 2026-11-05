@@ -51,20 +51,8 @@ func (u *uploads) open(id, sandboxID string) bool {
 	if n >= maxOpenUploads {
 		return false
 	}
-	if u.owner == nil {
-		u.owner = map[string]string{}
-	}
 	u.owner[id] = sandboxID
 	return true
-}
-
-func (u *uploads) set(id string, n int64) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.onDisk == nil {
-		u.onDisk = map[string]int64{}
-	}
-	u.onDisk[id] = n
 }
 
 // drop stops the count of an upload that is finalized or removed.
@@ -79,15 +67,11 @@ func (u *uploads) drop(id string) {
 // so of one entry: MaxBytes, and at most a quarter of the disk.
 func (s *Server) Limit() int64 {
 	limit := int64(math.MaxInt64)
-	if s.maxBytes != nil {
-		if n := s.maxBytes(); n > 0 {
-			limit = n
-		}
+	if n := s.cfg.MaxBytes(); n > 0 {
+		limit = n
 	}
-	if s.diskSpace != nil {
-		if total, _, err := s.diskSpace(); err == nil && total > 0 {
-			limit = min(limit, total/4)
-		}
+	if total, _, err := s.cfg.DiskSpace(); err == nil && total > 0 {
+		limit = min(limit, total/4)
 	}
 	return limit
 }
@@ -95,14 +79,11 @@ func (s *Server) Limit() int64 {
 // diskShort returns the bytes that the disk lacks to have MinFreePercent
 // plus margin free, or 0.
 func (s *Server) diskShort(margin float64) int64 {
-	if s.diskSpace == nil || s.minFree == nil {
-		return 0
-	}
-	total, free, err := s.diskSpace()
+	total, free, err := s.cfg.DiskSpace()
 	if err != nil || total <= 0 {
 		return 0
 	}
-	return max(0, int64(float64(total)*(s.minFree()+margin)/100)-free)
+	return max(0, int64(float64(total)*(s.cfg.MinFreePercent()+margin)/100)-free)
 }
 
 // reserve takes up to want bytes of the limit for one write to an upload.
@@ -127,7 +108,7 @@ func (s *Server) reserve(ctx context.Context, want int64) (int64, error) {
 	if s.diskShort(0) > 0 {
 		return 0, errTooLarge
 	}
-	entries, err := s.usage(ctx)
+	entries, err := s.cfg.Index.CacheSize(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -146,30 +127,30 @@ func (s *Server) reserve(ctx context.Context, want int64) (int64, error) {
 	return n, nil
 }
 
-// release gives back the bytes of reserve after a write to the upload e,
-// and counts the files of e as they are now.
-func (s *Server) release(e Entry, reserved int64) {
-	_, staged := s.disk.staged(e.ID)
-	blob, _ := s.disk.size(e)
+// release gives back the bytes of reserve after a write to the upload id,
+// and counts its files as they are now.
+func (s *Server) release(id string, reserved int64) {
+	_, staged := s.disk.staged(id)
+	blob, _ := s.disk.size(id)
 	u := &s.uploads
 	u.mu.Lock()
+	defer u.mu.Unlock()
 	u.writing -= reserved
-	u.mu.Unlock()
 	if staged+blob > 0 {
-		u.set(e.ID, staged+blob)
+		u.onDisk[id] = staged + blob
 	}
 }
 
 // countUploads counts the files of the unfinished uploads that an earlier
 // process left.
 func (s *Server) countUploads(ctx context.Context) {
-	list, err := s.index.Unfinished(ctx, s.now())
+	list, err := s.cfg.Index.ListUnfinishedCacheEntries(ctx, s.now())
 	if err != nil {
-		s.log.Error("cache: list unfinished uploads", "err", err)
+		s.cfg.Logger.Error("cache: list unfinished uploads", "err", err)
 		return
 	}
 	for _, e := range list {
-		s.release(e, 0)
+		s.release(e.ID, 0)
 	}
 }
 
@@ -179,7 +160,7 @@ func (s *Server) countUploads(ctx context.Context) {
 func (s *Server) evict(ctx context.Context, extra int64) error {
 	s.evictMu.Lock()
 	defer s.evictMu.Unlock()
-	total, err := s.usage(ctx)
+	total, err := s.cfg.Index.CacheSize(ctx)
 	if err != nil {
 		return err
 	}
@@ -189,7 +170,7 @@ func (s *Server) evict(ctx context.Context, extra int64) error {
 	}
 	over = max(over, s.diskShort(evictMargin))
 	for over > 0 {
-		oldest, err := s.index.Oldest(ctx, 64)
+		oldest, err := s.cfg.Index.LeastRecentCacheEntries(ctx, 64)
 		if err != nil {
 			return fmt.Errorf("list oldest entries: %w", err)
 		}
@@ -204,21 +185,8 @@ func (s *Server) evict(ctx context.Context, extra int64) error {
 				return err
 			}
 			over -= e.SizeBytes
-			s.log.Info("cache: evict", "repository", e.Repository, "key", e.Key, "bytes", e.SizeBytes)
+			s.cfg.Logger.Info("cache: evict", "repository", e.Repository, "key", e.Key, "bytes", e.SizeBytes)
 		}
 	}
 	return nil
-}
-
-// usage returns the bytes of the finalized entries.
-func (s *Server) usage(ctx context.Context) (int64, error) {
-	usage, err := s.index.Usage(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("read usage: %w", err)
-	}
-	var total int64
-	for _, u := range usage {
-		total += u.Bytes
-	}
-	return total, nil
 }

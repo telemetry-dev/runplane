@@ -5,7 +5,6 @@ package image
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -21,12 +20,8 @@ func TestEnsureBundleModesWithStrictUmask(t *testing.T) {
 	t.Cleanup(func() { syscall.Umask(old) })
 
 	archive := runnerArchive(t, []byte("MZ"))
-	sum := sha256.Sum256(archive)
-	files := map[string][]byte{
-		"api.github.com/repos/actions/runner/releases/tags/v2.338.2":                                   releaseJSON("2.338.2", "x64", hex.EncodeToString(sum[:])),
-		"github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz": archive,
-	}
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), HTTP: fakeGitHub(t, files, nil).Client()})
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir()})
+	serveRunner(t, b, "2.338.2", "x64", archive, sha256.Sum256(archive))
 	bundle, err := b.Ensure(context.Background(), "2.338.2", "x64")
 	if err != nil {
 		t.Fatal(err)

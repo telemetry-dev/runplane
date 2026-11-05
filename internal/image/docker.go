@@ -19,6 +19,8 @@ import (
 	"github.com/runplane/runplane/images"
 )
 
+var platform = ocispec.Platform{OS: "linux", Architecture: runtime.GOARCH}
+
 // ensureDocker pulls the image with Docker. A builtin image that Docker
 // cannot pull is built from its embedded Dockerfile.
 func (m *Manager) ensureDocker(ctx context.Context, src source, r *reporter) (Image, error) {
@@ -54,7 +56,7 @@ func (m *Manager) inspect(ctx context.Context, ref string) (Image, error) {
 
 func (m *Manager) pull(ctx context.Context, ref string, r *reporter) error {
 	resp, err := m.cfg.Docker.ImagePull(ctx, ref, client.ImagePullOptions{
-		Platforms: []ocispec.Platform{platform()},
+		Platforms: []ocispec.Platform{platform},
 	})
 	if err != nil {
 		return fmt.Errorf("pull %s: %w", ref, err)
@@ -87,7 +89,6 @@ func (m *Manager) pull(ctx context.Context, ref string, r *reporter) error {
 	return nil
 }
 
-// build builds a builtin image with BuildKit and tags it.
 func (m *Manager) build(ctx context.Context, name, tag string) error {
 	dir, err := fs.Sub(images.FS, name)
 	if err != nil {
@@ -101,7 +102,7 @@ func (m *Manager) build(ctx context.Context, name, tag string) error {
 		Labels:    map[string]string{labelManaged: "true"},
 		Version:   build.BuilderBuildKit,
 		Remove:    true,
-		Platforms: []ocispec.Platform{platform()},
+		Platforms: []ocispec.Platform{platform},
 	})
 	if err != nil {
 		return fmt.Errorf("build %s: %w", name, err)
@@ -174,8 +175,4 @@ func (m *Manager) dockerGC(ctx context.Context, keep map[string]bool) error {
 		m.log.Info("removed unused image", "id", img.ID, "tags", img.RepoTags)
 	}
 	return nil
-}
-
-func platform() ocispec.Platform {
-	return ocispec.Platform{OS: "linux", Architecture: runtime.GOARCH}
 }

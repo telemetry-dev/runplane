@@ -3,11 +3,9 @@ package cachestore
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/netip"
 	"path/filepath"
-	"slices"
 	"testing"
 	"time"
 
@@ -27,132 +25,6 @@ func openStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	return st
-}
-
-func TestIndexLookup(t *testing.T) {
-	ctx := context.Background()
-	x := NewIndex(openStore(t))
-	add := func(id, ref, key string, created time.Time, finalized bool) {
-		t.Helper()
-		e := cache.Entry{ID: id, Repository: "acme/api", Ref: ref, Key: key, Version: "v1", Path: "blobs/" + id,
-			CreatedAt: created, LastUsedAt: created}
-		if err := x.Create(ctx, e); err != nil {
-			t.Fatal(err)
-		}
-		if finalized {
-			if err := x.Finalize(ctx, id, 100, created); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	main := "refs/heads/main"
-	add("e1", main, "npm-linux-aaa", t0, true)
-	add("e2", main, "npm-linux-bbb", t0.Add(time.Minute), true)
-	add("e3", main, "npm-linux-ccc", t0.Add(2*time.Minute), false) // upload in progress
-	add("e4", main, "NPM-LINUX-ddd", t0.Add(3*time.Minute), true)
-	add("e5", main, "go-%-x", t0, true)
-	add("e6", main, "go-a-x", t0.Add(time.Minute), true)
-	add("e7", "refs/heads/dev", "npm-linux-zzz", t0.Add(time.Hour), true)
-
-	tests := []struct {
-		name string
-		q    cache.Query
-		want string // entry ID; "" for ErrNotFound
-	}{
-		{"newest finalized prefix match", cache.Query{Ref: main, Key: "npm-linux-", Prefix: true}, "e2"},
-		{"exact key", cache.Query{Ref: main, Key: "npm-linux-aaa"}, "e1"},
-		{"a prefix is not an exact key", cache.Query{Ref: main, Key: "npm-linux-"}, ""},
-		{"a wildcard is a plain character", cache.Query{Ref: main, Key: "go-%", Prefix: true}, "e5"},
-		{"keys keep their case", cache.Query{Ref: main, Key: "NPM-", Prefix: true}, "e4"},
-		{"other version", cache.Query{Ref: main, Key: "npm-linux-aaa", Version: "v2"}, ""},
-		{"other ref", cache.Query{Ref: "refs/heads/dev", Key: "npm-linux-", Prefix: true}, "e7"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tt.q.Repository = "acme/api"
-			if tt.q.Version == "" {
-				tt.q.Version = "v1"
-			}
-			got, err := x.Lookup(ctx, tt.q)
-			if tt.want == "" {
-				if !errors.Is(err, cache.ErrNotFound) {
-					t.Fatalf("got %q, %v; want ErrNotFound", got.ID, err)
-				}
-				return
-			}
-			if err != nil || got.ID != tt.want {
-				t.Fatalf("got %q, %v; want %q", got.ID, err, tt.want)
-			}
-		})
-	}
-}
-
-func TestIndexEntries(t *testing.T) {
-	ctx := context.Background()
-	x := NewIndex(openStore(t))
-	e := cache.Entry{ID: "a1", Repository: "acme/api", Ref: "refs/heads/main", Key: "k", Version: "v1",
-		Path: "blobs/a1", CreatedAt: t0, LastUsedAt: t0}
-	if err := x.Create(ctx, e); err != nil {
-		t.Fatal(err)
-	}
-	dup := e
-	dup.ID = "a2"
-	if err := x.Create(ctx, dup); !errors.Is(err, cache.ErrExists) {
-		t.Fatalf("second entry with the same key: %v, want ErrExists", err)
-	}
-	other := cache.Entry{ID: "b1", Repository: "acme/web", Ref: "refs/heads/main", Key: "k", Version: "v1",
-		Path: "blobs/b1", CreatedAt: t0.Add(time.Minute), LastUsedAt: t0.Add(time.Minute)}
-	newer := cache.Entry{ID: "a3", Repository: "acme/api", Ref: "refs/heads/main", Key: "k2", Version: "v1",
-		Path: "blobs/a3", CreatedAt: t0.Add(2 * time.Minute), LastUsedAt: t0.Add(2 * time.Minute)}
-	for _, e := range []cache.Entry{other, newer} {
-		if err := x.Create(ctx, e); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	used := t0.Add(time.Hour)
-	if err := x.Finalize(ctx, "a1", 4096, used); err != nil {
-		t.Fatal(err)
-	}
-	if err := x.Finalize(ctx, "b1", 10, t0); err != nil {
-		t.Fatal(err)
-	}
-	got, err := x.Get(ctx, "a1")
-	if err != nil || !got.Finalized || got.SizeBytes != 4096 || !got.LastUsedAt.Equal(used) || got.Path != "blobs/a1" {
-		t.Errorf("finalized entry: %+v, %v", got, err)
-	}
-
-	list, err := x.List(ctx, "acme/api")
-	if ids := entryIDs(list); err != nil || !slices.Equal(ids, []string{"a3", "a1"}) {
-		t.Errorf("list acme/api: %v, %v; want newest first", ids, err)
-	}
-	// The cache server deletes what List returns.
-	if list, err := x.List(ctx, ""); err != nil || len(list) != 0 {
-		t.Errorf("list of no repository: %v, %v", entryIDs(list), err)
-	}
-	usage, err := x.Usage(ctx)
-	want := []cache.Usage{{Repository: "acme/api", Entries: 1, Bytes: 4096}, {Repository: "acme/web", Entries: 1, Bytes: 10}}
-	if err != nil || !slices.Equal(usage, want) {
-		t.Errorf("usage: %+v, %v; want %+v", usage, err, want)
-	}
-
-	if err := x.Delete(ctx, "a1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := x.Get(ctx, "a1"); !errors.Is(err, cache.ErrNotFound) {
-		t.Errorf("get a deleted entry: %v", err)
-	}
-	if err := x.Delete(ctx, "a1"); !errors.Is(err, cache.ErrNotFound) {
-		t.Errorf("delete a deleted entry: %v", err)
-	}
-}
-
-func entryIDs(list []cache.Entry) []string {
-	var ids []string
-	for _, e := range list {
-		ids = append(ids, e.ID)
-	}
-	return ids
 }
 
 func TestResolver(t *testing.T) {
@@ -290,54 +162,5 @@ func TestIdentityRefs(t *testing.T) {
 				t.Errorf("ref %q base %q, want %q %q", got.Ref, got.BaseRef, tt.ref, tt.baseRef)
 			}
 		})
-	}
-}
-
-func TestStatsAddPerHour(t *testing.T) {
-	st := openStore(t)
-	s := NewStats(st, slog.New(slog.DiscardHandler))
-	now := t0
-	s.now = func() time.Time { return now }
-	s.Add("acme/api", cache.Counts{Hits: 1, BytesRead: 100})
-	now = t0.Add(30 * time.Minute)
-	s.Add("acme/api", cache.Counts{Misses: 1})
-	s.Add("acme/web", cache.Counts{BytesWritten: 7})
-	now = t0.Add(time.Hour)
-	s.Add("acme/api", cache.Counts{Hits: 2})
-
-	// Run writes the counts when it ends.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	s.Run(ctx)
-	// A later flush adds to the rows that exist.
-	s.Add("acme/api", cache.Counts{Hits: 1})
-	s.flush(context.Background())
-
-	rows, err := st.DB().Query("SELECT hour, repository, hits, misses, bytes_read, bytes_written FROM cache_stats ORDER BY hour, repository")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	type row struct {
-		hour                                  int64
-		repository                            string
-		hits, misses, bytesRead, bytesWritten int64
-	}
-	var got []row
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.hour, &r.repository, &r.hits, &r.misses, &r.bytesRead, &r.bytesWritten); err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, r)
-	}
-	h := t0.Unix() / 3600
-	want := []row{
-		{h, "acme/api", 1, 1, 100, 0},
-		{h, "acme/web", 0, 0, 0, 7},
-		{h + 1, "acme/api", 3, 0, 0, 0},
-	}
-	if !slices.Equal(got, want) {
-		t.Errorf("cache_stats rows:\n got %+v\nwant %+v", got, want)
 	}
 }

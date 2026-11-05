@@ -6,6 +6,7 @@
 package image
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -101,15 +102,9 @@ func New(cfg Config) (*Manager, error) {
 	default:
 		return nil, fmt.Errorf("new image manager: unknown mode %q", cfg.Mode)
 	}
-	log := cfg.Logger
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
-	m := &Manager{cfg: cfg, log: log, fresh: map[string]bool{}}
+	m := &Manager{cfg: cfg, log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)), fresh: map[string]bool{}}
+	// Only VM mode reads runplane-init.
 	m.init = sync.OnceValues(func() (initFile, error) {
-		if cfg.Init == nil {
-			return initFile{}, errors.New("no runplane-init binary")
-		}
 		bin, err := cfg.Init()
 		if err != nil {
 			return initFile{}, fmt.Errorf("read runplane-init: %w", err)

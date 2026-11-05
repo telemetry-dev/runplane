@@ -1,4 +1,4 @@
-package cachestore
+package cache
 
 import (
 	"context"
@@ -6,15 +6,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/store"
 )
 
-const flushEvery = time.Minute
+// ErrNotFound means that no cache entry has the ID.
+var ErrNotFound = store.ErrNotFound
 
-// Stats is the cache_stats table as a cache.Stats. The cache server calls
-// Add on each request, so Add only adds to counts in memory, and Run writes
-// them each minute.
+// Index is the store that holds the cache_entries table. The blobs stay on
+// disk.
+type Index struct{ *store.Store }
+
+// Stats records cache use for each repository in the cache_stats table. The
+// server counts on request paths, so Add only adds to counts in memory, and
+// Run writes them each minute.
 type Stats struct {
 	st  *store.Store
 	log *slog.Logger
@@ -29,22 +33,20 @@ type hourRepo struct {
 	repository string
 }
 
-var _ cache.Stats = (*Stats)(nil)
-
 func NewStats(st *store.Store, log *slog.Logger) *Stats {
 	return &Stats{st: st, log: log, now: time.Now, pending: map[hourRepo]store.CacheCounts{}}
 }
 
-func (s *Stats) Add(repository string, c cache.Counts) {
+func (s *Stats) Add(repository string, c store.CacheCounts) {
 	k := hourRepo{s.now().Unix() / 3600, repository}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pending[k] = sum(s.pending[k], store.CacheCounts{Hits: c.Hits, Misses: c.Misses, BytesRead: c.BytesRead, BytesWritten: c.BytesWritten})
+	s.pending[k] = sum(s.pending[k], c)
 }
 
 // Run writes the counts each minute, and a last time when ctx ends.
 func (s *Stats) Run(ctx context.Context) {
-	tick := time.NewTicker(flushEvery)
+	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for {
 		select {

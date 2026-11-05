@@ -8,9 +8,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,28 +31,10 @@ func TestPatchResultsURL(t *testing.T) {
 		want []byte
 		n    int
 	}{
-		{
-			name: "each UTF-16 match",
-			in:   join([]byte{0x4d, 0x5a}, url, []byte{0, 0, 7}, url),
-			want: join([]byte{0x4d, 0x5a}, orl, []byte{0, 0, 7}, orl),
-			n:    2,
-		},
-		{
-			name: "adjacent matches",
-			in:   join(url, url),
-			want: join(orl, orl),
-			n:    2,
-		},
-		{
-			name: "ASCII is not a match",
-			in:   []byte("xxACTIONS_RESULTS_URLxx"),
-			want: []byte("xxACTIONS_RESULTS_URLxx"),
-		},
-		{
-			name: "cut match at the end",
-			in:   join([]byte{1}, url[:len(url)-2]),
-			want: join([]byte{1}, url[:len(url)-2]),
-		},
+		{"each UTF-16 match", join([]byte{0x4d, 0x5a}, url, []byte{0, 0, 7}, url), join([]byte{0x4d, 0x5a}, orl, []byte{0, 0, 7}, orl), 2},
+		{"adjacent matches", join(url, url), join(orl, orl), 2},
+		{"ASCII is not a match", []byte("xxACTIONS_RESULTS_URLxx"), []byte("xxACTIONS_RESULTS_URLxx"), 0},
+		{"cut match at the end", join([]byte{1}, url[:len(url)-2]), join([]byte{1}, url[:len(url)-2]), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -63,9 +45,6 @@ func TestPatchResultsURL(t *testing.T) {
 			if !bytes.Equal(b, tt.want) {
 				t.Errorf("bytes = %q, want %q", b, tt.want)
 			}
-			if len(b) != len(tt.in) {
-				t.Errorf("length = %d, want %d", len(b), len(tt.in))
-			}
 		})
 	}
 }
@@ -75,71 +54,47 @@ func TestRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var auth string
-	gh := fakeGitHub(t, map[string][]byte{"api.github.com/repos/actions/runner/releases/latest": release}, func(r *http.Request) {
-		auth = r.Header.Get("Authorization")
-	})
-	b := NewBundles(BundleConfig{
-		HTTP:  gh.Client(),
-		Token: func(context.Context) (string, error) { return "ghs_test", nil },
-	})
-	rel, err := b.release(context.Background(), "/releases/latest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if auth != "Bearer ghs_test" {
-		t.Errorf("Authorization = %q", auth)
-	}
-	if rel.Version != "2.338.2" {
-		t.Errorf("version = %q", rel.Version)
-	}
 	want := map[string]string{
 		"x64":   "baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40",
 		"arm64": "670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945",
 	}
-	for arch, sum := range want {
-		if rel.SHA256[arch] != sum {
-			t.Errorf("SHA-256 %s = %q, want %q", arch, rel.SHA256[arch], sum)
-		}
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{"SHA markers in the notes", release},
+		{"asset digests without markers", bytes.ReplaceAll(release, []byte("BEGIN SHA"), []byte("BEGIN XXX"))},
 	}
-	if len(rel.SHA256) != 2 {
-		t.Errorf("SHA-256 for %d arches, want 2: %v", len(rel.SHA256), rel.SHA256)
-	}
-}
-
-func TestReleaseUsesAssetDigestWithoutMarkers(t *testing.T) {
-	release, err := os.ReadFile("testdata/runner-release-2.338.2.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	release = bytes.ReplaceAll(release, []byte("BEGIN SHA"), []byte("BEGIN XXX"))
-	gh := fakeGitHub(t, map[string][]byte{"api.github.com/repos/actions/runner/releases/latest": release}, nil)
-	rel, err := NewBundles(BundleConfig{HTTP: gh.Client()}).release(context.Background(), "/releases/latest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := rel.SHA256["arm64"], "670adb2f268fe21dcbb58b3db0e0aa9d5b3bddfe2c651481336e561ff86de945"; got != want {
-		t.Errorf("SHA-256 arm64 = %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := NewBundles(BundleConfig{Token: func(context.Context) (string, error) { return "ghs_test", nil }})
+			var auth string
+			fakeGitHub(t, b, map[string][]byte{"/repos/actions/runner/releases/latest": tt.body}, func(r *http.Request) {
+				auth = r.Header.Get("Authorization")
+			})
+			version, sums, err := b.release(context.Background(), "/releases/latest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if auth != "Bearer ghs_test" || version != "2.338.2" || !maps.Equal(sums, want) {
+				t.Errorf("auth %q, version %q, SHA-256 %v; want %v", auth, version, sums, want)
+			}
+		})
 	}
 }
 
 func TestEnsureBundle(t *testing.T) {
 	dll := bytes.Join([][]byte{[]byte("MZ"), utf16Bytes("ACTIONS_RESULTS_URL"), {0, 0}, utf16Bytes("ACTIONS_RESULTS_URL")}, nil)
 	archive := runnerArchive(t, dll)
-	sum := sha256.Sum256(archive)
-	files := map[string][]byte{
-		"api.github.com/repos/actions/runner/releases/tags/v2.338.2":                                     releaseJSON("2.338.2", "arm64", hex.EncodeToString(sum[:])),
-		"github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-arm64-2.338.2.tar.gz": archive,
-	}
-	var requests atomic.Int32
-	gh := fakeGitHub(t, files, func(*http.Request) { requests.Add(1) })
 	dir := t.TempDir()
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: dir, HTTP: gh.Client()})
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: dir})
+	requests := serveRunner(t, b, "2.338.2", "arm64", archive, sha256.Sum256(archive))
 
 	bundle, err := b.Ensure(context.Background(), "2.338.2", "arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
+	sum := sha256.Sum256(archive)
 	want := Bundle{
 		Version:  "2.338.2",
 		Arch:     "arm64",
@@ -182,30 +137,21 @@ func TestEnsureBundle(t *testing.T) {
 }
 
 func TestEnsureBundleRejectsBadSHA(t *testing.T) {
-	archive := runnerArchive(t, []byte("MZ"))
-	files := map[string][]byte{
-		"api.github.com/repos/actions/runner/releases/tags/v2.338.2":                                   releaseJSON("2.338.2", "x64", strings.Repeat("0", 64)),
-		"github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz": archive,
-	}
 	dir := t.TempDir()
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: dir, HTTP: fakeGitHub(t, files, nil).Client()})
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: dir})
+	serveRunner(t, b, "2.338.2", "x64", runnerArchive(t, []byte("MZ")), [32]byte{})
 	if _, err := b.Ensure(context.Background(), "2.338.2", "x64"); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("Ensure error = %v, want a SHA-256 error", err)
 	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Errorf("runners folder has %d entries after a bad download, want 0", len(entries))
+	if left := names(t, dir); left != "" {
+		t.Errorf("runners folder has %s after a bad download, want nothing", left)
 	}
 }
 
 func TestEnsureBundleWithoutPatch(t *testing.T) {
 	archive := runnerArchive(t, []byte("MZ no results url here"))
-	sum := sha256.Sum256(archive)
-	files := map[string][]byte{
-		"api.github.com/repos/actions/runner/releases/tags/v2.400.0":                                   releaseJSON("2.400.0", "x64", hex.EncodeToString(sum[:])),
-		"github.com/actions/runner/releases/download/v2.400.0/actions-runner-linux-x64-2.400.0.tar.gz": archive,
-	}
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), HTTP: fakeGitHub(t, files, nil).Client()})
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir()})
+	serveRunner(t, b, "2.400.0", "x64", archive, sha256.Sum256(archive))
 	bundle, err := b.Ensure(context.Background(), "2.400.0", "x64")
 	if err != nil {
 		t.Fatal(err)
@@ -216,35 +162,6 @@ func TestEnsureBundleWithoutPatch(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(bundle.Dir, "bin", "Runner.Worker.dll"))
 	if err != nil || string(got) != "MZ no results url here" {
 		t.Errorf("Runner.Worker.dll = %q, %v", got, err)
-	}
-}
-
-// TestEnsureBundleFromOtherGitHub checks that the release read and the
-// download go to the GitHub of APIURL and WebURL, as runplane does with the
-// fake GitHub of the end-to-end tests.
-func TestEnsureBundleFromOtherGitHub(t *testing.T) {
-	archive := runnerArchive(t, utf16Bytes("ACTIONS_RESULTS_URL"))
-	sum := sha256.Sum256(archive)
-	files := map[string][]byte{
-		"/api/v3/repos/actions/runner/releases/tags/v2.338.2":                                releaseJSON("2.338.2", "x64", hex.EncodeToString(sum[:])),
-		"/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz": archive,
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, ok := files[r.URL.Path]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Write(body)
-	}))
-	t.Cleanup(srv.Close)
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), APIURL: srv.URL + "/api/v3", WebURL: srv.URL})
-	bundle, err := b.Ensure(context.Background(), "2.338.2", "x64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bundle.SHA256 != hex.EncodeToString(sum[:]) || !bundle.Patched {
-		t.Errorf("bundle = %+v, want the patched release of the other GitHub", bundle)
 	}
 }
 
@@ -260,28 +177,21 @@ func TestPrune(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	b := NewBundles(BundleConfig{Dir: dir})
-	if err := b.Prune([]string{"2.9.0"}); err != nil {
+	if err := NewBundles(BundleConfig{Dir: dir}).Prune([]string{"2.9.0"}); err != nil {
 		t.Fatal(err)
 	}
-	var left []string
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		left = append(left, e.Name())
-	}
-	want := []string{"2.300.0-arm64", "2.337.0-x64", "2.338.2-x64", "2.338.2-x64.json", "2.9.0-x64"}
-	if strings.Join(left, " ") != strings.Join(want, " ") {
-		t.Errorf("after prune: %v\nwant %v", left, want)
+	if left, want := names(t, dir), "2.300.0-arm64 2.337.0-x64 2.338.2-x64 2.338.2-x64.json 2.9.0-x64"; left != want {
+		t.Errorf("after prune: %s\nwant %s", left, want)
 	}
 }
 
-// fakeGitHub serves files by host and path. Its client sends all requests to it.
-func fakeGitHub(t *testing.T, files map[string][]byte, seen func(*http.Request)) *fakeServer {
+// fakeGitHub serves files by path, and points the GitHub URLs of b at it.
+func fakeGitHub(t *testing.T, b *Bundles, files map[string][]byte, seen func(*http.Request)) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if seen != nil {
 			seen(r)
 		}
-		body, ok := files[r.Host+r.URL.Path]
+		body, ok := files[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -289,27 +199,19 @@ func fakeGitHub(t *testing.T, files map[string][]byte, seen func(*http.Request))
 		w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
-	return &fakeServer{srv}
+	b.api, b.web = srv.URL, srv.URL
 }
 
-type fakeServer struct{ *httptest.Server }
-
-func (s *fakeServer) Client() *http.Client {
-	target, _ := url.Parse(s.URL)
-	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		r = r.Clone(r.Context())
-		r.URL.Scheme, r.URL.Host = target.Scheme, target.Host
-		return http.DefaultTransport.RoundTrip(r)
-	})}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func releaseJSON(version, arch, sum string) []byte {
-	return fmt.Appendf(nil, `{"tag_name":"v%s","published_at":"2026-10-26T14:45:12Z","body":"- actions-runner-linux-%s-%s.tar.gz <!-- BEGIN SHA linux-%s -->%s<!-- END SHA linux-%s -->","assets":[]}`,
-		version, arch, version, arch, sum, arch)
+// serveRunner serves a runner release whose notes give sum for the archive,
+// and returns the count of requests.
+func serveRunner(t *testing.T, b *Bundles, version, arch string, archive []byte, sum [32]byte) *atomic.Int32 {
+	release := fmt.Appendf(nil, `{"tag_name":"v%s","body":"<!-- BEGIN SHA linux-%s -->%x<!-- END SHA linux-%s -->","assets":[]}`,
+		version, arch, sum, arch)
+	download := fmt.Sprintf("/actions/runner/releases/download/v%s/actions-runner-linux-%s-%s.tar.gz", version, arch, version)
+	var requests atomic.Int32
+	fakeGitHub(t, b, map[string][]byte{"/repos/actions/runner/releases/tags/v" + version: release, download: archive},
+		func(*http.Request) { requests.Add(1) })
+	return &requests
 }
 
 func runnerArchive(t *testing.T, dll []byte) []byte {

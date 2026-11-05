@@ -2,18 +2,13 @@
 // the cache service v2 (Twirp github.actions.results.api.v1.CacheService),
 // emulates the Azure Blob calls on the signed URLs that the service hands
 // out, and sends all other results traffic, for example artifacts, to GitHub.
-//
 // A patched runner keeps the ACTIONS_RESULTS_URL of its .env file (see
-// RunnerEnv), so jobs send cache calls here. The server keeps the entries of
-// each repository apart and applies the GitHub branch rules: a job restores
-// from its ref, its base ref, and the default branch, and saves only to its
-// ref.
+// RunnerEnv), so jobs send cache calls here.
 package cache
 
 import (
 	"cmp"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,62 +17,55 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/runplane/runplane/internal/store"
 )
 
-// DefaultResultsURL is the GitHub results service.
-const DefaultResultsURL = "https://results-receiver.actions.githubusercontent.com"
+var resultsURL = &url.URL{Scheme: "https", Host: "results-receiver.actions.githubusercontent.com"}
 
-// staleUpload is the age at which the cleanup removes an unfinished upload.
-const staleUpload = time.Hour
+const (
+	// staleUpload is the age at which the cleanup removes an unfinished upload.
+	staleUpload = time.Hour
+	// jobWait is how long a request of a known sandbox waits for its job.
+	// runplane learns which job a runner took from the scale set message, and
+	// GitHub can send that message 20 seconds or more after the job starts,
+	// when the first cache step already runs.
+	jobWait = time.Minute
+)
 
 type Config struct {
 	Dir      string // blob folder, for example /var/lib/runplane/cache
 	Index    Index
 	Resolver Resolver
-	Stats    Stats // nil: no statistics
-	// JobWait is how long a request of a known sandbox waits for its job;
-	// zero means 60 seconds. runplane learns which job a runner took from
-	// the scale set message, and GitHub can send that message 20 seconds or
-	// more after the job starts, when the first cache step already runs.
-	JobWait time.Duration
-	// MaxBytes returns the byte limit of all entries. The server reads it at
-	// each check, so a settings change applies at once. Nil or a value <= 0:
-	// no limit.
+	Stats    *Stats
+	// MaxBytes returns the byte limit of all entries; a value <= 0 means no
+	// limit. The server reads it at each check, so a settings change applies
+	// at once.
 	MaxBytes func() int64
-	// DiskSpace returns the size and the free bytes of the disk of Dir. Nil:
-	// the server does not look at the disk. With it, the limit is at most a
-	// quarter of the disk.
+	// DiskSpace returns the size and the free bytes of the disk of Dir. The
+	// limit is at most a quarter of the disk.
 	DiskSpace func() (total, free int64, err error)
 	// MinFreePercent returns the part of the disk, 0 to 100, that the cache
 	// leaves free: below it, the server takes no upload and removes the
-	// least recently used entries. Nil: 0.
+	// least recently used entries.
 	MinFreePercent func() float64
-	// SigningKey signs blob URLs. Empty: a random key, so URLs stop working
-	// when the process restarts.
-	SigningKey []byte
-	ResultsURL string // empty: DefaultResultsURL
-	Logger     *slog.Logger
+	SigningKey     []byte // signs blob URLs
+	Logger         *slog.Logger
 }
 
 // Server is the cache server. As an http.Handler it serves requests that
 // come from sandboxes directly; Proxied serves requests that a trusted proxy
 // forwards.
 type Server struct {
-	index     Index
-	resolver  Resolver
-	stats     Stats
-	maxBytes  func() int64
-	jobWait   time.Duration
-	diskSpace func() (total, free int64, err error)
-	minFree   func() float64
-	disk      disk
-	signer    signer
-	proxy     *httputil.ReverseProxy
-	log       *slog.Logger
-	now       func() time.Time
+	cfg     Config
+	disk    disk
+	jobWait time.Duration
+	proxy   *httputil.ReverseProxy
+	now     func() time.Time
 
 	mu      sync.Mutex // serializes reservations and finalizations
 	evictMu sync.Mutex
@@ -85,40 +73,15 @@ type Server struct {
 }
 
 func New(cfg Config) (*Server, error) {
-	if cfg.Dir == "" || cfg.Index == nil || cfg.Resolver == nil {
-		return nil, errors.New("cache: Dir, Index, and Resolver are required")
-	}
+	cfg.Logger = cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler))
 	s := &Server{
-		index:     cfg.Index,
-		resolver:  cfg.Resolver,
-		stats:     cfg.Stats,
-		maxBytes:  cfg.MaxBytes,
-		jobWait:   cmp.Or(cfg.JobWait, 60*time.Second),
-		diskSpace: cfg.DiskSpace,
-		minFree:   cfg.MinFreePercent,
-		disk:      disk{root: cfg.Dir},
-		signer:    signer{key: cfg.SigningKey},
-		log:       cfg.Logger,
-		now:       time.Now,
+		cfg:     cfg,
+		disk:    disk{root: cfg.Dir},
+		jobWait: jobWait,
+		proxy:   newProxy(resultsURL, cfg.Logger),
+		now:     time.Now,
+		uploads: uploads{onDisk: map[string]int64{}, owner: map[string]string{}},
 	}
-	if s.stats == nil {
-		s.stats = noStats{}
-	}
-	if s.log == nil {
-		s.log = slog.New(slog.DiscardHandler)
-	}
-	if len(s.signer.key) == 0 {
-		s.signer.key = make([]byte, 32)
-		rand.Read(s.signer.key)
-	}
-	if cfg.ResultsURL == "" {
-		cfg.ResultsURL = DefaultResultsURL
-	}
-	upstream, err := url.Parse(cfg.ResultsURL)
-	if err != nil || upstream.Host == "" {
-		return nil, fmt.Errorf("cache: results URL %q is not valid", cfg.ResultsURL)
-	}
-	s.proxy = newProxy(upstream, s.log)
 	if err := s.disk.init(); err != nil {
 		return nil, err
 	}
@@ -173,7 +136,7 @@ func (s *Server) serveResults(w http.ResponseWriter, r *http.Request, trusted bo
 			return
 		}
 		if err != nil {
-			s.log.Error("cache: identify sandbox", "err", err)
+			s.cfg.Logger.Error("cache: identify sandbox", "err", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -185,6 +148,46 @@ func fromLoopback(r *http.Request) bool {
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 	addr, err := netip.ParseAddr(ip)
 	return err == nil && addr.IsLoopback()
+}
+
+// SandboxHeader names the sandbox of a request that a trusted proxy (the
+// agent cache endpoint) forwards. The server ignores it on other requests.
+const SandboxHeader = "X-Runplane-Sandbox"
+
+// ErrNoSandbox means that no sandbox with a job matches a request.
+var ErrNoSandbox = errors.New("no sandbox for this request")
+
+// Identity is the sandbox and job behind a request, from runplane records.
+// The cache scopes in the runtime token of a job do not count: runplane
+// cannot check the signature of the token, so the job controls them.
+type Identity struct {
+	SandboxID     string
+	Repository    string // owner/name of the job; empty if the sandbox has no job
+	DefaultBranch string // for example "main"; empty if runplane does not know the repository
+	// Ref is the ref of the run: "refs/heads/<branch>", "refs/tags/<tag>",
+	// or "refs/pull/<n>/merge". Empty if runplane does not know it.
+	Ref string
+	// BaseRef is the base branch of a pull request, for example "refs/heads/main".
+	BaseRef string
+}
+
+// Resolver finds the sandbox behind a request. header contains SandboxHeader
+// only when the request came through a trusted proxy; then the sandbox ID
+// identifies the sandbox, and remoteIP is the address of the proxy.
+// Sandbox returns ErrNoSandbox if no sandbox matches.
+type Resolver interface {
+	Sandbox(ctx context.Context, remoteIP string, header http.Header) (Identity, error)
+}
+
+// readRefs returns the refs that the job may restore from, in search order:
+// its ref, its base ref, and the default branch, like GitHub. The job saves
+// only to Ref.
+func (id Identity) readRefs() []string {
+	var defaultRef string
+	if id.DefaultBranch != "" {
+		defaultRef = "refs/heads/" + strings.TrimPrefix(id.DefaultBranch, "refs/heads/")
+	}
+	return dedupe(slices.DeleteFunc([]string{id.Ref, id.BaseRef, defaultRef}, func(r string) bool { return r == "" }))
 }
 
 // identify returns the Identity of a request, or an error that wraps
@@ -221,7 +224,7 @@ func (s *Server) sandbox(r *http.Request, trusted bool) (Identity, error) {
 	if err != nil {
 		ip = r.RemoteAddr
 	}
-	return s.resolver.Sandbox(r.Context(), ip, header)
+	return s.cfg.Resolver.Sandbox(r.Context(), ip, header)
 }
 
 // baseURL returns the scheme and host that the client used, for signed URLs
@@ -242,9 +245,8 @@ func baseURL(r *http.Request, trusted bool) string {
 	return scheme + "://" + host
 }
 
-// Run removes unfinished uploads older than one hour and files that belong
-// to no entry, and keeps the cache under its byte limit. It returns when ctx
-// ends.
+// Run removes stale uploads and files that belong to no entry, and keeps the
+// cache under its byte limit. It returns when ctx ends.
 func (s *Server) Run(ctx context.Context) error {
 	s.removeOrphans(ctx, "blobs")
 	s.countUploads(ctx)
@@ -261,19 +263,19 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) cleanup(ctx context.Context) {
-	stale, err := s.index.Unfinished(ctx, s.now().Add(-staleUpload))
+	stale, err := s.cfg.Index.ListUnfinishedCacheEntries(ctx, s.now().Add(-staleUpload))
 	if err != nil {
-		s.log.Error("cache: list unfinished uploads", "err", err)
+		s.cfg.Logger.Error("cache: list unfinished uploads", "err", err)
 	}
 	for _, e := range stale {
-		s.log.Info("cache: remove abandoned upload", "repository", e.Repository, "key", e.Key)
+		s.cfg.Logger.Info("cache: remove abandoned upload", "repository", e.Repository, "key", e.Key)
 		if err := s.remove(ctx, e); err != nil {
-			s.log.Error("cache: remove abandoned upload", "id", e.ID, "err", err)
+			s.cfg.Logger.Error("cache: remove abandoned upload", "id", e.ID, "err", err)
 		}
 	}
 	s.removeOrphans(ctx, "uploads")
 	if err := s.evict(ctx, 0); err != nil {
-		s.log.Error("cache: evict", "err", err)
+		s.cfg.Logger.Error("cache: evict", "err", err)
 	}
 }
 
@@ -281,19 +283,18 @@ func (s *Server) cleanup(ctx context.Context) {
 // entry is gone, for example after a crash between two steps of a removal.
 func (s *Server) removeOrphans(ctx context.Context, sub string) {
 	for _, id := range s.disk.ids(sub) {
-		_, err := s.index.Get(ctx, id)
-		if !errors.Is(err, ErrNotFound) {
+		if _, err := s.cfg.Index.GetCacheEntry(ctx, id); !errors.Is(err, ErrNotFound) {
 			continue
 		}
-		if err := s.disk.remove(Entry{ID: id, Path: blobPath(id)}); err != nil {
-			s.log.Error("cache: remove orphan files", "id", id, "err", err)
+		if err := s.disk.remove(id); err != nil {
+			s.cfg.Logger.Error("cache: remove orphan files", "id", id, "err", err)
 		}
 	}
 }
 
 // Delete removes one entry and its blob.
 func (s *Server) Delete(ctx context.Context, id string) error {
-	e, err := s.index.Get(ctx, id)
+	e, err := s.cfg.Index.GetCacheEntry(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get entry: %w", err)
 	}
@@ -302,7 +303,11 @@ func (s *Server) Delete(ctx context.Context, id string) error {
 
 // DeleteRepository removes all entries of a repository and returns the count.
 func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, error) {
-	list, err := s.index.List(ctx, repository)
+	// The store lists all repositories for "".
+	if repository == "" {
+		return 0, nil
+	}
+	list, err := s.cfg.Index.ListCacheEntries(ctx, repository)
 	if err != nil {
 		return 0, fmt.Errorf("list entries: %w", err)
 	}
@@ -316,11 +321,11 @@ func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, 
 
 // remove deletes the index row first: if the file removal fails, the cleanup
 // finds an orphan file, and no entry points to a missing blob.
-func (s *Server) remove(ctx context.Context, e Entry) error {
-	if err := s.index.Delete(ctx, e.ID); err != nil && !errors.Is(err, ErrNotFound) {
+func (s *Server) remove(ctx context.Context, e store.CacheEntry) error {
+	if _, err := s.cfg.Index.DeleteCacheEntries(ctx, "", e.ID); err != nil {
 		return fmt.Errorf("delete entry: %w", err)
 	}
-	if err := s.disk.remove(e); err != nil {
+	if err := s.disk.remove(e.ID); err != nil {
 		return fmt.Errorf("delete blob: %w", err)
 	}
 	s.uploads.drop(e.ID)

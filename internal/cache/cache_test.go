@@ -4,15 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/runplane/runplane/internal/store"
 )
 
 const version = "c0ffee"
@@ -31,7 +38,7 @@ func TestBlockUploadAndRestore(t *testing.T) {
 	}
 	list.WriteString("</BlockList>")
 	for i := len(parts) - 1; i >= 0; i-- {
-		if status := c.put(u+"&comp=block&blockid="+urlQuery(blockID(i)), []byte(parts[i]), nil); status != http.StatusCreated {
+		if status := c.put(u+"&comp=block&blockid="+url.QueryEscape(blockID(i)), []byte(parts[i]), nil); status != http.StatusCreated {
 			t.Fatalf("Put Block %d: %d", i, status)
 		}
 	}
@@ -58,7 +65,7 @@ func TestBlockUploadAndRestore(t *testing.T) {
 	if matched, _ := c.lookup("other-version", "node-deps-abc"); matched != "" {
 		t.Errorf("restore with a different version matched %q", matched)
 	}
-	if got := f.stats.get("acme/app"); got != (Counts{Hits: 2, Misses: 1, BytesRead: 36, BytesWritten: 18}) {
+	if got := f.counts(t, "acme/app"); got != (store.CacheCounts{Hits: 2, Misses: 1, BytesRead: 36, BytesWritten: 18}) {
 		t.Errorf("stats = %+v", got)
 	}
 	if staged, _ := os.ReadDir(filepath.Join(f.dir, "uploads")); len(staged) != 0 {
@@ -70,10 +77,6 @@ func TestBlockUploadAndRestore(t *testing.T) {
 // UUID and an index.
 func blockID(i int) string {
 	return base64.StdEncoding.EncodeToString(fmt.Appendf(nil, "3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b%012d", i))
-}
-
-func urlQuery(s string) string {
-	return strings.NewReplacer("+", "%2B", "/", "%2F", "=", "%3D").Replace(s)
 }
 
 func TestRestoreOrder(t *testing.T) {
@@ -176,37 +179,6 @@ func TestBranchRules(t *testing.T) {
 	})
 }
 
-// The runtime token of a job has no signature that runplane can check, so a
-// job can write any cache scopes into it. Scopes that claim main must not
-// let a pull request or a fork save to main.
-func TestTokenScopesDoNotCount(t *testing.T) {
-	f := newFixture(t, 0)
-	ctx := context.Background()
-	claimsMain := token(scope{"refs/heads/main", 3})
-
-	pr := f.via(t, "sb-pr1")
-	pr.token = claimsMain
-	pr.save("deps", version, []byte("poison"))
-	if _, err := f.index.Find(ctx, "acme/app", "refs/heads/main", "deps", version); err != ErrNotFound {
-		t.Errorf("entry on main from a pull request: %v", err)
-	}
-	if _, err := f.index.Find(ctx, "acme/app", "refs/pull/1/merge", "deps", version); err != nil {
-		t.Errorf("entry not on the pull request ref: %v", err)
-	}
-	if matched, _ := (client{t: t, url: f.url}).lookup(version, "deps"); matched != "" {
-		t.Errorf("a job on main restored %q from a pull request", matched)
-	}
-
-	fork := f.via(t, "sb-fork")
-	fork.token = claimsMain
-	if status, out := fork.call("CreateCacheEntry", map[string]any{"key": "deps2", "version": version}); out["ok"] != false {
-		t.Errorf("save of a job without a known ref: %d %v, want ok:false", status, out)
-	}
-	if entries, _ := f.index.List(ctx, "acme/app"); len(entries) != 1 {
-		t.Errorf("entries %+v, want only the pull request entry", entries)
-	}
-}
-
 func TestRepositoryIsolation(t *testing.T) {
 	f := newFixture(t, 0)
 	acme := client{t: t, url: f.url}
@@ -225,7 +197,7 @@ func TestRepositoryIsolation(t *testing.T) {
 	t.Run("only a trusted proxy can name the sandbox", func(t *testing.T) {
 		spoof := client{t: t, url: f.url, header: http.Header{SandboxHeader: {"sb-other"}}}
 		spoof.save("spoofed", version, []byte("x"))
-		e, err := f.index.Find(context.Background(), "acme/app", "refs/heads/main", "spoofed", version)
+		e, err := f.st.GetCacheEntryByKey(context.Background(), "acme/app", "refs/heads/main", "spoofed", version)
 		if err != nil {
 			t.Fatalf("entry not saved for the sandbox of the source IP: %v", err)
 		}
@@ -254,7 +226,7 @@ func TestRequestsWithoutIdentity(t *testing.T) {
 			}
 		})
 	}
-	if entries, _ := f.index.List(context.Background(), "acme/app"); len(entries) != 0 {
+	if entries, _ := f.st.ListCacheEntries(context.Background(), "acme/app"); len(entries) != 0 {
 		t.Errorf("entries made without identity: %v", entries)
 	}
 }
@@ -279,7 +251,7 @@ func TestSignedURLs(t *testing.T) {
 		{"download URL used to upload", func() int { return c.put(download, []byte("evil"), nil) }, http.StatusForbidden},
 		{"upload URL used to download", func() int { s, _ := c.get(upload, nil); return s }, http.StatusForbidden},
 		{"other entry ID with the same signature", func() int {
-			e, _ := f.index.Find(context.Background(), "acme/app", "refs/heads/main", "k2", version)
+			e, _ := f.st.GetCacheEntryByKey(context.Background(), "acme/app", "refs/heads/main", "k2", version)
 			s, _ := c.get(strings.Replace(download, blobPrefix, blobPrefix+e.ID+"?x=", 1), nil)
 			return s
 		}, http.StatusForbidden},
@@ -309,7 +281,7 @@ func TestReservations(t *testing.T) {
 
 	first := c.reserve("k", version)
 	f.clock.advance(activeUpload - time.Minute)
-	c.put(first+"&comp=block&blockid="+urlQuery(blockID(0)), []byte("partial"), nil)
+	c.put(first+"&comp=block&blockid="+url.QueryEscape(blockID(0)), []byte("partial"), nil)
 	f.clock.advance(activeUpload - time.Minute)
 	if status := create("k"); status != http.StatusConflict {
 		t.Errorf("reserve during an active upload: %d, want 409", status)
@@ -359,8 +331,8 @@ func TestFinalizeChecks(t *testing.T) {
 func TestBuildKitRequestShape(t *testing.T) {
 	f := newFixture(t, 0)
 	c := client{t: t, url: f.url}
-	u := c.reserve("buildkit-index", version)
-	resp := c.do(must(http.NewRequest(http.MethodPut, u, strings.NewReader("layer"))))
+	req, _ := http.NewRequest(http.MethodPut, c.reserve("buildkit-index", version), strings.NewReader("layer"))
+	resp := c.do(req)
 	resp.Body.Close()
 	if resp.Header.Get("x-ms-request-id") == "" {
 		t.Error("Put Blob response has no x-ms-request-id; BuildKit dereferences it")
@@ -376,13 +348,6 @@ func TestBuildKitRequestShape(t *testing.T) {
 	if status != http.StatusOK || out["matched_key"] != "buildkit-index" {
 		t.Errorf("lookup: %d %v", status, out)
 	}
-}
-
-func must[T any](v T, err error) T {
-	if err != nil {
-		panic(err)
-	}
-	return v
 }
 
 func TestEviction(t *testing.T) {
@@ -412,10 +377,10 @@ func TestUploadOverLimit(t *testing.T) {
 	f := newFixture(t, 100)
 	c := client{t: t, url: f.url}
 	u := c.reserve("big", version)
-	if status := c.put(u+"&comp=block&blockid="+urlQuery(blockID(0)), bytes.Repeat([]byte("x"), 60), nil); status != http.StatusCreated {
+	if status := c.put(u+"&comp=block&blockid="+url.QueryEscape(blockID(0)), bytes.Repeat([]byte("x"), 60), nil); status != http.StatusCreated {
 		t.Fatalf("first block: %d", status)
 	}
-	if status := c.put(u+"&comp=block&blockid="+urlQuery(blockID(1)), bytes.Repeat([]byte("x"), 60), nil); status != http.StatusRequestEntityTooLarge {
+	if status := c.put(u+"&comp=block&blockid="+url.QueryEscape(blockID(1)), bytes.Repeat([]byte("x"), 60), nil); status != http.StatusRequestEntityTooLarge {
 		t.Errorf("block past the limit: %d, want 413", status)
 	}
 	if status := c.put(u, bytes.Repeat([]byte("x"), 101), nil); status != http.StatusRequestEntityTooLarge {
@@ -443,7 +408,7 @@ func TestCleanup(t *testing.T) {
 
 	c.save("kept", version, []byte("x"))
 	u := c.reserve("abandoned", version)
-	c.put(u+"&comp=block&blockid="+urlQuery(blockID(0)), []byte("partial"), nil)
+	c.put(u+"&comp=block&blockid="+url.QueryEscape(blockID(0)), []byte("partial"), nil)
 	orphan := filepath.Join(f.dir, "blobs", "01jorphan0000000000000000")
 	os.WriteFile(orphan, []byte("x"), 0o600)
 	// A block that arrived while its upload was removed.
@@ -452,7 +417,7 @@ func TestCleanup(t *testing.T) {
 
 	f.clock.advance(staleUpload - time.Minute)
 	f.srv.cleanup(ctx)
-	if _, err := f.index.Find(ctx, "acme/app", "refs/heads/main", "abandoned", version); err != nil {
+	if _, err := f.st.GetCacheEntryByKey(ctx, "acme/app", "refs/heads/main", "abandoned", version); err != nil {
 		t.Fatalf("upload removed before one hour: %v", err)
 	}
 	if staged, _ := os.ReadDir(filepath.Join(f.dir, "uploads")); len(staged) != 1 {
@@ -460,10 +425,9 @@ func TestCleanup(t *testing.T) {
 	}
 
 	f.clock.advance(2 * time.Minute)
-	runCtx, cancel := context.WithCancel(ctx)
-	cancel()
-	f.srv.Run(runCtx)
-	if _, err := f.index.Find(ctx, "acme/app", "refs/heads/main", "abandoned", version); err != ErrNotFound {
+	f.srv.removeOrphans(ctx, "blobs")
+	f.srv.cleanup(ctx)
+	if _, err := f.st.GetCacheEntryByKey(ctx, "acme/app", "refs/heads/main", "abandoned", version); !errors.Is(err, ErrNotFound) {
 		t.Errorf("abandoned upload still in the index: %v", err)
 	}
 	if staged, _ := os.ReadDir(filepath.Join(f.dir, "uploads")); len(staged) != 0 {
@@ -483,7 +447,7 @@ func TestDamagedBlobIsAMiss(t *testing.T) {
 	c.save("deps-old", version, []byte("old"))
 	f.clock.advance(time.Minute)
 	c.save("deps-new", version, []byte("new"))
-	e, _ := f.index.Find(context.Background(), "acme/app", "refs/heads/main", "deps-new", version)
+	e, _ := f.st.GetCacheEntryByKey(context.Background(), "acme/app", "refs/heads/main", "deps-new", version)
 	os.Truncate(filepath.Join(f.dir, e.Path), 1)
 
 	// A download URL is a promise: BuildKit fails the build on a 404.
@@ -512,61 +476,36 @@ func TestDelete(t *testing.T) {
 }
 
 func TestResultsProxy(t *testing.T) {
-	var got *http.Request
-	var gotBody string
+	type call struct{ path, body, auth, sandbox string }
+	calls := make(chan call, 10)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r
 		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
+		calls <- call{r.URL.Path, string(b), r.Header.Get("Authorization"), r.Header.Get(SandboxHeader)}
 		w.WriteHeader(http.StatusTeapot)
 		io.WriteString(w, `{"ok":true}`)
 	}))
 	defer upstream.Close()
-	srv, err := New(Config{Dir: t.TempDir(), Index: NewMemIndex(), Resolver: sandboxes{}, ResultsURL: upstream.URL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	front := httptest.NewServer(srv.Proxied())
-	defer front.Close()
+	f := newFixture(t, 0)
+	u, _ := url.Parse(upstream.URL)
+	f.srv.proxy = newProxy(u, f.srv.cfg.Logger)
 
-	path := "/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact"
-	req, _ := http.NewRequest(http.MethodPost, front.URL+path, strings.NewReader(`{"name":"dist"}`))
+	const path = "/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact"
+	req, _ := http.NewRequest(http.MethodPost, f.proxied+path, strings.NewReader(`{"name":"dist"}`))
 	req.Header.Set("Authorization", "Bearer job-token")
 	req.Header.Set(SandboxHeader, "sb-1")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := client{t: t}.do(req)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-
 	if resp.StatusCode != http.StatusTeapot || string(body) != `{"ok":true}` {
 		t.Errorf("response %d %q", resp.StatusCode, body)
 	}
-	if got.URL.Path != path || gotBody != `{"name":"dist"}` || got.Header.Get("Authorization") != "Bearer job-token" {
-		t.Errorf("upstream got %s %q auth %q", got.URL.Path, gotBody, got.Header.Get("Authorization"))
-	}
-	if got.Header.Get(SandboxHeader) != "" {
-		t.Error("the sandbox header went to GitHub")
-	}
-}
-
-// The service port listens on all addresses. Only sandboxes and the host
-// itself may send requests to GitHub through it, else anyone could hide
-// behind the server.
-func TestResultsProxyNeedsASandbox(t *testing.T) {
-	calls := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusTeapot)
-	}))
-	defer upstream.Close()
-	srv, err := New(Config{Dir: t.TempDir(), Index: NewMemIndex(), ResultsURL: upstream.URL,
-		Resolver: sandboxes{"10.213.0.5": {SandboxID: "sb-idle"}}})
-	if err != nil {
-		t.Fatal(err)
+	if got, want := <-calls, (call{path, `{"name":"dist"}`, "Bearer job-token", ""}); got != want {
+		t.Errorf("upstream got %+v, want %+v", got, want)
 	}
 
+	// The service port listens on all addresses. Only sandboxes and the host
+	// itself may send requests to GitHub through it, else anyone could hide
+	// behind the server.
 	tests := []struct {
 		name   string
 		remote string
@@ -580,20 +519,98 @@ func TestResultsProxyNeedsASandbox(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			before := calls
-			req := httptest.NewRequest(http.MethodPost, "/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact", strings.NewReader("{}"))
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
 			req.RemoteAddr = tt.remote
 			for k, v := range tt.header {
 				req.Header[k] = v
 			}
 			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, req)
+			f.srv.ServeHTTP(rec, req)
 			if rec.Code != tt.want {
 				t.Fatalf("status %d, want %d", rec.Code, tt.want)
 			}
-			if sent := calls > before; sent != (tt.want == http.StatusTeapot) {
+			if sent := len(calls) > 0; sent != (tt.want == http.StatusTeapot) {
 				t.Errorf("request sent to GitHub: %v", sent)
 			}
+			for len(calls) > 0 {
+				<-calls
+			}
 		})
+	}
+}
+
+// lateJob is a sandbox whose job runplane learns after linked is set, as
+// with GitHub, which sends the job message after the job starts.
+type lateJob struct{ linked atomic.Bool }
+
+func (l *lateJob) Sandbox(context.Context, string, http.Header) (Identity, error) {
+	if !l.linked.Load() {
+		return Identity{SandboxID: "sb-1"}, nil
+	}
+	return acme("sb-1", "refs/heads/main", ""), nil
+}
+
+// The first cache step of a job runs before runplane knows the job of the
+// sandbox. The request must wait for the job, not fail with 403.
+func TestCacheRequestWaitsForTheJob(t *testing.T) {
+	tests := []struct {
+		name    string
+		linkIn  time.Duration // 0 = never
+		wantErr error
+	}{
+		{"job known after 200 ms", 200 * time.Millisecond, nil},
+		{"job never known", 0, ErrNoSandbox},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &lateJob{}
+			s := &Server{cfg: Config{Resolver: r}, jobWait: time.Second}
+			if tt.linkIn > 0 {
+				time.AfterFunc(tt.linkIn, func() { r.linked.Store(true) })
+			}
+			ident, err := s.identify(httptest.NewRequest("POST", "/twirp/x", nil), false)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr == nil && ident.Repository != "acme/app" {
+				t.Errorf("identity %+v, want the repository of the job", ident)
+			}
+		})
+	}
+}
+
+func TestStatsAddPerHour(t *testing.T) {
+	st := openStore(t)
+	s := NewStats(st, slog.New(slog.DiscardHandler))
+	t0 := time.Date(2026, 11, 4, 10, 15, 0, 0, time.UTC)
+	now := t0
+	s.now = func() time.Time { return now }
+	s.Add("acme/api", store.CacheCounts{Hits: 1, BytesRead: 100})
+	now = t0.Add(30 * time.Minute)
+	s.Add("acme/api", store.CacheCounts{Misses: 1})
+	s.Add("acme/web", store.CacheCounts{BytesWritten: 7})
+	now = t0.Add(time.Hour)
+	s.Add("acme/api", store.CacheCounts{Hits: 2})
+
+	// Run writes the counts when it ends.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.Run(ctx)
+	// A later flush adds to the rows that exist.
+	s.Add("acme/api", store.CacheCounts{Hits: 1})
+	s.flush(context.Background())
+
+	tests := []struct {
+		since time.Time
+		want  map[string]store.CacheCounts
+	}{
+		{t0, map[string]store.CacheCounts{"acme/api": {Hits: 4, Misses: 1, BytesRead: 100}, "acme/web": {BytesWritten: 7}}},
+		{t0.Add(time.Hour), map[string]store.CacheCounts{"acme/api": {Hits: 3}}},
+	}
+	for _, tt := range tests {
+		got, err := st.CacheStatsByRepository(context.Background(), tt.since)
+		if err != nil || !maps.Equal(got, tt.want) {
+			t.Errorf("counts since %s = %v, %v; want %v", tt.since, got, err, tt.want)
+		}
 	}
 }

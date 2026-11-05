@@ -25,7 +25,6 @@ import (
 	"github.com/moby/moby/client"
 )
 
-// initPath is the path of runplane-init in a root disk.
 const initPath = "sbin/runplane-init"
 
 // mountPoints are the folders that runplane-init mounts file systems on. The
@@ -80,17 +79,12 @@ func (m *Manager) ensureRootDisk(ctx context.Context, src source, r *reporter) (
 		return Image{}, err
 	}
 	defer os.RemoveAll(tmp)
-	layers, total, err := download(ctx, img, tmp, r)
+	layers, err := download(ctx, img, tmp, r)
 	if err != nil {
 		return Image{}, fmt.Errorf("pull %s: %w", src.ref, err)
 	}
 
 	r.status(StatusConverting)
-	var read atomic.Int64
-	for i, l := range layers {
-		l.read = func(n int64) { r.bytes(StatusConverting, read.Add(n), total) }
-		layers[i] = l
-	}
 	out.Size, err = writeExt4(out.Path, func(w io.Writer) error {
 		return rootfs(w, mutate.Extract(layersImage{img, layers}), init.bin)
 	})
@@ -176,21 +170,24 @@ func remoteImage(ctx context.Context, ref string) (v1.Image, error) {
 }
 
 // download copies the compressed layers of img to files in dir, four at a
-// time. It returns the layers and their total size.
-func download(ctx context.Context, img v1.Image, dir string, r *reporter) ([]fileLayer, int64, error) {
+// time. The layers report the reads of the files as converting progress.
+func download(ctx context.Context, img v1.Image, dir string, r *reporter) ([]fileLayer, error) {
 	remoteLayers, err := img.Layers()
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	layers := make([]fileLayer, len(remoteLayers))
 	var total int64
+	var read atomic.Int64
+	layers := make([]fileLayer, len(remoteLayers))
 	for i, l := range remoteLayers {
 		size, err := l.Size()
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		total += size
-		layers[i] = fileLayer{Layer: l, path: filepath.Join(dir, strconv.Itoa(i))}
+		layers[i] = fileLayer{Layer: l, path: filepath.Join(dir, strconv.Itoa(i)), read: func(n int64) {
+			r.bytes(StatusConverting, read.Add(n), total)
+		}}
 	}
 
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -214,9 +211,9 @@ func download(ctx context.Context, img v1.Image, dir string, r *reporter) ([]fil
 	}
 	wg.Wait()
 	if err := context.Cause(ctx); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return layers, total, nil
+	return layers, nil
 }
 
 // fileLayer is a layer whose compressed bytes are in a local file. The

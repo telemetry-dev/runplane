@@ -25,17 +25,17 @@ func TestRealRunnerBundle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: t.TempDir(), Logger: testLogger(t)})
-	rel, err := b.release(ctx, "/releases/latest")
+	version, _, err := b.release(ctx, "/releases/latest")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("latest runner %s", rel.Version)
-	bundle, err := b.Ensure(ctx, rel.Version, "arm64")
+	t.Logf("latest runner %s", version)
+	bundle, err := b.Ensure(ctx, version, "arm64")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bundle.Patched {
-		t.Fatalf("runner %s is not patched", rel.Version)
+		t.Fatalf("runner %s is not patched", version)
 	}
 	dll, err := os.ReadFile(filepath.Join(bundle.Dir, "bin", "Runner.Worker.dll"))
 	if err != nil {

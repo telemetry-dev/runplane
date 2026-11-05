@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/store"
 )
 
 // blobPrefix is the path of the blob endpoints. The Azure SDK reads a URL on
@@ -32,29 +33,25 @@ const (
 	maxBlockListBytes = 8 << 20
 )
 
-// signer makes and checks blob URLs in the style of an Azure SAS:
-// sp is the permission (r or w), se the expiry in unix seconds, sig the HMAC.
-type signer struct {
-	key []byte
-}
-
-func (s signer) url(base, perm, id string, expires time.Time) string {
+// sign makes a blob URL in the style of an Azure SAS: sp is the permission
+// (r or w), se the expiry in unix seconds, sig the HMAC.
+func (s *Server) sign(base, perm, id string, expires time.Time) string {
 	se := strconv.FormatInt(expires.Unix(), 10)
 	q := url.Values{"sp": {perm}, "se": {se}, "sig": {s.mac(perm, id, se)}}
 	return base + blobPrefix + id + "?" + q.Encode()
 }
 
-func (s signer) valid(perm, id string, q url.Values, now time.Time) bool {
+func (s *Server) signed(perm, id string, q url.Values) bool {
 	se := q.Get("se")
 	expires, err := strconv.ParseInt(se, 10, 64)
-	if err != nil || q.Get("sp") != perm || now.Unix() > expires {
+	if err != nil || q.Get("sp") != perm || s.now().Unix() > expires {
 		return false
 	}
 	return hmac.Equal([]byte(q.Get("sig")), []byte(s.mac(perm, id, se)))
 }
 
-func (s signer) mac(perm, id, se string) string {
-	h := hmac.New(sha256.New, s.key)
+func (s *Server) mac(perm, id, se string) string {
+	h := hmac.New(sha256.New, s.cfg.SigningKey)
 	fmt.Fprintf(h, "%s\n%s\n%s", perm, id, se)
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
@@ -72,23 +69,23 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool)
 		blobError(w, http.StatusMethodNotAllowed, "UnsupportedHttpVerb", "method not allowed")
 		return
 	}
-	if !s.signer.valid(perm, id, r.URL.Query(), s.now()) {
+	if !s.signed(perm, id, r.URL.Query()) {
 		blobError(w, http.StatusForbidden, "AuthenticationFailed", "the URL signature is not valid or has expired")
 		return
 	}
-	e, err := s.index.Get(r.Context(), id)
+	e, err := s.cfg.Index.GetCacheEntry(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
 		blobError(w, http.StatusNotFound, "BlobNotFound", "the cache entry does not exist")
 		return
 	}
 	if err != nil {
-		s.log.Error("cache: read entry", "id", id, "err", err)
+		s.cfg.Logger.Error("cache: read entry", "id", id, "err", err)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
 	ident, err := s.identify(r, trusted)
 	if err != nil && !errors.Is(err, ErrNoSandbox) {
-		s.log.Error("cache: identify sandbox", "err", err)
+		s.cfg.Logger.Error("cache: identify sandbox", "err", err)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
@@ -103,7 +100,7 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool)
 	}
 }
 
-func (s *Server) upload(w http.ResponseWriter, r *http.Request, e Entry) {
+func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEntry) {
 	if e.Finalized {
 		blobError(w, http.StatusConflict, "BlobImmutable", "the cache entry is finalized")
 		return
@@ -121,14 +118,14 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e Entry) {
 		return
 	}
 	if err != nil {
-		s.log.Error("cache: reserve upload space", "id", e.ID, "err", err)
+		s.cfg.Logger.Error("cache: reserve upload space", "id", e.ID, "err", err)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	defer s.release(e, reserved)
+	defer s.release(e.ID, reserved)
 	switch q.Get("comp") {
 	case "":
-		err = s.disk.putBlob(e, r.Body, reserved)
+		err = s.disk.putBlob(e.ID, r.Body, reserved)
 	case "block":
 		blockID := q.Get("blockid")
 		if blockID == "" {
@@ -148,7 +145,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e Entry) {
 			blobError(w, http.StatusBadRequest, "InvalidXmlDocument", err.Error())
 			return
 		}
-		err = s.disk.commitBlocks(e, blocks)
+		err = s.disk.commitBlocks(e.ID, blocks)
 	default:
 		blobError(w, http.StatusBadRequest, "InvalidQueryParameterValue", "comp is not supported")
 		return
@@ -161,12 +158,12 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e Entry) {
 		blobError(w, http.StatusBadRequest, "InvalidBlockList", err.Error())
 		return
 	case err != nil:
-		s.log.Error("cache: write upload", "id", e.ID, "err", err)
+		s.cfg.Logger.Error("cache: write upload", "id", e.ID, "err", err)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	if err := s.index.Touch(r.Context(), e.ID, s.now()); err != nil {
-		s.log.Warn("cache: touch entry", "id", e.ID, "err", err)
+	if err := s.cfg.Index.TouchCacheEntry(r.Context(), e.ID, s.now()); err != nil {
+		s.cfg.Logger.Warn("cache: touch entry", "id", e.ID, "err", err)
 	}
 	h := w.Header()
 	h.Set("ETag", `"`+ids.New()+`"`)
@@ -175,14 +172,14 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e Entry) {
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (s *Server) download(w http.ResponseWriter, r *http.Request, e Entry) {
+func (s *Server) download(w http.ResponseWriter, r *http.Request, e store.CacheEntry) {
 	if !e.Finalized {
 		blobError(w, http.StatusNotFound, "BlobNotFound", "the cache entry is not finalized")
 		return
 	}
-	f, err := s.disk.open(e)
+	f, err := s.disk.open(e.ID)
 	if err != nil {
-		s.log.Warn("cache: open blob", "id", e.ID, "err", err)
+		s.cfg.Logger.Warn("cache: open blob", "id", e.ID, "err", err)
 		blobError(w, http.StatusNotFound, "BlobNotFound", "the cache entry has no data")
 		return
 	}
@@ -200,7 +197,7 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, e Entry) {
 	cw := &countingWriter{ResponseWriter: w}
 	http.ServeContent(cw, r, "", e.CreatedAt, f)
 	if cw.n > 0 {
-		s.stats.Add(e.Repository, Counts{BytesRead: cw.n})
+		s.cfg.Stats.Add(e.Repository, store.CacheCounts{BytesRead: cw.n})
 	}
 }
 

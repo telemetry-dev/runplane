@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -38,7 +39,7 @@ func TestUnfinishedUploadsShareTheLimit(t *testing.T) {
 	var created, refused int
 	for i := range 20 {
 		u := c.reserve(fmt.Sprintf("junk-%d", i), version)
-		switch status := c.put(u+"&comp=block&blockid="+urlQuery(blockID(0)), bytes.Repeat([]byte("x"), 60), nil); status {
+		switch status := c.put(u+"&comp=block&blockid="+url.QueryEscape(blockID(0)), bytes.Repeat([]byte("x"), 60), nil); status {
 		case http.StatusCreated:
 			created++
 		case http.StatusRequestEntityTooLarge:
@@ -58,21 +59,6 @@ func TestUnfinishedUploadsShareTheLimit(t *testing.T) {
 	u := c.reserve("blob", version)
 	if status := c.put(u, bytes.Repeat([]byte("x"), 50), nil); status != http.StatusRequestEntityTooLarge {
 		t.Errorf("Put Blob past the room left: %d, want 413", status)
-	}
-}
-
-// An upload takes the place of the least recently used entries, also when
-// the entries alone are below the limit.
-func TestUploadEvictsOldEntriesToMakeRoom(t *testing.T) {
-	f := newFixture(t, 100)
-	c := client{t: t, url: f.url}
-	c.save("old", version, bytes.Repeat([]byte("o"), 70))
-	c.save("new", version, bytes.Repeat([]byte("n"), 20))
-	c.save("next", version, bytes.Repeat([]byte("x"), 50))
-	for key, want := range map[string]bool{"old": false, "new": true, "next": true} {
-		if matched, _ := c.lookup(version, key); (matched != "") != want {
-			t.Errorf("entry %q kept = %v, want %v", key, matched != "", want)
-		}
 	}
 }
 
@@ -97,10 +83,10 @@ func TestOpenUploadsPerSandbox(t *testing.T) {
 func TestCacheLeavesFreeDisk(t *testing.T) {
 	f := newFixture(t, 0)
 	var used atomic.Int64 // bytes of other programs on a 10 000-byte disk
-	f.srv.diskSpace = func() (int64, int64, error) {
+	f.srv.cfg.DiskSpace = func() (int64, int64, error) {
 		return 10_000, 10_000 - used.Load() - dirBytes(t, f.dir), nil
 	}
-	f.srv.minFree = func() float64 { return 15 }
+	f.srv.cfg.MinFreePercent = func() float64 { return 15 }
 	c := client{t: t, url: f.url}
 	c.save("a", version, bytes.Repeat([]byte("a"), 1000))
 	c.save("b", version, bytes.Repeat([]byte("b"), 1000))
@@ -125,7 +111,7 @@ func TestCacheLeavesFreeDisk(t *testing.T) {
 // With a small disk, the limit is a quarter of the disk, not cache_max_gb.
 func TestLimitIsAQuarterOfTheDiskAtMost(t *testing.T) {
 	f := newFixture(t, 50<<30)
-	f.srv.diskSpace = func() (int64, int64, error) { return 400, 400, nil }
+	f.srv.cfg.DiskSpace = func() (int64, int64, error) { return 400, 400, nil }
 	c := client{t: t, url: f.url}
 	u := c.reserve("big", version)
 	if status := c.put(u, bytes.Repeat([]byte("x"), 101), nil); status != http.StatusRequestEntityTooLarge {

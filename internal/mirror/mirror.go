@@ -20,20 +20,14 @@ import (
 	"time"
 )
 
-const dockerHub = "https://registry-1.docker.io"
+// tagTTL is how long a tag is trusted before a check with upstream.
+const tagTTL = 10 * time.Minute
 
-// Config sets up a Mirror.
 type Config struct {
-	Dir      string // cache folder, for example /var/lib/runplane/mirror
-	MaxBytes int64  // size limit of the cache; 0 = no limit
-	Upstream string // registry URL; default https://registry-1.docker.io
-
-	TagTTL time.Duration // how long a tag is trusted before a check with upstream; default 10 minutes
-
-	// Allow reports if a client address can use the mirror. nil allows all.
-	Allow func(ip netip.Addr) bool
-
-	Logger *slog.Logger
+	Dir      string                   // cache folder, for example /var/lib/runplane/mirror
+	MaxBytes int64                    // size limit of the cache; 0 = no limit
+	Allow    func(ip netip.Addr) bool // reports if a client address can use the mirror
+	Logger   *slog.Logger
 }
 
 // Stats counts the use of the mirror since the start. A request for a
@@ -46,7 +40,6 @@ type Stats struct {
 	SizeBytes int64 `json:"size_bytes"` // bytes in the cache now
 }
 
-// Add adds the counts of o to s.
 func (s *Stats) Add(o Stats) {
 	s.Hits += o.Hits
 	s.Misses += o.Misses
@@ -57,12 +50,11 @@ func (s *Stats) Add(o Stats) {
 
 // Mirror is an http.Handler for /v2/.
 type Mirror struct {
-	up     *upstream
-	store  *store
-	tags   *tagIndex
-	allow  func(netip.Addr) bool
-	tagTTL time.Duration
-	log    *slog.Logger
+	up    *upstream
+	store *store
+	tags  *tagIndex
+	allow func(netip.Addr) bool
+	log   *slog.Logger
 
 	ctx    context.Context // ends at Close
 	cancel context.CancelFunc
@@ -79,9 +71,6 @@ type Mirror struct {
 
 // New opens the cache in cfg.Dir. Call Close after the HTTP server stops.
 func New(cfg Config) (*Mirror, error) {
-	if cfg.Dir == "" {
-		return nil, errors.New("mirror: no cache folder")
-	}
 	s, err := openStore(cfg.Dir, cfg.MaxBytes)
 	if err != nil {
 		return nil, fmt.Errorf("open mirror cache: %w", err)
@@ -93,14 +82,10 @@ func New(cfg Config) (*Mirror, error) {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.ResponseHeaderTimeout = time.Minute
 	m := &Mirror{
-		up: &upstream{
-			base:   strings.TrimSuffix(cmp.Or(cfg.Upstream, dockerHub), "/"),
-			client: &http.Client{Transport: t},
-		},
+		up:        &upstream{base: "https://registry-1.docker.io", client: &http.Client{Transport: t}},
 		store:     s,
 		tags:      tags,
 		allow:     cfg.Allow,
-		tagTTL:    cmp.Or(cfg.TagTTL, 10*time.Minute),
 		log:       cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)),
 		downloads: map[string]*download{},
 	}
@@ -127,7 +112,7 @@ func (m *Mirror) Stats() Stats {
 
 func (m *Mirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Docker-Distribution-API-Version", "registry/2.0")
-	if !m.allowed(r) {
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err != nil || !m.allow(ap.Addr().Unmap()) {
 		writeError(w, http.StatusForbidden, "DENIED", "only sandboxes can use the registry mirror")
 		return
 	}
@@ -158,14 +143,6 @@ func (m *Mirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (m *Mirror) allowed(r *http.Request) bool {
-	if m.allow == nil {
-		return true
-	}
-	ap, err := netip.ParseAddrPort(r.RemoteAddr)
-	return err == nil && m.allow(ap.Addr().Unmap())
-}
-
 var (
 	nameRe   = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
 	tagRe    = regexp.MustCompile(`^\w[\w.-]{0,127}$`)
@@ -194,7 +171,6 @@ func parsePath(path string) (name, kind, ref string, err error) {
 	return name, kind, ref, nil
 }
 
-// apiError is an error with its registry error code.
 type apiError struct {
 	status  int
 	code    string

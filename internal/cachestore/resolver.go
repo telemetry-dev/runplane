@@ -1,9 +1,12 @@
+// Package cachestore finds the sandbox behind each request to the Actions
+// cache server (cache.Resolver) in the runplane database.
 package cachestore
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -27,8 +30,6 @@ type Resolver struct {
 	mu      sync.Mutex
 	localID string
 }
-
-var _ cache.Resolver = (*Resolver)(nil)
 
 func NewResolver(st *store.Store, local func(ctx context.Context) ([]sandbox.Sandbox, error)) *Resolver {
 	return &Resolver{st: st, local: local}
@@ -144,3 +145,13 @@ func (r *Resolver) localServer(ctx context.Context) (string, error) {
 	r.localID = v.ID
 	return v.ID, nil
 }
+
+// Index and Stats are the cache tables, which the cache package owns.
+type (
+	Index = cache.Index
+	Stats = cache.Stats
+)
+
+func NewIndex(st *store.Store) Index { return Index{Store: st} }
+
+func NewStats(st *store.Store, log *slog.Logger) *Stats { return cache.NewStats(st, log) }
