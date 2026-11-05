@@ -35,6 +35,12 @@ func (s State) Done() bool { return s == StateGone || s == StateFailed }
 // Drivers change only objects with this label.
 const LabelSandbox = "dev.runplane.sandbox"
 
+// ImageEnvFile holds the environment of the image config in a VM root disk,
+// as "KEY=value" entries that each end with a NUL byte. Docker gives this
+// environment to the first process of a container. In a VM, runplane-init
+// reads it from this file.
+const ImageEnvFile = "/etc/runplane/environ"
+
 type Spec struct {
 	ID            string            `json:"id"`
 	PoolID        string            `json:"pool_id"`
