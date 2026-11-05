@@ -117,8 +117,7 @@ func (d *Driver) adopt(ctx context.Context, id, containerID string) error {
 	if b.logs, err = control.OpenLogFile(dir); err != nil {
 		return err
 	}
-	// The guest asked for its config before; it asks only one time.
-	if b.ctl, err = d.listen(b, control.GuestConfig{SandboxID: id}); err != nil {
+	if b.ctl, err = d.listen(b, nil); err != nil {
 		b.logs.Close()
 		return err
 	}

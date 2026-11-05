@@ -4,12 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // logQueueMax is the memory for log lines while the host is away.
@@ -17,8 +16,8 @@ const logQueueMax = 8 << 20
 
 var errLinkDown = errors.New("control connection dropped")
 
-// logQueue holds log lines for the host in the wire form
-// "<unix-ms> <source> <text>\n". When it is full, it drops the oldest lines.
+// logQueue holds log lines for the host in the form of the log stream
+// (guest.AppendLogLine). When it is full, it drops the oldest lines.
 type logQueue struct {
 	max int
 
@@ -34,25 +33,15 @@ func newLogQueue(max int) *logQueue {
 	return &logQueue{max: max, wake: make(chan struct{})}
 }
 
-// push queues a line. It splits a text longer than control.MaxLine, so that
-// the host can read each line in one piece.
 func (q *logQueue) push(source, text string) {
-	now := time.Now()
+	b := guest.AppendLogLine(nil, guest.LogLine{Time: time.Now(), Source: source, Text: text})
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
 		return
 	}
-	for {
-		part := text[:min(len(text), control.MaxLine)]
-		b := appendLine(nil, now, source, part)
-		q.lines = append(q.lines, b)
-		q.size += len(b)
-		text = text[len(part):]
-		if text == "" {
-			break
-		}
-	}
+	q.lines = append(q.lines, b)
+	q.size += len(b)
 	for q.size > q.max && len(q.lines) > 0 {
 		q.size -= len(q.lines[0])
 		q.lines[0] = nil
@@ -89,7 +78,11 @@ func (q *logQueue) take(done <-chan struct{}) ([]byte, error) {
 		if len(q.lines) > 0 || q.dropped > 0 {
 			var b []byte
 			if q.dropped > 0 {
-				b = appendLine(b, time.Now(), "init", fmt.Sprintf("dropped %d older log lines: the log buffer was full", q.dropped))
+				b = guest.AppendLogLine(b, guest.LogLine{
+					Time:   time.Now(),
+					Source: guest.SourceInit,
+					Text:   fmt.Sprintf("dropped %d older log lines: the log buffer was full", q.dropped),
+				})
 				q.dropped = 0
 			}
 			for _, line := range q.lines {
@@ -151,13 +144,4 @@ func (w lineWriter) Write(p []byte) (int, error) {
 		w.q.push(w.source, line)
 	}
 	return len(p), nil
-}
-
-func appendLine(b []byte, t time.Time, source, text string) []byte {
-	b = strconv.AppendInt(b, t.UnixMilli(), 10)
-	b = append(b, ' ')
-	b = append(b, source...)
-	b = append(b, ' ')
-	b = append(b, text...)
-	return append(b, '\n')
 }

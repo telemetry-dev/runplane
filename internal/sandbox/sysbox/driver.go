@@ -22,6 +22,7 @@ import (
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 	"github.com/runplane/runplane/internal/sandbox/scratch"
 )
@@ -36,9 +37,6 @@ const (
 	// ScratchVolume is a Docker volume at /mnt/scratch (dev mode).
 	ScratchVolume Scratch = "volume"
 )
-
-// labelManaged marks the Docker objects that runplane makes.
-const labelManaged = "dev.runplane.managed"
 
 // labelData marks the containers and volumes of a driver with its data
 // folder, so that two runplane processes on one Docker leave each other's
@@ -426,7 +424,7 @@ func (h handler) OnLostConfig() {
 }
 
 // OnLog runs only after listen, so b.logs is set and stays.
-func (h handler) OnLog(line control.LogLine) {
+func (h handler) OnLog(line guest.LogLine) {
 	if err := h.b.logs.Write(line); err != nil && !errors.Is(err, os.ErrClosed) {
 		h.log.Warn("write sandbox log", "err", err)
 	}

@@ -28,9 +28,6 @@ import (
 	"github.com/runplane/runplane/internal/version"
 )
 
-// labelManaged marks each Docker object that runplane makes.
-const labelManaged = "dev.runplane.managed"
-
 type Status string
 
 const (

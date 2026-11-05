@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -17,10 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // The test binary is also the fake jailer: systemd-run (a script in the
@@ -75,39 +74,35 @@ func fakeJailer(args []string) {
 		fmt.Println("dial the control socket:", err)
 		os.Exit(1)
 	}
-	sess, _ := yamux.Client(conn, nil)
-	host := &http.Client{Transport: &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
-	}}
 	shutdown := make(chan struct{})
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST "+guest.PathShutdown, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		close(shutdown)
 	})
-	go http.Serve(sess, mux)
-	post := func(path, body string) {
-		resp, err := host.Post("http://host"+path, "application/json", strings.NewReader(body))
-		if err != nil {
-			fmt.Println("post", path, err)
-			os.Exit(1)
-		}
-		resp.Body.Close()
-	}
-	resp, err := host.Get("http://host/v1/config")
+	host, err := guest.NewClient(conn, mux, slog.New(slog.DiscardHandler))
 	if err != nil {
+		fmt.Println(err)
 		os.Exit(1)
 	}
-	cfg, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if bytes.Contains(cfg, []byte(`"jit_config":"jit-secret"`)) {
+	check := func(what string, err error) {
+		if err != nil {
+			fmt.Println(what, err)
+			os.Exit(1)
+		}
+	}
+	ctx := context.Background()
+	cfg, err := host.Config(ctx)
+	check("get config", err)
+	if cfg.JITConfig == "jit-secret" {
 		fmt.Println("guest: got the JIT config")
 	}
-	post("/v1/logs", fmt.Sprintf("%d runner Listening for Jobs\n", time.Now().UnixMilli()))
-	post("/v1/events", `{"kind":"listening"}`)
+	line := guest.AppendLogLine(nil, guest.LogLine{Time: time.Now(), Source: guest.SourceRunner, Text: "Listening for Jobs"})
+	check("stream logs", host.StreamLogs(ctx, bytes.NewReader(line)))
+	check("post event", host.PostEvent(ctx, sandbox.RunnerEvent{Kind: sandbox.RunnerListening}))
 	<-shutdown
-	post("/v1/events", `{"kind":"exited","exit_code":0}`)
-	sess.Close()
+	check("post event", host.PostEvent(ctx, sandbox.RunnerEvent{Kind: sandbox.RunnerExited}))
+	host.Close()
 	os.Exit(0)
 }
 
@@ -140,7 +135,9 @@ func startDriver(t *testing.T) (*Driver, *fakeHost, string) {
 	}
 	d.opts.Kernel = filepath.Join(files, "vmlinux")
 	d.opts.RootDisk = func(string) (string, error) { return filepath.Join(files, "root.ext4"), nil }
-	d.opts.RunnerDrive = func(context.Context, string, string) (string, error) { return filepath.Join(files, "runner.ext4"), nil }
+	d.opts.RunnerDrive = func(context.Context, string, string) (string, bool, error) {
+		return filepath.Join(files, "runner.ext4"), true, nil
+	}
 	return d, sys, filepath.Join(root, "data")
 }
 
@@ -222,45 +219,5 @@ func TestStartFailureRemovesTheVM(t *testing.T) {
 	}
 	if !slices.Equal(sys.calls(&sys.dropped), []string{"rp-0"}) {
 		t.Errorf("TAPs removed: %v, want rp-0", sys.calls(&sys.dropped))
-	}
-}
-
-func TestGuestConfig(t *testing.T) {
-	d := testDriver(t, t.TempDir(), &fakeHost{})
-	d.opts.CacheEnv = func(url string) map[string]string {
-		return map[string]string{"ACTIONS_RESULTS_URL": url + "/"}
-	}
-	spec := sandbox.Spec{ID: "01m6jwd94yx8aj3sdamaedysaw", JITConfig: "jit", TimeLimit: 90 * time.Minute, Env: map[string]string{"A": "1"}, Debug: true}
-
-	all := sandbox.Settings{ActionsCache: true, RegistryMirror: true, DNS: []string{"1.1.1.1", "2606:4700::1111", "9.9.9.9"}}
-	cfg := d.guestConfig(spec, testLease, all)
-	// The services listen on the host end of the TAP, the gateway of the guest.
-	if want := map[string]string{"A": "1", "ACTIONS_RESULTS_URL": "http://10.214.0.13:8486/"}; !maps.Equal(cfg.Env, want) {
-		t.Errorf("env %v, want %v", cfg.Env, want)
-	}
-	if cfg.RegistryMirror != "http://10.214.0.13:8486" {
-		t.Errorf("registry mirror %q", cfg.RegistryMirror)
-	}
-	if !slices.Equal(cfg.DNS, []string{"1.1.1.1", "9.9.9.9"}) {
-		t.Errorf("DNS %v, want the IPv4 servers only", cfg.DNS)
-	}
-	if cfg.JITConfig != "jit" || cfg.TimeLimitSeconds != 5400 || !cfg.Debug || cfg.RunnerDir != "/opt/runplane/runner" {
-		t.Errorf("config %+v", cfg)
-	}
-	// The first ULID characters hold the time, which VMs of the same
-	// second share; the host name takes the random end, as the runner name does.
-	if cfg.Hostname != "runplane-maedysaw" {
-		t.Errorf("host name %q, want runplane-maedysaw", cfg.Hostname)
-	}
-
-	none := d.guestConfig(spec, testLease, sandbox.Settings{})
-	if !maps.Equal(none.Env, map[string]string{"A": "1"}) || none.RegistryMirror != "" {
-		t.Errorf("with the cache and mirror off: env %v, mirror %q", none.Env, none.RegistryMirror)
-	}
-
-	// As in container mode, the spec env wins over the cache env.
-	spec.Env = map[string]string{"ACTIONS_RESULTS_URL": "http://other/"}
-	if got := d.guestConfig(spec, testLease, all).Env["ACTIONS_RESULTS_URL"]; got != "http://other/" {
-		t.Errorf("ACTIONS_RESULTS_URL %q, want the spec value http://other/", got)
 	}
 }

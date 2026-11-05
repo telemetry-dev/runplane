@@ -86,10 +86,7 @@ func (d *Driver) resume(rec record) error {
 		go v.tailConsole(v.console)
 	}
 	chroot := d.chroot(id)
-	// The guest asks for its config one time only, so this config without
-	// the JIT config matters only for a VM that restarted before it asked.
-	cfg := d.guestConfig(rec.Spec, v.lease, d.settings)
-	if v.ctl, err = control.Listen(filepath.Join(chroot, controlSocket), cfg, v, d.log.With("sandbox", id)); err != nil {
+	if v.ctl, err = control.Listen(filepath.Join(chroot, controlSocket), nil, v, d.log.With("sandbox", id)); err != nil {
 		v.detach()
 		return err
 	}

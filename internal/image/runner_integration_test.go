@@ -15,6 +15,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // baseImage is the base image that "make runner-smoke" tests. Build it with:
@@ -75,8 +76,8 @@ func runRunner(t *testing.T, docker *client.Client, bundle string, args ...strin
 	copyAndRun := []string{"sh", "-c", "cp -a " + ro + "/. . && exec \"$@\"", "sh"}
 	res, err := docker.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
-			Image: baseImage, User: "runner", WorkingDir: "/home/runner/actions-runner", Entrypoint: append(copyAndRun, args...),
-			Labels: map[string]string{labelManaged: "true"},
+			Image: baseImage, User: guest.RunnerUser, WorkingDir: guest.RunnerHome, Entrypoint: append(copyAndRun, args...),
+			Labels: map[string]string{guest.LabelManaged: "true"},
 		},
 		HostConfig: &container.HostConfig{
 			Mounts: []mount.Mount{{Type: mount.TypeBind, Source: bundle, Target: ro, ReadOnly: true}},

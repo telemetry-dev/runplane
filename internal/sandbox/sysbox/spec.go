@@ -6,25 +6,20 @@ import (
 	"net/netip"
 	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/internal/cache"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // Paths in the sandbox.
 const (
 	guestInit      = "/.runplane/init"
 	guestRunnerDir = "/.runplane/runner" // read-only runner bundle
-	guestCtlDir    = "/run/runplane"
-	guestScratch   = "/mnt/scratch"
 )
 
 const (
@@ -60,7 +55,7 @@ func createOptions(o Options, spec sandbox.Spec, m mounts, dns []netip.Addr) cli
 
 	binds := []mount.Mount{
 		{Type: mount.TypeBind, Source: m.init, Target: guestInit, ReadOnly: true},
-		{Type: mount.TypeBind, Source: m.ctl, Target: guestCtlDir, ReadOnly: true},
+		{Type: mount.TypeBind, Source: m.ctl, Target: guest.CtlDir, ReadOnly: true},
 		{Type: mount.TypeBind, Source: m.bundle, Target: guestRunnerDir, ReadOnly: true},
 	}
 	switch o.Scratch {
@@ -70,12 +65,12 @@ func createOptions(o Options, spec sandbox.Spec, m mounts, dns []netip.Addr) cli
 		// disk only with this mount. /tmp on scratch keeps large temporary
 		// files off the host disk.
 		binds = append(binds,
-			mount.Mount{Type: mount.TypeBind, Source: m.scratch, Target: guestScratch},
-			mount.Mount{Type: mount.TypeBind, Source: filepath.Join(m.scratch, "docker"), Target: "/var/lib/docker"},
-			mount.Mount{Type: mount.TypeBind, Source: filepath.Join(m.scratch, "tmp"), Target: "/tmp"},
+			mount.Mount{Type: mount.TypeBind, Source: m.scratch, Target: guest.ScratchDir},
+			mount.Mount{Type: mount.TypeBind, Source: filepath.Join(m.scratch, guest.ScratchDocker), Target: guest.DockerDir},
+			mount.Mount{Type: mount.TypeBind, Source: filepath.Join(m.scratch, guest.ScratchTmp), Target: "/tmp"},
 		)
 	case ScratchVolume:
-		binds = append(binds, mount.Mount{Type: mount.TypeVolume, Source: m.scratch, Target: guestScratch})
+		binds = append(binds, mount.Mount{Type: mount.TypeVolume, Source: m.scratch, Target: guest.ScratchDir})
 	}
 
 	pids := int64(pidsLimit)
@@ -106,7 +101,7 @@ func createOptions(o Options, spec sandbox.Spec, m mounts, dns []netip.Addr) cli
 		Name: containerName(spec.ID),
 		Config: &container.Config{
 			Image:      spec.Image.Digest,
-			Hostname:   hostname(spec.ID),
+			Hostname:   guest.Hostname(spec.ID),
 			Entrypoint: []string{guestInit},
 			Labels:     labels,
 		},
@@ -117,40 +112,10 @@ func createOptions(o Options, spec sandbox.Spec, m mounts, dns []netip.Addr) cli
 	}
 }
 
-// guestConfig is what runplane-init gets from the control channel.
-func guestConfig(spec sandbox.Spec, s sandbox.Settings, bundle image.Bundle, serviceURL string) control.GuestConfig {
-	env := map[string]string{}
-	// An unpatched runner overwrites ACTIONS_RESULTS_URL with the GitHub
-	// value, so the local cache works only with a patched bundle.
-	if s.ActionsCache && bundle.Patched {
-		maps.Copy(env, cache.RunnerEnv(serviceURL))
-	}
-	maps.Copy(env, spec.Env)
-	var mirror string
-	if s.RegistryMirror {
-		mirror = serviceURL
-	}
-	return control.GuestConfig{
-		SandboxID:        spec.ID,
-		Hostname:         hostname(spec.ID),
-		JITConfig:        spec.JITConfig,
-		RunnerDir:        guestRunnerDir,
-		Env:              env,
-		DNS:              s.DNS,
-		RegistryMirror:   mirror,
-		TimeLimitSeconds: int(spec.TimeLimit / time.Second),
-		Debug:            spec.Debug,
-	}
-}
-
 func serviceURL(host string, port int) string {
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 func containerName(id string) string { return "runplane-" + id }
-
-// hostname uses the random end of the ULID, as the runner name does. The
-// start is the time, which sandboxes of the same second share.
-func hostname(id string) string { return "runplane-" + id[len(id)-8:] }
 
 func volumeName(id string) string { return "runplane-scratch-" + id }

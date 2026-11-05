@@ -2,14 +2,14 @@ package firecracker
 
 import (
 	"context"
-	"net/http"
+	"errors"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 func TestRecoverAfterRestart(t *testing.T) {
@@ -59,12 +59,10 @@ func TestRecoverAfterRestart(t *testing.T) {
 
 	// The guest of the live VM, which has its config, connects again on the
 	// same socket.
-	guest := dialGuest(t, filepath.Join(data, "jail", "firecracker", "live", "root", "v.sock_1024"), func() {})
-	resp, err := guest.Post("http://host/v1/events", "application/json", strings.NewReader(`{"kind":"exited","exit_code":0}`))
-	if err != nil {
+	c := dialGuest(t, filepath.Join(data, "jail", "firecracker", "live", "root", "v.sock_1024"), func() {})
+	if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: sandbox.RunnerExited}); err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
 	if ev := nextEvent(t, d); ev.Type != sandbox.EventRunner || ev.Runner.Kind != sandbox.RunnerExited {
 		t.Fatalf("got %+v, want the exited runner event", ev)
 	}
@@ -134,14 +132,9 @@ func TestLostConfigStopsTheVM(t *testing.T) {
 	writeVM(t, root, "vm1", 0, sandbox.StateStarting, time.Now().UTC())
 	d := recovered(t, root, &fakeHost{})
 
-	guest := dialGuest(t, filepath.Join(d.chroot("vm1"), controlSocket), func() {})
-	resp, err := guest.Get("http://host/v1/config")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Errorf("config after the restart: status %d, want 409", resp.StatusCode)
+	c := dialGuest(t, filepath.Join(d.chroot("vm1"), controlSocket), func() {})
+	if _, err := c.Config(context.Background()); !errors.Is(err, guest.ErrNoConfig) {
+		t.Errorf("config after the restart: %v, want ErrNoConfig", err)
 	}
 	if ev := nextEvent(t, d); ev.State != sandbox.StateStopping {
 		t.Fatalf("got %+v, want the stop of the VM", ev)

@@ -14,6 +14,8 @@ import (
 
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -84,14 +86,10 @@ func (l logs) sandboxLog(ctx context.Context, b store.Sandbox, follow bool) (io.
 	return drv.Logs(ctx, b.ID, follow)
 }
 
-// diagLines keeps the step output of a sandbox log line
-// "<time> diag <GitHub log line>".
+// diagLines keeps the step output of a sandbox log line.
 func diagLines(line string) (string, bool) {
-	_, rest, ok := strings.Cut(line, " ")
-	if !ok {
-		return "", false
-	}
-	return strings.CutPrefix(rest, "diag ")
+	l, ok := control.ParseLogFileLine(line)
+	return l.Text, ok && l.Source == guest.SourceDiag
 }
 
 // stepLines keeps the lines of step n of a GitHub job log. Each line starts

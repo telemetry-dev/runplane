@@ -23,23 +23,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
-
-const initPath = "sbin/runplane-init"
-
-// mountPoints are the folders that runplane-init mounts file systems on. The
-// root disk is read-only, so they must exist in it.
-var mountPoints = []struct {
-	path string
-	mode int64
-}{
-	{"dev", 0o755},
-	{"proc", 0o555},
-	{"sys", 0o555},
-	{"run", 0o755},
-	{"tmp", 0o1777},
-	{"mnt/scratch", 0o755},
-}
 
 // ensureRootDisk pulls the image for this platform without Docker and makes
 // its ext4 root disk. A root disk that is already there is used again.
@@ -119,8 +105,8 @@ func (m *Manager) buildRootDisk(ctx context.Context, src source, init []byte, r 
 	c, err := m.cfg.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image:  tag,
-			Cmd:    []string{"/" + initPath},
-			Labels: map[string]string{labelManaged: "true"},
+			Cmd:    []string{guest.InitPath},
+			Labels: map[string]string{guest.LabelManaged: "true"},
 		},
 	})
 	if err != nil {
@@ -303,16 +289,16 @@ func rootfs(w io.Writer, src io.ReadCloser, init []byte) error {
 			return fmt.Errorf("read image files: %w", err)
 		}
 	}
-	for _, mp := range mountPoints {
-		p := resolve(mp.path, links)
+	for _, mp := range guest.MountPoints {
+		p := resolve(strings.TrimPrefix(mp.Path, "/"), links)
 		if p == "" || have[p] {
 			continue
 		}
-		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: p + "/", Mode: mp.mode}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: p + "/", Mode: mp.Mode}); err != nil {
 			return err
 		}
 	}
-	hdr := &tar.Header{Typeflag: tar.TypeReg, Name: resolve(initPath, links), Mode: 0o755, Size: int64(len(init))}
+	hdr := &tar.Header{Typeflag: tar.TypeReg, Name: resolve(strings.TrimPrefix(guest.InitPath, "/"), links), Mode: 0o755, Size: int64(len(init))}
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}

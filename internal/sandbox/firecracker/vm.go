@@ -16,6 +16,7 @@ import (
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
@@ -107,7 +108,7 @@ func (v *vm) OnLostConfig() {
 	}
 }
 
-func (v *vm) OnLog(line control.LogLine) {
+func (v *vm) OnLog(line guest.LogLine) {
 	v.heard.Store(true)
 	if err := v.log.Write(line); err != nil {
 		v.d.log.Debug("write sandbox log", "sandbox", v.id, "err", err)
@@ -233,18 +234,18 @@ func (v *vm) withConsole(err error) error {
 	return fmt.Errorf("%w%s", err, v.consoleEnd())
 }
 
-// tailConsole copies the console lines to the sandbox log with the source
-// "console" until Firecracker closes its end.
+// tailConsole copies the console lines to the sandbox log until Firecracker
+// closes its end.
 func (v *vm) tailConsole(r *os.File) {
 	defer close(v.tailDone)
-	control.ReadLines(r, func(line string) {
+	guest.ReadLines(r, func(line string) {
 		v.mu.Lock()
 		if len(v.lastLines) == keepLines {
 			v.lastLines = v.lastLines[1:]
 		}
 		v.lastLines = append(v.lastLines, line)
 		v.mu.Unlock()
-		v.log.Write(control.LogLine{Time: time.Now().UTC(), Source: "console", Text: line})
+		v.log.Write(guest.LogLine{Time: time.Now().UTC(), Source: guest.SourceConsole, Text: line})
 	})
 }
 

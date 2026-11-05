@@ -8,6 +8,8 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 const (
@@ -38,7 +40,7 @@ func (d *Driver) ensureNetwork(ctx context.Context) (bridgeNet, error) {
 				"com.docker.network.bridge.name":       bridgeName,
 				"com.docker.network.bridge.enable_icc": "false",
 			},
-			Labels: map[string]string{labelManaged: "true"},
+			Labels: map[string]string{guest.LabelManaged: "true"},
 		})
 		if err != nil && !cerrdefs.IsConflict(err) {
 			return bridgeNet{}, fmt.Errorf("make network %s: %w", networkName, err)
@@ -53,7 +55,7 @@ func (d *Driver) ensureNetwork(ctx context.Context) (bridgeNet, error) {
 }
 
 func readNetwork(n network.Network) (bridgeNet, error) {
-	if n.Labels[labelManaged] != "true" || n.Driver != "bridge" {
+	if n.Labels[guest.LabelManaged] != "true" || n.Driver != "bridge" {
 		return bridgeNet{}, fmt.Errorf("the Docker network %s is not a bridge that runplane made; remove it or rename it", networkName)
 	}
 	if n.Options["com.docker.network.bridge.enable_icc"] != "false" {

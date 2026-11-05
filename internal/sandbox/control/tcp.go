@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -17,16 +16,12 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
-// AddrFile is the file in the ctl folder that sends the guest to TCP. Its
-// one line is "tcp://<host:port> <sandbox-id> <token>".
-const AddrFile = "control.addr"
-
 // TCPListener serves the control channels of all sandboxes on one TCP port.
-// Dev mode uses it, because a Unix socket in a bind mount does not cross the
-// VM of Docker Desktop or OrbStack. Each connection starts with the line
-// "RUNPLANE <sandbox-id> <token>\n"; a wrong token closes it.
+// Dev mode uses it (see guest.AddrFile). Each connection starts with the
+// hello line of a sandbox; a wrong token closes it.
 type TCPListener struct {
 	ln   net.Listener
 	dial string // the address that guests dial
@@ -59,19 +54,19 @@ func ListenTCP(addr, dialHost string, log *slog.Logger) (*TCPListener, error) {
 	return t, nil
 }
 
-// Listen serves the control channel of the sandbox cfg.SandboxID. It writes
-// a new token to <ctlDir>/control.addr, so after a runplane restart the guest
-// gets in with the new token. Server.Close takes the sandbox off the listener.
-func (t *TCPListener) Listen(ctlDir string, cfg GuestConfig, h Handler, log *slog.Logger) (*Server, error) {
-	id := cfg.SandboxID
+// Listen serves the control channel of the sandbox id, as the function
+// Listen does. It writes a new token to the guest.AddrFile in ctlDir, so
+// after a runplane restart the guest gets in with the new token.
+// Server.Close takes the sandbox off the listener.
+func (t *TCPListener) Listen(ctlDir, id string, cfg *guest.Config, h Handler, log *slog.Logger) (*Server, error) {
 	if id == "" || strings.ContainsAny(id, " \n") {
 		return nil, fmt.Errorf("listen for sandbox %q: bad sandbox ID", id)
 	}
 	b := make([]byte, 32)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
-	line := "tcp://" + t.dial + " " + id + " " + token + "\n"
-	if err := atomicfile.Write(filepath.Join(ctlDir, AddrFile), strings.NewReader(line), 0o644); err != nil {
+	line := guest.FormatAddr(t.dial, id, token)
+	if err := atomicfile.Write(filepath.Join(ctlDir, guest.AddrFile), strings.NewReader(line), 0o644); err != nil {
 		return nil, fmt.Errorf("write control address: %w", err)
 	}
 
@@ -131,20 +126,20 @@ func (t *TCPListener) handshake(conn net.Conn) {
 	srv.serve(conn)
 }
 
-// check finds the sandbox of a hello line "RUNPLANE <sandbox-id> <token>".
+// check finds the sandbox of a hello line.
 func (t *TCPListener) check(line string) (*Server, error) {
-	f := strings.Fields(line)
-	if len(f) != 3 || f[0] != "RUNPLANE" {
-		return nil, errors.New("bad hello line")
+	id, token, err := guest.ParseHello(line)
+	if err != nil {
+		return nil, err
 	}
 	t.mu.Lock()
-	sb, ok := t.sandboxes[f[1]]
+	sb, ok := t.sandboxes[id]
 	t.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("unknown sandbox %q", f[1])
+		return nil, fmt.Errorf("unknown sandbox %q", id)
 	}
-	if subtle.ConstantTimeCompare([]byte(f[2]), []byte(sb.token)) != 1 {
-		return nil, fmt.Errorf("wrong token for sandbox %s", f[1])
+	if subtle.ConstantTimeCompare([]byte(token), []byte(sb.token)) != 1 {
+		return nil, fmt.Errorf("wrong token for sandbox %s", id)
 	}
 	return sb.srv, nil
 }
@@ -164,14 +159,4 @@ func readHello(r io.Reader) (string, error) {
 		line = append(line, b[0])
 	}
 	return "", errors.New("hello line too long")
-}
-
-// ParseAddr reads the line of a control.addr file. It returns the TCP
-// address to dial and the hello line to send first.
-func ParseAddr(content []byte) (addr, hello string, err error) {
-	f := strings.Fields(string(bytes.TrimSpace(content)))
-	if len(f) != 3 || !strings.HasPrefix(f[0], "tcp://") {
-		return "", "", fmt.Errorf("bad control address %q", content)
-	}
-	return strings.TrimPrefix(f[0], "tcp://"), "RUNPLANE " + f[1] + " " + f[2] + "\n", nil
 }

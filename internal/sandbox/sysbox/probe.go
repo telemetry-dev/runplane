@@ -15,6 +15,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // labelProbe marks the short containers of Probe.
@@ -48,7 +49,7 @@ func Probe(ctx context.Context, o ProbeOptions) error {
 		Config: &container.Config{
 			Image:      img,
 			Entrypoint: []string{"curl", "-fsS", "-o", "/dev/null", "--max-time", "20", "https://api.github.com"},
-			Labels:     map[string]string{labelProbe: "true", labelManaged: "true", labelData: o.DataDir},
+			Labels:     map[string]string{labelProbe: "true", guest.LabelManaged: "true", labelData: o.DataDir},
 			Tty:        true, // plain logs, without the stream headers
 		},
 		HostConfig: &container.HostConfig{
@@ -100,7 +101,7 @@ func (d *Driver) Probe(ctx context.Context) error {
 // have it, and the images FROM them inherit it.
 func probeImage(ctx context.Context, docker *client.Client) (string, error) {
 	res, err := docker.ImageList(ctx, client.ImageListOptions{
-		Filters: client.Filters{}.Add("label", labelManaged+"=true"),
+		Filters: client.Filters{}.Add("label", guest.LabelManaged+"=true"),
 	})
 	if err != nil {
 		return "", fmt.Errorf("list images: %w", err)

@@ -3,7 +3,7 @@
 // emulates the Azure Blob calls on the signed URLs that the service hands
 // out, and sends all other results traffic, for example artifacts, to GitHub.
 // A patched runner keeps the ACTIONS_RESULTS_URL of its .env file (see
-// RunnerEnv), so jobs send cache calls here.
+// guest.NewConfig), so jobs send cache calls here.
 package cache
 
 import (
@@ -86,17 +86,6 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	return s, nil
-}
-
-// RunnerEnv returns the runner .env values that send the cache calls of a
-// patched runner to the cache server at serviceURL, for example
-// http://10.0.0.1:8486. The cache server must be at the root path:
-// @actions/cache drops the path of ACTIONS_RESULTS_URL.
-func RunnerEnv(serviceURL string) map[string]string {
-	return map[string]string{
-		"ACTIONS_RESULTS_URL":      strings.TrimRight(serviceURL, "/") + "/",
-		"ACTIONS_CACHE_SERVICE_V2": "true",
-	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

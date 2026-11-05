@@ -15,7 +15,6 @@ import (
 
 	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
@@ -101,11 +100,11 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	case sandbox.ModeVM:
 		drv, err := firecracker.New(firecracker.Options{
 			DataDir: cfg.DataDir, Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: images.RootDisk,
-			RunnerDrive: func(ctx context.Context, version, arch string) (string, error) {
+			RunnerDrive: func(ctx context.Context, version, arch string) (string, bool, error) {
 				b, err := bundles.Ensure(ctx, version, arch)
-				return b.Ext4Path, err
+				return b.Ext4Path, b.Patched, err
 			},
-			CacheEnv: cache.RunnerEnv, Settings: lc.settings, Logger: log.With("driver", "firecracker"),
+			Settings: lc.settings, Logger: log.With("driver", "firecracker"),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start the VM driver: %w", err)

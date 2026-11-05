@@ -17,6 +17,7 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 	"github.com/runplane/runplane/internal/sandbox/scratch"
 )
@@ -114,7 +115,7 @@ func (d *Driver) create(ctx context.Context, b *box, spec sandbox.Spec, s sandbo
 		m.scratch = volumeName(spec.ID)
 		_, err := d.docker.VolumeCreate(ctx, client.VolumeCreateOptions{
 			Name:   m.scratch,
-			Labels: map[string]string{sandbox.LabelSandbox: spec.ID, labelManaged: "true", labelData: d.opts.Config.DataDir},
+			Labels: map[string]string{sandbox.LabelSandbox: spec.ID, guest.LabelManaged: "true", labelData: d.opts.Config.DataDir},
 		})
 		if err != nil {
 			return fmt.Errorf("make scratch volume: %w", err)
@@ -127,8 +128,8 @@ func (d *Driver) create(ctx context.Context, b *box, spec sandbox.Spec, s sandbo
 	d.mu.Lock()
 	b.logs = logs
 	d.mu.Unlock()
-	cfg := guestConfig(spec, s, bundle, serviceURL(d.opts.ServiceHost, d.opts.Config.ServicePort))
-	ctl, err := d.listen(b, cfg)
+	cfg := guest.NewConfig(spec, s, serviceURL(d.opts.ServiceHost, d.opts.Config.ServicePort), guestRunnerDir, bundle.Patched)
+	ctl, err := d.listen(b, &cfg)
 	if err != nil {
 		return err
 	}
@@ -206,17 +207,20 @@ func (d *Driver) makeScratchDisk(dir string, sizeGB int) (string, error) {
 	if err := scratch.Attach(img, mnt); err != nil {
 		return "", err
 	}
-	if err := mkdir(filepath.Join(mnt, "docker"), 0o710); err != nil {
+	if err := mkdir(filepath.Join(mnt, guest.ScratchDocker), 0o710); err != nil {
 		return "", err
 	}
-	return mnt, mkdir(filepath.Join(mnt, "tmp"), 0o777|os.ModeSticky)
+	return mnt, mkdir(filepath.Join(mnt, guest.ScratchTmp), 0o777|os.ModeSticky)
 }
 
-func (d *Driver) listen(b *box, cfg control.GuestConfig) (*control.Server, error) {
+// listen serves the control channel in the ctl folder, which the sandbox has
+// at guest.CtlDir. cfg is nil for a sandbox from before a runplane restart.
+func (d *Driver) listen(b *box, cfg *guest.Config) (*control.Server, error) {
 	log := d.log.With("sandbox", b.id)
 	h := handler{d: d, b: b, log: log}
+	ctlDir := filepath.Join(b.dir, "ctl")
 	if d.tcp != nil {
-		return d.tcp.Listen(filepath.Join(b.dir, "ctl"), cfg, h, log)
+		return d.tcp.Listen(ctlDir, b.id, cfg, h, log)
 	}
-	return control.Listen(filepath.Join(b.dir, "ctl", "control.sock"), cfg, h, log)
+	return control.Listen(filepath.Join(ctlDir, guest.SocketFile), cfg, h, log)
 }

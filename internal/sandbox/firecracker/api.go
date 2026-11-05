@@ -11,6 +11,7 @@ import (
 	"net/netip"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
@@ -52,18 +53,24 @@ func (a *apiClient) call(ctx context.Context, method, path string, body any) err
 	return fmt.Errorf("firecracker %s %s: %s: %s", method, path, resp.Status, fault.Message)
 }
 
-// boot sets up the VM through the API and starts it. The drive order gives
-// the guest vda (root disk), vdb (runner bundle), and vdc (scratch). The
-// paths are inside the chroot.
+// boot sets up the VM through the API and starts it. The paths are inside
+// the chroot.
 func (a *apiClient) boot(ctx context.Context, spec sandbox.Spec, l netrules.Lease, bandwidthMbps int) error {
-	steps := []struct {
+	type step struct {
 		path string
 		body any
-	}{
-		{"/boot-source", bootSource{KernelImagePath: "/" + kernelFile, BootArgs: bootArgs(l.Guest, l.Host)}},
-		{"/drives/rootfs", drive{ID: "rootfs", Path: "/" + rootFile, Root: true, ReadOnly: true}},
-		{"/drives/runner", drive{ID: "runner", Path: "/" + runnerFile, ReadOnly: true}},
-		{"/drives/scratch", drive{ID: "scratch", Path: "/" + scratchFile}},
+	}
+	steps := []step{{"/boot-source", bootSource{KernelImagePath: "/" + kernelFile, BootArgs: bootArgs(l.Guest, l.Host)}}}
+	drives := [...]drive{
+		guest.DriveRoot:    {ID: "rootfs", Path: "/" + rootFile, Root: true, ReadOnly: true},
+		guest.DriveRunner:  {ID: "runner", Path: "/" + runnerFile, ReadOnly: true},
+		guest.DriveScratch: {ID: "scratch", Path: "/" + scratchFile},
+	}
+	// The guest names the drives in the order of these calls.
+	for _, d := range drives {
+		steps = append(steps, step{"/drives/" + d.ID, d})
+	}
+	steps = append(steps, []step{
 		{"/machine-config", machineConfig{VCPU: spec.VCPU, MemoryMiB: spec.MemoryMB}},
 		{"/network-interfaces/eth0", netInterface{
 			ID:      "eth0",
@@ -77,7 +84,7 @@ func (a *apiClient) boot(ctx context.Context, spec sandbox.Spec, l netrules.Leas
 		{"/vsock", vsock{CID: 3, Path: "/" + vsockFile}},
 		{"/entropy", struct{}{}},
 		{"/actions", action{Type: "InstanceStart"}},
-	}
+	}...)
 	for _, s := range steps {
 		if err := a.call(ctx, http.MethodPut, s.path, s.body); err != nil {
 			return err
@@ -104,11 +111,10 @@ func (a *apiClient) ctrlAltDel(ctx context.Context) error {
 // "root=/dev/vda ro" for the read-only root drive and, from v1.13, "pci=off".
 // quiet keeps the boot messages off the serial console, where each byte
 // stops the vCPU: the guest then reaches init in half the time. Warnings and
-// panics still print. reboot=k makes a guest reboot end Firecracker on x86.
-// ip= sets the guest address without DHCP.
-func bootArgs(guest, host netip.Addr) string {
-	return "console=ttyS0 quiet reboot=k panic=1 init=/sbin/runplane-init runplane.mode=vm" +
-		" ip=" + guest.String() + "::" + host.String() + ":255.255.255.252::eth0:off random.trust_cpu=on"
+// panics still print. ip= sets the guest address without DHCP.
+func bootArgs(addr, host netip.Addr) string {
+	return "console=ttyS0 quiet " + guest.KernelArgs +
+		" ip=" + addr.String() + "::" + host.String() + ":255.255.255.252::eth0:off random.trust_cpu=on"
 }
 
 // guestMAC is a locally administered address that holds the guest IPv4
