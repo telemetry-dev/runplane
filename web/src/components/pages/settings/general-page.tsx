@@ -4,9 +4,10 @@ import type { Schemas } from '~/api/client'
 import { Spinner } from '~/components/ui/spinner'
 import { formatDate } from '~/lib/format'
 import { Backups } from './backups'
+import { dnsStatus, serverRecord } from './dns-info'
 import { LoadError, ReadOnlyNote, SettingRow, SettingRows, SettingsColumn, SettingsSection, SettingRowsSkeleton } from './parts'
 import { NumberSetting, TextSetting } from './setting-controls'
-import { settingsQuery, useIsAdmin } from './settings-api'
+import { domainDNSQuery, settingsQuery, useIsAdmin } from './settings-api'
 import { Updates } from './updates'
 
 /** Settings · General: instance, HTTPS, data retention, and for admins updates and backups. */
@@ -16,6 +17,11 @@ export function GeneralSettings() {
     ...settingsQuery,
     // No event reports the certificate, so ask until the request ends.
     refetchInterval: (query) => (query.state.data?.https?.state === 'requesting' ? 5_000 : false),
+  })
+  const { data: dns, isError: dnsFailed } = useQuery({
+    ...domainDNSQuery,
+    // Ask again until the admin has made the record.
+    refetchInterval: (query) => (['missing', 'other', 'error'].includes(query.state.data?.state ?? '') ? 10_000 : false),
   })
 
   if (isError && !settings) {
@@ -28,6 +34,7 @@ export function GeneralSettings() {
   if (!settings) return <GeneralSkeleton admin={admin} />
 
   const disabled = !admin
+  const record = serverRecord(dns?.server_addresses ?? [])
   return (
     <SettingsColumn>
       {!admin && <ReadOnlyNote />}
@@ -57,7 +64,11 @@ export function GeneralSettings() {
         <SettingRows>
           <TextSetting
             label="Domain"
-            description="runplane serves HTTPS on ports 443 and 80."
+            description={
+              record
+                ? `Point the ${record.type} record of the domain to ${record.value}. runplane serves HTTPS on ports 443 and 80.`
+                : 'runplane serves HTTPS on ports 443 and 80.'
+            }
             value={settings.domain}
             toPatch={(domain) => ({ domain })}
             placeholder="ci.example.com"
@@ -71,6 +82,7 @@ export function GeneralSettings() {
             toPatch={(acme_email) => ({ acme_email })}
             disabled={disabled}
           />
+          {settings.domain && <DNSRow domain={settings.domain} dns={dns} failed={dnsFailed} />}
           {settings.domain && <CertificateRow domain={settings.domain} certificate={settings.https} />}
         </SettingRows>
       </SettingsSection>
@@ -103,6 +115,44 @@ export function GeneralSettings() {
       {admin && <Updates autoUpdate={settings.auto_update} />}
       {admin && <Backups settings={settings} />}
     </SettingsColumn>
+  )
+}
+
+type DNSRowProps = {
+  domain: string
+  dns: Schemas['DomainDNS'] | undefined
+  /** The request for the check failed. */
+  failed: boolean
+}
+
+/**
+ * Whether the DNS record of the domain points to this server. Just after a
+ * save, the last check is for the old domain, so the row shows "Checking".
+ */
+function DNSRow({ domain, dns, failed }: DNSRowProps) {
+  const status = dns?.domain === domain ? dnsStatus(dns) : undefined
+  return (
+    <SettingRow group label="DNS record" description={status?.help || `runplane looks up ${domain}.`}>
+      <p role="status" className="flex max-w-[280px] items-center gap-xs text-s text-neutral-10">
+        {!status && failed ? (
+          <>
+            <X size={14} className="shrink-0" aria-hidden />
+            Could not check the record
+          </>
+        ) : !status ? (
+          <>
+            <Spinner size={14} />
+            Checking
+          </>
+        ) : (
+          <>
+            {status.tone === 'ok' && <Check size={14} className="shrink-0" aria-hidden />}
+            {status.tone === 'error' && <X size={14} className="shrink-0" aria-hidden />}
+            <span className="min-w-0 break-words">{status.text}</span>
+          </>
+        )}
+      </p>
+    </SettingRow>
   )
 }
 

@@ -50,6 +50,7 @@ Flags:
   --version <v>              Release to install (default: $RUNPLANE_VERSION)
   --repo <owner/name>        GitHub repository of the releases (default: $RUNPLANE_REPO)
   --listen <addr>            Dashboard address of the primary (default: :8484)
+  --domain <name>            HTTPS domain of the dashboard (its DNS must point to this server)
   --binary <path>            Install this runplane binary, not a release download
   --kernel <path>            Install this guest kernel (VM mode), not a release download
   --token <token>            Install an agent with this one-time server token
@@ -88,6 +89,7 @@ main() {
 	write_config
 	write_units
 	store_mode
+	store_domain
 	start_service
 	finish
 }
@@ -97,6 +99,7 @@ parse_flags() {
 	VERSION=$RUNPLANE_VERSION
 	REPO=$RUNPLANE_REPO
 	LISTEN=
+	DOMAIN=
 	TOKEN=
 	PRIMARY=$RUNPLANE_PRIMARY
 	FINGERPRINT=$RUNPLANE_FINGERPRINT
@@ -115,7 +118,7 @@ parse_flags() {
 			flag=${flag%%=*}
 			shift
 			;;
-		--mode | --version | --repo | --listen | --binary | --kernel | --token | --primary | --fingerprint)
+		--mode | --version | --repo | --listen | --domain | --binary | --kernel | --token | --primary | --fingerprint)
 			[ $# -ge 2 ] || die "$flag needs a value"
 			value=$2
 			shift 2
@@ -130,6 +133,7 @@ parse_flags() {
 		--version) VERSION=$value ;;
 		--repo) REPO=$value ;;
 		--listen) LISTEN=$value ;;
+		--domain) DOMAIN=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]') ;;
 		--binary) BINARY=$value ;;
 		--kernel) KERNEL=$value ;;
 		--token) TOKEN=$value ;;
@@ -164,6 +168,10 @@ parse_flags() {
 	if [ -n "$KERNEL" ] && [ ! -f "$KERNEL" ]; then
 		die "--kernel: $KERNEL does not exist"
 	fi
+	case $DOMAIN in
+	'' | *.*) only_chars "$DOMAIN" 'a-z0-9.-' || die "--domain must be a domain name such as ci.example.com" ;;
+	*) die "--domain must be a domain name such as ci.example.com" ;;
+	esac
 
 	ROLE=primary
 	SERVICE=runplane
@@ -172,6 +180,7 @@ parse_flags() {
 	ROLE=agent
 	SERVICE=runplane-agent
 	[ -z "$LISTEN" ] || die "--listen is for the primary only"
+	[ -z "$DOMAIN" ] || die "--domain is for the primary only"
 	[ -n "$PRIMARY" ] || die "an agent needs --primary <host:port>"
 	[ -n "$FINGERPRINT" ] || die "an agent needs --fingerprint <sha256:...>"
 	# These values go into JSON without escapes, so permit only safe characters.
@@ -224,6 +233,7 @@ check_role() {
 	fi
 	[ -f "$AGENT_FILE" ] || [ -f "$UNIT_DIR/runplane-agent.service" ] || return 0
 	[ -z "$LISTEN" ] || die "this server is a runplane agent, and --listen is for the primary only"
+	[ -z "$DOMAIN" ] || die "this server is a runplane agent, and --domain is for the primary only"
 	PRIMARY=$(sed -n 's/.*"primary": *"\([^"]*\)".*/\1/p' "$AGENT_FILE" 2>/dev/null | head -n 1)
 	[ -n "$PRIMARY" ] ||
 		die "this server is a runplane agent, but $AGENT_FILE has no primary. Run the agent install command from the Servers page of the dashboard."
@@ -740,6 +750,16 @@ store_mode() {
 	run with_env "$BIN" set-mode "$MODE" || die "runplane cannot write $MODE mode to its settings"
 }
 
+# store_domain writes --domain into the settings of the primary. On a new
+# install, this makes the database before the first start.
+store_domain() {
+	if [ "$ROLE" != primary ] || [ -z "$DOMAIN" ]; then
+		return 0
+	fi
+	step "Write the domain to the settings"
+	run with_env "$BIN" set-domain "$DOMAIN" || die "runplane cannot write the domain $DOMAIN to its settings"
+}
+
 start_service() {
 	step "Start $SERVICE"
 	run systemctl daemon-reload
@@ -798,7 +818,12 @@ finish() {
 		warn "the dashboard settings keep $mode mode. For $MODE mode, run this script again with --mode $MODE."
 	fi
 	say ""
-	say "  Dashboard:  http://$host:$port"
+	if [ -n "$DOMAIN" ]; then
+		say "  Dashboard:  https://$DOMAIN"
+		say "              http://$host:$port until the DNS record points to this server"
+	else
+		say "  Dashboard:  http://$host:$port"
+	fi
 	if [ "$DRY_RUN" = 1 ]; then
 		say "  Setup code: (from runplane setup-code)"
 	elif curl -fsS "$(local_url)/api/status" 2>/dev/null | grep -q '"needs_setup": *true'; then
@@ -817,8 +842,13 @@ finish() {
 		;;
 	esac
 	say ""
-	say "The dashboard uses HTTP. Set a domain in Settings > General to get HTTPS,"
-	say "or connect through an SSH tunnel: ssh -L $port:localhost:$port <user>@$ip"
+	if [ -n "$DOMAIN" ]; then
+		say "The A record of $DOMAIN must point to the public IP address of this server, with no proxy."
+		say "runplane gets the certificate at the first visit. Settings > General shows the DNS record."
+	else
+		say "The dashboard uses HTTP. Set a domain in Settings > General to get HTTPS,"
+		say "or connect through an SSH tunnel: ssh -L $port:localhost:$port <user>@$ip"
+	fi
 	say "Logs: journalctl -u $SERVICE -f"
 }
 

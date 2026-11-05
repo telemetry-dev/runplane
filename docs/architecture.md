@@ -548,6 +548,7 @@ All paths start with `/api`. JSON field names are `snake_case`. Errors use the H
 | DELETE | `/api/caches?repository&id` | admin | Remove entries |
 | GET | `/api/runner-versions` | user | Bundles, latest version, end dates |
 | GET, PATCH | `/api/settings` | user, admin | |
+| GET | `/api/settings/dns` | user | The A and AAAA records of the `domain` setting, the public addresses of this server, and `state`: `ok` if each record points to this server. runplane asks a nameserver of the zone first, because a resolver can keep a "no such host" answer for 30 minutes. |
 | GET, POST | `/api/notifications` | admin | |
 | PATCH, DELETE | `/api/notifications/{id}` | admin | |
 | POST | `/api/notifications/{id}/test` | admin | |
@@ -685,7 +686,7 @@ Frontend behavior that the routes do not show:
 
 ## 12. Commands (`cmd/runplane`)
 
-`runplane help` shows the commands. `runplane <command> -h` shows the flags. The flags are the same as the environment variables (section 3). `sudo` starts a command without the variables of `runplane.env`. Thus `doctor`, `update`, `reset-password`, `setup-code`, and `set-mode` read the `RUNPLANE_*` variables of `runplane.env` that the environment does not have.
+`runplane help` shows the commands. `runplane <command> -h` shows the flags. The flags are the same as the environment variables (section 3). `sudo` starts a command without the variables of `runplane.env`. Thus `doctor`, `update`, `reset-password`, `setup-code`, `set-mode`, and `set-domain` read the `RUNPLANE_*` variables of `runplane.env` that the environment does not have.
 
 | Command | Use |
 | --- | --- |
@@ -696,6 +697,7 @@ Frontend behavior that the routes do not show:
 | `reset-password <email>` | Set a new random password for the user, show it, and remove the sessions of the user. |
 | `setup-code` | Show a new one-time setup code. |
 | `set-mode container\|vm\|dev` | Write the sandbox mode to the settings of the primary. After the first start, the settings win over `RUNPLANE_MODE`. install.sh runs this command for `--mode` on a primary that has a database. The mode applies at the next start. In container mode, the command also sets `allow_public_repos` to false. |
+| `set-domain <domain>` | Write the `domain` setting of the primary. An empty domain stops HTTPS. If the database does not exist, the command makes it. install.sh runs this command for `--domain` before the start of the service. The domain applies at the next start. |
 | `dev-seed` | Fill an empty database with demo data. For development only: only a build with the tag `devseed` has this command (section 11). The demo data has no `mode` setting, and its notification channels use hosts under `.invalid`. |
 | `openapi` | Write the OpenAPI spec as JSON. |
 | `version` | Show the version. |

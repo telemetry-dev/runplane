@@ -47,6 +47,38 @@ func TestSetModeStoresTheMode(t *testing.T) {
 	}
 }
 
+// install.sh --domain runs set-domain before the first start of runplane,
+// thus before the database exists.
+func TestSetDomainStoresTheDomain(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("RUNPLANE_CONFIG_DIR", dir)
+	t.Setenv("RUNPLANE_DATA_DIR", dir)
+
+	if err := setDomain(ctx, []string{" CI.Example.com "}); err != nil {
+		t.Fatal(err)
+	}
+	if s := settingsIn(t, dir); s.Domain != "ci.example.com" {
+		t.Fatalf("domain %q, want ci.example.com", s.Domain)
+	}
+
+	for _, bad := range []string{"192.0.2.1", "localhost", "https://ci.example.com"} {
+		if err := setDomain(ctx, []string{bad}); err == nil {
+			t.Errorf("set-domain %s has no error", bad)
+		}
+	}
+	if s := settingsIn(t, dir); s.Domain != "ci.example.com" {
+		t.Fatalf("a refused set-domain changed the domain to %q", s.Domain)
+	}
+
+	if err := setDomain(ctx, []string{""}); err != nil {
+		t.Fatal(err)
+	}
+	if s := settingsIn(t, dir); s.Domain != "" {
+		t.Fatalf("domain %q after set-domain '', want none", s.Domain)
+	}
+}
+
 func settingsIn(t *testing.T, dir string) store.Settings {
 	t.Helper()
 	st, err := store.Open(dir + "/runplane.db")

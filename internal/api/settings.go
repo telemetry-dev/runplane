@@ -189,7 +189,7 @@ func (p *SettingsPatch) check() error {
 	}
 	if p.Domain != nil {
 		*p.Domain = strings.ToLower(*p.Domain)
-		if *p.Domain != "" && !validDomain(*p.Domain) {
+		if *p.Domain != "" && !ValidDomain(*p.Domain) {
 			errs.add("body.domain", "Enter a domain name such as ci.example.com.", *p.Domain)
 		}
 	}
@@ -247,8 +247,9 @@ var (
 	dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
-// validDomain accepts a host name with at least two labels, not an IP address.
-func validDomain(d string) bool {
+// ValidDomain accepts a lowercase host name with at least two labels, not an
+// IP address.
+func ValidDomain(d string) bool {
 	labels := strings.Split(d, ".")
 	if len(d) > 253 || len(labels) < 2 || net.ParseIP(d) != nil {
 		return false
@@ -268,7 +269,7 @@ func validEgress(v string) bool {
 	if _, err := netip.ParsePrefix(v); err == nil {
 		return true
 	}
-	return validDomain(strings.TrimPrefix(v, "*."))
+	return ValidDomain(strings.TrimPrefix(v, "*."))
 }
 
 func (p *SettingsPatch) apply(st *store.Settings, h *Handler) {

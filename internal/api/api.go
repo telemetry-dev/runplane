@@ -205,6 +205,7 @@ func (h *Handler) routes() {
 	// Settings and administration.
 	handle(h, auth.ActionRead, "GET /api/settings", "get-settings", "Read the settings", h.getSettings)
 	handle(h, auth.ActionAdmin, "PATCH /api/settings", "update-settings", "Change settings", h.updateSettings)
+	handle(h, auth.ActionRead, "GET /api/settings/dns", "get-domain-dns", "Check that the DNS record of the domain points to this server", h.getDomainDNS)
 	handle(h, auth.ActionAdmin, "GET /api/notifications", "list-notifications", "List notification channels", h.listNotifications)
 	handle(h, auth.ActionAdmin, "POST /api/notifications", "create-notification", "Add a notification channel", h.createNotification)
 	handle(h, auth.ActionAdmin, "PATCH /api/notifications/{id}", "update-notification", "Change a notification channel", h.updateNotification)

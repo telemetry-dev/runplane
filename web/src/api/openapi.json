@@ -622,6 +622,53 @@
         ],
         "type": "object"
       },
+      "DomainDNS": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "description": "The domain setting. Empty: no domain.",
+            "type": "string"
+          },
+          "error": {
+            "description": "Why the DNS lookup failed.",
+            "type": "string"
+          },
+          "records": {
+            "description": "The addresses of the A and AAAA records of the domain.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "server_addresses": {
+            "description": "Public IP addresses of this server, for the DNS record. Empty when runplane cannot find one, for example behind NAT.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "none: no domain is set. ok: each record is an address of this server. missing: the domain has no A or AAAA record. other: a record is not an address of this server. unknown: runplane knows no public address of this server to compare. error: the DNS lookup failed.",
+            "enum": [
+              "none",
+              "ok",
+              "missing",
+              "other",
+              "unknown",
+              "error"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain",
+          "state",
+          "records",
+          "server_addresses",
+          "error"
+        ],
+        "type": "object"
+      },
       "ErrorDetail": {
         "additionalProperties": false,
         "properties": {
@@ -7265,6 +7312,42 @@
           }
         ],
         "summary": "Change settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/dns": {
+      "get": {
+        "operationId": "get-domain-dns",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainDNS"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Check that the DNS record of the domain points to this server",
         "tags": [
           "settings"
         ]

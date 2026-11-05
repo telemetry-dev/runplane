@@ -58,6 +58,17 @@ main() {
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --listen 127.0.0.1:9000)
 	expect "--listen" "$out" "RUNPLANE_LISTEN=127.0.0.1:9000" "Dashboard:  http://127.0.0.1:9000"
 
+	# set-domain runs before the start, so that the first start serves HTTPS.
+	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --mode container --domain CI.Example.com)
+	expect "--domain" "$out" "exit=0" \
+		"+ with_env /usr/local/bin/runplane set-domain ci.example.com
+
+==> Start runplane" \
+		"Dashboard:  https://ci.example.com"
+
+	out=$(install ubuntu:24.04 --dry-run --domain localhost)
+	expect "--domain without a dot" "$out" "exit=1" "--domain must be a domain name"
+
 	out=$(on ubuntu:24.04 'mkdir -p /etc/runplane && echo RUNPLANE_MODE=vm >/etc/runplane/runplane.env &&
 		sh /install.sh --dry-run --yes --version v1.2.3')
 	expect "a second run keeps the mode" "$out" "Mode: vm (from /etc/runplane/runplane.env)" "+ set RUNPLANE_MODE=vm"
@@ -81,6 +92,9 @@ main() {
 
 	out=$(on ubuntu:24.04 "$agent && sh /install.sh --dry-run --yes --version v1.2.3 --listen :9000")
 	expect "--listen on an agent" "$out" "exit=1" "--listen is for the primary only"
+
+	out=$(on ubuntu:24.04 "$agent && sh /install.sh --dry-run --yes --version v1.2.3 --domain ci.example.com")
+	expect "--domain on an agent" "$out" "exit=1" "--domain is for the primary only"
 
 	out=$(on ubuntu:24.04 'mkdir -p /etc/runplane &&
 		printf "%s\n" "{" "  \"primary\": \"203.0.113.5:8485\"," "  \"token\": \"rp_srv_x\"" "}" >/etc/runplane/agent.json &&

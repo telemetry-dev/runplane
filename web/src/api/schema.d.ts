@@ -856,6 +856,23 @@ export interface paths {
         patch: operations["update-settings"];
         trace?: never;
     };
+    "/api/settings/dns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Check that the DNS record of the domain points to this server */
+        get: operations["get-domain-dns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/setup": {
         parameters: {
             query?: never;
@@ -1190,6 +1207,21 @@ export interface components {
             checked_at: string | null;
             checks: components["schemas"]["Check"][];
             server_id: string;
+        };
+        DomainDNS: {
+            /** @description The domain setting. Empty: no domain. */
+            domain: string;
+            /** @description Why the DNS lookup failed. */
+            error: string;
+            /** @description The addresses of the A and AAAA records of the domain. */
+            records: string[];
+            /** @description Public IP addresses of this server, for the DNS record. Empty when runplane cannot find one, for example behind NAT. */
+            server_addresses: string[];
+            /**
+             * @description none: no domain is set. ok: each record is an address of this server. missing: the domain has no A or AAAA record. other: a record is not an address of this server. unknown: runplane knows no public address of this server to compare. error: the DNS lookup failed.
+             * @enum {string}
+             */
+            state: "none" | "ok" | "missing" | "other" | "unknown" | "error";
         };
         ErrorDetail: {
             /** @description Where the error occurred, e.g. 'body.items[3].tags' or 'path.thing-id' */
@@ -4575,6 +4607,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Settings"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-domain-dns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainDNS"];
                 };
             };
             /** @description Error */
