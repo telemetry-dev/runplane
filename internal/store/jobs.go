@@ -464,7 +464,8 @@ func (s *Store) JobFacets(ctx context.Context) (JobFacets, error) {
 
 func scanFacet(sc scanner) (Facet, error) {
 	var x Facet
-	return x, sc.Scan(&x.ID, &x.Name)
+	err := sc.Scan(&x.ID, &x.Name)
+	return x, err
 }
 
 // ExpectedDurationMS is the median run time of the last 20 succeeded runs of
@@ -483,7 +484,8 @@ func (s *Store) ExpectedDurationMS(ctx context.Context, repository, workflowFile
 func (s *Store) ListRunUsage(ctx context.Context, repository, workflowFile, jobName string, limit int) ([]RunUsage, error) {
 	return queryAll(ctx, s.r, "list run usage", func(sc scanner) (RunUsage, error) {
 		var u RunUsage
-		return u, sc.Scan(&u.CPUPeak, &u.CPUAvg, &u.MemPeakMB, &u.VCPU, &u.MemoryMB)
+		err := sc.Scan(&u.CPUPeak, &u.CPUAvg, &u.MemPeakMB, &u.VCPU, &u.MemoryMB)
+		return u, err
 	}, `SELECT j.cpu_peak, j.cpu_avg, j.mem_peak_mb,
 			coalesce(nullif(b.vcpu, 0), p.vcpu, 0), coalesce(nullif(b.memory_mb, 0), p.memory_mb, 0)
 		FROM jobs j LEFT JOIN sandboxes b ON b.id = j.sandbox_id LEFT JOIN pools p ON p.id = j.pool_id
@@ -564,7 +566,8 @@ func (s *Store) AppendJobMetrics(ctx context.Context, jobID string, samples []Jo
 func (s *Store) ListJobMetrics(ctx context.Context, jobID string) ([]JobMetric, error) {
 	return queryAll(ctx, s.r, "list job metrics", func(sc scanner) (JobMetric, error) {
 		var m JobMetric
-		return m, sc.Scan(at(&m.At), &m.CPUPercent, &m.MemoryMB)
+		err := sc.Scan(at(&m.At), &m.CPUPercent, &m.MemoryMB)
+		return m, err
 	}, "SELECT t_ms, cpu_percent, memory_mb FROM job_metrics WHERE job_id = ? ORDER BY t_ms", jobID)
 }
 

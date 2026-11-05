@@ -123,7 +123,8 @@ func (s *Store) DeleteCacheEntries(ctx context.Context, repository, id string) (
 func (s *Store) CacheUsage(ctx context.Context) ([]CacheUsage, error) {
 	return queryAll(ctx, s.r, "get cache usage", func(sc scanner) (CacheUsage, error) {
 		var u CacheUsage
-		return u, sc.Scan(&u.Repository, &u.Entries, &u.SizeBytes, atPtr(&u.LastUsedAt))
+		err := sc.Scan(&u.Repository, &u.Entries, &u.SizeBytes, atPtr(&u.LastUsedAt))
+		return u, err
 	}, `SELECT repository, count(*), sum(size_bytes), max(last_used_at)
 		FROM cache_entries WHERE finalized = 1 GROUP BY repository ORDER BY 3 DESC, repository`)
 }

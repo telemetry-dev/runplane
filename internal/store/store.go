@@ -217,7 +217,8 @@ func queryMap[K comparable, V any](ctx context.Context, q querier, op string, sc
 // scanValue scans a row of one column.
 func scanValue[T any](sc scanner) (T, error) {
 	var v T
-	return v, sc.Scan(&v)
+	err := sc.Scan(&v)
+	return v, err
 }
 
 // exec runs a write. Errors get op as a prefix.

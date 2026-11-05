@@ -98,7 +98,8 @@ func (s *Store) overviewBuckets(ctx context.Context, since, until time.Time, buc
 	}
 	counts, err := queryAll(ctx, s.r, "overview", func(sc scanner) (count, error) {
 		var c count
-		return c, sc.Scan(&c.i, &c.result, &c.n)
+		err := sc.Scan(&c.i, &c.result, &c.n)
+		return c, err
 	}, `SELECT (queued_at - ?1) / ?2, result, count(*) FROM jobs
 		WHERE state = 'completed' AND result IN ('succeeded', 'failed', 'cancelled') AND queued_at >= ?1 AND queued_at < ?3
 		GROUP BY 1, 2`, ms(since), bucket.Milliseconds(), ms(until))

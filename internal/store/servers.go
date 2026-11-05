@@ -186,7 +186,8 @@ func (s *Store) DeleteServer(ctx context.Context, id string) error {
 		}
 		pools, err := queryAll(ctx, tx, "list pools", func(sc scanner) (pool, error) {
 			var p pool
-			return p, sc.Scan(&p.id, jsonCol(&p.serverIDs))
+			err := sc.Scan(&p.id, jsonCol(&p.serverIDs))
+			return p, err
 		}, `SELECT p.id, p.server_ids FROM pools p
 			WHERE EXISTS (SELECT 1 FROM json_each(p.server_ids) WHERE value = ?)`, id)
 		if err != nil {

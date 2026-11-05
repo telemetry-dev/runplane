@@ -172,7 +172,8 @@ func (s *Store) FindLiveSandboxes(ctx context.Context, prefix string) ([]Sandbox
 func (s *Store) CountLiveSandboxes(ctx context.Context) ([]SandboxCount, error) {
 	return queryAll(ctx, s.r, "count sandboxes", func(sc scanner) (SandboxCount, error) {
 		var c SandboxCount
-		return c, sc.Scan(&c.PoolID, &c.ServerID, &c.State, &c.Count)
+		err := sc.Scan(&c.PoolID, &c.ServerID, &c.State, &c.Count)
+		return c, err
 	}, `SELECT pool_id, server_id, state, count(*) FROM sandboxes
 		WHERE state NOT IN ('gone', 'failed') GROUP BY pool_id, server_id, state`)
 }
