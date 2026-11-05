@@ -17,7 +17,6 @@ import (
 	"github.com/runplane/runplane/internal/ghrest"
 )
 
-// arches are the runner arches of the servers.
 var arches = []string{"x64", "arm64"}
 
 var versionRE = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -38,12 +37,10 @@ type Releases struct {
 	Auth ghrest.Auth // nil for anonymous reads, which have a lower rate limit
 }
 
-// Latest reads the latest release.
 func (r Releases) Latest(ctx context.Context) (Release, error) {
 	return r.read(ctx, "latest")
 }
 
-// Get reads the release of version.
 func (r Releases) Get(ctx context.Context, version string) (Release, error) {
 	return r.read(ctx, "tags/v"+version)
 }

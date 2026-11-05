@@ -127,8 +127,7 @@ func (b *Bundles) ensure(ctx context.Context, bundle *Bundle) error {
 	return nil
 }
 
-// fetch downloads the release archive into dir, then extracts and patches
-// it.
+// fetch replaces dir with the extracted and patched release archive.
 func (b *Bundles) fetch(ctx context.Context, version, arch, dir string) (stamp, error) {
 	rel, err := b.cfg.Releases.Get(ctx, version)
 	if err != nil {
