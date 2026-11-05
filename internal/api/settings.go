@@ -78,8 +78,11 @@ func (h *Handler) settingsOut(ctx context.Context, st store.Settings) Settings {
 		BackupKeep: st.BackupKeep, BackupS3: backupS3Out(st.BackupS3), SSHPort: h.sshPort(),
 	}
 	if h.d.HTTPS != nil {
-		s := h.d.HTTPS.CertificateStatus(ctx)
-		out.HTTPS = &s
+		s := h.d.HTTPS.Status(ctx)
+		out.HTTPS = &HTTPSStatus{State: s.State, Error: s.Error}
+		if !s.NotAfter.IsZero() {
+			out.HTTPS.NotAfter = &s.NotAfter
+		}
 	}
 	return out
 }

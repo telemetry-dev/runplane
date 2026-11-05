@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/runplane/runplane/internal/sandbox"
@@ -76,6 +79,22 @@ func TestSetDomainStoresTheDomain(t *testing.T) {
 	}
 	if s := settingsIn(t, dir); s.Domain != "" {
 		t.Fatalf("domain %q after set-domain '', want none", s.Domain)
+	}
+}
+
+// An agent must not install the latest release, which can be newer than
+// the release of its primary.
+func TestUpdateRefusesAnAgent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RUNPLANE_CONFIG_DIR", dir)
+	t.Setenv("RUNPLANE_DATA_DIR", dir)
+	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(`{"primary": "203.0.113.5:8485"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{nil, {"-check"}} {
+		if err := updateCmd(context.Background(), args); !errors.Is(err, errAgentUpdate) {
+			t.Errorf("update %v on an agent: %v, want the refusal", args, err)
+		}
 	}
 }
 

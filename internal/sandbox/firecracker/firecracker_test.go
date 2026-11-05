@@ -78,6 +78,7 @@ func testDriver(t *testing.T, root string, sys hostOps) *Driver {
 		DataDir:          data,
 		Sandboxes:        filepath.Join(data, "sandboxes"),
 		ScratchTemplates: filepath.Join(data, "scratch-templates"),
+		JailDir:          filepath.Join(data, "jail"),
 		ServicePort:      8486,
 		Logger:           slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}, idRange{uid: os.Getuid(), gid: os.Getgid(), count: 16}, sys)

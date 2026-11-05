@@ -78,9 +78,10 @@ func (f *Fleet) flushStats(ctx context.Context) {
 	}
 }
 
-// AgentMirrorStats sums the registry mirror stats of the connected agents.
-// An agent that does not answer adds nothing.
-func (f *Fleet) AgentMirrorStats(ctx context.Context) mirror.Stats {
+// MirrorStats sums the registry mirror stats of the primary and the
+// connected agents: the api Mirrors service. An agent that does not answer
+// adds nothing.
+func (f *Fleet) MirrorStats(ctx context.Context) mirror.Stats {
 	f.mu.Lock()
 	var sessions []*agent.Session
 	for _, n := range f.nodes {
@@ -91,7 +92,7 @@ func (f *Fleet) AgentMirrorStats(ctx context.Context) mirror.Stats {
 	f.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	var sum mirror.Stats
+	sum := f.mirror()
 	for _, s := range sessions {
 		m, err := s.MirrorStats(ctx)
 		if err != nil {

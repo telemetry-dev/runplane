@@ -327,10 +327,8 @@ func TestClosedRejectedJobRunsWhenAllowed(t *testing.T) {
 // GitHub sends JobCompleted one time, so a finish step that a restart cuts
 // off must run again after the restart. Its metrics summary stays.
 func TestFinishStepRunsAgainAfterRestart(t *testing.T) {
-	waits := logWaits
-	logWaits = []time.Duration{0, time.Hour}
-	t.Cleanup(func() { logWaits = waits })
 	e := newTestEnv(t)
+	e.newScheduler(0, time.Hour)
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
 	_, sc, _ := e.attach(pool)
@@ -353,8 +351,7 @@ func TestFinishStepRunsAgainAfterRestart(t *testing.T) {
 	}
 
 	e.gh.noLog = false
-	e.s = New(Config{Store: e.st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, LogsDir: e.logs, Now: e.clock.now})
-	t.Cleanup(e.s.stopBg)
+	e.newScheduler(0, time.Hour)
 	e.s.cleanup(e.ctx)
 	e.settle()
 	if j := e.job(71); j.LogState != store.LogStored {
@@ -365,10 +362,8 @@ func TestFinishStepRunsAgainAfterRestart(t *testing.T) {
 // The job log goes to its file in one step, so a download that breaks
 // leaves no part of a log.
 func TestBrokenLogDownloadLeavesNoFile(t *testing.T) {
-	waits := logWaits
-	logWaits = []time.Duration{0}
-	t.Cleanup(func() { logWaits = waits })
 	e := newTestEnv(t)
+	e.newScheduler(0)
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
 	_, sc, _ := e.attach(pool)

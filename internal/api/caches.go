@@ -89,12 +89,11 @@ func (h *Handler) getCaches(ctx context.Context, _ *struct{}) (*body[CacheOvervi
 	})
 	if h.d.Caches != nil {
 		out.MaxBytes = h.d.Caches.MaxBytes()
-		m, err := h.d.Caches.MirrorStats(ctx)
-		if err != nil {
-			h.d.Log.Warn("read mirror stats", "err", err)
-		} else {
-			m.StartedAt = h.started
-			out.Mirror = &m
+	}
+	if h.d.Mirrors != nil {
+		m := h.d.Mirrors.MirrorStats(ctx)
+		out.Mirror = &MirrorStats{
+			Hits: m.Hits, Misses: m.Misses, HitBytes: m.HitBytes, MissBytes: m.MissBytes, SizeBytes: m.SizeBytes, StartedAt: h.started,
 		}
 	}
 	return &body[CacheOverview]{out}, nil

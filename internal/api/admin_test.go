@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/update"
 )
 
 func TestNewInviteLinkReplacesTheOldOne(t *testing.T) {
@@ -82,45 +83,44 @@ func TestNotificationTests(t *testing.T) {
 	}
 }
 
-// fakeUpdater blocks Apply until release closes.
+// fakeUpdater is an updater in a state, whose Apply returns err.
 type fakeUpdater struct {
-	applying chan struct{}
-	release  chan struct{}
+	state update.State
+	err   error
 }
 
-func (f *fakeUpdater) Check(context.Context) (UpdateStatus, error) {
-	return UpdateStatus{Current: "v1.0.0", Latest: "v1.1.0", Available: true}, nil
+func (f fakeUpdater) Check(context.Context) (update.Status, error) {
+	return update.Status{Current: "v1.0.0", Latest: "v1.1.0", Available: true}, nil
 }
 
-func (f *fakeUpdater) Apply(context.Context) error {
-	close(f.applying)
-	<-f.release
-	return nil
+func (f fakeUpdater) State() update.State { return f.state }
+
+func (f fakeUpdater) Apply(context.Context) (update.Status, error) {
+	return update.Status{Current: "v1.0.0", Latest: "v1.1.0", Available: true}, f.err
 }
 
+// The dashboard shows the state of the updater, also of an auto update. A
+// second update while one runs is a conflict.
 func TestUpdateState(t *testing.T) {
-	u := &fakeUpdater{applying: make(chan struct{}), release: make(chan struct{})}
-	e := newEnv(t, func(d *Deps) { d.Updater = u })
-	b := e.login("ada@example.com", auth.RoleAdmin)
-	other := e.login("eve@example.com", auth.RoleAdmin)
-
-	var st UpdateStatus
-	b.do("GET", "/api/update", nil, &st).want(t, 200)
-	if st.State != "idle" {
-		t.Fatalf("state before the update = %q, want idle", st.State)
-	}
-	done := make(chan response)
-	go func() { done <- b.do("POST", "/api/update", nil, nil) }()
-	recv(t, u.applying)
-	other.do("GET", "/api/update", nil, &st).want(t, 200)
-	if st.State != "applying" {
-		t.Fatalf("state during the update = %q, want applying", st.State)
-	}
-	other.do("POST", "/api/update", nil, nil).want(t, 409)
-	close(u.release)
-	recv(t, done).want(t, 204)
-	other.do("GET", "/api/update", nil, &st).want(t, 200)
-	if st.State != "restarting" {
-		t.Fatalf("state after the update = %q, want restarting", st.State)
+	for _, tt := range []struct {
+		state  update.State
+		err    error
+		status int
+	}{
+		{update.Idle, nil, 204},
+		{update.Applying, update.ErrBusy, 409},
+		{update.Restarting, update.ErrBusy, 409},
+		{update.Idle, update.ErrNoUpdate, 409},
+	} {
+		e := newEnv(t, func(d *Deps) { d.Updater = fakeUpdater{state: tt.state, err: tt.err} })
+		b := e.login("ada@example.com", auth.RoleAdmin)
+		var st UpdateStatus
+		b.do("GET", "/api/update", nil, &st).want(t, 200)
+		if st.State != string(tt.state) || st.Latest != "v1.1.0" {
+			t.Errorf("state %q, latest %q; want %s and v1.1.0", st.State, st.Latest, tt.state)
+		}
+		if res := b.do("POST", "/api/update", nil, nil); res.StatusCode != tt.status {
+			t.Errorf("update with %v: status %d, want %d", tt.err, res.StatusCode, tt.status)
+		}
 	}
 }

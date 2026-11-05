@@ -61,7 +61,7 @@ main() {
 	# set-domain runs before the start, so that the first start serves HTTPS.
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --mode container --domain CI.Example.com)
 	expect "--domain" "$out" "exit=0" \
-		"+ with_env /usr/local/bin/runplane set-domain ci.example.com
+		"+ /usr/local/bin/runplane set-domain ci.example.com
 
 ==> Start runplane" \
 		"Dashboard:  https://ci.example.com"

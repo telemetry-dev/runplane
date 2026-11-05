@@ -371,11 +371,8 @@ func (h *scaleSet) handleStarted(ctx context.Context, jm JobMessage) error {
 		return err
 	}
 	if ok {
-		if job.LogState == store.LogNone {
-			if err := s.st.SetJobLogState(ctx, job.ID, store.LogLive); err != nil {
-				return err
-			}
-			job.LogState = store.LogLive
+		if err := s.jobLogs.MarkLive(ctx, &job); err != nil {
+			return err
 		}
 		s.setState(ctx, b.ID, sandbox.StateBusy, "")
 		if job.Debug && !b.Debug {

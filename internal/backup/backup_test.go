@@ -154,7 +154,7 @@ func TestUploadError(t *testing.T) {
 	}
 }
 
-func TestRun(t *testing.T) {
+func TestWrite(t *testing.T) {
 	dir := t.TempDir()
 	// No automatic checkpoint: the rows stay in the WAL file, so a plain
 	// copy of runplane.db would not have them.
@@ -173,29 +173,29 @@ func TestRun(t *testing.T) {
 	}
 
 	backups := filepath.Join(dir, "backups")
-	res, err := Run(context.Background(), db, backups, 7)
+	res, err := write(context.Background(), db, backups, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(res.Path)
+	info, err := os.Stat(res.path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Size() != res.Size {
-		t.Fatalf("size %d, file has %d", res.Size, info.Size())
+	if info.Size() != res.size {
+		t.Fatalf("size %d, file has %d", res.size, info.Size())
 	}
 	if mode := info.Mode().Perm(); mode != 0o600 {
 		t.Fatalf("backup mode %o, want 600: it holds password hashes", mode)
 	}
-	if !strings.HasPrefix(filepath.Base(res.Path), "runplane-") || !strings.HasSuffix(res.Path, "Z.db.gz") {
-		t.Fatalf("backup name %s", res.Path)
+	if !strings.HasPrefix(filepath.Base(res.path), "runplane-") || !strings.HasSuffix(res.path, "Z.db.gz") {
+		t.Fatalf("backup name %s", res.path)
 	}
 	entries, _ := os.ReadDir(backups)
 	if len(entries) != 1 {
 		t.Fatalf("backup dir has %d files, want only the backup", len(entries))
 	}
 
-	rdb, err := sql.Open("sqlite", "file:"+gunzip(t, res.Path)+"?mode=ro")
+	rdb, err := sql.Open("sqlite", "file:"+gunzip(t, res.path)+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestRun(t *testing.T) {
 	}
 }
 
-func TestRunKeepsNewest(t *testing.T) {
+func TestWriteKeepsNewest(t *testing.T) {
 	dir := t.TempDir()
 	old := []string{
 		"runplane-20250101T030000.000Z.db.gz",
@@ -224,20 +224,20 @@ func TestRunKeepsNewest(t *testing.T) {
 	}
 	defer db.Close()
 
-	res, err := Run(context.Background(), db, dir, 3)
+	res, err := write(context.Background(), db, dir, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantRemoved := []string{filepath.Join(dir, old[0]), filepath.Join(dir, old[1])}
-	if !slices.Equal(res.Removed, wantRemoved) {
-		t.Fatalf("removed %v, want %v", res.Removed, wantRemoved)
+	if !slices.Equal(res.removed, wantRemoved) {
+		t.Fatalf("removed %v, want %v", res.removed, wantRemoved)
 	}
 	var left []string
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		left = append(left, e.Name())
 	}
-	want := []string{"notes.txt", old[2], old[3], "runplane-before-upgrade.db.gz", filepath.Base(res.Path)}
+	want := []string{"notes.txt", old[2], old[3], "runplane-before-upgrade.db.gz", filepath.Base(res.path)}
 	slices.Sort(want)
 	if !slices.Equal(left, want) {
 		t.Fatalf("files %v, want %v", left, want)

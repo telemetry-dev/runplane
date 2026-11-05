@@ -332,7 +332,7 @@ func TestInstallSSH(t *testing.T) {
 	if !sawOutput.Load() {
 		t.Error("the status detail did not show the install output during the install")
 	}
-	trusted, err := knownhosts.New(filepath.Join(h.cfg.DataDir, "known_hosts"))
+	trusted, err := knownhosts.New(h.cfg.KnownHostsPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestInstallSSH(t *testing.T) {
 	// A server at a known address with another host key: runplane does not
 	// send the script.
 	srv2 := sshtest.NewServer(t, clientKey, func(string, []byte, io.Writer, io.Writer) uint32 { return 0 })
-	f, err := os.OpenFile(filepath.Join(h.cfg.DataDir, "known_hosts"), os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(h.cfg.KnownHostsPath(), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

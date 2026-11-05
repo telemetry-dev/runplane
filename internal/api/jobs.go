@@ -384,9 +384,9 @@ func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamRespons
 	if _, err := h.d.Store.GetJob(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No job has this ID.")
 	}
-	rc, live, err := h.d.Logs.JobLog(ctx, in.ID, in.Step, in.Follow)
+	rc, live, err := h.d.Logs.Job(ctx, in.ID, in.Step, in.Follow)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, h.logErr(err)
 	}
 	resp := h.stream(rc, "text/plain; charset=utf-8", in.Follow)
 	if live && in.Step > 0 {

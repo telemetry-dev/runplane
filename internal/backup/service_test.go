@@ -1,15 +1,14 @@
-package main
+package backup
 
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
-	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/update"
 )
 
 // A backup over backup_keep loses its file and its row together, so the
@@ -37,9 +35,9 @@ func TestBackupsRemoveTheRowsOfPrunedFiles(t *testing.T) {
 		Path: old, SizeBytes: 3, Status: store.BackupDone}); err != nil {
 		t.Fatal(err)
 	}
-	b := &backups{st: st, bus: &events.Bus{}, dir: dir, log: slog.New(slog.DiscardHandler)}
+	b := New(Config{Store: st, Bus: &events.Bus{}, Dir: dir})
 
-	id, err := b.Run(ctx)
+	id, err := b.Create(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +57,14 @@ func TestBackupsRemoveTheRowsOfPrunedFiles(t *testing.T) {
 }
 
 // The settings page follows a backup through backup.state events, also the
-// upload to S3 and a failure. Only a failure sends a notification.
+// upload to S3 and a failure. A failed upload fails the backup, and the
+// file stays. Only a failure sends a notification.
 func TestBackupStateEvents(t *testing.T) {
 	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
+		if strings.HasPrefix(r.URL.Path, "/denied/") {
+			http.Error(w, "<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>", http.StatusForbidden)
+		}
 	}))
 	defer s3.Close()
 	box, err := secret.NewBox(make([]byte, secret.KeySize))
@@ -71,15 +73,17 @@ func TestBackupStateEvents(t *testing.T) {
 	}
 	tests := []struct {
 		name     string
-		bucket   bool
+		bucket   string
 		dir      func(t *testing.T) string
 		want     []string
 		notified int
 	}{
-		{"local", false, func(t *testing.T) string { return t.TempDir() }, []string{store.BackupRunning, store.BackupDone}, 0},
-		{"upload to S3", true, func(t *testing.T) string { return t.TempDir() },
+		{"local", "", func(t *testing.T) string { return t.TempDir() }, []string{store.BackupRunning, store.BackupDone}, 0},
+		{"upload to S3", "ci-backups", func(t *testing.T) string { return t.TempDir() },
 			[]string{store.BackupRunning, store.BackupDone, store.BackupUploading, store.BackupUploaded}, 0},
-		{"backup fails", false, func(t *testing.T) string {
+		{"upload fails", "denied", func(t *testing.T) string { return t.TempDir() },
+			[]string{store.BackupRunning, store.BackupDone, store.BackupUploading, store.BackupFailed}, 1},
+		{"backup fails", "", func(t *testing.T) string {
 			file := filepath.Join(t.TempDir(), "file")
 			os.WriteFile(file, nil, 0o600)
 			return filepath.Join(file, "backups") // a folder in a file cannot exist
@@ -89,9 +93,9 @@ func TestBackupStateEvents(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			st := openStore(t)
-			if tt.bucket {
+			if tt.bucket != "" {
 				_, err := st.UpdateSettings(ctx, func(s *store.Settings) error {
-					s.BackupS3 = store.BackupS3{Endpoint: s3.URL, Region: "us-east-1", Bucket: "ci-backups", AccessKey: "AKIDEXAMPLE",
+					s.BackupS3 = store.BackupS3{Endpoint: s3.URL, Region: "us-east-1", Bucket: tt.bucket, AccessKey: "AKIDEXAMPLE",
 						SecretKeyEnc: box.Seal([]byte("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"))}
 					return nil
 				})
@@ -102,11 +106,13 @@ func TestBackupStateEvents(t *testing.T) {
 			bus := &events.Bus{}
 			states := events.Subscribe[events.BackupState](t.Context(), bus)
 			notified := 0
-			b := &backups{st: st, box: box, bus: bus, dir: tt.dir(t), notify: func(notify.Event) { notified++ }, log: slog.New(slog.DiscardHandler)}
-			b.Run(ctx)
+			b := New(Config{Store: st, Box: box, Bus: bus, Dir: tt.dir(t), Notify: func(notify.Event) { notified++ }})
+			b.Create(ctx)
 			var seen []string
+			var last events.BackupState
 			for len(states) > 0 {
-				seen = append(seen, (<-states).Status)
+				last = <-states
+				seen = append(seen, last.Status)
 			}
 			if !slices.Equal(seen, tt.want) {
 				t.Errorf("backup.state events %v, want %v", seen, tt.want)
@@ -114,42 +120,21 @@ func TestBackupStateEvents(t *testing.T) {
 			if notified != tt.notified {
 				t.Errorf("%d notifications, want %d", notified, tt.notified)
 			}
+			if tt.bucket == "denied" {
+				if _, err := os.Stat(last.Path); err != nil || last.Error == "" {
+					t.Errorf("failed upload: file %v, error %q; want the file and the error", err, last.Error)
+				}
+			}
 		})
 	}
 }
 
-// The dashboard reads the update status on each visit. A repository with no
-// release has no update, and GitHub sees one read in checkTTL.
-func TestUpdaterCheck(t *testing.T) {
-	var reads, status atomic.Int32
-	status.Store(http.StatusNotFound)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reads.Add(1)
-		w.WriteHeader(int(status.Load()))
-	}))
-	defer srv.Close()
-	u := &updater{u: &update.Updater{Repo: "runplane/runplane", Current: "v1.0.0", APIURL: srv.URL}, log: slog.New(slog.DiscardHandler)}
-	ctx := context.Background()
-
-	for range 2 {
-		s, err := u.Check(ctx)
-		if err != nil || s.Available || s.Current != "v1.0.0" {
-			t.Fatalf("Check = %+v, %v; want v1.0.0 without an update", s, err)
-		}
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := reads.Load(); n != 1 {
-		t.Errorf("%d release reads for two checks, want 1", n)
-	}
-
-	// A GitHub fault is not kept, so the next visit reads again. A 403
-	// fault, because the client tries a 5xx again.
-	u.checked = time.Time{}
-	status.Store(http.StatusForbidden)
-	if _, err := u.Check(ctx); err == nil {
-		t.Fatal("Check with a GitHub fault returned no error")
-	}
-	u.Check(ctx)
-	if n := reads.Load(); n != 3 {
-		t.Errorf("%d release reads after two failed checks, want 3", n)
-	}
+	t.Cleanup(func() { st.Close() })
+	return st
 }

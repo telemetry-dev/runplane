@@ -19,6 +19,7 @@ import (
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -64,6 +65,8 @@ type Config struct {
 	Config config.Config
 	// Local is the server of the primary itself.
 	Local agent.Node
+	// Mirror gives the stats of the registry mirror of the primary.
+	Mirror func() mirror.Stats
 	// AgentFingerprint is the fingerprint of the agent certificate. The
 	// install commands and install.sh carry it.
 	AgentFingerprint string
@@ -86,6 +89,7 @@ type Fleet struct {
 	log             *slog.Logger
 	cfg             config.Config
 	local           agent.Node
+	mirror          func() mirror.Stats
 	fp              string
 	onEvent         func(string, sandbox.Event)
 	capacityChanged func()
@@ -154,6 +158,7 @@ func New(c Config) *Fleet {
 		log:             c.Log,
 		cfg:             c.Config,
 		local:           c.Local,
+		mirror:          c.Mirror,
 		fp:              c.AgentFingerprint,
 		onEvent:         c.OnEvent,
 		capacityChanged: c.CapacityChanged,

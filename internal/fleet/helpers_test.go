@@ -67,7 +67,8 @@ func newHarness(t *testing.T, local *fakeNode) *harness {
 	}
 	h.clock.ns.Store(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixNano())
 	h.f = New(Config{
-		Store: st, Bus: h.bus, Log: h.log.With("side", "fleet"), Config: h.cfg, Local: local, AgentFingerprint: fp,
+		Store: st, Bus: h.bus, Log: h.log.With("side", "fleet"), Config: h.cfg, Local: local,
+		Mirror: func() mirror.Stats { return local.mirror }, AgentFingerprint: fp,
 		OnEvent: func(string, sandbox.Event) {}, CapacityChanged: func() { h.capacity.Add(1) }, Notifier: h.notes, Now: h.clock.now,
 		Runners: versions.New(versions.Config{Store: st, Bus: h.bus}),
 	})

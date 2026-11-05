@@ -1,5 +1,6 @@
-// Package backup copies the SQLite database to gzip files, keeps the newest
-// ones, and uploads them to S3-compatible storage.
+// Package backup makes the backups of the database: it copies the SQLite
+// database to gzip files, keeps the newest ones, and uploads them to
+// S3-compatible storage.
 package backup
 
 import (
@@ -19,11 +20,10 @@ import (
 	"github.com/runplane/runplane/internal/atomicfile"
 )
 
-// Result describes one backup.
-type Result struct {
-	Path    string   // the new backup file
-	Size    int64    // its size in bytes
-	Removed []string // older backup files that Run removed
+type result struct {
+	path    string   // the new backup file
+	size    int64    // its size in bytes
+	removed []string // older backup files that write removed
 }
 
 const (
@@ -31,12 +31,12 @@ const (
 	filePattern = "runplane-????????T??????.???Z.db.gz"
 )
 
-// Run copies the database with VACUUM INTO, writes it to
+// write copies the database with VACUUM INTO, writes it to
 // dir/runplane-<UTC time>.db.gz, and removes the oldest backups so that
-// keep files stay. If keep is 0 or less, Run removes no backups.
-func Run(ctx context.Context, db *sql.DB, dir string, keep int) (Result, error) {
+// keep files stay. If keep is 0 or less, write removes no backups.
+func write(ctx context.Context, db *sql.DB, dir string, keep int) (result, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Result{}, fmt.Errorf("make backup dir: %w", err)
+		return result{}, fmt.Errorf("make backup dir: %w", err)
 	}
 	name, path := freeName(dir, time.Now().UTC())
 
@@ -46,16 +46,16 @@ func Run(ctx context.Context, db *sql.DB, dir string, keep int) (Result, error) 
 	os.Remove(snapshot)
 	defer os.Remove(snapshot)
 	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", snapshot); err != nil {
-		return Result{}, fmt.Errorf("vacuum into snapshot: %w", err)
+		return result{}, fmt.Errorf("vacuum into snapshot: %w", err)
 	}
 
 	size, err := gzipFile(snapshot, path)
 	if err != nil {
-		return Result{}, err
+		return result{}, err
 	}
-	res := Result{Path: path, Size: size}
+	res := result{path: path, size: size}
 	if keep > 0 {
-		if res.Removed, err = prune(dir, keep); err != nil {
+		if res.removed, err = prune(dir, keep); err != nil {
 			return res, err
 		}
 	}
@@ -128,8 +128,8 @@ func prune(dir string, keep int) ([]string, error) {
 	return removed, nil
 }
 
-// Daily calls job each day at 03:00 UTC until ctx ends.
-func Daily(ctx context.Context, job func(context.Context)) {
+// daily calls job each day at 03:00 UTC until ctx ends.
+func daily(ctx context.Context, job func(context.Context)) {
 	for {
 		t := time.NewTimer(time.Until(nextRun(time.Now())))
 		select {

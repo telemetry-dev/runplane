@@ -33,9 +33,10 @@ const (
 )
 
 type Options struct {
-	DataDir          string // the data disk, and the chroots of the jailer
+	DataDir          string // the disk of the VMs, for the capacity
 	Sandboxes        string // the sandboxes folder
 	ScratchTemplates string
+	JailDir          string // the chroots of the jailer
 	Kernel           string
 	ServicePort      int // cache server and registry mirror on the gateway of each VM
 	// RootDisk returns the ext4 root disk of a ready image.

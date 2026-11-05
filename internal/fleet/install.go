@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -100,10 +99,7 @@ func agentFlags(token, primary, fingerprint string) string {
 // agentAddr is the address of the agent listener for agents that reach the
 // primary at host.
 func (f *Fleet) agentAddr(host string) string {
-	_, port, err := net.SplitHostPort(f.cfg.AgentListen)
-	if err != nil || port == "" {
-		port = "8485"
-	}
+	_, port, _ := net.SplitHostPort(f.cfg.AgentListen)
 	return net.JoinHostPort(f.publicAddr(host), port)
 }
 
@@ -240,7 +236,7 @@ func (f *Fleet) install(ctx context.Context, job installJob) {
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "does not match the known key") {
-			err = fmt.Errorf("%w. If the server was reinstalled, remove its line from %s", err, f.knownHostsPath())
+			err = fmt.Errorf("%w. If the server was reinstalled, remove its line from %s", err, f.cfg.KnownHostsPath())
 		}
 		f.installFailed(ctx, job.id, err, last)
 		return
@@ -291,17 +287,15 @@ func (f *Fleet) SSHPublicKey(context.Context) (string, error) {
 func (f *Fleet) sshKey() (ssh.Signer, string, error) {
 	f.keyMu.Lock()
 	defer f.keyMu.Unlock()
-	return sshinstall.LoadOrCreateKey(filepath.Join(f.cfg.ConfigDir, "ssh_key"))
+	return sshinstall.LoadOrCreateKey(f.cfg.SSHKeyPath())
 }
-
-func (f *Fleet) knownHostsPath() string { return filepath.Join(f.cfg.DataDir, "known_hosts") }
 
 // knownHostKey returns the host key of addr, or nil if runplane has not
 // connected to addr before.
 func (f *Fleet) knownHostKey(addr string) (ssh.PublicKey, error) {
 	f.keyMu.Lock()
 	defer f.keyMu.Unlock()
-	data, err := os.ReadFile(f.knownHostsPath())
+	data, err := os.ReadFile(f.cfg.KnownHostsPath())
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -315,7 +309,7 @@ func (f *Fleet) knownHostKey(addr string) (ssh.PublicKey, error) {
 			return nil, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read known hosts %s: %w", f.knownHostsPath(), err)
+			return nil, fmt.Errorf("read known hosts %s: %w", f.cfg.KnownHostsPath(), err)
 		}
 		if slices.Contains(hosts, want) {
 			return key, nil
@@ -328,7 +322,7 @@ func (f *Fleet) knownHostKey(addr string) (ssh.PublicKey, error) {
 func (f *Fleet) trustHostKey(addr string, key ssh.PublicKey) error {
 	f.keyMu.Lock()
 	defer f.keyMu.Unlock()
-	file, err := os.OpenFile(f.knownHostsPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	file, err := os.OpenFile(f.cfg.KnownHostsPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}

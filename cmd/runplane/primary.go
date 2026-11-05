@@ -18,12 +18,15 @@ import (
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/github"
+	"github.com/runplane/runplane/internal/joblog"
+	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -40,7 +43,8 @@ import (
 var errRestart = errors.New("restart")
 
 func serve(ctx context.Context, args []string) error {
-	cfg, err := config.Parse(flag.NewFlagSet("serve", flag.ContinueOnError), args)
+	cfg, err := config.Parse(flag.NewFlagSet("serve", flag.ContinueOnError), args, config.Listen, config.AgentListen,
+		config.ServicePort, config.DataDir, config.Mode, config.Dev, config.DevInsecure, config.SSHListen)
 	if err != nil {
 		return err
 	}
@@ -222,6 +226,10 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	if err != nil {
 		return nil, fmt.Errorf("make the agent certificate: %w", err)
 	}
+	caches, mir, err := p.serveCaches(key, local)
+	if err != nil {
+		return nil, err
+	}
 	ghRef := &githubRef{}
 	runners := versions.New(versions.Config{
 		Store: st, Bus: d.Bus, GitHub: ghRef, Notifier: notifier, Log: log.With("component", "runners"),
@@ -229,13 +237,14 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	})
 	// The fleet calls the scheduler only after Run starts.
 	p.fleet = fleet.New(fleet.Config{
-		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node,
+		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node, Mirror: mir.Stats,
 		AgentFingerprint: fingerprint, OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() },
 		Notifier: notifier, Runners: runners,
 	})
+	jobLogs := joblog.New(joblog.Config{Dir: cfg.LogsDir(), Store: st, Driver: p.fleet.Driver, Log: log.With("component", "joblog")})
 	p.sched = scheduler.New(scheduler.Config{
 		Store: st, Bus: d.Bus, Fleet: schedulerFleet{p.fleet}, GitHub: ghRef, Log: log.With("component", "scheduler"),
-		LogsDir: cfg.LogsDir(),
+		JobLogs: jobLogs,
 	})
 	p.gh = github.New(github.Config{
 		Store: st, Box: d.Box, Bus: d.Bus, Log: log.With("component", "github"), Scheduler: p.sched,
@@ -254,11 +263,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.pruneDaily("sessions, setup codes, and invites", d.Auth.Prune)
 	p.pruneDaily("server tokens and host samples", p.fleet.Prune)
 
-	c, err := p.serveCaches(key, local)
-	if err != nil {
-		return nil, err
-	}
-	if err := p.listenAgents(cert, c.Proxied()); err != nil {
+	if err := p.listenAgents(cert, caches.Proxied()); err != nil {
 		return nil, err
 	}
 	opener := shell.Drivers{Store: st, Driver: p.fleet.Driver}
@@ -274,10 +279,15 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 			}
 		})
 	}
-	bk := &backups{st: st, box: d.Box, bus: d.Bus, dir: cfg.BackupsDir(), notify: notifyBg, log: log.With("component", "backup")}
-	p.run(bk.daily)
-	up := &updater{u: update.New(cfg.KernelPath()), restart: func() { end(errRestart) }, log: log.With("component", "update")}
-	p.run(func(ctx context.Context) { up.checkDaily(ctx, st, notifyBg) })
+	backups := backup.New(backup.Config{
+		Store: st, Box: d.Box, Bus: d.Bus, Dir: cfg.BackupsDir(), Notify: notifyBg, Log: log.With("component", "backup"),
+	})
+	p.run(backups.Run)
+	updates := update.NewService(update.Config{
+		Updater: update.New(cfg.KernelPath()), Restart: func() { end(errRestart) }, Store: st, Notify: notifyBg,
+		Log: log.With("component", "update"),
+	})
+	p.run(updates.Run)
 	p.stops = append(p.stops, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -288,16 +298,17 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	d.GitHub = p.gh
 	d.Servers = p.fleet
 	d.Images = p.fleet.Images()
-	d.Caches = c
-	d.Backups = bk
-	d.Updater = up
+	d.Caches = caches
+	d.Mirrors = p.fleet
+	d.Backups = backups
+	d.Updater = updates
 	d.Notifier = notifier
-	d.Logs = logs{st: st, cfg: cfg, driver: p.fleet.Driver}
+	d.Logs = jobLogs
 	d.Shell = opener
 	d.HostChecker = p.fleet
 	d.InstallScript = p.fleet
 	d.SettingsHook = p
-	d.HTTPS = certificate{p.acme}
+	d.HTTPS = p.acme
 	return p, nil
 }
 
@@ -341,7 +352,7 @@ func (p *primary) stop() {
 
 // serveCaches starts the Actions cache server and the registry mirror, and
 // serves them on the service port.
-func (p *primary) serveCaches(key []byte, l *local) (caches, error) {
+func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, *mirror.Mirror, error) {
 	resolver := cache.NewSandboxResolver(p.st, l.driver.List)
 	space := func() datadisk.Space {
 		st := p.settings.Load()
@@ -352,16 +363,16 @@ func (p *primary) serveCaches(key []byte, l *local) (caches, error) {
 		SigningKey: subkey(key, "runplane cache urls"), Logger: p.log.With("component", "cache"),
 	})
 	if err != nil {
-		return caches{}, fmt.Errorf("start the cache server: %w", err)
+		return nil, nil, fmt.Errorf("start the cache server: %w", err)
 	}
 	p.run(srv.Run)
 	p.pruneDaily("cache stats", srv.Prune)
 	mir, stopPort, err := serveServicePort(p.cfg, l.allow(resolver.Allow), srv, space, p.log)
 	if err != nil {
-		return caches{}, err
+		return nil, nil, err
 	}
 	p.stops = append(p.stops, stopPort)
-	return caches{Server: srv, mirror: mir, agents: p.fleet.AgentMirrorStats}, nil
+	return srv, mir, nil
 }
 
 func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) error {

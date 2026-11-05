@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
@@ -91,4 +92,14 @@ func TestRecordIPTakesOnlySandboxesOfTheServer(t *testing.T) {
 			t.Errorf("sandbox %s: address %q, %v; want %s", id, b.IP, err, want)
 		}
 	}
+}
+
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
 }

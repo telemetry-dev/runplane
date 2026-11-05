@@ -743,7 +743,7 @@ store_mode() {
 		return 0
 	fi
 	step "Write the mode to the settings"
-	run with_env "$BIN" set-mode "$MODE" || die "runplane cannot write $MODE mode to its settings"
+	run "$BIN" set-mode "$MODE" || die "runplane cannot write $MODE mode to its settings"
 }
 
 # store_domain writes --domain into the settings of the primary. On a new
@@ -753,7 +753,7 @@ store_domain() {
 		return 0
 	fi
 	step "Write the domain to the settings"
-	run with_env "$BIN" set-domain "$DOMAIN" || die "runplane cannot write the domain $DOMAIN to its settings"
+	run "$BIN" set-domain "$DOMAIN" || die "runplane cannot write the domain $DOMAIN to its settings"
 }
 
 start_service() {
@@ -788,7 +788,7 @@ finish() {
 	step "Run runplane doctor"
 	if [ "$DRY_RUN" = 1 ]; then
 		say "+ $BIN doctor"
-	elif ! with_env "$BIN" doctor; then
+	elif ! "$BIN" doctor; then
 		warn "runplane doctor found problems. Jobs can fail until you correct them."
 	fi
 
@@ -823,7 +823,7 @@ finish() {
 	if [ "$DRY_RUN" = 1 ]; then
 		say "  Setup code: (from runplane setup-code)"
 	elif curl -fsS "$(local_url)/api/status" 2>/dev/null | grep -q '"needs_setup": *true'; then
-		code=$(with_env "$BIN" setup-code 2>/dev/null) || code=
+		code=$("$BIN" setup-code 2>/dev/null) || code=
 		if [ -n "$code" ]; then
 			say "  Setup code: $code"
 			say ""
@@ -1063,16 +1063,6 @@ confirm() {
 	[yY] | [yY][eE][sS]) return 0 ;;
 	esac
 	return 1
-}
-
-with_env() {
-	(
-		set -a
-		# shellcheck disable=SC1090 # this script writes the file
-		. "$ENV_FILE"
-		set +a
-		"$@"
-	)
 }
 
 listen_addr() {

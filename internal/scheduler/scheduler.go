@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -50,8 +51,8 @@ type Config struct {
 	Bus     *events.Bus
 	Fleet   Fleet
 	GitHub  GitHub
-	Log     *slog.Logger     // nil: no log
-	LogsDir string           // job logs go to <LogsDir>/<job-id>.log
+	Log     *slog.Logger // nil: no log
+	JobLogs *joblog.Logs
 	Now     func() time.Time // nil: time.Now
 }
 
@@ -61,7 +62,7 @@ type Scheduler struct {
 	fleet   Fleet
 	gh      GitHub
 	log     *slog.Logger
-	logsDir string
+	jobLogs *joblog.Logs
 	now     func() time.Time
 
 	// bg is the context of work that outlives the call that starts it.
@@ -110,7 +111,7 @@ func New(c Config) *Scheduler {
 		fleet:     c.Fleet,
 		gh:        c.GitHub,
 		log:       cmp.Or(c.Log, slog.New(slog.DiscardHandler)),
-		logsDir:   c.LogsDir,
+		jobLogs:   c.JobLogs,
 		now:       c.Now,
 		bg:        bg,
 		stopBg:    stop,

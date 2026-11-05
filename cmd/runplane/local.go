@@ -109,7 +109,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		rules := netrules.New(log.With("component", "netrules"), netrules.DefaultTapSubnet)
 		l.onClose(func() { rules.Close() })
 		drv, err := firecracker.New(firecracker.Options{
-			DataDir: cfg.DataDir, Sandboxes: cfg.SandboxesDir(), ScratchTemplates: cfg.ScratchTemplatesDir(),
+			DataDir: cfg.DataDir, Sandboxes: cfg.SandboxesDir(), ScratchTemplates: cfg.ScratchTemplatesDir(), JailDir: cfg.JailDir(),
 			Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: images.RootDisk,
 			RunnerDrive: func(ctx context.Context, version, arch string) (string, bool, error) {
 				b, err := bundles.Ensure(ctx, version, arch)

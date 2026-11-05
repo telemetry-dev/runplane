@@ -66,7 +66,7 @@ In VM mode, the script installs Firecracker v1.17.0, which the runplane tests us
 curl -fsSL https://github.com/runplane/runplane/releases/latest/download/install.sh | sudo RUNPLANE_FIRECRACKER_VERSION=v1.16.1 sh
 ```
 
-To update runplane, run the install command again. You can also select the update in **Settings > General**, or run `sudo runplane update` on the server. In VM mode, the update also replaces the guest kernel with the kernel of the release. A restart of runplane does not stop the jobs that operate. A shutdown of the server stops the jobs that operate with the result `cancelled`.
+To update runplane, run the install command again. You can also select the update in **Settings > General**, or run `sudo runplane update` on the primary. In VM mode, the update also replaces the guest kernel with the kernel of the release. A restart of runplane does not stop the jobs that operate. A shutdown of the server stops the jobs that operate with the result `cancelled`.
 
 The primary updates its agents. When an agent connects with a different version, the primary sends it the update to its own release. After an update of the primary, the agents connect again and get the new release. The primary tries each version one time on each agent. If the update is not successful, the **Servers** page shows **Update failed** after the name of the server. The page of the server shows the reason. You can start the update again with **Update agent** in the menu of the server. A primary that is not a release build does not update its agents.
 
@@ -76,7 +76,7 @@ You can also update an agent by hand. Run this command on the agent server:
 curl -fsSL http://203.0.113.10:8484/install.sh | sudo sh
 ```
 
-The primary serves this script. Thus the agent gets the version of the primary. On an agent, the script keeps the registration in `/etc/runplane/agent.json` and does not install a primary. On the agent server, `sudo runplane update` installs the latest release.
+The primary serves this script. Thus the agent gets the version of the primary. On an agent, the script keeps the registration in `/etc/runplane/agent.json` and does not install a primary. An agent must run the release of its primary, so `sudo runplane update` does not operate on an agent.
 
 To remove runplane, run this command:
 
