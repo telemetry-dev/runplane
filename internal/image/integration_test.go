@@ -95,7 +95,6 @@ func vmManager(t *testing.T, docker *client.Client) *Manager {
 	return m
 }
 
-// noPublishedImages is a repository that publishes no builtin images.
 const noPublishedImages = "runplane/no-such-repo"
 
 func dockerClient(t *testing.T) *client.Client {

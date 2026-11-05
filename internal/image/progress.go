@@ -37,7 +37,7 @@ func (r *reporter) send(p Progress) {
 	r.fn(p)
 }
 
-// counter counts the bytes that it reads, and stops when ctx ends.
+// counter stops when ctx ends.
 type counter struct {
 	ctx context.Context
 	r   io.Reader

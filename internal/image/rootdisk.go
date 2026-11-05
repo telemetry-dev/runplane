@@ -156,8 +156,8 @@ func remoteImage(ctx context.Context, ref string) (v1.Image, error) {
 	return img, nil
 }
 
-// download copies the compressed layers of img to files in dir, four at a
-// time. The layers report the reads of the files as converting progress.
+// download copies the compressed layers of img to files in dir. The layers
+// report the reads of the files as converting progress.
 func download(ctx context.Context, img v1.Image, dir string, r *reporter) ([]fileLayer, error) {
 	remoteLayers, err := img.Layers()
 	if err != nil {
@@ -211,8 +211,8 @@ type fileLayer struct {
 	read func(n int64)
 }
 
-// fetch copies the compressed bytes of the remote layer to the file. The
-// remote reader returns an error at the end if the digest is not correct.
+// fetch needs no digest check: the remote reader returns an error at the end
+// if the digest is not correct.
 func (l fileLayer) fetch(ctx context.Context, add func(int64)) error {
 	rc, err := l.Layer.Compressed()
 	if err != nil {

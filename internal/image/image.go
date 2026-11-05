@@ -194,7 +194,6 @@ func (m *Manager) GC(ctx context.Context, keep []string) error {
 	return err
 }
 
-// source is where an image comes from.
 type source struct {
 	ref     string // the registry reference to pull
 	builtin string // the builtin image name, empty for other images
