@@ -72,7 +72,7 @@ func TestDiskLifecycle(t *testing.T) {
 	if src, _ := mountSource(mnt); src != "" {
 		t.Fatalf("%s is still mounted from %s", mnt, src)
 	}
-	if loops := loopsOf(t, disk); len(loops) > 0 {
+	if loops := loopsAfterRelease(t, disk); len(loops) > 0 {
 		t.Fatalf("loop devices %v still use the disk after Detach", loops)
 	}
 
@@ -175,11 +175,7 @@ func TestLoopDeviceFreesItselfAfterUnmount(t *testing.T) {
 		if err := unix.Unmount(mnt, 0); err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(2 * time.Second)
-		for len(loopsOf(t, disk)) > 0 && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
-		if loops := loopsOf(t, disk); len(loops) > 0 {
+		if loops := loopsAfterRelease(t, disk); len(loops) > 0 {
 			t.Errorf("%s: loop devices %v stay after the unmount", name, loops)
 		}
 	}
@@ -242,6 +238,22 @@ func run(t *testing.T, name string, args ...string) string {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 	}
 	return string(out)
+}
+
+// loopsAfterRelease waits up to 5 seconds for the loop devices of path to
+// go, and returns the devices that stay. The kernel frees a loop device at
+// its last close. udev opens a loop device to probe it after a writer closes
+// it, thus the device can stay for some milliseconds after Detach.
+func loopsAfterRelease(t *testing.T, path string) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		loops := loopsOf(t, path)
+		if len(loops) == 0 || time.Now().After(deadline) {
+			return loops
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // loopsOf returns the loop devices with path as backing file.
