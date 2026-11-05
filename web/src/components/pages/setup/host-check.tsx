@@ -1,5 +1,4 @@
 import { RefreshCw } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { $api, errorMessage, isApiError, type Schemas } from '~/api/client'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { SectionButton } from '~/components/app/section-header'
@@ -8,6 +7,7 @@ import { FixCommand } from '~/components/pages/servers/fix-command'
 import { Spinner } from '~/components/ui/spinner'
 import { cx } from '~/lib/cx'
 import { formatBytes, formatMegabytes } from '~/lib/format'
+import { useDebouncedValue } from '~/lib/use-debounced-value'
 import { isSetupCode, listedChecks, modeReason, modeTitles } from './checks'
 
 type Check = Schemas['Check']
@@ -136,13 +136,4 @@ function CheckRow({ check }: { check: Check }) {
 function disk(host: Schemas['HostCheck']): string {
   const size = [formatBytes(host.disk_bytes), host.disk_kind].filter(Boolean).join(' ')
   return host.free_disk_bytes > 0 ? `${size} · ${formatBytes(host.free_disk_bytes)} free` : size
-}
-
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delayMs)
-    return () => clearTimeout(timer)
-  }, [value, delayMs])
-  return debounced
 }

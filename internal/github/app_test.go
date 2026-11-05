@@ -137,6 +137,37 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 	}
 }
 
+// GitHub makes the app on the personal account when the organization does
+// not exist or the user cannot make apps there.
+func TestCallbackRejectsAppOfAnotherAccount(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	ctx := context.Background()
+	e.mux.HandleFunc("POST /api/v3/app-manifests/code123/conversions", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id": 4242, "slug": "runplane-ab12cd", "name": "runplane-ab12cd", "client_id": "Iv23.abc",
+			"owner":    map[string]any{"login": "ada", "id": 1, "type": "User"},
+			"html_url": "https://github.com/apps/runplane-ab12cd", "client_secret": "secret-1", "webhook_secret": nil,
+			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
+		})
+	})
+	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", "organization", "Telemetry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(action)
+
+	_, err = e.svc.Callback(ctx, "https://ci.example.com", "code123", u.Query().Get("state"))
+	if err == nil || !strings.Contains(err.Error(), "ada") || !strings.Contains(err.Error(), "Telemetry") ||
+		!strings.Contains(err.Error(), "https://github.com/settings/apps/runplane-ab12cd/advanced") {
+		t.Fatalf("err = %v, want the two accounts and the delete page of the app", err)
+	}
+	app, err := e.st.GetGitHubApp(ctx)
+	if err != nil || app.AppID != testAppID {
+		t.Errorf("app = %+v, %v; want the earlier app %d, unchanged", app, err, testAppID)
+	}
+}
+
 func TestDisconnect(t *testing.T) {
 	e, f, _ := listeningEnv(t)
 	ctx := context.Background()

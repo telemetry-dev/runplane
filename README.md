@@ -113,7 +113,7 @@ sudo sh install.sh --binary ./runplane-linux-<arch> --token rp_srv_... --primary
 1. Open the dashboard URL that the install script shows, for example `http://203.0.113.10:8484`.
 2. Type the setup code to make the admin account.
 3. Select **Connect GitHub**.
-4. Select an organization or your personal account.
+4. In **Organization**, type the name from the URL of the organization, then select the organization in the list. For your personal account, select **Personal account**.
 5. On GitHub, select **Create GitHub App**.
 6. Install the app on your repositories.
 7. In a workflow file, set `runs-on` to the label of the default pool:
