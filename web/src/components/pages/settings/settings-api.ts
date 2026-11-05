@@ -10,6 +10,9 @@ export type SettingsPatch = Schemas['SettingsPatch']
 /** GET /api/settings. Every user can read it; only admins can change it. */
 export const settingsQuery = $api.queryOptions('get', '/api/settings')
 
+/** GET /api/settings/dns: the DNS record of the domain and the addresses of this server. */
+export const domainDNSQuery = $api.queryOptions('get', '/api/settings/dns')
+
 export function useIsAdmin(): boolean {
   return useQuery(sessionQuery).data?.role === 'admin'
 }
@@ -47,6 +50,7 @@ export function useSaveSettings({ optimistic = false } = {}) {
       client.setQueryData<Settings>(settingsQuery.queryKey, saved)
       // The sidebar shows the instance name from GET /api/status.
       if (body.instance_name !== undefined) void client.invalidateQueries({ queryKey: statusQuery.queryKey })
+      if (body.domain !== undefined) void client.invalidateQueries({ queryKey: domainDNSQuery.queryKey })
     },
   })
 }

@@ -12,9 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/moby/moby/client"
 
+	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/host"
@@ -29,6 +31,7 @@ func init() {
 	commands["update"] = command{"install the latest release (-check: only report it)", updateCmd}
 	commands["reset-password"] = command{"set a new random password for a user: reset-password <email>", resetPassword}
 	commands["set-mode"] = command{"set the sandbox mode of the primary: set-mode container|vm|dev", setMode}
+	commands["set-domain"] = command{"set the HTTPS domain of the dashboard: set-domain <domain>, or set-domain '' for no HTTPS", setDomain}
 }
 
 // doctor runs the checks of the host package for this server: a primary,
@@ -241,6 +244,47 @@ func setMode(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf("runplane uses %s mode after its next start.\n", mode)
+	return nil
+}
+
+// setDomain stores the domain setting of the primary, for install.sh
+// --domain. It makes the database when it does not exist, because a new
+// install sets the domain before the first start. HTTPS for the domain
+// starts when runplane starts again.
+func setDomain(ctx context.Context, args []string) error {
+	config.LoadEnvFile()
+	flags := flag.NewFlagSet("set-domain", flag.ContinueOnError)
+	cfg, err := config.Parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("give the domain: runplane set-domain ci.example.com")
+	}
+	domain := strings.ToLower(strings.TrimSpace(flags.Arg(0)))
+	if domain != "" && !api.ValidDomain(domain) {
+		return fmt.Errorf("%q is not a domain name such as ci.example.com", domain)
+	}
+	if exists(cfg.AgentConfigPath()) {
+		return errors.New("this server is an agent: only the primary serves the dashboard")
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	_, err = st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.Domain = domain
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if domain == "" {
+		fmt.Println("runplane stops HTTPS after its next start.")
+	} else {
+		fmt.Printf("runplane serves https://%s after its next start.\n", domain)
+	}
 	return nil
 }
 

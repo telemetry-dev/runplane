@@ -53,6 +53,7 @@ Flags of `install.sh`:
 | `--version <v>` | Release to install. The default is the latest release. |
 | `--repo <owner/name>` | GitHub repository of the releases. The default is `runplane/runplane`. |
 | `--listen <addr>` | Dashboard address. The default is `:8484`. |
+| `--domain <name>` | Domain of the dashboard. runplane serves HTTPS at this domain (refer to [Security](#security)). |
 | `--token`, `--primary`, `--fingerprint` | Installs an agent (refer to [Add servers](#add-servers)). |
 | `--binary <path>`, `--kernel <path>` | Installs local files, not the release files (refer to [Install from source](#install-from-source)). |
 | `--dry-run` | Shows each action and changes nothing. |
@@ -201,11 +202,13 @@ The cache service (port 8486) accepts connections only from the sandboxes of the
 
 runplane encrypts the secrets in its database with `/etc/runplane/secret.key`: the GitHub App key, the S3 secret key, and the notification URLs. The backups of runplane contain the database only, not the key. Keep a copy of `secret.key` in a safe place that is not on the server. Refer to [Restore from a backup](#restore-from-a-backup).
 
-The dashboard uses HTTP on port 8484. To get HTTPS with Let's Encrypt, set a domain in **Settings > General**. The DNS record of the domain must point to the server. Ports 80 and 443 must be free on the server and open in the firewall. If a different web server uses these ports, the certificate row of the settings shows the error. If you do not set a domain, open the dashboard through an SSH tunnel:
+The dashboard uses HTTP on port 8484. To get HTTPS with Let's Encrypt, set a domain in **Settings > General**, or add `--domain ci.example.com` to the install command. The A or AAAA record of the domain must point to the server, with no proxy. **Settings > General** shows the IP address for the record, and it shows if the record is correct. Ports 80 and 443 must be free on the server and open in the firewall. If a different web server uses these ports, the certificate row of the settings shows the error. If you do not set a domain, open the dashboard through an SSH tunnel:
 
 ```sh
 ssh -L 8484:localhost:8484 user@server
 ```
+
+To set the domain from the shell of the primary, run `sudo runplane set-domain ci.example.com`. Then run `sudo systemctl restart runplane`. An empty domain (`''`) stops HTTPS.
 
 The primary also gives SSH access to the debug shell of a sandbox on port 2222 (`RUNPLANE_SSH_LISTEN` in `runplane.env`). The job actor connects with a key from GitHub. To give administrators access to all debug sandboxes, put their public keys in `/etc/runplane/authorized_keys`.
 
