@@ -18,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/runplane/runplane/internal/blob"
 )
 
 // tagTTL is how long a tag is trusted before a check with upstream.
@@ -144,9 +146,8 @@ func (m *Mirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	nameRe   = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
-	tagRe    = regexp.MustCompile(`^\w[\w.-]{0,127}$`)
-	digestRe = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	nameRe = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
+	tagRe  = regexp.MustCompile(`^\w[\w.-]{0,127}$`)
 )
 
 // parsePath splits a path such as /alpine/manifests/latest (after /v2) into
@@ -165,7 +166,7 @@ func parsePath(path string) (name, kind, ref string, err error) {
 	if !strings.Contains(name, "/") {
 		name = "library/" + name
 	}
-	if !digestRe.MatchString(ref) && (kind == blobsDir || !tagRe.MatchString(ref)) {
+	if !blob.ValidDigest(ref) && (kind == blobsDir || !tagRe.MatchString(ref)) {
 		return "", "", "", &apiError{http.StatusBadRequest, "DIGEST_INVALID", "invalid tag or sha256 digest"}
 	}
 	return name, kind, ref, nil

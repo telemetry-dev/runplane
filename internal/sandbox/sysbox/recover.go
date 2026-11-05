@@ -1,6 +1,7 @@
 package sysbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
 )
@@ -159,11 +161,7 @@ func (d *Driver) save(b *box) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(b.dir, metaFile+".tmp")
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("save sandbox state: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(b.dir, metaFile)); err != nil {
+	if err := atomicfile.Write(filepath.Join(b.dir, metaFile), bytes.NewReader(data), 0o600); err != nil {
 		return fmt.Errorf("save sandbox state: %w", err)
 	}
 	return nil

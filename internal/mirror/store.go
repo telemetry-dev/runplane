@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 // Folders of the store. A file in them has the hex part of its sha256 digest
@@ -99,22 +101,27 @@ func (s *store) open(key string) *os.File {
 	return f
 }
 
-// temp makes a temp file on the same file system as the store.
-func (s *store) temp() (*os.File, error) {
-	return os.CreateTemp(filepath.Join(s.dir, "tmp"), "")
+// temp makes the temp file for key on the file system of the store.
+func (s *store) temp(key string) (*atomicfile.File, error) {
+	return atomicfile.CreateIn(filepath.Join(s.dir, "tmp"), s.path(key), 0o600)
 }
 
-// add moves the complete temp file tmp into the store as key. Then it removes
+// add moves the complete temp file f of key into the store. Then it removes
 // the least recently used files over the limit. It does not keep a file that
-// is larger than the limit.
-func (s *store) add(key, tmp string, size int64) error {
+// is larger than the limit; that temp file goes at its Close.
+func (s *store) add(key string, f *atomicfile.File, size int64) error {
+	if s.max > 0 && size > s.max {
+		return nil
+	}
+	// A sync before the lock, so that Commit has no data left to write
+	// while it holds the lock.
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("store %s: %w", key, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.max > 0 && size > s.max {
-		return os.Remove(tmp)
-	}
-	if err := os.Rename(tmp, s.path(key)); err != nil {
-		return errors.Join(fmt.Errorf("store %s: %w", key, err), os.Remove(tmp))
+	if err := f.Commit(); err != nil {
+		return fmt.Errorf("store %s: %w", key, err)
 	}
 	if el, ok := s.files[key]; ok {
 		s.drop(el)
@@ -126,24 +133,19 @@ func (s *store) add(key, tmp string, size int64) error {
 
 // write stores the parts of data as one file under key.
 func (s *store) write(key string, data ...[]byte) error {
-	f, err := s.temp()
+	f, err := s.temp(key)
 	if err != nil {
 		return fmt.Errorf("store %s: %w", key, err)
 	}
+	defer f.Close()
 	var size int64
 	for _, d := range data {
-		if _, err = f.Write(d); err != nil {
-			break
+		if _, err := f.Write(d); err != nil {
+			return fmt.Errorf("store %s: %w", key, err)
 		}
 		size += int64(len(d))
 	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if err := errors.Join(err, f.Close()); err != nil {
-		return errors.Join(fmt.Errorf("store %s: %w", key, err), os.Remove(f.Name()))
-	}
-	return s.add(key, f.Name(), size)
+	return s.add(key, f, size)
 }
 
 func (s *store) bytes() int64 {

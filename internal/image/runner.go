@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/version"
@@ -114,7 +115,11 @@ func (b *Bundles) ensure(ctx context.Context, version, arch string) (Bundle, err
 		if st, err = b.fetch(ctx, version, arch, bundle.Dir); err != nil {
 			return Bundle{}, err
 		}
-		if err := writeJSON(stampPath, st); err != nil {
+		data, err := json.Marshal(st)
+		if err != nil {
+			return Bundle{}, err
+		}
+		if err := atomicfile.Write(stampPath, bytes.NewReader(data), 0o644); err != nil {
 			return Bundle{}, err
 		}
 	}
@@ -453,17 +458,4 @@ func (b *Bundles) prune(keep []string) error {
 		}
 	}
 	return nil
-}
-
-// writeJSON writes v to file through a temp file and a rename.
-func writeJSON(file string, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	tmp := filepath.Join(filepath.Dir(file), "."+filepath.Base(file)+".tmp")
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, file)
 }

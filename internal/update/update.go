@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -150,11 +151,15 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 		return fmt.Errorf("update: SHA256SUMS has no entry for %s, the guest kernel of this server", kernelName)
 	}
 
-	archive, err := u.fetch(ctx, base+name, hashes[name], os.TempDir(), "runplane-update-*.tar.gz")
+	archive, err := os.CreateTemp("", "runplane-update-*.tar.gz")
 	if err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	defer os.Remove(archive.Name())
+	defer archive.Close()
+	if err := fetch(ctx, base+name, hashes[name], archive); err != nil {
 		return err
 	}
-	defer os.Remove(archive)
 	exe, err := u.exe()
 	if err != nil {
 		return err
@@ -163,49 +168,36 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(newExe)
+	defer newExe.Close()
 	if kernel != "" {
-		newKernel, err := u.fetch(ctx, base+kernelName, hashes[kernelName], filepath.Dir(kernel), ".vmlinux-update-*")
+		newKernel, err := atomicfile.Create(kernel, 0o644)
 		if err != nil {
-			return err
-		}
-		defer os.Remove(newKernel)
-		if err := os.Chmod(newKernel, 0o644); err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
-		if err := os.Rename(newKernel, kernel); err != nil {
+		defer newKernel.Close()
+		if err := fetch(ctx, base+kernelName, hashes[kernelName], newKernel); err != nil {
+			return err
+		}
+		if err := newKernel.Commit(); err != nil {
 			return fmt.Errorf("update: replace guest kernel: %w", err)
 		}
 	}
-	if err := os.Rename(newExe, exe); err != nil {
+	if err := newExe.Commit(); err != nil {
 		return fmt.Errorf("update: replace binary: %w", err)
 	}
 	return nil
 }
 
-// fetch downloads url to a new file in dir and checks its SHA-256 against
-// want. It returns the path of the file.
-func (u *Updater) fetch(ctx context.Context, url, want, dir, pattern string) (string, error) {
-	f, err := os.CreateTemp(dir, pattern)
-	if err != nil {
-		return "", fmt.Errorf("update: %w", err)
-	}
+// fetch downloads url to w and checks its SHA-256 against want.
+func fetch(ctx context.Context, url, want string, w io.Writer) error {
 	h := sha256.New()
-	err = download(ctx, url, io.MultiWriter(f, h), maxFileSize)
-	if err == nil {
-		err = f.Sync()
+	if err := download(ctx, url, io.MultiWriter(w, h), maxFileSize); err != nil {
+		return err
 	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		return fmt.Errorf("update: %s has SHA-256 %s, SHA256SUMS has %s", path.Base(url), got, want)
 	}
-	if got := hex.EncodeToString(h.Sum(nil)); err == nil && got != want {
-		err = fmt.Errorf("update: %s has SHA-256 %s, SHA256SUMS has %s", path.Base(url), got, want)
-	}
-	if err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
+	return nil
 }
 
 func (u *Updater) publicKey() (ed25519.PublicKey, error) {
@@ -279,26 +271,24 @@ func findArchive(hashes map[string]string, num, arch string) (string, error) {
 	return "", fmt.Errorf("update: SHA256SUMS has no entry for %s", names[0])
 }
 
-// extract writes the runplane binary of the archive to a new file next to
-// exe and returns its path. A rename then replaces exe atomically.
-func extract(exe, archive string) (string, error) {
-	f, err := os.Open(archive)
-	if err != nil {
-		return "", fmt.Errorf("update: %w", err)
+// extract writes the runplane binary of the archive to a new file for exe.
+// Its Commit then replaces exe.
+func extract(exe string, archive io.ReadSeeker) (*atomicfile.File, error) {
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("update: read archive: %w", err)
 	}
-	defer f.Close()
-	zr, err := gzip.NewReader(f)
+	zr, err := gzip.NewReader(archive)
 	if err != nil {
-		return "", fmt.Errorf("update: read archive: %w", err)
+		return nil, fmt.Errorf("update: read archive: %w", err)
 	}
 	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return "", errors.New("update: the archive has no runplane binary")
+			return nil, errors.New("update: the archive has no runplane binary")
 		}
 		if err != nil {
-			return "", fmt.Errorf("update: read archive: %w", err)
+			return nil, fmt.Errorf("update: read archive: %w", err)
 		}
 		if hdr.Typeflag == tar.TypeReg && path.Base(hdr.Name) == "runplane" {
 			return writeExe(exe, tr)
@@ -306,24 +296,14 @@ func extract(exe, archive string) (string, error) {
 	}
 }
 
-func writeExe(exe string, r io.Reader) (string, error) {
-	tmp, err := os.CreateTemp(filepath.Dir(exe), ".runplane-update-*")
+func writeExe(exe string, r io.Reader) (*atomicfile.File, error) {
+	f, err := atomicfile.Create(exe, 0o755)
 	if err != nil {
-		return "", fmt.Errorf("update: %w", err)
+		return nil, fmt.Errorf("update: %w", err)
 	}
-	_, err = io.Copy(tmp, io.LimitReader(r, maxFileSize))
-	if err == nil {
-		err = tmp.Chmod(0o755)
+	if _, err := io.Copy(f, io.LimitReader(r, maxFileSize)); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("update: write binary: %w", err)
 	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		os.Remove(tmp.Name())
-		return "", fmt.Errorf("update: write binary: %w", err)
-	}
-	return tmp.Name(), nil
+	return f, nil
 }

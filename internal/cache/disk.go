@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 var (
@@ -69,22 +71,18 @@ func (d disk) commitBlocks(id string, blockIDs []string) error {
 		return errEmptyCommit
 	}
 	dir := d.staging(id)
-	tmp, err := os.CreateTemp(dir, "tmp-")
+	f, err := atomicfile.CreateIn(dir, d.blob(id), 0o600)
 	if err != nil {
-		return fmt.Errorf("create blob: %w", err)
+		return err
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
+	defer f.Close()
 	for _, blockID := range blockIDs {
-		if err := appendFile(tmp, filepath.Join(dir, blockName(blockID))); err != nil {
+		if err := appendFile(f, filepath.Join(dir, blockName(blockID))); err != nil {
 			return err
 		}
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write blob: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), d.blob(id)); err != nil {
-		return fmt.Errorf("commit blob: %w", err)
+	if err := f.Commit(); err != nil {
+		return err
 	}
 	return os.RemoveAll(dir)
 }
@@ -143,32 +141,25 @@ func blockName(blockID string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// writeFile writes body to path through a temporary file in dir, so that a
-// failed request leaves no partial file at path.
+// writeFile writes body to path through a temporary file in the staging
+// folder dir, so that a failed request leaves no partial file at path.
 func writeFile(dir, path string, body io.Reader, limit int64) error {
-	tmp, err := os.CreateTemp(dir, "tmp-")
+	f, err := atomicfile.CreateIn(dir, path, 0o600)
 	if err != nil {
-		return fmt.Errorf("create file: %w", err)
+		return err
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-	n, err := io.Copy(tmp, io.LimitReader(body, limit+1))
+	defer f.Close()
+	n, err := io.Copy(f, io.LimitReader(body, limit+1))
 	if err != nil {
 		return fmt.Errorf("read upload: %w", err)
 	}
 	if n > limit {
 		return errTooLarge
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("move file: %w", err)
-	}
-	return nil
+	return f.Commit()
 }
 
-func appendFile(dst *os.File, path string) error {
+func appendFile(dst io.Writer, path string) error {
 	src, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return errNoBlock
