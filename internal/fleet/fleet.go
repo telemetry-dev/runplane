@@ -112,7 +112,6 @@ type Fleet struct {
 	wake   chan struct{} // asks Run to provision now
 
 	mu        sync.Mutex
-	localID   string
 	localAddr string               // IPv4 of the primary, for install commands
 	nodes     map[string]*node     // connected servers by ID
 	downSince map[string]time.Time // agents without a connection

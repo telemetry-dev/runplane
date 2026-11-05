@@ -44,9 +44,6 @@ func (f *Fleet) startLocal(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("record the local server: %w", err)
 	}
-	f.mu.Lock()
-	f.localID = v.ID
-	f.mu.Unlock()
 	hello := agent.Hello{Version: f.version, Mode: f.local.Driver().Mode(), Host: info, Addr: info.IPv4}
 	if err := f.connect(ctx, v.ID, f.local, hello); err != nil {
 		return fmt.Errorf("record the local server: %w", err)

@@ -105,13 +105,19 @@ func (h *harness) run() {
 			h.t.Errorf("Run: %v", err)
 		}
 	})
-	waitFor(h.t, "the local server", func() bool { return h.f.Driver(h.localID()) != nil })
+	waitFor(h.t, "the local server", func() bool {
+		v, err := h.st.GetLocalServer(context.Background())
+		return err == nil && h.f.Driver(v.ID) != nil
+	})
 }
 
 func (h *harness) localID() string {
-	h.f.mu.Lock()
-	defer h.f.mu.Unlock()
-	return h.f.localID
+	h.t.Helper()
+	v, err := h.st.GetLocalServer(context.Background())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return v.ID
 }
 
 func (h *harness) server(id string) store.Server {
