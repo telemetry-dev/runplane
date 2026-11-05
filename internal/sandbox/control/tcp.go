@@ -10,12 +10,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 // AddrFile is the file in the ctl folder that sends the guest to TCP. Its
@@ -70,7 +71,7 @@ func (t *TCPListener) Listen(ctlDir string, cfg GuestConfig, h Handler, log *slo
 	rand.Read(b)
 	token := hex.EncodeToString(b)
 	line := "tcp://" + t.dial + " " + id + " " + token + "\n"
-	if err := writeFileAtomic(filepath.Join(ctlDir, AddrFile), []byte(line), 0o644); err != nil {
+	if err := atomicfile.Write(filepath.Join(ctlDir, AddrFile), strings.NewReader(line), 0o644); err != nil {
 		return nil, fmt.Errorf("write control address: %w", err)
 	}
 
@@ -173,24 +174,4 @@ func ParseAddr(content []byte) (addr, hello string, err error) {
 		return "", "", fmt.Errorf("bad control address %q", content)
 	}
 	return strings.TrimPrefix(f[0], "tcp://"), "RUNPLANE " + f[1] + " " + f[2] + "\n", nil
-}
-
-// writeFileAtomic replaces path, so that a reader never sees half a file.
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(tmp.Name(), mode)
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
-	return err
 }

@@ -5,15 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -271,32 +269,10 @@ func (s *Service) DownloadLog(ctx context.Context, job store.Job, path string) e
 		}
 	}
 	defer resp.Body.Close()
-	return writeFile(path, resp.Body)
+	return atomicfile.Write(path, resp.Body, 0o600)
 }
 
 const logTimeout = 10 * time.Minute
-
-func writeFile(path string, r io.Reader) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	defer os.Remove(f.Name())
-	_, err = io.Copy(f, r)
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(f.Name(), path)
-	}
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
-}
 
 func (s *Service) Rerun(ctx context.Context, job store.Job) error {
 	id, err := s.githubJobID(ctx, job)

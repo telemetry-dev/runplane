@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
-	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
@@ -104,11 +103,7 @@ func internetProbe(cfg config.Config, mode sandbox.Mode, dns []string) (sysbox.P
 	if mode == sandbox.ModeContainer {
 		o.Runtime, o.CgroupParent = "sysbox-runc", "runplane.slice"
 	}
-	for _, v := range dns {
-		if a, err := netip.ParseAddr(v); err == nil && a.Is4() {
-			o.DNS = append(o.DNS, a)
-		}
-	}
+	o.DNS = sandbox.Settings{DNS: dns}.IPv4DNS()
 	docker, err := client.New(client.FromEnv)
 	if err != nil {
 		return o, fmt.Errorf("connect to Docker: %w", err)

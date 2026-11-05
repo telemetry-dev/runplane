@@ -174,7 +174,7 @@ func (d *Driver) guestConfig(spec sandbox.Spec, lease netrules.Lease, s sandbox.
 		mirror = service
 	}
 	var dns []string
-	for _, a := range ipv4DNS(s) {
+	for _, a := range s.IPv4DNS() {
 		dns = append(dns, a.String())
 	}
 	return control.GuestConfig{

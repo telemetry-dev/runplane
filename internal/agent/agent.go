@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -378,30 +380,11 @@ func (f agentFile) write(path string) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return fmt.Errorf("write agent config: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(append(b, '\n'))
-	if err == nil {
-		err = tmp.Chmod(0o600)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
-	if err != nil {
+	if err := atomicfile.Write(path, bytes.NewReader(append(b, '\n')), 0o600); err != nil {
 		return fmt.Errorf("write agent config: %w", err)
 	}
 	// The used token cannot register again, so make the rename durable.
-	if d, err := os.Open(dir); err == nil {
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
 		d.Sync()
 		d.Close()
 	}

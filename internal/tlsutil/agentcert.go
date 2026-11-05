@@ -3,6 +3,7 @@
 package tlsutil
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -20,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 const certLifetime = 10 * 365 * 24 * time.Hour
@@ -49,10 +52,10 @@ func AgentCert(dir string) (tls.Certificate, string, error) {
 	}
 	// Write the key first: a certificate without its key is useless, and a
 	// key without its certificate makes a new pair at the next start.
-	if err := writeFile(keyPath, keyPEM, 0o600); err != nil {
+	if err := atomicfile.Write(keyPath, bytes.NewReader(keyPEM), 0o600); err != nil {
 		return tls.Certificate{}, "", err
 	}
-	if err := writeFile(certPath, certPEM, 0o644); err != nil {
+	if err := atomicfile.Write(certPath, bytes.NewReader(certPEM), 0o644); err != nil {
 		return tls.Certificate{}, "", err
 	}
 	cert, err = tls.X509KeyPair(certPEM, keyPEM)
@@ -117,31 +120,4 @@ func newSelfSigned() (certPEM, keyPEM []byte, err error) {
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM, nil
-}
-
-// writeFile writes data to a temporary file and renames it into place, so a
-// crash never leaves a half-written file.
-func writeFile(path string, data []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Chmod(mode)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
 }

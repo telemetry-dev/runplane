@@ -13,7 +13,6 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -250,7 +249,7 @@ func (d *Driver) Configure(s sandbox.Settings) error {
 // other firewalls of the host.
 func (d *Driver) Probe(ctx context.Context) error {
 	d.mu.Lock()
-	dns := ipv4DNS(d.settings)
+	dns := d.settings.IPv4DNS()
 	d.mu.Unlock()
 	if len(dns) == 0 {
 		return errors.New("the dns setting has no IPv4 server, and VMs have IPv4 only")
@@ -312,7 +311,7 @@ func (d *Driver) stopForShutdown() {
 }
 
 func (d *Driver) netConfig(s sandbox.Settings) netrules.Config {
-	dns := ipv4DNS(s)
+	dns := s.IPv4DNS()
 	if len(dns) < len(s.DNS) {
 		d.log.Warn("sandboxes use only the IPv4 DNS servers", "servers", s.DNS)
 	}
@@ -322,18 +321,6 @@ func (d *Driver) netConfig(s sandbox.Settings) netrules.Config {
 		DNS:         dns,
 		Allowlist:   s.EgressAllowlist,
 	}
-}
-
-// ipv4DNS returns the IPv4 DNS servers of the settings. Sandboxes have no
-// IPv6.
-func ipv4DNS(s sandbox.Settings) []netip.Addr {
-	var list []netip.Addr
-	for _, a := range s.DNS {
-		if ip, err := netip.ParseAddr(a); err == nil && ip.Is4() {
-			list = append(list, ip)
-		}
-	}
-	return list
 }
 
 // spawn runs fn in a goroutine that Close waits for. After Close, it does
