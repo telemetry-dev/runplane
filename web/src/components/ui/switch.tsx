@@ -13,7 +13,7 @@ type SwitchProps = Omit<BaseSwitch.Root.Props, 'className' | 'children'> & {
   className?: string
 }
 
-/** Switch of gui/components/runplane/switch.md: an 18px track with a 14px thumb, color-1 when on. */
+/** Switch of gui/components/runplane/switch.md. */
 export function Switch({ label, description, error, className, ...props }: SwitchProps) {
   if (description) {
     return (

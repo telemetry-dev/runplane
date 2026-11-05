@@ -11,8 +11,8 @@ type NumberFieldProps = Omit<BaseNumberField.Root.Props, 'className' | 'children
 }
 
 /**
- * Number field of gui/components/runplane/number-field.md: minus, an 80px input,
- * plus. Holding a stepper repeats; min, max, step, and parsing stay in Base UI.
+ * Number field of gui/components/runplane/number-field.md. Holding a stepper
+ * repeats; min, max, step, and parsing stay in Base UI.
  */
 export function NumberField({ label, className, ...props }: NumberFieldProps) {
   const control = (

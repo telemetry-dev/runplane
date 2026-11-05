@@ -16,7 +16,6 @@ type SegmentedControlProps<T extends string> = {
   'aria-label': string
 }
 
-/** Picks one value from a few options. */
 export function SegmentedControl<T extends string>({ value, onValueChange, options, ...props }: SegmentedControlProps<T>) {
   return (
     <ToggleGroup
@@ -43,7 +42,6 @@ type SegmentedLinksProps = {
   'aria-label': string
 }
 
-/** Navigation between sibling routes, for example the Settings sections. */
 export function SegmentedLinks({ links, ...props }: SegmentedLinksProps) {
   return (
     <nav className={tabList} {...props}>

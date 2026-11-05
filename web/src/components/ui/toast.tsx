@@ -16,7 +16,7 @@ import { Spinner } from './spinner'
 /** The app's one toast queue. Toaster renders it. */
 export const toastManager = Toast.createToastManager()
 
-/** Bottom-right stack of toasts. Toasts close after 5 seconds, and pause while hovered or focused. */
+/** The timeout of a toast pauses while it is hovered or focused. */
 export function Toaster() {
   return (
     <Toast.Provider toastManager={toastManager} timeout={5000} limit={4}>

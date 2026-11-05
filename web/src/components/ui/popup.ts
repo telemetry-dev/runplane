@@ -12,7 +12,6 @@ export const popupSurface = cx(
   'shadow-[0_0_0_1px_var(--neutral-4),var(--shadow-m)]',
 )
 
-/** Small motion: opacity and popup scale from the positioner's transform origin. */
 export const popupMotion = cx(
   'origin-(--transform-origin) transition-[opacity,scale]',
   'data-starting-style:scale-(--motion-popup-scale) data-starting-style:opacity-0',

@@ -10,7 +10,6 @@ type PageHeaderProps = {
   actions?: ReactNode
 }
 
-/** The 36px title row at the top of each app page. */
 export function PageHeader({ title, count, icon, actions }: PageHeaderProps) {
   return (
     <header className="flex min-h-[36px] shrink-0 flex-wrap items-center justify-between gap-m">

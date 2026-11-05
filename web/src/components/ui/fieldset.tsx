@@ -9,9 +9,8 @@ type FieldsetProps = Omit<BaseFieldset.Root.Props, 'className' | 'children'> & {
 }
 
 /**
- * A group of controls under one legend (gui/components/runplane/fieldset.md),
- * as the events of a notification channel. The legend has the style of a Field
- * label. `disabled` disables every control inside.
+ * A group of controls under one legend (gui/components/runplane/fieldset.md).
+ * `disabled` disables every control inside.
  */
 export function Fieldset({ legend, className, children, ...props }: FieldsetProps) {
   return (

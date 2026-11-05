@@ -4,8 +4,8 @@ import { cx } from '~/lib/cx'
 type SeparatorProps = Omit<BaseSeparator.Props, 'className'> & { className?: string }
 
 /**
- * Separator of gui/components/runplane/separator.md: a 1px neutral-4 line drawn
- * as an inset edge in an XXS band, so a thicker theme edge never moves content.
+ * Separator of gui/components/runplane/separator.md. The line is an inset edge,
+ * so a thicker theme edge never moves content.
  */
 export function Separator({ orientation = 'horizontal', className, ...props }: SeparatorProps) {
   return (

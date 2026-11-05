@@ -8,7 +8,6 @@ type SpinnerProps = {
   className?: string
 }
 
-/** The color-1 arc on a neutral-4 ring of the designs ("running", "installing", "waiting"). */
 export function Spinner({ size = 16, label, className }: SpinnerProps) {
   return (
     <svg
