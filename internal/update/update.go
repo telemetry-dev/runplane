@@ -47,7 +47,6 @@ const (
 // ErrNoRelease means that the release repository has no published release.
 var ErrNoRelease = errors.New("no published release")
 
-// Updater checks for and applies releases.
 type Updater struct {
 	Repo        string // GitHub repository, "owner/name"
 	Current     string // version of the running binary
