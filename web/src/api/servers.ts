@@ -62,10 +62,6 @@ export function withHostStats<T extends Sampled>(server: T, stats: Schemas['Host
   }
 }
 
-export function putDoctor(client: QueryClient, serverId: string, result: Schemas['DoctorResult']) {
-  client.setQueryData(doctorQuery(serverId).queryKey, result)
-}
-
 export type Doctor = {
   /** The last result: undefined while it loads, null before the first run. */
   result: Schemas['DoctorResult'] | null | undefined
@@ -79,7 +75,7 @@ export function useDoctor(serverId: string): Doctor {
   const client = useQueryClient()
   const stored = useQuery(doctorQuery(serverId))
   const run = $api.useMutation('post', '/api/servers/{id}/doctor', {
-    onSuccess: (data) => putDoctor(client, serverId, data),
+    onSuccess: (data) => client.setQueryData(doctorQuery(serverId).queryKey, data),
   })
   return {
     result: stored.data && (stored.data.checked_at ? stored.data : null),

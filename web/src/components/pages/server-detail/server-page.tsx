@@ -1,14 +1,12 @@
-import { useQuery } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
-import { errorMessage, isApiError } from '~/api/client'
+import { useQuery, type QueryClient } from '@tanstack/react-query'
+import { isApiError } from '~/api/client'
 import { imagesQuery } from '~/api/images'
 import { sandboxesQuery } from '~/api/sandboxes'
-import { serverQuery, useDoctor } from '~/api/servers'
+import { doctorQuery, serverQuery, useDoctor } from '~/api/servers'
 import { useIsAdmin } from '~/api/session'
+import { LoadError, LoadErrorRow, NotFound } from '~/components/app/load-error'
 import { SectionHeader } from '~/components/app/section-header'
-import { TextButton } from '~/components/app/text-button'
 import { LiveRunnersTable } from '~/components/pages/runners/live-runners-table'
-import { Button, buttonClassName } from '~/components/ui/button'
 import { Skeleton } from '~/components/ui/skeleton'
 import { DoctorSection } from './doctor-section'
 import { ImagesTable } from './images-table'
@@ -16,14 +14,31 @@ import { ServerFacts, ServerUsage } from './server-facts'
 import type { Server } from './server-format'
 import { ServerHeader } from './server-header'
 
+/** Starts the requests of the page, and returns the server for the title. */
+export function prefetch(client: QueryClient, serverId: string) {
+  void client.prefetchQuery(sandboxesQuery(serverId))
+  void client.prefetchQuery(imagesQuery)
+  void client.prefetchQuery(doctorQuery(serverId))
+  // A failed load stays in the query cache, and the page shows it with a retry.
+  return client.ensureQueryData(serverQuery(serverId)).catch(() => undefined)
+}
+
 /** The Server detail design: facts and usage of one server, the doctor checks, its runners, and its images. */
-export function ServerPage() {
-  const { serverId } = useParams({ from: '/_app/servers/$serverId' })
+export function ServerPage({ serverId }: { serverId: string }) {
   const query = useQuery(serverQuery(serverId))
 
   if (query.isPending) return <ServerPageSkeleton />
   // A removed server answers 404 and replaces the page; other failed refetches keep the last data.
-  if (!query.data || isApiError(query.error, 404)) return <ServerError error={query.error} onRetry={() => void query.refetch()} />
+  if (isApiError(query.error, 404)) {
+    return (
+      <NotFound title="Server not found" to="/servers" link="All servers">
+        No server has this ID. It may have been removed.
+      </NotFound>
+    )
+  }
+  if (!query.data) {
+    return <LoadError heading={1} what="the server" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
+  }
   return <ServerDetail server={query.data} />
 }
 
@@ -49,7 +64,11 @@ function ServerDetail({ server }: { server: Server }) {
               ? 'No runners on this server. This server takes no new runners while it drains.'
               : 'No runners on this server.'
           }
-          failed={sandboxes.isError && <LoadFailed what="runners" error={sandboxes.error} onRetry={() => void sandboxes.refetch()} />}
+          failed={
+            sandboxes.isError ? (
+              <LoadErrorRow what="the runners" error={sandboxes.error} onRetry={() => void sandboxes.refetch()} retrying={sandboxes.isFetching} />
+            ) : undefined
+          }
         />
       </section>
       <section className="flex flex-col gap-s">
@@ -57,36 +76,14 @@ function ServerDetail({ server }: { server: Server }) {
         <ImagesTable
           server={server}
           images={images.data}
-          failed={images.isError && <LoadFailed what="images" error={images.error} onRetry={() => void images.refetch()} />}
+          failed={
+            images.isError ? (
+              <LoadErrorRow what="the images" error={images.error} onRetry={() => void images.refetch()} retrying={images.isFetching} />
+            ) : undefined
+          }
         />
       </section>
     </>
-  )
-}
-
-/** The text of a table whose list did not load, once the retries gave up. */
-function LoadFailed({ what, error, onRetry }: { what: string; error: unknown; onRetry: () => void }) {
-  return (
-    <span role="alert">
-      Could not load the {what}. {errorMessage(error)} <TextButton onClick={onRetry}>Try again</TextButton>
-    </span>
-  )
-}
-
-function ServerError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  const missing = isApiError(error, 404)
-  return (
-    <div role="alert" className="flex flex-col items-start gap-m">
-      <h1 className="type-page-title text-neutral-10">{missing ? 'Server not found' : 'Could not load the server'}</h1>
-      <p className="text-s text-neutral-8">{missing ? 'No server has this ID. It may have been removed.' : errorMessage(error)}</p>
-      {missing ? (
-        <Link to="/servers" className={buttonClassName('secondary')}>
-          All servers
-        </Link>
-      ) : (
-        <Button onClick={onRetry}>Try again</Button>
-      )}
-    </div>
   )
 }
 

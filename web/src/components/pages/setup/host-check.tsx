@@ -2,17 +2,13 @@ import { useQuery } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { errorMessage, isApiError, type Schemas } from '~/api/client'
 import { setupHostQuery } from '~/api/setup'
+import { DoctorChecks } from '~/components/app/doctor-checks'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { SectionButton } from '~/components/app/section-header'
-import { CheckIcon } from '~/components/app/status-icon'
-import { FixCommand } from '~/components/pages/servers/fix-command'
 import { Spinner } from '~/components/ui/spinner'
-import { cx } from '~/lib/cx'
 import { formatBytes, formatMegabytes } from '~/lib/format'
 import { useDebouncedValue } from '~/lib/use-debounced-value'
-import { isSetupCode, listedChecks, modeReason, modeTitles } from './checks'
-
-type Check = Schemas['Check']
+import { isSetupCode, modeReason, modeTitles } from './checks'
 
 /**
  * The host check for the setup code being typed. It starts once the code has
@@ -23,8 +19,7 @@ type Check = Schemas['Check']
  * code that the field holds now.
  */
 export function useHostCheck(code: string) {
-  // The server ignores spaces and case, as in "7kqm r4tx w9hb".
-  const typed = code.replace(/\s/g, '').toUpperCase()
+  const typed = code.trim()
   const checked = useDebouncedValue(typed, 300)
   const ready = isSetupCode(checked)
   const query = useQuery({ ...setupHostQuery(checked), enabled: ready, retry: false, staleTime: Infinity, refetchOnWindowFocus: false })
@@ -69,20 +64,19 @@ export function HostCheck({ query, ready }: HostCheckProps) {
         ) : query.isError ? (
           <p className="px-m py-s text-s text-neutral-7">{errorMessage(query.error)}</p>
         ) : (
-          <HostReport host={query.data} />
+          <HostReport host={query.data} rechecking={query.isFetching} />
         )}
       </div>
     </section>
   )
 }
 
-const divider = 'not-last:border-b not-last:border-neutral-4'
-
-function HostReport({ host }: { host: Schemas['HostCheck'] }) {
-  const checks = listedChecks(host.checks)
+function HostReport({ host, rechecking }: { host: Schemas['HostCheck']; rechecking: boolean }) {
+  // The summary names the mode, so the list leaves out its check.
+  const checks = host.checks.filter((check) => check.id !== 'mode')
   return (
     <>
-      <div className={cx('flex flex-col gap-l px-m py-l', divider)}>
+      <div className="flex flex-col gap-l px-m py-l not-last:border-b not-last:border-neutral-4">
         <div className="flex flex-col gap-xxs">
           <h3 className="text-m font-heavy text-neutral-10">{modeTitles[host.mode]}</h3>
           <p className="text-s text-neutral-8">{modeReason(host)}</p>
@@ -96,36 +90,8 @@ function HostReport({ host }: { host: Schemas['HostCheck'] }) {
           <KeyValue label="System">{host.os}</KeyValue>
         </KeyValueList>
       </div>
-      {checks.length > 0 && (
-        <ul aria-label="Checks">
-          {checks.map((check) => (
-            <CheckRow key={check.id} check={check} />
-          ))}
-        </ul>
-      )}
+      {checks.length > 0 && <DoctorChecks checks={checks} running={rechecking} bordered={false} />}
     </>
-  )
-}
-
-function CheckRow({ check }: { check: Check }) {
-  const ok = check.status === 'ok'
-  return (
-    <li className={cx('flex flex-col gap-xs px-m', ok ? 'py-xs' : 'py-s', divider)}>
-      <div className="flex items-start gap-s text-s">
-        {/* Centered on the first line of the row. */}
-        <span className="flex h-(--line-s) w-[14px] shrink-0 items-center">
-          <CheckIcon status={check.status} size={14} />
-        </span>
-        {/* Wide enough for "Sandbox internet access" on one line at both weights. */}
-        <span className={cx('w-[160px] shrink-0', ok ? 'text-neutral-8' : 'font-medium text-neutral-10')}>{check.name}</span>
-        <span className="flex min-w-0 flex-1 flex-col gap-xxs break-words">
-          <span className={ok ? 'text-neutral-7' : 'text-neutral-10'}>{check.detail}</span>
-          {!ok && check.fix && <span className="text-neutral-8">{check.fix}</span>}
-        </span>
-      </div>
-      {/* The left margin lines the command up with the name: the 14px icon plus the 9px (space-s) gap. */}
-      {!ok && check.command && <FixCommand command={check.command} className="ml-[23px]" />}
-    </li>
   )
 }
 

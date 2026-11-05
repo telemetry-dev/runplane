@@ -1,15 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { jobQuery } from '~/api/jobs'
-import { JobPage, JobPageSkeleton } from '~/components/pages/jobs/job-page'
+import { JobPage, JobPageSkeleton, prefetch } from '~/components/pages/jobs/job-page'
 import { parseJobSearch } from '~/components/pages/jobs/job-steps'
 import { pageHead } from '~/lib/head'
 
 export const Route = createFileRoute('/_app/jobs/$jobId')({
   validateSearch: parseJobSearch,
-  // A failed load stays in the query cache, and the page shows it with a retry.
-  loader: ({ context: { queryClient }, params }) => queryClient.ensureQueryData(jobQuery(params.jobId)).catch(() => undefined),
+  loader: ({ context: { queryClient }, params }) => prefetch(queryClient, params.jobId),
   head: ({ loaderData }) => pageHead(loaderData?.job_name ?? 'Job'),
   pendingComponent: JobPageSkeleton,
   pendingMs: 200,
-  component: JobPage,
+  component: () => <JobPage jobId={Route.useParams().jobId} step={Route.useSearch().step} />,
 })

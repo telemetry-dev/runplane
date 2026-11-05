@@ -1,16 +1,16 @@
-import { CheckboxGroup } from '@base-ui/react/checkbox-group'
 import { Field as BaseField } from '@base-ui/react/field'
-import { Fieldset } from '@base-ui/react/fieldset'
 import { useQueryClient } from '@tanstack/react-query'
 import { Send } from 'lucide-react'
 import { useId, useRef, useState, type Ref } from 'react'
 import { $api, type Schemas } from '~/api/client'
 import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
 import { notificationsQuery } from '~/api/notifications'
 import { Button } from '~/components/ui/button'
-import { Checkbox } from '~/components/ui/checkbox'
+import { Checkbox, CheckboxGroup } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogPopup } from '~/components/ui/dialog'
 import { Field, Input } from '~/components/ui/field'
+import { Fieldset } from '~/components/ui/fieldset'
 import { Form } from '~/components/ui/form'
 import { SegmentedControl } from '~/components/ui/segmented'
 import { toastManager } from '~/components/ui/toast'
@@ -81,7 +81,7 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
             onValueChange={setName}
             placeholder={kindInfo.namePlaceholder}
             required
-            maxLength={64}
+            maxLength={limits.CreateNotificationRequest.name.maxLength}
             autoComplete="off"
           />
         </Field>
@@ -99,15 +99,14 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
           <BaseField.Description className="text-xs text-neutral-7">{kindInfo.urlHelp}</BaseField.Description>
           <BaseField.Error className="text-xs text-error" />
         </BaseField.Root>
-        <Fieldset.Root className="flex min-w-0 flex-col gap-s">
-          <Fieldset.Legend className="text-s font-medium text-neutral-10">Events</Fieldset.Legend>
+        <Fieldset legend="Events">
           {/* Column first, as the design lists the job and server events on the left. */}
           <CheckboxGroup value={events} onValueChange={setEvents} className="grid grid-flow-col grid-cols-2 grid-rows-3 gap-x-l gap-y-s">
             {channelEvents.map((event) => (
               <Checkbox key={event.value} value={event.value} label={event.label} />
             ))}
           </CheckboxGroup>
-        </Fieldset.Root>
+        </Fieldset>
         {problems.alert && (
           <p role="alert" className="text-s text-error">
             {problems.alert}

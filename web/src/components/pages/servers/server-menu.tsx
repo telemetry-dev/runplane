@@ -2,10 +2,10 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ArrowRight, Ellipsis, Pause, Play, Stethoscope, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { $api, errorMessage } from '~/api/client'
+import { $api, api, errorMessage } from '~/api/client'
 import { applyChange, dropServer } from '~/api/events'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
-import { Button, IconButton } from '~/components/ui/button'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
+import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
 import { DoctorDialog } from './doctor-dialog'
@@ -69,32 +69,15 @@ type RemoveDialogProps = { server: Server; open: boolean; onOpenChange: (open: b
 
 function RemoveDialog({ server, open, onOpenChange }: RemoveDialogProps) {
   const client = useQueryClient()
-  const remove = $api.useMutation('delete', '/api/servers/{id}', { onSuccess: () => onOpenChange(false) })
-
   return (
-    <AlertDialog
+    <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      onOpenChangeComplete={(isOpen) => {
-        if (isOpen) return
-        // Drop the row only after the close animation; the dialog lives in it.
-        if (remove.isSuccess) void dropServer(client, server.id)
-        remove.reset()
-      }}
-    >
-      <AlertDialogPopup title={`Remove ${server.name}?`} description={removeDescription(server.running_jobs)}>
-        {remove.error && (
-          <p role="alert" className="text-s text-error">
-            {errorMessage(remove.error)}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate({ params: { path: { id: server.id } } })}>
-            Remove server
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+      title={`Remove ${server.name}?`}
+      description={removeDescription(server.running_jobs)}
+      action="Remove server"
+      onConfirm={() => api.DELETE('/api/servers/{id}', { params: { path: { id: server.id } } })}
+      onDone={() => void dropServer(client, server.id)}
+    />
   )
 }

@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from '@tanstack/react-query'
+import { useSuspenseQuery, type QueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { cachesQuery } from '~/api/caches'
@@ -11,6 +11,10 @@ import { PageHeader } from '~/components/ui/page-header'
 import { formatBytes, formatDateTime } from '~/lib/format'
 import { cacheStats, mirrorHitRate, mirrorSince, pulls, type CacheOverview } from './cache-format'
 import { RepositoriesTable } from './repositories-table'
+
+export function prefetch(client: QueryClient) {
+  return client.ensureQueryData(cachesQuery)
+}
 
 /** The Cache design: the Actions cache by repository, and the registry mirror. */
 export function CachePage() {

@@ -10,8 +10,8 @@ type ProgressProps = Omit<BaseProgress.Root.Props, 'className' | 'children'> & {
 }
 
 /**
- * Progress of gui/components/runplane/progress.md: a 3px color-1 bar. A `null`
- * value is indeterminate work; the bar then sweeps and no number shows.
+ * Progress of gui/components/runplane/progress.md. A `null` value is
+ * indeterminate work; the bar then sweeps and no number shows.
  */
 export function Progress({ label, className, ...props }: ProgressProps) {
   return (
@@ -22,7 +22,7 @@ export function Progress({ label, className, ...props }: ProgressProps) {
           <BaseProgress.Value className="text-xs text-neutral-7 tabular-nums" />
         </div>
       )}
-      <BaseProgress.Track className="h-[3px] overflow-hidden rounded-full bg-neutral-3">
+      <BaseProgress.Track className="h-[4px] overflow-hidden rounded-full bg-neutral-3">
         <BaseProgress.Indicator className="progress-indicator h-full rounded-full bg-color-1 transition-[width]" />
       </BaseProgress.Track>
     </BaseProgress.Root>

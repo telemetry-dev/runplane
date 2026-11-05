@@ -1,4 +1,5 @@
 import type { Schemas } from '~/api/client'
+import { queryLimits } from '~/api/limits'
 import type { BarChartBar } from '~/components/app/bar-chart'
 import { formatCount, formatDate, formatDuration, formatPercent } from '~/lib/format'
 
@@ -8,10 +9,17 @@ export type Overview = Schemas['Overview']
 export type Range = Overview['range']
 type Bucket = Schemas['OverviewBucket']
 
-export const ranges: readonly Range[] = ['24h', '7d', '30d']
+const rangeLimits = queryLimits['get /api/overview'].range
 
-export function isRange(value: unknown): value is Range {
-  return ranges.includes(value as Range)
+export const ranges: readonly Range[] = rangeLimits.enum
+
+/** The range of the API without one, which stays out of the URL. */
+export const defaultRange: Range = rangeLimits.default
+
+/** validateSearch of the Overview: a range other than the default, or none. */
+export function parseOverviewSearch(search: Record<string, unknown>): { range?: Range } {
+  const range = ranges.find((item) => item === search.range)
+  return { range: range === defaultRange ? undefined : range }
 }
 
 /**

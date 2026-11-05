@@ -4,6 +4,7 @@ import { auditQuery } from './api/audit'
 import { isApiError } from './api/client'
 import { sessionQuery } from './api/session'
 import { RouteError } from './components/route-error'
+import { withGallery } from './dev/gallery-route'
 import { routeTree } from './routeTree.gen'
 
 export function getRouter() {
@@ -23,7 +24,7 @@ export function getRouter() {
   })
 
   const router = createRouter({
-    routeTree,
+    routeTree: import.meta.env.DEV ? withGallery(routeTree) : routeTree,
     context: { queryClient },
     defaultPreload: 'intent',
     // Loaders read through TanStack Query, which owns caching.

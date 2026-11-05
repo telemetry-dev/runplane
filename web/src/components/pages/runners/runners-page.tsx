@@ -1,10 +1,12 @@
-import { useSuspenseQuery } from '@tanstack/react-query'
-import { useSearch } from '@tanstack/react-router'
+import { useSuspenseQuery, type QueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 import { useState } from 'react'
+import { imagesQuery } from '~/api/images'
 import { poolsQuery } from '~/api/pools'
 import { sandboxesQuery } from '~/api/sandboxes'
+import { serversQuery } from '~/api/servers'
 import { useIsAdmin } from '~/api/session'
+import { settingsQuery } from '~/api/settings'
 import { SectionHeader } from '~/components/app/section-header'
 import { Button } from '~/components/ui/button'
 import { PageHeader } from '~/components/ui/page-header'
@@ -13,12 +15,19 @@ import { LabelsTable } from './labels-table'
 import { LiveRunnersTable } from './live-runners-table'
 import type { Pool } from './runner-format'
 
-/** The Runners design: the labels (pools) with their live counts, and the runners that live now. */
-export function RunnersPage() {
+/** Loads the pools and runners of the page, and starts the requests of the label dialog. */
+export function prefetch(client: QueryClient) {
+  void client.prefetchQuery(serversQuery)
+  void client.prefetchQuery(imagesQuery)
+  void client.prefetchQuery(settingsQuery)
+  return Promise.all([client.ensureQueryData(poolsQuery), client.ensureQueryData(sandboxesQuery())])
+}
+
+/** The Runners design: the labels (pools) with their live counts, and the runners that live now. `marked` is the label that a link points to. */
+export function RunnersPage({ marked }: { marked: string | undefined }) {
   const { data: pools } = useSuspenseQuery(poolsQuery)
   const { data: sandboxes } = useSuspenseQuery(sandboxesQuery())
   const admin = useIsAdmin()
-  const marked = useSearch({ from: '/_app/runners', select: (search) => search.label })
   // The pool stays while the dialog closes, so its content does not change during the animation.
   const [dialog, setDialog] = useState<{ open: boolean; pool?: Pool }>({ open: false })
 

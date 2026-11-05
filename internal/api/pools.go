@@ -128,7 +128,7 @@ func (h *Handler) getPool(ctx context.Context, in *PathID) (*body[Pool], error) 
 
 type CreatePoolRequest struct {
 	Name             string   `json:"name,omitempty" maxLength:"64" doc:"Defaults to the label."`
-	Label            string   `json:"label" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes" doc:"The runs-on label. Unique."`
+	Label            string   `json:"label" maxLength:"63" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes" doc:"The runs-on label. Unique."`
 	Arch             string   `json:"arch,omitempty" enum:"x64,arm64" doc:"Defaults to the arch of the primary server."`
 	VCPU             int      `json:"vcpu" minimum:"1" maximum:"64"`
 	MemoryMB         int      `json:"memory_mb" minimum:"512" maximum:"262144"`
@@ -170,7 +170,7 @@ func (h *Handler) createPool(ctx context.Context, in *body[CreatePoolRequest]) (
 
 type UpdatePoolRequest struct {
 	Name             *string   `json:"name,omitempty" minLength:"1" maxLength:"64"`
-	Label            *string   `json:"label,omitempty" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes"`
+	Label            *string   `json:"label,omitempty" maxLength:"63" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes"`
 	Arch             *string   `json:"arch,omitempty" enum:"x64,arm64"`
 	VCPU             *int      `json:"vcpu,omitempty" minimum:"1" maximum:"64"`
 	MemoryMB         *int      `json:"memory_mb,omitempty" minimum:"512" maximum:"262144"`

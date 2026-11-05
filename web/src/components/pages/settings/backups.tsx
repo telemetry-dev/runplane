@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react'
 import { backupsQuery } from '~/api/backups'
 import { $api, errorMessage, type Schemas } from '~/api/client'
 import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
 import { useSaveSettings } from '~/api/settings'
 import {
   DataTable,
@@ -15,17 +16,19 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { ErrorHint } from '~/components/app/error-hint'
+import { LoadErrorRow } from '~/components/app/load-error'
 import { None } from '~/components/app/none'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { StatusIcon } from '~/components/app/status-icon'
 import { Button, IconButton } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
-import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { Tooltip } from '~/components/ui/tooltip'
 import { formatBytes, formatDateTime } from '~/lib/format'
 import { backupStatus, storedOn } from './backup-info'
-import { CardTitle, ErrorHint, LoadError, SettingRows, SettingsCard, SettingsSection } from './parts'
+import { CardTitle, SettingRows, SettingsCard, SettingsSection } from './parts'
 import { showSaved } from './save'
 import { NumberSetting, SwitchSetting } from './setting-controls'
 
@@ -62,8 +65,7 @@ export function Backups({ settings }: { settings: Schemas['Settings'] }) {
           description="Older backup files on this server are deleted."
           value={settings.backup_keep}
           toPatch={(backup_keep) => ({ backup_keep })}
-          min={1}
-          max={365}
+          limit={limits.SettingsPatch.backup_keep}
         />
       </SettingRows>
       <div className="flex flex-col gap-l">
@@ -178,13 +180,15 @@ function BackupTable() {
         {backups.data ? (
           backups.data.map((backup) => <BackupRow key={backup.id} backup={backup} shown={shown} />)
         ) : backups.isError ? (
-          <div role="row" className="px-m">
-            <div role="cell">
-              <LoadError what="backups" onRetry={() => void backups.refetch()} retrying={backups.isFetching} />
-            </div>
-          </div>
+          <LoadErrorRow what="the backups" error={backups.error} onRetry={() => void backups.refetch()} retrying={backups.isFetching} />
         ) : (
-          <SkeletonRows shown={shown} />
+          <SkeletonRows label="Loading the backups">
+            <SkeletonCell shape="icon" />
+            <SkeletonCell lines={[96]} />
+            {shown.size && <SkeletonCell lines={[48]} align="end" />}
+            {shown.place && <SkeletonCell lines={[112]} />}
+            <SkeletonCell />
+          </SkeletonRows>
         )}
         {backups.data?.length === 0 && <DataTableEmpty>No backups yet.</DataTableEmpty>}
       </DataTable>
@@ -252,28 +256,4 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
       </DataTableCell>
     </DataTableRow>
   )
-}
-
-function SkeletonRows({ shown }: { shown: Shown }) {
-  return Array.from({ length: 3 }, (_, index) => (
-    <DataTableRow key={index}>
-      <DataTableCell>
-        <Skeleton className="size-[16px] rounded-full" />
-      </DataTableCell>
-      <DataTableCell>
-        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
-      </DataTableCell>
-      {shown.size && (
-        <DataTableCell align="end">
-          <Skeleton className="my-[3px] h-[12px] w-[48px]" />
-        </DataTableCell>
-      )}
-      {shown.place && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[112px]" />
-        </DataTableCell>
-      )}
-      <DataTableCell />
-    </DataTableRow>
-  ))
 }

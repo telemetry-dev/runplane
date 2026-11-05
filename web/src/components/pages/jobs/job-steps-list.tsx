@@ -6,11 +6,9 @@ import { formatDuration } from '~/lib/format'
 import { stepTime } from './job-format'
 
 type JobStepsListProps = {
-  steps: readonly Schemas['JobStep'][]
+  job: Pick<Schemas['Job'], 'id' | 'steps' | 'log_state'>
   /** Number of the step whose log shows, 0 for the whole log. */
   selected: number
-  /** The steps link to their logs. Only a stored log splits into steps. */
-  linked: boolean
   now: number
 }
 
@@ -19,7 +17,10 @@ type JobStepsListProps = {
  * selected step links back to the whole log. Steps that did not run have no log
  * and are not links.
  */
-export function JobStepsList({ steps, selected, linked, now }: JobStepsListProps) {
+export function JobStepsList({ job, selected, now }: JobStepsListProps) {
+  const { steps } = job
+  // Only a stored log splits into steps.
+  const linked = job.log_state === 'stored'
   return (
     <section aria-labelledby="job-steps" className="flex w-full shrink-0 flex-col gap-s xl:w-[280px]">
       <h2 id="job-steps" className="px-s text-m font-heavy text-neutral-10">
@@ -31,7 +32,7 @@ export function JobStepsList({ steps, selected, linked, now }: JobStepsListProps
         <ol className="flex flex-col gap-xxs">
           {steps.map((step) => (
             <li key={step.number}>
-              <StepRow step={step} selected={step.number === selected} linked={linked} now={now} />
+              <StepRow jobId={job.id} step={step} selected={step.number === selected} linked={linked} now={now} />
             </li>
           ))}
         </ol>
@@ -40,9 +41,9 @@ export function JobStepsList({ steps, selected, linked, now }: JobStepsListProps
   )
 }
 
-type StepRowProps = { step: Schemas['JobStep']; selected: boolean; linked: boolean; now: number }
+type StepRowProps = { jobId: string; step: Schemas['JobStep']; selected: boolean; linked: boolean; now: number }
 
-function StepRow({ step, selected, linked, now }: StepRowProps) {
+function StepRow({ jobId, step, selected, linked, now }: StepRowProps) {
   const status = stepStatus(step)
   const skipped = status === 'skipped'
   const time = stepTime(step, now)
@@ -62,8 +63,8 @@ function StepRow({ step, selected, linked, now }: StepRowProps) {
   if (!linked || skipped || !step.started_at) return <div className={row}>{content}</div>
   return (
     <Link
-      from="/jobs/$jobId"
-      to="."
+      to="/jobs/$jobId"
+      params={{ jobId }}
       search={{ step: selected ? 0 : step.number }}
       replace
       resetScroll={false}

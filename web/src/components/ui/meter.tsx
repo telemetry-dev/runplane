@@ -10,7 +10,7 @@ type MeterProps = Omit<BaseMeter.Root.Props, 'className' | 'children'> & {
 
 /**
  * Meter of gui/components/runplane/meter.md: a read-only measurement such as disk
- * use, drawn as a 3px color-1 bar. For the compact table bars use UsageBar.
+ * use. UsageBar puts it in the cells of a table.
  */
 export function Meter({ label, className, ...props }: MeterProps) {
   return (
@@ -21,7 +21,7 @@ export function Meter({ label, className, ...props }: MeterProps) {
           <BaseMeter.Value className="text-xs text-neutral-7 tabular-nums" />
         </div>
       )}
-      <BaseMeter.Track className="h-[3px] overflow-hidden rounded-full bg-neutral-3">
+      <BaseMeter.Track className="h-[4px] overflow-hidden rounded-full bg-neutral-3">
         <BaseMeter.Indicator className="h-full rounded-full bg-color-1 transition-[width]" />
       </BaseMeter.Track>
     </BaseMeter.Root>

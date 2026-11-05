@@ -212,7 +212,7 @@ func (h *Handler) getInvite(ctx context.Context, in *InviteToken) (*body[InviteI
 
 type AcceptInviteRequest struct {
 	Name     string `json:"name" maxLength:"100"`
-	Password string `json:"password" maxLength:"1024"`
+	Password string `json:"password" minLength:"10" maxLength:"1024"`
 }
 
 func (h *Handler) acceptInvite(ctx context.Context, in *struct {

@@ -1,4 +1,5 @@
 import type { Schemas } from '~/api/client'
+import { limits } from '~/api/limits'
 import { buildStateNames, type JobStatus } from '~/components/app/status-icon'
 
 type Build = Schemas['ImageBuild']
@@ -69,4 +70,4 @@ function inUse(version: string, arches: Arch[], current: Schemas['RunnerCurrent'
 
 type Arch = keyof Schemas['RunnerCurrent']
 
-const archOrder: Arch[] = ['x64', 'arm64']
+const archOrder: readonly Arch[] = limits.RunnerVersion.arch.enum

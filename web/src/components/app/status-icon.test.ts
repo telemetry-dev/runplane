@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'vitest'
-import { jobStatus, stepStatus } from './status-icon'
+import type { Schemas } from '~/api/client'
+import { jobStatus, stepStatus, type JobStatus } from './status-icon'
 
 describe('jobStatus', () => {
-  test.each([
+  test.each<[Pick<Schemas['JobSummary'], 'state' | 'result'>, JobStatus]>([
     [{ state: 'queued', result: null }, 'queued'],
     [{ state: 'assigned', result: null }, 'running'],
     [{ state: 'running', result: null }, 'running'],

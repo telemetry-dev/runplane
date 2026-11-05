@@ -121,7 +121,7 @@ func (h *Handler) logout(ctx context.Context, _ *struct{}) (*cookieOutput, error
 type UpdateMeRequest struct {
 	Name            *string `json:"name,omitempty" maxLength:"100"`
 	CurrentPassword *string `json:"current_password,omitempty" maxLength:"1024" doc:"Required with new_password."`
-	NewPassword     *string `json:"new_password,omitempty" maxLength:"1024" doc:"Logs out the other sessions of the user."`
+	NewPassword     *string `json:"new_password,omitempty" minLength:"10" maxLength:"1024" doc:"Logs out the other sessions of the user."`
 }
 
 func (h *Handler) updateMe(ctx context.Context, in *body[UpdateMeRequest]) (*sessionOutput, error) {

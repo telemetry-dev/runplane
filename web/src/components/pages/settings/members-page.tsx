@@ -1,25 +1,34 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { Ellipsis, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { $api, api, errorMessage, type Schemas } from '~/api/client'
-import { sessionQuery, useIsAdmin } from '~/api/session'
+import { useOptimisticPatch } from '~/api/optimistic-patch'
+import { api, errorMessage, type Schemas } from '~/api/client'
+import { isAdmin, sessionQuery, useIsAdmin } from '~/api/session'
 import { membersQuery } from '~/api/users'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import { DataTable, DataTableCell, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
+import { LoadError } from '~/components/app/load-error'
 import { None } from '~/components/app/none'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { Avatar } from '~/components/ui/avatar'
-import { Button, IconButton } from '~/components/ui/button'
+import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { Select, SelectItem, SelectPopup, SelectTrigger } from '~/components/ui/select'
-import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { formatRelativeTime } from '~/lib/format'
-import { Activity } from './activity'
+import { Activity, prefetchActivity } from './activity'
 import { Invites } from './invites'
 import { roles, type Members, type Role } from './member-info'
-import { LoadError, ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
+import { ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
 
 type User = Schemas['User']
+
+/** Starts the requests of the page, which are for admins only; the page shows its own loading and error states. */
+export function prefetch(client: QueryClient) {
+  if (!isAdmin(client)) return
+  void client.prefetchQuery(membersQuery)
+  prefetchActivity(client)
+}
 
 /** Settings · Members: the users with their roles, the open invites, and the activity of all users. */
 export function MemberSettings() {
@@ -45,7 +54,7 @@ export function MemberSettings() {
     <SettingsColumn>
       <SettingsSection title="Members" count={users?.length} table>
         {members.isError ? (
-          <LoadError what="members" onRetry={() => void members.refetch()} retrying={members.isFetching} />
+          <LoadError what="the members" error={members.error} onRetry={() => void members.refetch()} retrying={members.isFetching} />
         ) : (
           <div ref={fit.ref}>
             <DataTable aria-label="Members" columns={fit.columns}>
@@ -69,7 +78,13 @@ export function MemberSettings() {
                   />
                 ))
               ) : (
-                <SkeletonRows shown={fit.shown} />
+                <SkeletonRows label="Loading the members" count={2}>
+                  {fit.shown.avatar && <SkeletonCell shape="large-avatar" />}
+                  <SkeletonCell lines={[96, 120]} />
+                  <SkeletonCell shape="select" />
+                  {fit.shown.login && <SkeletonCell lines={[64]} />}
+                  <SkeletonCell />
+                </SkeletonRows>
               )}
             </DataTable>
           </div>
@@ -91,8 +106,14 @@ function UserRow({ user, me, onlyAdmin, shown }: UserRowProps) {
 
   function pickRole(role: Role) {
     // Taking away your own admin role ends your access to settings, so ask first.
-    if (me && role === 'member') setDialog('demote')
-    else changeRole.mutate({ user, role })
+    if (me && role === 'member') {
+      setDialog('demote')
+      return
+    }
+    changeRole.mutate(
+      { user, role },
+      { onError: (error) => toastManager.add({ title: `Could not change the role of ${user.name}`, description: errorMessage(error) }) },
+    )
   }
 
   return (
@@ -141,11 +162,13 @@ function UserRow({ user, me, onlyAdmin, shown }: UserRowProps) {
           </>
         )}
         {me && (
-          <DemoteMyself
+          <ConfirmDialog
             open={dialog === 'demote'}
             onOpenChange={(open) => setDialog(open ? 'demote' : undefined)}
-            onConfirm={() => changeRole.mutate({ user, role: 'member' }, { onSettled: () => setDialog(undefined) })}
-            pending={changeRole.isPending}
+            title="Make yourself a member?"
+            description="You can no longer change settings or manage members. Another admin can make you an admin again."
+            action="Make me a member"
+            onConfirm={() => changeRole.mutateAsync({ user, role: 'member' })}
           />
         )}
       </DataTableCell>
@@ -156,108 +179,35 @@ function UserRow({ user, me, onlyAdmin, shown }: UserRowProps) {
 /** PATCH /api/users/{id} {role}. The select changes at once and changes back if the API refuses. */
 function useChangeRole() {
   const client = useQueryClient()
-  const setRole = (id: string, role: Role) =>
-    client.setQueryData<Members>(
-      membersQuery.queryKey,
-      (old) => old && { ...old, users: old.users.map((item) => (item.id === id ? { ...item, role } : item)) },
-    )
-
-  return useMutation({
+  return useOptimisticPatch({
+    queryKey: membersQuery.queryKey,
     mutationFn: ({ user, role }: { user: User; role: Role }) =>
       api.PATCH('/api/users/{id}', { params: { path: { id: user.id } }, body: { role } }),
-    onMutate: async ({ user, role }) => {
-      await client.cancelQueries({ queryKey: membersQuery.queryKey })
-      setRole(user.id, role)
-    },
-    onError: (error, { user }) => {
-      setRole(user.id, user.role)
-      toastManager.add({ title: `Could not change the role of ${user.name}`, description: errorMessage(error) })
-    },
+    apply: (members: Members, { user, role }) => ({
+      ...members,
+      users: members.users.map((item) => (item.id === user.id ? { ...item, role } : item)),
+    }),
+    undo: ({ user }, before) => ({ user, role: before.users.find((item) => item.id === user.id)?.role ?? user.role }),
     // A change of your own role changes what this page may show.
     onSuccess: () => client.invalidateQueries({ queryKey: sessionQuery.queryKey }),
   })
-}
-
-type DemoteMyselfProps = { open: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void; pending: boolean }
-
-function DemoteMyself({ open, onOpenChange, onConfirm, pending }: DemoteMyselfProps) {
-  return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogPopup
-        title="Make yourself a member?"
-        description="You can no longer change settings or manage members. Another admin can make you an admin again."
-      >
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={pending} onClick={onConfirm}>
-            Make me a member
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
-  )
 }
 
 type RemoveUserProps = { user: User; open: boolean; onOpenChange: (open: boolean) => void }
 
 function RemoveUser({ user, open, onOpenChange }: RemoveUserProps) {
   const client = useQueryClient()
-  const remove = $api.useMutation('delete', '/api/users/{id}', { onSuccess: () => onOpenChange(false) })
-
   return (
-    <AlertDialog
+    <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      onOpenChangeComplete={(isOpen) => {
-        if (isOpen) return
-        // Drop the row only after the close animation; the dialog lives in it.
-        if (remove.isSuccess) {
-          client.setQueryData<Members>(
-            membersQuery.queryKey,
-            (old) => old && { ...old, users: old.users.filter((item) => item.id !== user.id) },
-          )
-        }
-        remove.reset()
-      }}
-    >
-      <AlertDialogPopup title={`Remove ${user.name}?`} description={`${user.name} is logged out and can no longer log in.`}>
-        {remove.error && (
-          <p role="alert" className="text-s text-error">
-            {errorMessage(remove.error)}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate({ params: { path: { id: user.id } } })}>
-            Remove member
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+      title={`Remove ${user.name}?`}
+      description={`${user.name} is logged out and can no longer log in.`}
+      action="Remove member"
+      onConfirm={() => api.DELETE('/api/users/{id}', { params: { path: { id: user.id } } })}
+      onDone={() =>
+        client.setQueryData<Members>(membersQuery.queryKey, (old) => old && { ...old, users: old.users.filter((item) => item.id !== user.id) })
+      }
+    />
   )
-}
-
-function SkeletonRows({ shown }: { shown: Shown }) {
-  return Array.from({ length: 2 }, (_, index) => (
-    <DataTableRow key={index}>
-      {shown.avatar && (
-        <DataTableCell>
-          <Skeleton className="size-[28px] rounded-full" />
-        </DataTableCell>
-      )}
-      <DataTableCell className="flex-col items-start gap-0">
-        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
-        <Skeleton className="my-[2px] h-[10px] w-[120px]" />
-      </DataTableCell>
-      <DataTableCell>
-        <Skeleton className="h-[calc(var(--line-s)+2*var(--space-xs))] w-[120px] rounded-s" />
-      </DataTableCell>
-      {shown.login && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[64px]" />
-        </DataTableCell>
-      )}
-      <DataTableCell />
-    </DataTableRow>
-  ))
 }

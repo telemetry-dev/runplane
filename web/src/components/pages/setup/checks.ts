@@ -1,26 +1,14 @@
 import type { Schemas } from '~/api/client'
+import { limits } from '~/api/limits'
 
 type HostCheck = Schemas['HostCheck']
-type Check = Schemas['Check']
 
-/**
- * Whether `code` has the shape of a setup code, as "7KQM-R4TX-W9HB". The
- * alphabet leaves out I, O, 0, and 1; the dashes are optional.
- */
+const setupCode = new RegExp(limits.SetupRequest.code.pattern)
+
+/** Whether `code` has the shape of a setup code, as "7KQM-R4TX-W9HB". */
 export function isSetupCode(code: string): boolean {
-  return /^[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}-?[A-HJ-NP-Z2-9]{4}$/i.test(code)
+  return setupCode.test(code)
 }
-
-/**
- * The checks to list: failed ones first, then warnings, then passed ones, each
- * group in API order. The summary above the list shows the mode, so the mode
- * check is left out.
- */
-export function listedChecks(checks: Check[]): Check[] {
-  return checks.filter((check) => check.id !== 'mode').toSorted((a, b) => statusOrder[a.status] - statusOrder[b.status])
-}
-
-const statusOrder: Record<Check['status'], number> = { fail: 0, warn: 1, ok: 2 }
 
 export const modeTitles: Record<HostCheck['mode'], string> = {
   vm: 'VM mode',
