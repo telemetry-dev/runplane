@@ -25,7 +25,6 @@ func (f *fakeGitHub) RoundTrip(r *http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: f.status,
 		Status:     http.StatusText(f.status),
-		Header:     http.Header{"Content-Type": {"text/plain; charset=utf-8"}},
 		Body:       io.NopCloser(strings.NewReader(f.body)),
 		Request:    r,
 	}, nil
@@ -56,11 +55,22 @@ func TestGitHubKeys(t *testing.T) {
 	}
 }
 
-func TestGitHubKeysUnknownUser(t *testing.T) {
-	gh := &fakeGitHub{status: http.StatusNotFound, body: "Not Found"}
-	got, err := NewGitHubKeys(&http.Client{Transport: gh}).Keys(context.Background(), "nobody-here")
-	if err != nil || len(got) != 0 {
-		t.Errorf("Keys = %d keys, %v; want no keys and no error", len(got), err)
+func TestGitHubKeysNone(t *testing.T) {
+	tests := []struct {
+		name, login  string
+		wantRequests int
+	}{
+		{"unknown user", "nobody-here", 1},
+		{"bot", "dependabot[bot]", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &fakeGitHub{status: http.StatusNotFound, body: "Not Found"}
+			got, err := NewGitHubKeys(&http.Client{Transport: gh}).Keys(context.Background(), tt.login)
+			if err != nil || len(got) != 0 || len(gh.urls) != tt.wantRequests {
+				t.Errorf("Keys = %d keys, %v, requests %q; want no keys, no error, and %d requests", len(got), err, gh.urls, tt.wantRequests)
+			}
+		})
 	}
 }
 
@@ -75,14 +85,6 @@ func TestGitHubKeysFailureIsNotKept(t *testing.T) {
 	got, err := keys.Keys(context.Background(), "octocat")
 	if err != nil || !hasKey(got, k) {
 		t.Errorf("Keys after GitHub is back = %d keys, %v; want the key", len(got), err)
-	}
-}
-
-func TestGitHubKeysBotHasNoKeys(t *testing.T) {
-	gh := &fakeGitHub{status: http.StatusOK}
-	got, err := NewGitHubKeys(&http.Client{Transport: gh}).Keys(context.Background(), "dependabot[bot]")
-	if err != nil || len(got) != 0 || len(gh.urls) != 0 {
-		t.Errorf("Keys = %d keys, %v, requests %q; want nothing", len(got), err, gh.urls)
 	}
 }
 

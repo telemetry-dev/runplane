@@ -5,25 +5,23 @@ import (
 	"time"
 )
 
-// limiter blocks a key (an IP address or an email) after max failures in
-// one window. It keeps the times of the last max failures of each key.
-type limiter struct {
-	max    int
-	window time.Duration
+const (
+	maxFailures = 10
+	failWindow  = 15 * time.Minute
+)
 
+// limiter blocks a key (an IP address or an email) after maxFailures in
+// failWindow. It keeps the times of the last maxFailures failures of each key.
+type limiter struct {
 	mu    sync.Mutex
 	fails map[string][]time.Time
 	swept time.Time
 }
 
-func newLimiter(max int, window time.Duration) *limiter {
-	return &limiter{max: max, window: window, fails: map[string][]time.Time{}}
-}
-
 func (l *limiter) blocked(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.recent(key, now)) >= l.max
+	return len(l.recent(key, now)) >= maxFailures
 }
 
 func (l *limiter) fail(key string, now time.Time) {
@@ -31,8 +29,8 @@ func (l *limiter) fail(key string, now time.Time) {
 	defer l.mu.Unlock()
 	l.sweep(now)
 	times := append(l.recent(key, now), now)
-	if len(times) > l.max {
-		times = times[len(times)-l.max:]
+	if len(times) > maxFailures {
+		times = times[len(times)-maxFailures:]
 	}
 	l.fails[key] = times
 }
@@ -46,7 +44,7 @@ func (l *limiter) reset(key string) {
 // recent returns the failures of key inside the window that ends at now.
 func (l *limiter) recent(key string, now time.Time) []time.Time {
 	times := l.fails[key]
-	for len(times) > 0 && now.Sub(times[0]) >= l.window {
+	for len(times) > 0 && now.Sub(times[0]) >= failWindow {
 		times = times[1:]
 	}
 	return times
@@ -55,12 +53,12 @@ func (l *limiter) recent(key string, now time.Time) []time.Time {
 // sweep drops the keys with no failure in the window, at most one time per
 // window, so the map does not grow without limit.
 func (l *limiter) sweep(now time.Time) {
-	if now.Sub(l.swept) < l.window {
+	if now.Sub(l.swept) < failWindow {
 		return
 	}
 	l.swept = now
 	for key, times := range l.fails {
-		if now.Sub(times[len(times)-1]) >= l.window {
+		if now.Sub(times[len(times)-1]) >= failWindow {
 			delete(l.fails, key)
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -133,10 +134,5 @@ func parseKeys(data []byte) []ssh.PublicKey {
 
 func hasKey(keys []ssh.PublicKey, key ssh.PublicKey) bool {
 	want := key.Marshal()
-	for _, k := range keys {
-		if bytes.Equal(k.Marshal(), want) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(keys, func(k ssh.PublicKey) bool { return bytes.Equal(k.Marshal(), want) })
 }

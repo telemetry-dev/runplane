@@ -4,6 +4,7 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -27,10 +28,23 @@ const (
 
 	MinPasswordLen = 10
 
-	maxFailures = 10
-	failWindow  = 15 * time.Minute
 	// touchEvery limits the session writes to one per minute for each session.
 	touchEvery = time.Minute
+)
+
+const (
+	RoleAdmin  = store.RoleAdmin
+	RoleMember = store.RoleMember
+)
+
+type Action int
+
+const (
+	ActionRead        Action = iota // read the dashboard data
+	ActionRerunJob                  // re-run a job, also with debug
+	ActionStopSandbox               // stop a sandbox
+	ActionOpenShell                 // open the debug shell of a sandbox
+	ActionAdmin                     // all other changes, and users, audit log, and backups
 )
 
 var (
@@ -58,7 +72,21 @@ type Service struct {
 // NewService returns the accounts of st. deviceKey signs the device tokens
 // of browsers that logged in; a service without one makes no valid tokens.
 func NewService(st *store.Store, deviceKey []byte) *Service {
-	return &Service{store: st, limiter: newLimiter(maxFailures, failWindow), deviceKey: deviceKey, now: time.Now}
+	return &Service{store: st, limiter: &limiter{fails: map[string][]time.Time{}}, deviceKey: deviceKey, now: time.Now}
+}
+
+// CanDo reports if a user with role can do the action. An unknown role can do nothing.
+func CanDo(role string, a Action) bool {
+	switch role {
+	case RoleAdmin:
+		return true
+	case RoleMember:
+		switch a {
+		case ActionRead, ActionRerunJob, ActionStopSandbox, ActionOpenShell:
+			return true
+		}
+	}
+	return false
 }
 
 // NewSetupCode makes a new setup code in the format XXXX-XXXX-XXXX. It is
@@ -99,7 +127,7 @@ func (s *Service) Setup(ctx context.Context, code, name, email, password, ip, us
 		return store.User{}, "", err
 	}
 	u.Email, u.Role = email, RoleAdmin
-	token, sess := s.newSession(u.ID, ip, userAgent, now)
+	token, sess := newSession(u.ID, ip, userAgent, now)
 	err = s.store.CreateFirstUser(ctx, hashCode(code), now, u, sess)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -164,7 +192,7 @@ func (s *Service) Login(ctx context.Context, email, password, device, ip, userAg
 	// an account must not reset it.
 	s.limiter.reset(key)
 
-	token, sess := s.newSession(u.ID, ip, userAgent, now)
+	token, sess := newSession(u.ID, ip, userAgent, now)
 	if err := s.store.CreateSession(ctx, sess); err != nil {
 		return store.User{}, "", err
 	}
@@ -173,6 +201,19 @@ func (s *Service) Login(ctx context.Context, email, password, device, ip, userAg
 	}
 	u.LastLoginAt = &now
 	return u, token, nil
+}
+
+// Device returns the device token for the browser of a user after a login:
+// token if it is valid for the user, or a new one. The dashboard keeps it in
+// a cookie, and Login gives a browser with the token a rate limit of its own.
+func (s *Service) Device(userID, token string) string {
+	if _, ok := s.deviceID(userID, token); ok {
+		return token
+	}
+	b := make([]byte, 16)
+	rand.Read(b)
+	id := base64.RawURLEncoding.EncodeToString(b)
+	return id + "." + s.deviceMAC(userID, id)
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {
@@ -187,20 +228,14 @@ func (s *Service) UserForToken(ctx context.Context, token string) (store.User, e
 	now := s.now()
 	hash := hashToken(token)
 	sess, u, err := s.store.SessionUser(ctx, hash, now)
+	if err == nil && now.Sub(sess.LastSeenAt) >= touchEvery {
+		err = s.store.TouchSession(ctx, hash, now, now.Add(SessionTTL))
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return store.User{}, ErrNoSession
 	}
 	if err != nil {
 		return store.User{}, err
-	}
-	if now.Sub(sess.LastSeenAt) >= touchEvery {
-		err := s.store.TouchSession(ctx, hash, now, now.Add(SessionTTL))
-		if errors.Is(err, store.ErrNotFound) {
-			return store.User{}, ErrNoSession
-		}
-		if err != nil {
-			return store.User{}, err
-		}
 	}
 	return u, nil
 }
@@ -236,7 +271,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, next, ip,
 	if err := s.store.DeleteUserSessions(ctx, u.ID); err != nil {
 		return "", err
 	}
-	token, sess := s.newSession(u.ID, ip, userAgent, now)
+	token, sess := newSession(u.ID, ip, userAgent, now)
 	if err := s.store.CreateSession(ctx, sess); err != nil {
 		return "", err
 	}
@@ -250,7 +285,7 @@ func (s *Service) CreateInvite(ctx context.Context, by, email, role string) (str
 	if !validEmail(email) {
 		return "", ErrBadEmail
 	}
-	if !ValidRole(role) {
+	if role != RoleAdmin && role != RoleMember {
 		return "", ErrBadRole
 	}
 	_, err := s.store.GetUserByEmail(ctx, email)
@@ -288,7 +323,7 @@ func (s *Service) AcceptInvite(ctx context.Context, token, name, password, ip, u
 	if err != nil {
 		return store.User{}, "", err
 	}
-	sessToken, sess := s.newSession(u.ID, ip, userAgent, now)
+	sessToken, sess := newSession(u.ID, ip, userAgent, now)
 	u, err = s.store.AcceptInvite(ctx, hashToken(token), now, u, sess)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -299,6 +334,21 @@ func (s *Service) AcceptInvite(ctx context.Context, token, name, password, ip, u
 		return store.User{}, "", err
 	}
 	return u, sessToken, nil
+}
+
+// deviceID returns the ID of a device token that Device made for userID.
+func (s *Service) deviceID(userID, token string) (string, bool) {
+	id, mac, ok := strings.Cut(token, ".")
+	if !ok || userID == "" || len(s.deviceKey) == 0 {
+		return "", false
+	}
+	return id, hmac.Equal([]byte(mac), []byte(s.deviceMAC(userID, id)))
+}
+
+func (s *Service) deviceMAC(userID, id string) string {
+	m := hmac.New(sha256.New, s.deviceKey)
+	m.Write([]byte(userID + "." + id))
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
 // newUser checks the name and the password, and returns a user with no email and role.
@@ -315,7 +365,7 @@ func newUser(name, password string, now time.Time) (store.User, error) {
 	}, nil
 }
 
-func (s *Service) newSession(userID, ip, userAgent string, now time.Time) (string, store.Session) {
+func newSession(userID, ip, userAgent string, now time.Time) (string, store.Session) {
 	token, hash := newToken()
 	return token, store.Session{
 		IDHash: hash, UserID: userID, CreatedAt: now, ExpiresAt: now.Add(SessionTTL), LastSeenAt: now,
