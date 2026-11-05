@@ -128,7 +128,6 @@ func (s *Service) Enrich(ctx context.Context, job store.Job) (scheduler.Enrichme
 	return e, nil
 }
 
-// githubJob reads the jobs of the run and finds the GitHub job of job.
 func (s *Service) githubJob(ctx context.Context, job store.Job) (workflowJob, error) {
 	if job.RunID == 0 {
 		return workflowJob{}, fmt.Errorf("find the GitHub job of %s: the job has no run ID", job.ID)
@@ -237,7 +236,6 @@ func (s *Service) DownloadLog(ctx context.Context, job store.Job) (io.ReadCloser
 
 const logTimeout = 10 * time.Minute
 
-// cancelBody ends the context of its download when it closes.
 type cancelBody struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -264,8 +262,6 @@ func (s *Service) Rerun(ctx context.Context, job store.Job) error {
 	return nil
 }
 
-// githubJobID returns the GitHub job ID, and reads the jobs of the run if
-// the ID is not known yet.
 func (s *Service) githubJobID(ctx context.Context, job store.Job) (int64, error) {
 	if job.GitHubJobID != 0 {
 		return job.GitHubJobID, nil

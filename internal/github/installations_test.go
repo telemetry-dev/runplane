@@ -114,7 +114,6 @@ func TestSyncInstallations(t *testing.T) {
 		t.Errorf("the scale set of the removed installation is still there: %v", err)
 	}
 
-	// The suspension ends.
 	org["suspended_at"] = nil
 	if err := e.svc.Sync(ctx); err != nil {
 		t.Fatal(err)

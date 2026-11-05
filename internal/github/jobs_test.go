@@ -43,7 +43,6 @@ var testJobs = []map[string]any{
 	{"id": 903, "run_attempt": 2, "name": "lint", "runner_name": "runplane-01def", "html_url": "https://x/903"},
 }
 
-// serveRun serves run 555 of acme/web with the jobs.
 func (e *env) serveRun(jobs []map[string]any) {
 	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, runJSON("push", true, 100))

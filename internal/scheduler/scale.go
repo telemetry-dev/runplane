@@ -187,7 +187,6 @@ func (h *scaleSet) handle(ctx context.Context, m Message) error {
 	return nil
 }
 
-// own gives the job message the scale set and the pool of h.
 func (h *scaleSet) own(jm JobMessage) JobMessage {
 	jm.ScaleSetID, jm.PoolID = h.set.ID, h.set.PoolID
 	return jm

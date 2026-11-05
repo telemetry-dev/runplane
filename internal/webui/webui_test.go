@@ -52,7 +52,6 @@ func TestServesBuild(t *testing.T) {
 				t.Fatalf("favicon: Cache-Control %q", res.Header.Get("Cache-Control"))
 			}
 
-			// Client routes, the shell itself, and dot files get the shell.
 			for _, path := range []string{"/", "/jobs/01jabc", "/settings/github?error=x", "/" + shellName, "/.keep"} {
 				res := get(t, h, path)
 				if res.StatusCode != 200 || body(t, res) != "<html>shell</html>" {

@@ -119,7 +119,6 @@ func (s *Service) publish(row store.Backup) {
 	s.cfg.Bus.Publish(events.BackupState(row))
 }
 
-// dropRows deletes the rows of the backup files that the retention removed.
 func (s *Service) dropRows(ctx context.Context, removed []string) {
 	if len(removed) == 0 {
 		return

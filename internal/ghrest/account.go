@@ -10,9 +10,8 @@ const (
 	User         = "User"
 )
 
-// Account is a GitHub organization or personal account.
 type Account struct {
-	Type  string `json:"type"` // Organization or User
+	Type  string `json:"type"` // Organization, User, or another GitHub account type
 	Login string `json:"login"`
 }
 

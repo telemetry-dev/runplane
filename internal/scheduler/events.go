@@ -112,7 +112,6 @@ func (s *Scheduler) addSample(serverID string, ev sandbox.Event) {
 	})
 }
 
-// flushMetrics writes the buffered samples of each sandbox to its job.
 func (s *Scheduler) flushMetrics(ctx context.Context) {
 	s.mu.Lock()
 	all := s.metrics
@@ -133,7 +132,6 @@ func (s *Scheduler) flushMetrics(ctx context.Context) {
 	}
 }
 
-// flushSandbox writes the buffered samples of one sandbox to its job.
 func (s *Scheduler) flushSandbox(ctx context.Context, id string) {
 	s.mu.Lock()
 	buf := s.metrics[id]

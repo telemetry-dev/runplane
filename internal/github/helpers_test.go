@@ -136,7 +136,6 @@ func (e *env) pool(id, label string, enabled bool) {
 	}
 }
 
-// checkJWT verifies an app JWT with the public key of the test app.
 func (e *env) checkJWT(r *http.Request) {
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	_, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },

@@ -53,7 +53,7 @@ func TestServiceCheck(t *testing.T) {
 }
 
 // The dashboard shows an update while it installs and while runplane
-// restarts. A second update waits for the end of the first.
+// restarts. A second update during the first gets ErrBusy.
 func TestServiceAppliesOneUpdate(t *testing.T) {
 	downloading, release := make(chan struct{}), make(chan struct{})
 	files := serve(t, loadRelease(t))
