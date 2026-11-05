@@ -208,6 +208,8 @@ The dashboard uses HTTP on port 8484. To get HTTPS with Let's Encrypt, set a dom
 ssh -L 8484:localhost:8484 user@server
 ```
 
+To set the domain from the shell of the primary, run `sudo runplane set-domain ci.example.com`. Then run `sudo systemctl restart runplane`. An empty domain (`''`) stops HTTPS.
+
 The primary also gives SSH access to the debug shell of a sandbox on port 2222 (`RUNPLANE_SSH_LISTEN` in `runplane.env`). The job actor connects with a key from GitHub. To give administrators access to all debug sandboxes, put their public keys in `/etc/runplane/authorized_keys`.
 
 If you do not know the admin password, run `sudo runplane reset-password <email>` on the primary. The command shows a new password and stops all sessions of that user.
