@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -27,52 +26,30 @@ type Backup struct {
 
 const backupCols = "id, created_at, path, size_bytes, s3_key, status, error"
 
-func scanBackup(sc scanner) (Backup, error) {
-	var b Backup
-	err := sc.Scan(&b.ID, at(&b.CreatedAt), &b.Path, &b.SizeBytes, &b.S3Key, &b.Status, &b.Error)
-	return b, err
+func (b *Backup) cols() []any {
+	return []any{&b.ID, at(&b.CreatedAt), &b.Path, &b.SizeBytes, &b.S3Key, &b.Status, &b.Error}
 }
 
 func (s *Store) CreateBackup(ctx context.Context, b Backup) error {
-	_, err := s.w.ExecContext(ctx, "INSERT INTO backups ("+backupCols+") VALUES ("+placeholders(7)+")",
-		b.ID, ms(b.CreatedAt), b.Path, b.SizeBytes, b.S3Key, b.Status, b.Error)
-	if err != nil {
-		return fmt.Errorf("create backup: %w", dbErr(err))
-	}
-	return nil
+	return exec(ctx, s.w, "create backup", insert("backups", backupCols), b.cols()...)
 }
 
 // UpdateBackup writes the path, size, S3 key, status, and error.
 func (s *Store) UpdateBackup(ctx context.Context, b Backup) error {
-	err := exec1(ctx, s.w, "UPDATE backups SET path = ?, size_bytes = ?, s3_key = ?, status = ?, error = ? WHERE id = ?",
+	return exec1(ctx, s.w, "update backup",
+		"UPDATE backups SET path = ?, size_bytes = ?, s3_key = ?, status = ?, error = ? WHERE id = ?",
 		b.Path, b.SizeBytes, b.S3Key, b.Status, b.Error, b.ID)
-	if err != nil {
-		return fmt.Errorf("update backup: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) GetBackup(ctx context.Context, id string) (Backup, error) {
-	b, err := scanBackup(s.r.QueryRowContext(ctx, "SELECT "+backupCols+" FROM backups WHERE id = ?", id))
-	if err != nil {
-		return Backup{}, fmt.Errorf("get backup: %w", dbErr(err))
-	}
-	return b, nil
+	return queryOne(ctx, s.r, "get backup", scanRow[Backup], "SELECT "+backupCols+" FROM backups WHERE id = ?", id)
 }
 
 // ListBackups returns the backups, newest first.
 func (s *Store) ListBackups(ctx context.Context) ([]Backup, error) {
-	rows, err := s.r.QueryContext(ctx, "SELECT "+backupCols+" FROM backups ORDER BY created_at DESC, id DESC")
-	list, err := scanAll(rows, err, scanBackup)
-	if err != nil {
-		return nil, fmt.Errorf("list backups: %w", err)
-	}
-	return list, nil
+	return queryAll(ctx, s.r, "list backups", scanRow[Backup], "SELECT "+backupCols+" FROM backups ORDER BY created_at DESC, id DESC")
 }
 
 func (s *Store) DeleteBackup(ctx context.Context, id string) error {
-	if err := exec1(ctx, s.w, "DELETE FROM backups WHERE id = ?", id); err != nil {
-		return fmt.Errorf("delete backup: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "delete backup", "DELETE FROM backups WHERE id = ?", id)
 }

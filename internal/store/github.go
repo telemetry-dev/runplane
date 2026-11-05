@@ -87,69 +87,54 @@ type ScaleSetStats struct {
 	IdleRunners       int `json:"idle_runners"`
 }
 
-const appCols = "id, app_id, slug, name, client_id, owner_login, owner_type, html_url, private_key_enc, client_secret_enc, webhook_secret_enc, created_at"
+const appCols = `id, app_id, slug, name, client_id, owner_login, owner_type, html_url, private_key_enc, client_secret_enc,
+	webhook_secret_enc, created_at`
+
+func (a *GitHubApp) cols() []any {
+	return []any{&a.ID, &a.AppID, &a.Slug, &a.Name, &a.ClientID, &a.OwnerLogin, &a.OwnerType, &a.HTMLURL,
+		&a.PrivateKeyEnc, &a.ClientSecretEnc, &a.WebhookSecretEnc, at(&a.CreatedAt)}
+}
 
 // GetGitHubApp returns the app, or ErrNotFound if runplane has no app.
 func (s *Store) GetGitHubApp(ctx context.Context) (GitHubApp, error) {
-	var a GitHubApp
-	err := s.r.QueryRowContext(ctx, "SELECT "+appCols+" FROM github_apps ORDER BY created_at DESC LIMIT 1").Scan(
-		&a.ID, &a.AppID, &a.Slug, &a.Name, &a.ClientID, &a.OwnerLogin, &a.OwnerType, &a.HTMLURL,
-		&a.PrivateKeyEnc, &a.ClientSecretEnc, &a.WebhookSecretEnc, at(&a.CreatedAt))
-	if err != nil {
-		return GitHubApp{}, fmt.Errorf("get github app: %w", dbErr(err))
-	}
-	return a, nil
+	return queryOne(ctx, s.r, "get github app", scanRow[GitHubApp],
+		"SELECT "+appCols+" FROM github_apps ORDER BY created_at DESC LIMIT 1")
 }
 
 // SaveGitHubApp stores the app in place of the earlier app. The installations
 // of the earlier app go with it.
 func (s *Store) SaveGitHubApp(ctx context.Context, a GitHubApp) error {
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, "save github app", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM github_apps WHERE id != ?", a.ID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO github_apps (`+appCols+`) VALUES (`+placeholders(12)+`)
-			ON CONFLICT (id) DO UPDATE SET app_id = excluded.app_id, slug = excluded.slug, name = excluded.name,
-				client_id = excluded.client_id, owner_login = excluded.owner_login, owner_type = excluded.owner_type,
-				html_url = excluded.html_url, private_key_enc = excluded.private_key_enc,
-				client_secret_enc = excluded.client_secret_enc, webhook_secret_enc = excluded.webhook_secret_enc`,
-			a.ID, a.AppID, a.Slug, a.Name, a.ClientID, a.OwnerLogin, a.OwnerType, a.HTMLURL,
-			a.PrivateKeyEnc, a.ClientSecretEnc, a.WebhookSecretEnc, ms(a.CreatedAt))
+		_, err := tx.ExecContext(ctx, upsert("github_apps", appCols, "id"), a.cols()...)
 		return dbErr(err)
 	})
-	if err != nil {
-		return fmt.Errorf("save github app: %w", err)
-	}
-	return nil
 }
 
 // DeleteGitHubApp also deletes its installations and their repositories.
 func (s *Store) DeleteGitHubApp(ctx context.Context, id string) error {
-	if err := exec1(ctx, s.w, "DELETE FROM github_apps WHERE id = ?", id); err != nil {
-		return fmt.Errorf("delete github app: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "delete github app", "DELETE FROM github_apps WHERE id = ?", id)
+}
+
+const manifestCols = "state_hash, account_type, organization, created_at, expires_at"
+
+func (m *ManifestState) cols() []any {
+	return []any{&m.StateHash, &m.AccountType, &m.Organization, at(&m.CreatedAt), at(&m.ExpiresAt)}
 }
 
 func (s *Store) CreateManifestState(ctx context.Context, m ManifestState) error {
-	_, err := s.w.ExecContext(ctx,
-		"INSERT INTO manifest_states (state_hash, account_type, organization, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-		m.StateHash, m.AccountType, m.Organization, ms(m.CreatedAt), ms(m.ExpiresAt))
-	if err != nil {
-		return fmt.Errorf("create manifest state: %w", dbErr(err))
-	}
-	return nil
+	return exec(ctx, s.w, "create manifest state", insert("manifest_states", manifestCols), m.cols()...)
 }
 
 // ConsumeManifestState deletes the state and returns it. It returns
 // ErrNotFound if the state is unknown or expired at now.
 func (s *Store) ConsumeManifestState(ctx context.Context, stateHash string, now time.Time) (ManifestState, error) {
-	var m ManifestState
-	err := s.w.QueryRowContext(ctx, `DELETE FROM manifest_states WHERE state_hash = ?
-		RETURNING state_hash, account_type, organization, created_at, expires_at`, stateHash).Scan(
-		&m.StateHash, &m.AccountType, &m.Organization, at(&m.CreatedAt), at(&m.ExpiresAt))
+	m, err := queryOne(ctx, s.w, "use manifest state", scanRow[ManifestState],
+		"DELETE FROM manifest_states WHERE state_hash = ? RETURNING "+manifestCols, stateHash)
 	if err != nil {
-		return ManifestState{}, fmt.Errorf("use manifest state: %w", dbErr(err))
+		return ManifestState{}, err
 	}
 	if !m.ExpiresAt.After(now) {
 		return ManifestState{}, fmt.Errorf("use manifest state: %w", ErrNotFound)
@@ -157,173 +142,114 @@ func (s *Store) ConsumeManifestState(ctx context.Context, stateHash string, now 
 	return m, nil
 }
 
-const installationCols = "id, app_id, account_login, account_id, account_type, avatar_url, repository_selection, suspended_at, created_at, updated_at"
+const installationCols = `id, app_id, account_login, account_id, account_type, avatar_url, repository_selection,
+	suspended_at, created_at, updated_at`
 
-func scanInstallation(sc scanner) (Installation, error) {
-	var i Installation
-	err := sc.Scan(&i.ID, &i.AppID, &i.AccountLogin, &i.AccountID, &i.AccountType, &i.AvatarURL,
-		&i.RepositorySelection, atPtr(&i.SuspendedAt), at(&i.CreatedAt), at(&i.UpdatedAt))
-	return i, err
+func (i *Installation) cols() []any {
+	return []any{&i.ID, &i.AppID, &i.AccountLogin, &i.AccountID, &i.AccountType, &i.AvatarURL, &i.RepositorySelection,
+		atPtr(&i.SuspendedAt), at(&i.CreatedAt), at(&i.UpdatedAt)}
 }
 
 // UpsertInstallation keeps the created_at of a known installation.
 func (s *Store) UpsertInstallation(ctx context.Context, i Installation) error {
-	_, err := s.w.ExecContext(ctx, `INSERT INTO installations (`+installationCols+`) VALUES (`+placeholders(10)+`)
-		ON CONFLICT (id) DO UPDATE SET app_id = excluded.app_id, account_login = excluded.account_login,
-			account_id = excluded.account_id, account_type = excluded.account_type, avatar_url = excluded.avatar_url,
-			repository_selection = excluded.repository_selection, suspended_at = excluded.suspended_at,
-			updated_at = excluded.updated_at`,
-		i.ID, i.AppID, i.AccountLogin, i.AccountID, i.AccountType, i.AvatarURL, i.RepositorySelection,
-		msPtr(i.SuspendedAt), ms(i.CreatedAt), ms(i.UpdatedAt))
-	if err != nil {
-		return fmt.Errorf("save installation: %w", dbErr(err))
-	}
-	return nil
+	return exec(ctx, s.w, "save installation", upsert("installations", installationCols, "id"), i.cols()...)
 }
 
 func (s *Store) GetInstallation(ctx context.Context, id int64) (Installation, error) {
-	i, err := scanInstallation(s.r.QueryRowContext(ctx, "SELECT "+installationCols+" FROM installations WHERE id = ?", id))
-	if err != nil {
-		return Installation{}, fmt.Errorf("get installation: %w", dbErr(err))
-	}
-	return i, nil
+	return queryOne(ctx, s.r, "get installation", scanRow[Installation],
+		"SELECT "+installationCols+" FROM installations WHERE id = ?", id)
 }
 
 func (s *Store) ListInstallations(ctx context.Context) ([]Installation, error) {
-	rows, err := s.r.QueryContext(ctx, "SELECT "+installationCols+" FROM installations ORDER BY account_login")
-	list, err := scanAll(rows, err, scanInstallation)
-	if err != nil {
-		return nil, fmt.Errorf("list installations: %w", err)
-	}
-	return list, nil
+	return queryAll(ctx, s.r, "list installations", scanRow[Installation],
+		"SELECT "+installationCols+" FROM installations ORDER BY account_login")
 }
 
-// SetInstallationSuspended sets or clears (nil) the suspension time.
 // DeleteInstallation also deletes its repositories.
 func (s *Store) DeleteInstallation(ctx context.Context, id int64) error {
-	if err := exec1(ctx, s.w, "DELETE FROM installations WHERE id = ?", id); err != nil {
-		return fmt.Errorf("delete installation: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "delete installation", "DELETE FROM installations WHERE id = ?", id)
 }
 
 const repositoryCols = "id, installation_id, full_name, private, archived, default_branch, updated_at"
 
-func scanRepository(sc scanner) (Repository, error) {
-	var r Repository
-	err := sc.Scan(&r.ID, &r.InstallationID, &r.FullName, &r.Private, &r.Archived, &r.DefaultBranch, at(&r.UpdatedAt))
-	return r, err
+func (r *Repository) cols() []any {
+	return []any{&r.ID, &r.InstallationID, &r.FullName, &r.Private, &r.Archived, &r.DefaultBranch, at(&r.UpdatedAt)}
 }
 
 // ReplaceRepositories makes repos the full set of repositories of the installation.
 func (s *Store) ReplaceRepositories(ctx context.Context, installationID int64, repos []Repository) error {
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, "replace repositories", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM repositories WHERE installation_id = ?", installationID); err != nil {
 			return err
 		}
+		query := upsert("repositories", repositoryCols, "id")
 		for _, r := range repos {
-			_, err := tx.ExecContext(ctx, `INSERT INTO repositories (`+repositoryCols+`) VALUES (`+placeholders(7)+`)
-				ON CONFLICT (id) DO UPDATE SET installation_id = excluded.installation_id, full_name = excluded.full_name,
-					private = excluded.private, archived = excluded.archived, default_branch = excluded.default_branch,
-					updated_at = excluded.updated_at`,
-				r.ID, installationID, r.FullName, r.Private, r.Archived, r.DefaultBranch, ms(r.UpdatedAt))
-			if err != nil {
+			r.InstallationID = installationID
+			if _, err := tx.ExecContext(ctx, query, r.cols()...); err != nil {
 				return dbErr(err)
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("replace repositories: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) ListRepositories(ctx context.Context, installationID int64) ([]Repository, error) {
-	rows, err := s.r.QueryContext(ctx,
+	return queryAll(ctx, s.r, "list repositories", scanRow[Repository],
 		"SELECT "+repositoryCols+" FROM repositories WHERE installation_id = ? ORDER BY full_name", installationID)
-	list, err := scanAll(rows, err, scanRepository)
-	if err != nil {
-		return nil, fmt.Errorf("list repositories: %w", err)
-	}
-	return list, nil
 }
 
 // GetRepositoryByName matches owner/name without regard to case.
 func (s *Store) GetRepositoryByName(ctx context.Context, fullName string) (Repository, error) {
-	r, err := scanRepository(s.r.QueryRowContext(ctx,
-		"SELECT "+repositoryCols+" FROM repositories WHERE full_name = ? LIMIT 1", fullName))
-	if err != nil {
-		return Repository{}, fmt.Errorf("get repository: %w", dbErr(err))
-	}
-	return r, nil
+	return queryOne(ctx, s.r, "get repository", scanRow[Repository],
+		"SELECT "+repositoryCols+" FROM repositories WHERE full_name = ? LIMIT 1", fullName)
 }
 
-const scaleSetCols = "id, pool_id, installation_id, repository_id, github_id, runner_group_id, name, status, error, last_poll_at, stats_json, updated_at"
+const scaleSetCols = `id, pool_id, installation_id, repository_id, github_id, runner_group_id, name, status, error,
+	last_poll_at, stats_json, updated_at`
 
-func scanScaleSet(sc scanner) (ScaleSet, error) {
-	var x ScaleSet
-	err := sc.Scan(&x.ID, &x.PoolID, &x.InstallationID, &x.RepositoryID, &x.GitHubID, &x.RunnerGroupID,
-		&x.Name, &x.Status, &x.Error, atPtr(&x.LastPollAt), jsonCol(&x.Stats), at(&x.UpdatedAt))
-	return x, err
+func (x *ScaleSet) cols() []any {
+	return []any{&x.ID, &x.PoolID, &x.InstallationID, &x.RepositoryID, &x.GitHubID, &x.RunnerGroupID, &x.Name, &x.Status,
+		&x.Error, atPtr(&x.LastPollAt), jsonCol(&x.Stats), at(&x.UpdatedAt)}
 }
 
 // UpsertScaleSet writes all columns of the scale set with this ID. It returns
 // ErrConflict if a different scale set has the same pool, installation, and repository.
 func (s *Store) UpsertScaleSet(ctx context.Context, x ScaleSet) error {
-	_, err := s.w.ExecContext(ctx, `INSERT INTO scale_sets (`+scaleSetCols+`) VALUES (`+placeholders(12)+`)
-		ON CONFLICT (id) DO UPDATE SET pool_id = excluded.pool_id, installation_id = excluded.installation_id,
-			repository_id = excluded.repository_id, github_id = excluded.github_id,
-			runner_group_id = excluded.runner_group_id, name = excluded.name, status = excluded.status,
-			error = excluded.error, last_poll_at = excluded.last_poll_at, stats_json = excluded.stats_json,
-			updated_at = excluded.updated_at`,
-		x.ID, x.PoolID, x.InstallationID, x.RepositoryID, x.GitHubID, x.RunnerGroupID, x.Name, x.Status, x.Error,
-		msPtr(x.LastPollAt), jsonArg(x.Stats), ms(x.UpdatedAt))
-	if err != nil {
-		return fmt.Errorf("save scale set: %w", dbErr(err))
-	}
-	return nil
+	return exec(ctx, s.w, "save scale set", upsert("scale_sets", scaleSetCols, "id"), x.cols()...)
 }
 
 func (s *Store) GetScaleSet(ctx context.Context, id string) (ScaleSet, error) {
-	x, err := scanScaleSet(s.r.QueryRowContext(ctx, "SELECT "+scaleSetCols+" FROM scale_sets WHERE id = ?", id))
-	if err != nil {
-		return ScaleSet{}, fmt.Errorf("get scale set: %w", dbErr(err))
-	}
-	return x, nil
+	return queryOne(ctx, s.r, "get scale set", scanRow[ScaleSet], "SELECT "+scaleSetCols+" FROM scale_sets WHERE id = ?", id)
 }
 
 func (s *Store) ListScaleSets(ctx context.Context) ([]ScaleSet, error) {
-	rows, err := s.r.QueryContext(ctx, "SELECT "+scaleSetCols+" FROM scale_sets ORDER BY name, id")
-	list, err := scanAll(rows, err, scanScaleSet)
-	if err != nil {
-		return nil, fmt.Errorf("list scale sets: %w", err)
-	}
-	return list, nil
+	return queryAll(ctx, s.r, "list scale sets", scanRow[ScaleSet], "SELECT "+scaleSetCols+" FROM scale_sets ORDER BY name, id")
 }
 
 func (s *Store) SetScaleSetStatus(ctx context.Context, id, status, errMsg string) error {
-	err := exec1(ctx, s.w, "UPDATE scale_sets SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+	return exec1(ctx, s.w, "set scale set status", "UPDATE scale_sets SET status = ?, error = ?, updated_at = ? WHERE id = ?",
 		status, errMsg, ms(time.Now()), id)
-	if err != nil {
-		return fmt.Errorf("set scale set status: %w", err)
-	}
-	return nil
 }
 
-// SetScaleSetStats records the statistics of a listener message received at polledAt.
+// SetScaleSetRemote records the GitHub side of a scale set. It does not
+// touch the status, the statistics, or the poll time.
+func (s *Store) SetScaleSetRemote(ctx context.Context, id string, githubID, runnerGroupID int64, name string) error {
+	return exec1(ctx, s.w, "set scale set remote",
+		"UPDATE scale_sets SET github_id = ?, runner_group_id = ?, name = ?, updated_at = ? WHERE id = ?",
+		githubID, runnerGroupID, name, ms(time.Now()), id)
+}
+
 func (s *Store) SetScaleSetStats(ctx context.Context, id string, stats ScaleSetStats, polledAt time.Time) error {
-	err := exec1(ctx, s.w, "UPDATE scale_sets SET stats_json = ?, last_poll_at = ?, updated_at = ? WHERE id = ?",
-		jsonArg(stats), ms(polledAt), ms(time.Now()), id)
-	if err != nil {
-		return fmt.Errorf("set scale set stats: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "set scale set stats",
+		"UPDATE scale_sets SET stats_json = ?, last_poll_at = ?, updated_at = ? WHERE id = ?",
+		jsonCol(&stats), ms(polledAt), ms(time.Now()), id)
+}
+
+// TouchScaleSetPoll records a listener poll that brought no statistics.
+func (s *Store) TouchScaleSetPoll(ctx context.Context, id string, polledAt time.Time) error {
+	return exec1(ctx, s.w, "touch scale set poll", "UPDATE scale_sets SET last_poll_at = ? WHERE id = ?", ms(polledAt), id)
 }
 
 func (s *Store) DeleteScaleSet(ctx context.Context, id string) error {
-	if err := exec1(ctx, s.w, "DELETE FROM scale_sets WHERE id = ?", id); err != nil {
-		return fmt.Errorf("delete scale set: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "delete scale set", "DELETE FROM scale_sets WHERE id = ?", id)
 }

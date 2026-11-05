@@ -14,9 +14,5 @@ func String() string {
 	if Commit == "" {
 		return Version
 	}
-	commit := Commit
-	if len(commit) > 7 {
-		commit = commit[:7]
-	}
-	return Version + " (" + commit + ")"
+	return Version + " (" + Commit[:min(len(Commit), 7)] + ")"
 }
