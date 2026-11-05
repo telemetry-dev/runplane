@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/moby/moby/client"
 
@@ -258,6 +259,47 @@ func printVersion(_ context.Context, args []string) error {
 		return err
 	}
 	fmt.Println("runplane", version.String())
+	return nil
+}
+
+// setDomain stores the domain setting of the primary, for install.sh
+// --domain. It makes the database when it does not exist, because a new
+// install sets the domain before the first start. HTTPS for the domain
+// starts when runplane starts again.
+func setDomain(ctx context.Context, args []string) error {
+	config.LoadEnvFile()
+	flags := flag.NewFlagSet("set-domain", flag.ContinueOnError)
+	cfg, err := config.Parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("give the domain: runplane set-domain ci.example.com")
+	}
+	domain := strings.ToLower(strings.TrimSpace(flags.Arg(0)))
+	if domain != "" && !api.ValidDomain(domain) {
+		return fmt.Errorf("%q is not a domain name such as ci.example.com", domain)
+	}
+	if exists(cfg.AgentConfigPath()) {
+		return errors.New("this server is an agent: only the primary serves the dashboard")
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	_, err = st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.Domain = domain
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if domain == "" {
+		fmt.Println("runplane stops HTTPS after its next start.")
+	} else {
+		fmt.Printf("runplane serves https://%s after its next start.\n", domain)
+	}
 	return nil
 }
 

@@ -31,6 +31,7 @@ var commands = map[string]command{
 	"setup-code":     {"print a new one-time setup code for the first admin", setupCode},
 	"reset-password": {"set a new random password for a user: reset-password <email>", resetPassword},
 	"set-mode":       {"set the sandbox mode of the primary: set-mode container|vm|dev", setMode},
+	"set-domain":     {"set the HTTPS domain of the dashboard: set-domain <domain>, or set-domain '' for no HTTPS", setDomain},
 	"openapi":        {"print the OpenAPI spec of the API as JSON", openapi},
 	"version":        {"print the version", printVersion},
 }
