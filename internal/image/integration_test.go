@@ -14,7 +14,6 @@ import (
 	"github.com/runplane/runplane/internal/ext4/ext4test"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/guest"
-	"github.com/runplane/runplane/internal/version"
 )
 
 // These tests use the network, and the Docker tests use the Docker daemon
@@ -38,8 +37,7 @@ func TestDockerBuildsBuiltinImage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	docker := dockerClient(t)
-	noPublishedImages(t)
-	m, err := New(Config{Mode: sandbox.ModeContainer, Docker: docker, Logger: testLogger(t)})
+	m, err := New(Config{Mode: sandbox.ModeContainer, Docker: docker, Repo: noPublishedImages, Logger: testLogger(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +64,6 @@ func TestDockerBuildsBuiltinImage(t *testing.T) {
 func TestDockerBuildsBuiltinRootDisk(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	noPublishedImages(t)
 	m := vmManager(t, dockerClient(t))
 	var steps []Progress
 	img, err := m.Ensure(ctx, "builtin:ubuntu-24.04", func(p Progress) { steps = append(steps, p) })
@@ -88,6 +85,7 @@ func vmManager(t *testing.T, docker *client.Client) *Manager {
 		Mode:      sandbox.ModeVM,
 		ImagesDir: t.TempDir(),
 		Docker:    docker,
+		Repo:      noPublishedImages,
 		Init:      func() ([]byte, error) { return []byte("#!runplane-init"), nil },
 		Logger:    testLogger(t),
 	})
@@ -97,12 +95,8 @@ func vmManager(t *testing.T, docker *client.Client) *Manager {
 	return m
 }
 
-// noPublishedImages makes the pull of each builtin image fail.
-func noPublishedImages(t *testing.T) {
-	repo := version.Repo
-	version.Repo = "runplane/no-such-repo"
-	t.Cleanup(func() { version.Repo = repo })
-}
+// noPublishedImages is a repository that publishes no builtin images.
+const noPublishedImages = "runplane/no-such-repo"
 
 func dockerClient(t *testing.T) *client.Client {
 	t.Helper()

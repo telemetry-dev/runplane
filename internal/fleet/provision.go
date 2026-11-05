@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"slices"
 	"strings"
 	"sync"
@@ -31,18 +30,11 @@ func (f *Fleet) seedImages(ctx context.Context) (bool, error) {
 	if err != nil || len(list) > 0 {
 		return false, err
 	}
-	dirs, err := fs.ReadDir(images.FS, ".")
-	if err != nil {
-		return false, fmt.Errorf("list builtin images: %w", err)
-	}
 	now := f.now()
-	for _, d := range dirs {
-		if !d.IsDir() {
-			continue
-		}
+	for _, name := range images.Names {
 		img := store.Image{
-			ID: ids.New(), Name: d.Name(), Ref: "builtin:" + d.Name(), IsDefault: d.Name() == images.Default,
-			Source: "builtin", CreatedAt: now, UpdatedAt: now,
+			ID: ids.New(), Name: name, Ref: images.Prefix + name, IsDefault: name == images.Default,
+			Source: images.Source, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := f.st.CreateImage(ctx, img); err != nil {
 			return false, fmt.Errorf("add builtin image: %w", err)

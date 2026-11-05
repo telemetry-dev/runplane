@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -27,7 +26,6 @@ import (
 	"github.com/runplane/runplane/internal/blob"
 	"github.com/runplane/runplane/internal/keylock"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/version"
 )
 
 type Status string
@@ -63,6 +61,9 @@ type Image struct {
 type Config struct {
 	Mode      sandbox.Mode
 	ImagesDir string // VM mode: the root disks
+	// Repo is the repository that publishes the builtin images, for example
+	// "runplane/runplane" (version.Repo).
+	Repo string
 	// Docker is necessary in container and dev mode. In VM mode it is
 	// optional: with it, runplane can build a builtin image that it cannot pull.
 	Docker *client.Client
@@ -115,11 +116,10 @@ func New(cfg Config) (*Manager, error) {
 }
 
 // Ensure makes the image ready on this server and returns it. ref is an OCI
-// reference, or "builtin:<name>" for a folder of the images package, for
-// example "builtin:ubuntu-24.04". A builtin image comes from
-// ghcr.io/<version.Repo>/runner-<name>:latest, or from a local build when
-// that pull fails. progress, if not nil, gets each step. Calls for the same
-// ref wait for each other.
+// reference, or "builtin:<name>" for a builtin image of the images package,
+// for example "builtin:ubuntu-24.04". A builtin image comes from images.Ref
+// of Config.Repo, or from a local build when that pull fails. progress, if
+// not nil, gets each step. Calls for the same ref wait for each other.
 func (m *Manager) Ensure(ctx context.Context, ref string, progress func(Progress)) (Image, error) {
 	r := &reporter{fn: progress}
 	r.status(StatusPending)
@@ -201,23 +201,14 @@ type source struct {
 }
 
 func (m *Manager) source(ref string) (source, error) {
-	name, ok := strings.CutPrefix(ref, "builtin:")
-	if !ok {
+	if !strings.HasPrefix(ref, images.Prefix) {
 		return source{ref: ref}, nil
 	}
-	if !fs.ValidPath(name) || strings.Contains(name, "/") {
-		return source{}, fmt.Errorf("unknown builtin image %q", name)
+	name, ok := images.Name(ref)
+	if !ok {
+		return source{}, fmt.Errorf("unknown builtin image %q", strings.TrimPrefix(ref, images.Prefix))
 	}
-	if _, err := fs.Stat(images.FS, name+"/Dockerfile"); err != nil {
-		return source{}, fmt.Errorf("unknown builtin image %q", name)
-	}
-	return source{ref: BuiltinRef(name), builtin: name}, nil
-}
-
-// BuiltinRef is the registry reference of the builtin image name, which the
-// images workflow of the release repository publishes.
-func BuiltinRef(name string) string {
-	return "ghcr.io/" + strings.ToLower(version.Repo) + "/runner-" + name + ":latest"
+	return source{ref: images.Ref(m.cfg.Repo, name), builtin: name}, nil
 }
 
 // CanPull reads the manifest and the config of ref for this platform, as

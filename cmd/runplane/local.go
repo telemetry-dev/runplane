@@ -27,6 +27,7 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
 	"github.com/runplane/runplane/internal/update"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // local is the server that this process operates: its sandbox driver, and
@@ -61,7 +62,8 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		l.onClose(func() { docker.Close() })
 	}
 	images, err := image.New(image.Config{
-		Mode: lc.mode, ImagesDir: cfg.ImagesDir(), Docker: docker, Init: initbin.Bytes, Logger: log.With("component", "image"),
+		Mode: lc.mode, ImagesDir: cfg.ImagesDir(), Repo: version.Repo, Docker: docker, Init: initbin.Bytes,
+		Logger: log.With("component", "image"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start the image manager: %w", err)
@@ -161,7 +163,7 @@ func dockerClient(ctx context.Context, mode sandbox.Mode) (*client.Client, error
 
 // baseImage tries to pull the default builtin image, for the doctor.
 func baseImage(ctx context.Context) (string, error) {
-	ref := image.BuiltinRef(images.Default)
+	ref := images.Ref(version.Repo, images.Default)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	return ref, image.CanPull(ctx, ref)
