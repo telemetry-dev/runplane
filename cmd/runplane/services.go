@@ -44,31 +44,15 @@ func (p pools) PoolsChanged(ctx context.Context) {
 // service fills it.
 type githubRef struct{ *github.Service }
 
-// caches is the api Caches service.
+// caches is the api Caches service: the cache server, and the mirror stats
+// of all servers.
 type caches struct {
-	srv    *cache.Server
+	*cache.Server
 	mirror *mirror.Mirror
 	// agents sums the mirror stats of the agents, which have mirrors of
 	// their own.
 	agents func(context.Context) mirror.Stats
 }
-
-func (c caches) Delete(ctx context.Context, repository, id string) (int, error) {
-	if id == "" {
-		if repository == "" {
-			return 0, huma.Error422UnprocessableEntity("Give a repository or an entry ID.")
-		}
-		return c.srv.DeleteRepository(ctx, repository)
-	}
-	if err := c.srv.Delete(ctx, id); errors.Is(err, cache.ErrNotFound) {
-		return 0, huma.Error404NotFound("No cache entry has this ID.")
-	} else if err != nil {
-		return 0, err
-	}
-	return 1, nil
-}
-
-func (c caches) MaxBytes() int64 { return c.srv.Limit() }
 
 // MirrorStats sums the registry mirror stats of all servers.
 func (c caches) MirrorStats(ctx context.Context) (api.MirrorStats, error) {

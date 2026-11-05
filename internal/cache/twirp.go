@@ -183,7 +183,6 @@ func (s *Server) create(ctx context.Context, req request, in *createRequest) (an
 		Ref:        req.Ref,
 		Key:        in.Key,
 		Version:    in.Version,
-		Path:       blobPath(id),
 		CreatedAt:  now,
 		LastUsedAt: now,
 	}
@@ -198,7 +197,7 @@ func (s *Server) create(ctx context.Context, req request, in *createRequest) (an
 		if err := s.remove(ctx, old); err != nil {
 			return nil, err
 		}
-	case !errors.Is(err, ErrNotFound):
+	case !errors.Is(err, store.ErrNotFound):
 		return nil, fmt.Errorf("find entry: %w", err)
 	}
 	if !s.uploads.open(id, req.SandboxID) {
@@ -237,7 +236,7 @@ func (s *Server) commit(ctx context.Context, req request, in *finalizeRequest) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, err := s.cfg.Store.GetCacheEntryByKey(ctx, req.Repository, req.Ref, in.Key, in.Version)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) {
 		return finalizeResponse{}, twirpErr("not_found", "no upload for this cache entry")
 	}
 	if err != nil {
@@ -256,8 +255,8 @@ func (s *Server) commit(ctx context.Context, req request, in *finalizeRequest) (
 		return finalizeResponse{}, err
 	case in.SizeBytes > 0 && size != int64(in.SizeBytes):
 		problem = fmt.Sprintf("the upload has %d bytes, not %d", size, in.SizeBytes)
-	case size > s.Limit():
-		problem = fmt.Sprintf("the entry has %d bytes, more than the cache limit of %d bytes", size, s.Limit())
+	case size > s.MaxBytes():
+		problem = fmt.Sprintf("the entry has %d bytes, more than the cache limit of %d bytes", size, s.MaxBytes())
 	}
 	if problem != "" {
 		// Drop the upload, so that the job can try again at once.
@@ -270,7 +269,7 @@ func (s *Server) commit(ctx context.Context, req request, in *finalizeRequest) (
 		return finalizeResponse{}, fmt.Errorf("finalize entry: %w", err)
 	}
 	s.uploads.drop(e.ID)
-	s.cfg.Stats.Add(e.Repository, store.CacheCounts{BytesWritten: size})
+	s.stats.add(e.Repository, store.CacheCounts{BytesWritten: size})
 	s.cfg.Logger.Info("cache: saved", "repository", e.Repository, "ref", e.Ref, "key", e.Key, "bytes", size)
 	return finalizeResponse{OK: true, EntryID: entryID(e)}, nil
 }
@@ -289,8 +288,8 @@ func (s *Server) downloadURL(ctx context.Context, req request, in *downloadReque
 		return nil, twirpErr("permission_denied", "cache read denied: runplane knows no ref of this job")
 	}
 	e, err := s.match(ctx, req, keys, in.Version)
-	if errors.Is(err, ErrNotFound) {
-		s.cfg.Stats.Add(req.Repository, store.CacheCounts{Misses: 1})
+	if errors.Is(err, store.ErrNotFound) {
+		s.stats.add(req.Repository, store.CacheCounts{Misses: 1})
 		return downloadResponse{}, nil
 	}
 	if err != nil {
@@ -300,7 +299,7 @@ func (s *Server) downloadURL(ctx context.Context, req request, in *downloadReque
 	if err := s.cfg.Store.TouchCacheEntry(ctx, e.ID, now); err != nil {
 		s.cfg.Logger.Warn("cache: touch entry", "id", e.ID, "err", err)
 	}
-	s.cfg.Stats.Add(req.Repository, store.CacheCounts{Hits: 1})
+	s.stats.add(req.Repository, store.CacheCounts{Hits: 1})
 	return downloadResponse{
 		OK:                true,
 		SignedDownloadURL: s.sign(req.base, "r", e.ID, now.Add(urlTTL)),
@@ -334,14 +333,14 @@ func (s *Server) lookup(ctx context.Context, req request, keys []string, version
 	for _, ref := range req.readRefs() {
 		for _, key := range keys {
 			for _, prefix := range []bool{false, true} {
-				e, err := s.cfg.Store.MatchCacheEntry(ctx, req.Repository, version, []string{ref}, key, prefix)
-				if !errors.Is(err, ErrNotFound) {
+				e, err := s.cfg.Store.MatchCacheEntry(ctx, req.Repository, version, ref, key, prefix)
+				if !errors.Is(err, store.ErrNotFound) {
 					return e, err
 				}
 			}
 		}
 	}
-	return store.CacheEntry{}, ErrNotFound
+	return store.CacheEntry{}, store.ErrNotFound
 }
 
 // dedupe drops repeated strings and keeps the first of each.

@@ -22,10 +22,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/store"
 )
-
-var resultsURL = &url.URL{Scheme: "https", Host: "results-receiver.actions.githubusercontent.com"}
 
 const (
 	// staleUpload is the age at which the cleanup removes an unfinished upload.
@@ -37,24 +36,39 @@ const (
 	jobWait = time.Minute
 )
 
+// Store keeps the cache entries and the hourly counts. *store.Store
+// implements it.
+type Store interface {
+	CreateCacheEntry(ctx context.Context, e store.CacheEntry) error
+	GetCacheEntry(ctx context.Context, id string) (store.CacheEntry, error)
+	GetCacheEntryByKey(ctx context.Context, repository, ref, key, version string) (store.CacheEntry, error)
+	MatchCacheEntry(ctx context.Context, repository, version, ref, key string, prefix bool) (store.CacheEntry, error)
+	TouchCacheEntry(ctx context.Context, id string, used time.Time) error
+	SetCacheUpload(ctx context.Context, id string, size int64, used time.Time) error
+	FinishCacheEntry(ctx context.Context, id string, size int64, at time.Time) error
+	ListCacheEntries(ctx context.Context, repository string) ([]store.CacheEntry, error)
+	LeastRecentCacheEntries(ctx context.Context, limit int) ([]store.CacheEntry, error)
+	ListUnfinishedCacheEntries(ctx context.Context, before time.Time) ([]store.CacheEntry, error)
+	DeleteCacheEntry(ctx context.Context, id string) error
+	CacheSize(ctx context.Context) (store.CacheBytes, error)
+	AddCacheStats(ctx context.Context, hour time.Time, repository string, c store.CacheCounts) error
+}
+
 type Config struct {
-	Dir      string       // blob folder, for example /var/lib/runplane/cache
-	Store    *store.Store // the cache_entries table; the blobs stay in Dir
+	Dir      string // blob folder, for example /var/lib/runplane/cache
+	Store    Store  // the cache_entries table; the blobs stay in Dir
 	Resolver Resolver
-	Stats    *Stats
-	// MaxBytes returns the byte limit of all entries; a value <= 0 means no
-	// limit. The server reads it at each check, so a settings change applies
-	// at once.
-	MaxBytes func() int64
-	// DiskSpace returns the size and the free bytes of the disk of Dir. The
-	// limit is at most a quarter of the disk.
-	DiskSpace func() (total, free int64, err error)
-	// MinFreePercent returns the part of the disk, 0 to 100, that the cache
-	// leaves free: below it, the server takes no upload and removes the
-	// least recently used entries.
-	MinFreePercent func() float64
-	SigningKey     []byte // signs blob URLs
-	Logger         *slog.Logger
+	// Space returns the room of the cache on the data disk now
+	// (datadisk.Limits). The server reads it at each check, so a settings
+	// change applies at once. Below min_free_disk_percent, the server takes
+	// no upload and removes the least recently used entries.
+	Space      func() datadisk.Space
+	SigningKey []byte // signs blob URLs
+	Logger     *slog.Logger
+	Now        func() time.Time // nil: time.Now
+	// Results is the GitHub results service, which gets all requests that
+	// are not for the cache. nil: results-receiver.actions.githubusercontent.com.
+	Results *url.URL
 }
 
 // Server is the cache server. As an http.Handler it serves requests that
@@ -63,6 +77,7 @@ type Config struct {
 type Server struct {
 	cfg     Config
 	disk    disk
+	stats   *stats
 	jobWait time.Duration
 	proxy   *httputil.ReverseProxy
 	now     func() time.Time
@@ -74,13 +89,20 @@ type Server struct {
 
 func New(cfg Config) (*Server, error) {
 	cfg.Logger = cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler))
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.Results == nil {
+		cfg.Results = &url.URL{Scheme: "https", Host: "results-receiver.actions.githubusercontent.com"}
+	}
 	s := &Server{
 		cfg:     cfg,
 		disk:    disk{root: cfg.Dir},
+		stats:   newStats(cfg.Store, cfg.Logger, cfg.Now),
 		jobWait: jobWait,
-		proxy:   newProxy(resultsURL, cfg.Logger),
-		now:     time.Now,
-		uploads: uploads{onDisk: map[string]int64{}, owner: map[string]string{}},
+		proxy:   newProxy(cfg.Results, cfg.Logger),
+		now:     cfg.Now,
+		uploads: uploads{owner: map[string]string{}},
 	}
 	if err := s.disk.init(); err != nil {
 		return nil, err
@@ -240,18 +262,22 @@ func baseURL(r *http.Request, trusted bool) string {
 	return scheme + "://" + host
 }
 
-// Run removes stale uploads and files that belong to no entry, and keeps the
-// cache under its byte limit. It returns when ctx ends.
-func (s *Server) Run(ctx context.Context) error {
+// Run removes stale uploads and files that belong to no entry, keeps the
+// cache under its byte limit, and writes the hourly counts. It returns when
+// ctx ends.
+func (s *Server) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() { s.stats.run(ctx) })
 	s.removeOrphans(ctx, "blobs")
-	s.countUploads(ctx)
+	s.syncUploads(ctx)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for {
 		s.cleanup(ctx)
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-tick.C:
 		}
 	}
@@ -278,7 +304,7 @@ func (s *Server) cleanup(ctx context.Context) {
 // entry is gone, for example after a crash between two steps of a removal.
 func (s *Server) removeOrphans(ctx context.Context, sub string) {
 	for _, id := range s.disk.ids(sub) {
-		if _, err := s.cfg.Store.GetCacheEntry(ctx, id); !errors.Is(err, ErrNotFound) {
+		if _, err := s.cfg.Store.GetCacheEntry(ctx, id); !errors.Is(err, store.ErrNotFound) {
 			continue
 		}
 		if err := s.disk.remove(id); err != nil {
@@ -287,7 +313,8 @@ func (s *Server) removeOrphans(ctx context.Context, sub string) {
 	}
 }
 
-// Delete removes one entry and its blob.
+// Delete removes one entry and its blob. It returns store.ErrNotFound if no
+// entry has the ID.
 func (s *Server) Delete(ctx context.Context, id string) error {
 	e, err := s.cfg.Store.GetCacheEntry(ctx, id)
 	if err != nil {
@@ -296,12 +323,9 @@ func (s *Server) Delete(ctx context.Context, id string) error {
 	return s.remove(ctx, e)
 }
 
-// DeleteRepository removes all entries of a repository and returns the count.
+// DeleteRepository removes all entries of a repository and returns the
+// count. An empty repository means all repositories.
 func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, error) {
-	// The store lists all repositories for "".
-	if repository == "" {
-		return 0, nil
-	}
 	list, err := s.cfg.Store.ListCacheEntries(ctx, repository)
 	if err != nil {
 		return 0, fmt.Errorf("list entries: %w", err)
@@ -317,7 +341,7 @@ func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, 
 // remove deletes the index row first: if the file removal fails, the cleanup
 // finds an orphan file, and no entry points to a missing blob.
 func (s *Server) remove(ctx context.Context, e store.CacheEntry) error {
-	if _, err := s.cfg.Store.DeleteCacheEntries(ctx, "", e.ID); err != nil {
+	if err := s.cfg.Store.DeleteCacheEntry(ctx, e.ID); err != nil {
 		return fmt.Errorf("delete entry: %w", err)
 	}
 	if err := s.disk.remove(e.ID); err != nil {

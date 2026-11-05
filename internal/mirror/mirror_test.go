@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/runplane/runplane/internal/datadisk"
 )
 
 const (
@@ -186,15 +188,16 @@ func TestTagTTL(t *testing.T) {
 	t.Run("expired tag follows upstream", func(t *testing.T) {
 		hub := newHub(t)
 		hub.push("library/alpine", "latest", "a")
-		m, url := newMirror(t, hub, Config{})
+		clock := &clock{t: time.Now()}
+		_, url := newMirror(t, hub, Config{Now: clock.now})
 
 		get(t, url+tagPath)
 		img := hub.push("library/alpine", "latest", "b")
-		expireTags(m)
+		clock.advance(tagTTL)
 		for range 2 {
 			resp, body := get(t, url+tagPath)
 			wantResponse(t, resp, body, 200, typeSchema2, sha(img.manifest), img.manifest)
-			expireTags(m)
+			clock.advance(tagTTL)
 		}
 		// The check of an unchanged tag uses HEAD only, which does not count
 		// against the Docker Hub pull limit.
@@ -206,11 +209,12 @@ func TestTagTTL(t *testing.T) {
 	t.Run("expired tag works while upstream is down", func(t *testing.T) {
 		hub := newHub(t)
 		img := hub.push("library/alpine", "latest", "a")
-		m, url := newMirror(t, hub, Config{})
+		clock := &clock{t: time.Now()}
+		_, url := newMirror(t, hub, Config{Now: clock.now})
 
 		get(t, url+tagPath)
 		hub.setDown(true)
-		expireTags(m)
+		clock.advance(tagTTL)
 		resp, body := get(t, url+tagPath)
 		wantResponse(t, resp, body, 200, typeSchema2, sha(img.manifest), img.manifest)
 	})
@@ -259,7 +263,7 @@ func TestConcurrentBlobFetchesShareOneDownload(t *testing.T) {
 func TestEvictsLeastRecentlyUsed(t *testing.T) {
 	hub := newHub(t)
 	a, b, c := hub.addBlob("a", 100), hub.addBlob("b", 100), hub.addBlob("c", 100)
-	m, url := newMirror(t, hub, Config{MaxBytes: 250})
+	m, url := newMirror(t, hub, Config{Space: func() datadisk.Space { return datadisk.Space{Mirror: 250} }})
 	blobURL := url + "/v2/library/alpine/blobs/"
 
 	for _, digest := range []string{a, b, a, c, a} {
@@ -278,6 +282,36 @@ func TestEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 	if size := m.Stats().SizeBytes; size > 250 {
 		t.Errorf("cache size = %d bytes, want at most 250", size)
+	}
+}
+
+// The mirror shares the data disk with the sandboxes. Below
+// min_free_disk_percent it keeps no new content and removes the old.
+func TestLowDiskKeepsNothing(t *testing.T) {
+	hub := newHub(t)
+	a, b := hub.addBlob("a", 100), hub.addBlob("b", 100)
+	var free atomic.Int64
+	free.Store(10_000)
+	m, url := newMirror(t, hub, Config{Space: func() datadisk.Space {
+		return datadisk.Limits(datadisk.Settings{MinFreePercent: 15}, 10_000, free.Load())
+	}})
+	blobURL := url + "/v2/library/alpine/blobs/"
+	get(t, blobURL+a)
+	settle(t, m)
+	if size := m.Stats().SizeBytes; size != 100 {
+		t.Fatalf("cache size = %d bytes, want the 100 bytes of a", size)
+	}
+
+	free.Store(1_000)
+	for range 2 {
+		get(t, blobURL+b)
+		settle(t, m)
+	}
+	if n := hub.count("GET", "/v2/library/alpine/blobs/"+b); n != 2 {
+		t.Errorf("upstream got %d GETs of a blob while the disk is low, want 2", n)
+	}
+	if size := m.Stats().SizeBytes; size != 0 {
+		t.Errorf("cache size = %d bytes while the disk is low, want 0", size)
 	}
 }
 
@@ -553,25 +587,35 @@ func newMirror(t *testing.T, hub *fakeHub, cfg Config) (*Mirror, string) {
 	if cfg.Allow == nil {
 		cfg.Allow = func(netip.Addr) bool { return true }
 	}
+	if cfg.Space == nil {
+		cfg.Space = func() datadisk.Space { return datadisk.Space{} }
+	}
+	cfg.Upstream = hub.srv.URL
 	m, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.up.base = hub.srv.URL
 	t.Cleanup(func() { m.Close() })
 	srv := httptest.NewServer(m)
 	t.Cleanup(srv.Close)
 	return m, srv.URL
 }
 
-// expireTags makes the tags of m due for a check with upstream.
-func expireTags(m *Mirror) {
-	m.tags.mu.Lock()
-	defer m.tags.mu.Unlock()
-	for k, te := range m.tags.tags {
-		te.Checked = time.Time{}
-		m.tags.tags[k] = te
-	}
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *clock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
 }
 
 // settle waits until m has moved the blobs of finished downloads into the

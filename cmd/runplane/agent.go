@@ -9,6 +9,7 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -42,7 +43,10 @@ func runAgent(ctx context.Context, args []string) error {
 		list, err := l.driver.List(context.Background())
 		return err == nil && slices.ContainsFunc(list, func(b sandbox.Sandbox) bool { return b.IP == ip.String() })
 	}
-	mir, stopPort, err := serveServicePort(cfg, cfg.Mode, hasSandbox, proxy, log)
+	space := func() datadisk.Space {
+		return diskSpace(cfg.MirrorDir(), datadisk.Settings{MinFreePercent: float64(l.node.minFree.Load())})
+	}
+	mir, stopPort, err := serveServicePort(cfg, cfg.Mode, hasSandbox, proxy, space, log)
 	if err != nil {
 		return err
 	}

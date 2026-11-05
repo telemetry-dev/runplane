@@ -75,7 +75,7 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool)
 		return
 	}
 	e, err := s.cfg.Store.GetCacheEntry(r.Context(), id)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) {
 		blobError(w, http.StatusNotFound, "BlobNotFound", "the cache entry does not exist")
 		return
 	}
@@ -123,7 +123,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEnt
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	defer s.release(e.ID, reserved)
+	defer s.release(reserved)
 	switch q.Get("comp") {
 	case "":
 		err = s.disk.putBlob(e.ID, r.Body, reserved)
@@ -138,7 +138,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEnt
 			blobError(w, http.StatusConflict, "BlockCountExceedsLimit", "the upload has too many blocks")
 			return
 		}
-		err = s.disk.putBlock(e.ID, blockID, r.Body, min(reserved, s.Limit()-size))
+		err = s.disk.putBlock(e.ID, blockID, r.Body, min(reserved, s.MaxBytes()-size))
 	case "blocklist":
 		var blocks []string
 		blocks, err = parseBlockList(io.LimitReader(r.Body, maxBlockListBytes))
@@ -163,8 +163,8 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEnt
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	if err := s.cfg.Store.TouchCacheEntry(r.Context(), e.ID, s.now()); err != nil {
-		s.cfg.Logger.Warn("cache: touch entry", "id", e.ID, "err", err)
+	if err := s.recordUpload(r.Context(), e.ID, s.now()); err != nil {
+		s.cfg.Logger.Warn("cache: record upload", "id", e.ID, "err", err)
 	}
 	h := w.Header()
 	h.Set("ETag", `"`+ids.New()+`"`)
@@ -196,7 +196,7 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, e store.CacheE
 	h.Set("x-ms-blob-type", "BlockBlob")
 	setAzureHeaders(h)
 	if n := blob.Serve(w, r, e.CreatedAt, f); n > 0 {
-		s.cfg.Stats.Add(e.Repository, store.CacheCounts{BytesRead: n})
+		s.stats.add(e.Repository, store.CacheCounts{BytesRead: n})
 	}
 }
 

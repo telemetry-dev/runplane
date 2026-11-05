@@ -20,10 +20,10 @@ import (
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/github"
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -255,7 +255,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	if err != nil {
 		return nil, err
 	}
-	if err := p.listenAgents(cert, c.srv.Proxied()); err != nil {
+	if err := p.listenAgents(cert, c.Proxied()); err != nil {
 		return nil, err
 	}
 	opener := shell.Drivers{Store: st, Driver: p.fleet.Driver}
@@ -321,25 +321,24 @@ func (p *primary) stop() {
 // serves them on the service port.
 func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver) (caches, error) {
 	resolver := cache.NewSandboxResolver(p.st, drv.List)
-	stats := cache.NewStats(p.st, p.log.With("component", "cache"))
+	space := func() datadisk.Space {
+		st := p.settings.Load()
+		return diskSpace(p.cfg.CacheDir(), datadisk.Settings{CacheMaxGB: st.CacheMaxGB, MinFreePercent: st.MinFreeDiskPercent})
+	}
 	srv, err := cache.New(cache.Config{
-		Dir: p.cfg.CacheDir(), Store: p.st, Resolver: resolver, Stats: stats,
-		MaxBytes:       func() int64 { return int64(p.settings.Load().CacheMaxGB) << 30 },
-		DiskSpace:      func() (int64, int64, error) { return host.DiskSpace(p.cfg.CacheDir()) },
-		MinFreePercent: func() float64 { return p.settings.Load().MinFreeDiskPercent },
-		SigningKey:     subkey(key, "runplane cache urls"), Logger: p.log.With("component", "cache"),
+		Dir: p.cfg.CacheDir(), Store: p.st, Resolver: resolver, Space: space,
+		SigningKey: subkey(key, "runplane cache urls"), Logger: p.log.With("component", "cache"),
 	})
 	if err != nil {
 		return caches{}, fmt.Errorf("start the cache server: %w", err)
 	}
-	p.run(stats.Run)
-	p.run(func(ctx context.Context) { srv.Run(ctx) })
-	mir, stopPort, err := serveServicePort(p.cfg, mode, resolver.Allow, srv, p.log)
+	p.run(srv.Run)
+	mir, stopPort, err := serveServicePort(p.cfg, mode, resolver.Allow, srv, space, p.log)
 	if err != nil {
 		return caches{}, err
 	}
 	p.stops = append(p.stops, stopPort)
-	return caches{srv: srv, mirror: mir, agents: p.fleet.AgentMirrorStats}, nil
+	return caches{Server: srv, mirror: mir, agents: p.fleet.AgentMirrorStats}, nil
 }
 
 func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) error {

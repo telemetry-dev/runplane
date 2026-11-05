@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/datadisk"
 )
 
 // Folders of the store. A file in them has the hex part of its sha256 digest
@@ -21,10 +22,11 @@ const (
 )
 
 // store keeps blobs and manifests as files named by their digest. When the
-// files use more than max bytes, it removes the least recently used ones.
+// files use more than the limit of the mirror, or the disk is low, it
+// removes the least recently used ones.
 type store struct {
-	dir string
-	max int64 // 0 = no limit
+	dir   string
+	space func() datadisk.Space
 
 	mu    sync.Mutex
 	lru   *list.List               // of *storeFile, most recently used first
@@ -37,8 +39,8 @@ type storeFile struct {
 	size int64
 }
 
-func openStore(dir string, max int64) (*store, error) {
-	s := &store{dir: dir, max: max, lru: list.New(), files: map[string]*list.Element{}}
+func openStore(dir string, space func() datadisk.Space) (*store, error) {
+	s := &store{dir: dir, space: space, lru: list.New(), files: map[string]*list.Element{}}
 	if err := os.RemoveAll(filepath.Join(dir, "tmp")); err != nil {
 		return nil, fmt.Errorf("remove temp files: %w", err)
 	}
@@ -72,7 +74,7 @@ func openStore(dir string, max int64) (*store, error) {
 		s.files[f.key] = s.lru.PushFront(&storeFile{f.key, f.size})
 		s.size += f.size
 	}
-	if err := s.evict(); err != nil {
+	if err := s.evict(space()); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -108,10 +110,14 @@ func (s *store) temp(key string) (*atomicfile.File, error) {
 
 // add moves the complete temp file f of key into the store. Then it removes
 // the least recently used files over the limit. It does not keep a file that
-// is larger than the limit; that temp file goes at its Close.
+// is larger than the limit, or a file while the disk is low; that temp file
+// goes at its Close.
 func (s *store) add(key string, f *atomicfile.File, size int64) error {
-	if s.max > 0 && size > s.max {
-		return nil
+	space := s.space()
+	if space.Mirror > 0 && size > space.Mirror || space.Low() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.evict(space)
 	}
 	// A sync before the lock, so that Commit has no data left to write
 	// while it holds the lock.
@@ -128,7 +134,7 @@ func (s *store) add(key string, f *atomicfile.File, size int64) error {
 	}
 	s.files[key] = s.lru.PushFront(&storeFile{key, size})
 	s.size += size
-	return s.evict()
+	return s.evict(space)
 }
 
 // write stores the parts of data as one file under key.
@@ -154,14 +160,23 @@ func (s *store) bytes() int64 {
 	return s.size
 }
 
-func (s *store) evict() error {
+// evict removes the least recently used files until the files fit in the
+// limit, and the disk has the free part that datadisk.Space.Reclaim asks
+// for.
+func (s *store) evict(space datadisk.Space) error {
+	over := space.Reclaim()
+	if space.Mirror > 0 {
+		over = max(over, s.size-space.Mirror)
+	}
 	var errs []error
-	for s.max > 0 && s.size > s.max {
+	for over > 0 && s.lru.Len() > 0 {
 		el := s.lru.Back()
-		if err := os.Remove(s.path(el.Value.(*storeFile).key)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		f := el.Value.(*storeFile)
+		if err := os.Remove(s.path(f.key)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("evict: %w", err))
 		}
 		s.drop(el)
+		over -= f.size
 	}
 	return errors.Join(errs...)
 }

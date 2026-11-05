@@ -5,36 +5,28 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 )
 
-const (
-	// evictMargin is how far above MinFreePercent the eviction frees the
-	// disk, so that it does not run again at each upload.
-	evictMargin = 5
-	// maxOpenUploads is the count of unfinished uploads that one sandbox may
-	// have. Each one is an index row until it is finalized or stale.
-	maxOpenUploads = 64
-)
+// maxOpenUploads is the count of unfinished uploads that one sandbox may
+// have. Each one is an index row until it is finalized or stale.
+const maxOpenUploads = 64
 
-// uploads counts the bytes of the unfinished uploads, which count against
-// the limit like the entries: their files on disk and the writes in
-// progress. Without the count, many unfinished uploads could each take the
-// whole limit.
+// uploads holds what only memory knows of the unfinished uploads: the bytes
+// that the writes in progress may still add, and the sandbox of each upload.
+// The rows of the uploads keep the bytes of their files. The uploads count
+// against the limit like the entries. Without the count, many unfinished
+// uploads could each take the whole limit.
 type uploads struct {
 	mu      sync.Mutex
-	onDisk  map[string]int64  // bytes of the files of each unfinished entry, by entry ID
-	writing int64             // bytes that the writes in progress may still add
+	writing int64
 	owner   map[string]string // sandbox ID by unfinished entry ID
 }
 
-func (u *uploads) bytes() int64 {
+func (u *uploads) inFlight() int64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	n := u.writing
-	for _, b := range u.onDisk {
-		n += b
-	}
-	return n
+	return u.writing
 }
 
 // open adds an upload of the sandbox. It returns false if the sandbox has
@@ -55,35 +47,20 @@ func (u *uploads) open(id, sandboxID string) bool {
 	return true
 }
 
-// drop stops the count of an upload that is finalized or removed.
 func (u *uploads) drop(id string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	delete(u.onDisk, id)
 	delete(u.owner, id)
 }
 
-// Limit returns the byte limit of all entries and unfinished uploads, and
-// so of one entry: MaxBytes, and at most a quarter of the disk.
-func (s *Server) Limit() int64 {
-	limit := int64(math.MaxInt64)
-	if n := s.cfg.MaxBytes(); n > 0 {
-		limit = n
+// MaxBytes returns the byte limit of all entries and unfinished uploads,
+// and so of one entry, that the server uses now. It is math.MaxInt64 when
+// the cache has no limit.
+func (s *Server) MaxBytes() int64 {
+	if limit := s.cfg.Space().Cache; limit > 0 {
+		return limit
 	}
-	if total, _, err := s.cfg.DiskSpace(); err == nil && total > 0 {
-		limit = min(limit, total/4)
-	}
-	return limit
-}
-
-// diskShort returns the bytes that the disk lacks to have MinFreePercent
-// plus margin free, or 0.
-func (s *Server) diskShort(margin float64) int64 {
-	total, free, err := s.cfg.DiskSpace()
-	if err != nil || total <= 0 {
-		return 0
-	}
-	return max(0, int64(float64(total)*(s.cfg.MinFreePercent()+margin)/100)-free)
+	return math.MaxInt64
 }
 
 // reserve takes up to want bytes of the limit for one write to an upload.
@@ -98,27 +75,28 @@ func (s *Server) reserve(ctx context.Context, want int64) (int64, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	limit := s.MaxBytes()
+	size, err := s.cfg.Store.CacheSize(ctx)
+	if err != nil {
+		return 0, err
+	}
 	// The entries can make room only for what fits next to the other uploads.
-	if s.uploads.bytes()+extra > s.Limit() {
+	if size.Uploads+s.uploads.inFlight()+extra > limit {
 		return 0, errTooLarge
 	}
 	if err := s.evict(ctx, extra); err != nil {
 		return 0, err
 	}
-	if s.diskShort(0) > 0 {
+	if s.cfg.Space().Low() {
 		return 0, errTooLarge
 	}
-	entries, err := s.cfg.Store.CacheSize(ctx)
-	if err != nil {
+	if size, err = s.cfg.Store.CacheSize(ctx); err != nil {
 		return 0, err
 	}
 	u := &s.uploads
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	room := s.Limit() - entries - u.writing
-	for _, n := range u.onDisk {
-		room -= n
-	}
+	room := limit - size.Entries - size.Uploads - u.writing
 	if room <= 0 {
 		return 0, errTooLarge
 	}
@@ -127,48 +105,53 @@ func (s *Server) reserve(ctx context.Context, want int64) (int64, error) {
 	return n, nil
 }
 
-// release gives back the bytes of reserve after a write to the upload id,
-// and counts its files as they are now.
-func (s *Server) release(id string, reserved int64) {
-	_, staged := s.disk.staged(id)
-	blob, _ := s.disk.size(id)
+// release gives back the bytes of reserve after a write. The caller first
+// records the files of a write that worked (recordUpload).
+func (s *Server) release(reserved int64) {
 	u := &s.uploads
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.writing -= reserved
-	if staged+blob > 0 {
-		u.onDisk[id] = staged + blob
-	}
 }
 
-// countUploads counts the files of the unfinished uploads that an earlier
-// process left.
-func (s *Server) countUploads(ctx context.Context) {
+// recordUpload writes the bytes that the files of the upload id have now in
+// its row, with the time of its last use.
+func (s *Server) recordUpload(ctx context.Context, id string, used time.Time) error {
+	_, staged := s.disk.staged(id)
+	blob, _ := s.disk.size(id)
+	return s.cfg.Store.SetCacheUpload(ctx, id, staged+blob, used)
+}
+
+// syncUploads records the files of the unfinished uploads that an earlier
+// process left, because it can stop between a write and its record.
+func (s *Server) syncUploads(ctx context.Context) {
 	list, err := s.cfg.Store.ListUnfinishedCacheEntries(ctx, s.now())
 	if err != nil {
 		s.cfg.Logger.Error("cache: list unfinished uploads", "err", err)
 		return
 	}
 	for _, e := range list {
-		s.release(e.ID, 0)
+		if err := s.recordUpload(ctx, e.ID, e.LastUsedAt); err != nil {
+			s.cfg.Logger.Warn("cache: record upload", "id", e.ID, "err", err)
+		}
 	}
 }
 
 // evict removes the least recently used entries until the entries, the
 // unfinished uploads, and extra more bytes fit in the limit, and the disk
-// has MinFreePercent plus evictMargin free.
+// has the free part that datadisk.Space.Reclaim asks for.
 func (s *Server) evict(ctx context.Context, extra int64) error {
 	s.evictMu.Lock()
 	defer s.evictMu.Unlock()
-	total, err := s.cfg.Store.CacheSize(ctx)
-	if err != nil {
-		return err
+	space := s.cfg.Space()
+	over := space.Reclaim()
+	if space.Cache > 0 {
+		size, err := s.cfg.Store.CacheSize(ctx)
+		if err != nil {
+			return err
+		}
+		over = max(over, size.Entries+size.Uploads+s.uploads.inFlight()+extra-space.Cache)
 	}
-	over := int64(0)
-	if limit := s.Limit(); limit != math.MaxInt64 {
-		over = total + s.uploads.bytes() + extra - limit
-	}
-	over = max(over, s.diskShort(evictMargin))
 	for over > 0 {
 		oldest, err := s.cfg.Store.LeastRecentCacheEntries(ctx, 64)
 		if err != nil {

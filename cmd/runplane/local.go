@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/moby/moby/client"
@@ -16,6 +17,7 @@ import (
 	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/initbin"
@@ -170,30 +172,35 @@ func baseImage(ctx context.Context) (string, error) {
 }
 
 // node is the LocalNode of this process. In dev mode it keeps the Actions
-// cache off for the sandboxes.
+// cache off for the sandboxes. It keeps min_free_disk_percent of the last
+// settings for the mirror of an agent.
 type node struct {
 	*agent.LocalNode
 	noCache bool
+	minFree atomic.Int64
 }
 
 func (n *node) Configure(ctx context.Context, s sandbox.Settings) error {
 	if n.noCache {
 		s.ActionsCache = false
 	}
+	n.minFree.Store(int64(s.MinFreeDiskPercent))
 	return n.LocalNode.Configure(ctx, s)
 }
 
 // serveServicePort starts the registry mirror and serves the service port
 // of the sandboxes on all addresses: /v2/ goes to the mirror, all other
-// paths to the Actions cache. allow tells if an address is a sandbox. The
-// returned function stops the listener and the mirror.
-func serveServicePort(cfg config.Config, mode sandbox.Mode, allow func(netip.Addr) bool, cache http.Handler, log *slog.Logger) (*mirror.Mirror, func(), error) {
+// paths to the Actions cache. allow tells if an address is a sandbox, and
+// space gives the room of the mirror on the data disk. The returned
+// function stops the listener and the mirror.
+func serveServicePort(cfg config.Config, mode sandbox.Mode, allow func(netip.Addr) bool, cache http.Handler,
+	space func() datadisk.Space, log *slog.Logger) (*mirror.Mirror, func(), error) {
 	if mode == sandbox.ModeDev {
 		isSandbox := allow
 		// Docker sends the requests of dev sandboxes from the loopback address.
 		allow = func(ip netip.Addr) bool { return ip.IsLoopback() || isSandbox(ip) }
 	}
-	mir, err := mirror.New(mirror.Config{Dir: cfg.MirrorDir(), MaxBytes: mirrorLimit(cfg.DataDir), Allow: allow, Logger: log.With("component", "mirror")})
+	mir, err := mirror.New(mirror.Config{Dir: cfg.MirrorDir(), Space: space, Allow: allow, Logger: log.With("component", "mirror")})
 	if err != nil {
 		return nil, nil, fmt.Errorf("start the registry mirror: %w", err)
 	}
@@ -235,12 +242,12 @@ func serveServicePort(cfg config.Config, mode sandbox.Mode, allow func(netip.Add
 
 func servicePortAddr(cfg config.Config) string { return fmt.Sprintf(":%d", cfg.ServicePort) }
 
-// mirrorLimit is the size limit of the registry mirror: a tenth of the data
-// disk, from 2 to 50 GiB.
-func mirrorLimit(dataDir string) int64 {
-	res, err := host.ReadResources(dataDir)
+// diskSpace returns the room of the Actions cache and the registry mirror
+// on the disk of dir, which is on the data disk.
+func diskSpace(dir string, s datadisk.Settings) datadisk.Space {
+	total, free, err := host.DiskSpace(dir)
 	if err != nil {
-		return 10 << 30
+		total, free = 0, 0
 	}
-	return min(max(res.DiskBytes/10, 2<<30), 50<<30)
+	return datadisk.Limits(s, total, free)
 }

@@ -19,6 +19,7 @@ import (
 type upstream struct {
 	base   string // for example https://registry-1.docker.io
 	client *http.Client
+	now    func() time.Time
 
 	mu     sync.Mutex
 	tokens map[string]bearer // by repository name
@@ -71,7 +72,7 @@ func (u *upstream) do(ctx context.Context, method, name, path, accept string) (*
 func (u *upstream) cachedToken(name string) string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if b, ok := u.tokens[name]; ok && time.Now().Before(b.expires) {
+	if b, ok := u.tokens[name]; ok && u.now().Before(b.expires) {
 		return b.token
 	}
 	return ""
@@ -126,7 +127,7 @@ func (u *upstream) fetchToken(ctx context.Context, challenge, name string) (stri
 	if u.tokens == nil {
 		u.tokens = map[string]bearer{}
 	}
-	u.tokens[name] = bearer{token, time.Now().Add(ttl)}
+	u.tokens[name] = bearer{token, u.now().Add(ttl)}
 	u.mu.Unlock()
 	return token, nil
 }
