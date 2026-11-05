@@ -60,7 +60,7 @@ func newFixture(t *testing.T, maxBytes int64) *fixture {
 	f.clock.ns.Store(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixNano())
 	srv, err := New(Config{
 		Dir:   f.dir,
-		Index: Index{f.st},
+		Store: f.st,
 		Resolver: sandboxes{
 			"127.0.0.1":  acme("sb-1", "refs/heads/main", ""),
 			"sb-feature": acme("sb-feature", "refs/heads/feature", ""),

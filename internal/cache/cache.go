@@ -38,8 +38,8 @@ const (
 )
 
 type Config struct {
-	Dir      string // blob folder, for example /var/lib/runplane/cache
-	Index    Index
+	Dir      string       // blob folder, for example /var/lib/runplane/cache
+	Store    *store.Store // the cache_entries table; the blobs stay in Dir
 	Resolver Resolver
 	Stats    *Stats
 	// MaxBytes returns the byte limit of all entries; a value <= 0 means no
@@ -150,9 +150,15 @@ func fromLoopback(r *http.Request) bool {
 	return err == nil && addr.IsLoopback()
 }
 
-// SandboxHeader names the sandbox of a request that a trusted proxy (the
-// agent cache endpoint) forwards. The server ignores it on other requests.
-const SandboxHeader = "X-Runplane-Sandbox"
+const (
+	// SandboxHeader names the sandbox of a request that a trusted proxy (the
+	// agent cache endpoint) forwards. The server ignores it on other requests.
+	SandboxHeader = "X-Runplane-Sandbox"
+	// ServerHeader names the server of a cache request that an agent sends.
+	// The primary sets it, so that the resolver can check that the sandbox of
+	// the request belongs to that server.
+	ServerHeader = "X-Runplane-Server"
+)
 
 // ErrNoSandbox means that no sandbox with a job matches a request.
 var ErrNoSandbox = errors.New("no sandbox for this request")
@@ -263,7 +269,7 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) cleanup(ctx context.Context) {
-	stale, err := s.cfg.Index.ListUnfinishedCacheEntries(ctx, s.now().Add(-staleUpload))
+	stale, err := s.cfg.Store.ListUnfinishedCacheEntries(ctx, s.now().Add(-staleUpload))
 	if err != nil {
 		s.cfg.Logger.Error("cache: list unfinished uploads", "err", err)
 	}
@@ -283,7 +289,7 @@ func (s *Server) cleanup(ctx context.Context) {
 // entry is gone, for example after a crash between two steps of a removal.
 func (s *Server) removeOrphans(ctx context.Context, sub string) {
 	for _, id := range s.disk.ids(sub) {
-		if _, err := s.cfg.Index.GetCacheEntry(ctx, id); !errors.Is(err, ErrNotFound) {
+		if _, err := s.cfg.Store.GetCacheEntry(ctx, id); !errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err := s.disk.remove(id); err != nil {
@@ -294,7 +300,7 @@ func (s *Server) removeOrphans(ctx context.Context, sub string) {
 
 // Delete removes one entry and its blob.
 func (s *Server) Delete(ctx context.Context, id string) error {
-	e, err := s.cfg.Index.GetCacheEntry(ctx, id)
+	e, err := s.cfg.Store.GetCacheEntry(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get entry: %w", err)
 	}
@@ -307,7 +313,7 @@ func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, 
 	if repository == "" {
 		return 0, nil
 	}
-	list, err := s.cfg.Index.ListCacheEntries(ctx, repository)
+	list, err := s.cfg.Store.ListCacheEntries(ctx, repository)
 	if err != nil {
 		return 0, fmt.Errorf("list entries: %w", err)
 	}
@@ -322,7 +328,7 @@ func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, 
 // remove deletes the index row first: if the file removal fails, the cleanup
 // finds an orphan file, and no entry points to a missing blob.
 func (s *Server) remove(ctx context.Context, e store.CacheEntry) error {
-	if _, err := s.cfg.Index.DeleteCacheEntries(ctx, "", e.ID); err != nil {
+	if _, err := s.cfg.Store.DeleteCacheEntries(ctx, "", e.ID); err != nil {
 		return fmt.Errorf("delete entry: %w", err)
 	}
 	if err := s.disk.remove(e.ID); err != nil {

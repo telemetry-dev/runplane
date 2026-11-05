@@ -73,7 +73,7 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool)
 		blobError(w, http.StatusForbidden, "AuthenticationFailed", "the URL signature is not valid or has expired")
 		return
 	}
-	e, err := s.cfg.Index.GetCacheEntry(r.Context(), id)
+	e, err := s.cfg.Store.GetCacheEntry(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
 		blobError(w, http.StatusNotFound, "BlobNotFound", "the cache entry does not exist")
 		return
@@ -162,7 +162,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEnt
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	if err := s.cfg.Index.TouchCacheEntry(r.Context(), e.ID, s.now()); err != nil {
+	if err := s.cfg.Store.TouchCacheEntry(r.Context(), e.ID, s.now()); err != nil {
 		s.cfg.Logger.Warn("cache: touch entry", "id", e.ID, "err", err)
 	}
 	h := w.Header()

@@ -12,10 +12,6 @@ import (
 // ErrNotFound means that no cache entry has the ID.
 var ErrNotFound = store.ErrNotFound
 
-// Index is the store that holds the cache_entries table. The blobs stay on
-// disk.
-type Index struct{ *store.Store }
-
 // Stats records cache use for each repository in the cache_stats table. The
 // server counts on request paths, so Add only adds to counts in memory, and
 // Run writes them each minute.

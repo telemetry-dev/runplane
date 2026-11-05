@@ -352,7 +352,7 @@ func TestCacheProxy(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, svc.URL+"/twirp/CacheService/CreateCacheEntry?v=2", strings.NewReader(`{"key":"npm-linux"}`))
 		// A sandbox must not choose its identity.
 		req.Header.Set(cache.SandboxHeader, "sb-other")
-		req.Header.Set(ServerHeader, "other-server")
+		req.Header.Set(cache.ServerHeader, "other-server")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -371,7 +371,7 @@ func TestCacheProxy(t *testing.T) {
 	}
 	wantHeaders := map[string]string{
 		cache.SandboxHeader: "sb-here",
-		ServerHeader:        testServer,
+		cache.ServerHeader:  testServer,
 		"X-Forwarded-Host":  svc.Listener.Addr().String(),
 		"X-Forwarded-Proto": "http",
 	}

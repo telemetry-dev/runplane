@@ -1,31 +1,18 @@
-package cachestore
+package cache
 
 import (
 	"context"
 	"errors"
 	"net/http"
 	"net/netip"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
 
 var t0 = time.Date(2026, 11, 4, 10, 15, 0, 0, time.UTC)
-
-func openStore(t *testing.T) *store.Store {
-	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
-}
 
 func TestResolver(t *testing.T) {
 	ctx := context.Background()
@@ -60,9 +47,9 @@ func TestResolver(t *testing.T) {
 	if err := st.SetJobRunRef(ctx, jobs[1], store.RunRef{Event: "pull_request", HeadBranch: "main", PRNumber: 5, BaseRef: "trunk"}); err != nil {
 		t.Fatal(err)
 	}
-	api := cache.Identity{SandboxID: "busy", Repository: "acme/api", DefaultBranch: "trunk", Ref: "refs/heads/trunk"}
-	web := func(id string) cache.Identity {
-		return cache.Identity{SandboxID: id, Repository: "acme/web", Ref: "refs/pull/5/merge", BaseRef: "refs/heads/trunk"}
+	api := Identity{SandboxID: "busy", Repository: "acme/api", DefaultBranch: "trunk", Ref: "refs/heads/trunk"}
+	web := func(id string) Identity {
+		return Identity{SandboxID: id, Repository: "acme/web", Ref: "refs/pull/5/merge", BaseRef: "refs/heads/trunk"}
 	}
 	sandboxes := []store.Sandbox{
 		{ID: "busy", ServerID: "local", State: sandbox.StateBusy, IP: "10.213.0.5", JobID: jobs[0]},
@@ -78,15 +65,15 @@ func TestResolver(t *testing.T) {
 		}
 	}
 	// The driver knows the address of the newest sandbox before the table does.
-	r := NewResolver(st, func(context.Context) ([]sandbox.Sandbox, error) {
+	r := NewSandboxResolver(st, func(context.Context) ([]sandbox.Sandbox, error) {
 		return []sandbox.Sandbox{{ID: "busy", IP: "10.213.0.5"}, {ID: "new", IP: "10.213.0.9"}}, nil
 	})
 
 	tunnel := func(sandboxID, serverID string) http.Header {
 		h := http.Header{}
-		h.Set(cache.SandboxHeader, sandboxID)
+		h.Set(SandboxHeader, sandboxID)
 		if serverID != "" {
-			h.Set(agent.ServerHeader, serverID)
+			h.Set(ServerHeader, serverID)
 		}
 		return h
 	}
@@ -94,24 +81,24 @@ func TestResolver(t *testing.T) {
 		name   string
 		ip     string
 		header http.Header
-		want   cache.Identity // zero: ErrNoSandbox
+		want   Identity // zero: ErrNoSandbox
 	}{
 		{"sandbox address", "10.213.0.5", nil, api},
 		{"IPv4 in IPv6 form", "::ffff:10.213.0.5", nil, api},
-		{"sandbox without a job", "10.213.0.6", nil, cache.Identity{SandboxID: "idle"}},
+		{"sandbox without a job", "10.213.0.6", nil, Identity{SandboxID: "idle"}},
 		{"address from the driver", "10.213.0.9", nil, web("new")},
-		{"stopped sandbox", "10.213.0.7", nil, cache.Identity{}},
-		{"address of an agent sandbox", "10.213.0.8", nil, cache.Identity{}},
-		{"unknown address", "192.0.2.1", nil, cache.Identity{}},
+		{"stopped sandbox", "10.213.0.7", nil, Identity{}},
+		{"address of an agent sandbox", "10.213.0.8", nil, Identity{}},
+		{"unknown address", "192.0.2.1", nil, Identity{}},
 		{"agent names its sandbox", "203.0.113.4", tunnel("agent", "remote"), web("agent")},
-		{"agent names a sandbox of the primary", "203.0.113.4", tunnel("busy", "remote"), cache.Identity{}},
-		{"sandbox header without a server", "10.213.0.5", tunnel("agent", ""), cache.Identity{}},
+		{"agent names a sandbox of the primary", "203.0.113.4", tunnel("busy", "remote"), Identity{}},
+		{"sandbox header without a server", "10.213.0.5", tunnel("agent", ""), Identity{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := r.Sandbox(ctx, tt.ip, tt.header)
-			if tt.want == (cache.Identity{}) {
-				if !errors.Is(err, cache.ErrNoSandbox) {
+			if tt.want == (Identity{}) {
+				if !errors.Is(err, ErrNoSandbox) {
 					t.Fatalf("got %+v, %v; want ErrNoSandbox", got, err)
 				}
 				return

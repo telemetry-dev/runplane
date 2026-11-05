@@ -19,7 +19,6 @@ import (
 	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/cache"
-	"github.com/runplane/runplane/internal/cachestore"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
@@ -316,10 +315,10 @@ func (p *primary) stop() {
 // serveCaches starts the Actions cache server and the registry mirror, and
 // serves them on the service port.
 func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver) (caches, error) {
-	resolver := cachestore.NewResolver(p.st, drv.List)
-	stats := cachestore.NewStats(p.st, p.log.With("component", "cache"))
+	resolver := cache.NewSandboxResolver(p.st, drv.List)
+	stats := cache.NewStats(p.st, p.log.With("component", "cache"))
 	srv, err := cache.New(cache.Config{
-		Dir: p.cfg.CacheDir(), Index: cachestore.NewIndex(p.st), Resolver: resolver, Stats: stats,
+		Dir: p.cfg.CacheDir(), Store: p.st, Resolver: resolver, Stats: stats,
 		MaxBytes:       func() int64 { return int64(p.settings.Load().CacheMaxGB) << 30 },
 		DiskSpace:      func() (int64, int64, error) { return host.DiskSpace(p.cfg.CacheDir()) },
 		MinFreePercent: func() float64 { return p.settings.Load().MinFreeDiskPercent },

@@ -108,7 +108,7 @@ func (s *Server) reserve(ctx context.Context, want int64) (int64, error) {
 	if s.diskShort(0) > 0 {
 		return 0, errTooLarge
 	}
-	entries, err := s.cfg.Index.CacheSize(ctx)
+	entries, err := s.cfg.Store.CacheSize(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -144,7 +144,7 @@ func (s *Server) release(id string, reserved int64) {
 // countUploads counts the files of the unfinished uploads that an earlier
 // process left.
 func (s *Server) countUploads(ctx context.Context) {
-	list, err := s.cfg.Index.ListUnfinishedCacheEntries(ctx, s.now())
+	list, err := s.cfg.Store.ListUnfinishedCacheEntries(ctx, s.now())
 	if err != nil {
 		s.cfg.Logger.Error("cache: list unfinished uploads", "err", err)
 		return
@@ -160,7 +160,7 @@ func (s *Server) countUploads(ctx context.Context) {
 func (s *Server) evict(ctx context.Context, extra int64) error {
 	s.evictMu.Lock()
 	defer s.evictMu.Unlock()
-	total, err := s.cfg.Index.CacheSize(ctx)
+	total, err := s.cfg.Store.CacheSize(ctx)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (s *Server) evict(ctx context.Context, extra int64) error {
 	}
 	over = max(over, s.diskShort(evictMargin))
 	for over > 0 {
-		oldest, err := s.cfg.Index.LeastRecentCacheEntries(ctx, 64)
+		oldest, err := s.cfg.Store.LeastRecentCacheEntries(ctx, 64)
 		if err != nil {
 			return fmt.Errorf("list oldest entries: %w", err)
 		}

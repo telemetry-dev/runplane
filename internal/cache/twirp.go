@@ -190,7 +190,7 @@ func (s *Server) create(ctx context.Context, req request, in *createRequest) (an
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	old, err := s.cfg.Index.GetCacheEntryByKey(ctx, e.Repository, e.Ref, e.Key, e.Version)
+	old, err := s.cfg.Store.GetCacheEntryByKey(ctx, e.Repository, e.Ref, e.Key, e.Version)
 	switch {
 	case err == nil && (old.Finalized || now.Sub(old.LastUsedAt) < activeUpload):
 		return nil, twirpErr("already_exists", "cache entry with the same key, version, and scope already exists")
@@ -204,7 +204,7 @@ func (s *Server) create(ctx context.Context, req request, in *createRequest) (an
 	if !s.uploads.open(id, req.SandboxID) {
 		return createResponse{Message: "cache write denied: too many uploads of this job are in progress"}, nil
 	}
-	err = s.cfg.Index.CreateCacheEntry(ctx, e)
+	err = s.cfg.Store.CreateCacheEntry(ctx, e)
 	if err != nil {
 		s.uploads.drop(id)
 	}
@@ -236,7 +236,7 @@ func (s *Server) finalize(ctx context.Context, req request, in *finalizeRequest)
 func (s *Server) commit(ctx context.Context, req request, in *finalizeRequest) (finalizeResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, err := s.cfg.Index.GetCacheEntryByKey(ctx, req.Repository, req.Ref, in.Key, in.Version)
+	e, err := s.cfg.Store.GetCacheEntryByKey(ctx, req.Repository, req.Ref, in.Key, in.Version)
 	if errors.Is(err, ErrNotFound) {
 		return finalizeResponse{}, twirpErr("not_found", "no upload for this cache entry")
 	}
@@ -266,7 +266,7 @@ func (s *Server) commit(ctx context.Context, req request, in *finalizeRequest) (
 		}
 		return finalizeResponse{Message: "cache upload failed: " + problem}, nil
 	}
-	if err := s.cfg.Index.FinishCacheEntry(ctx, e.ID, size, s.now()); err != nil {
+	if err := s.cfg.Store.FinishCacheEntry(ctx, e.ID, size, s.now()); err != nil {
 		return finalizeResponse{}, fmt.Errorf("finalize entry: %w", err)
 	}
 	s.uploads.drop(e.ID)
@@ -297,7 +297,7 @@ func (s *Server) downloadURL(ctx context.Context, req request, in *downloadReque
 		return nil, err
 	}
 	now := s.now()
-	if err := s.cfg.Index.TouchCacheEntry(ctx, e.ID, now); err != nil {
+	if err := s.cfg.Store.TouchCacheEntry(ctx, e.ID, now); err != nil {
 		s.cfg.Logger.Warn("cache: touch entry", "id", e.ID, "err", err)
 	}
 	s.cfg.Stats.Add(req.Repository, store.CacheCounts{Hits: 1})
@@ -334,7 +334,7 @@ func (s *Server) lookup(ctx context.Context, req request, keys []string, version
 	for _, ref := range req.readRefs() {
 		for _, key := range keys {
 			for _, prefix := range []bool{false, true} {
-				e, err := s.cfg.Index.MatchCacheEntry(ctx, req.Repository, version, []string{ref}, key, prefix)
+				e, err := s.cfg.Store.MatchCacheEntry(ctx, req.Repository, version, []string{ref}, key, prefix)
 				if !errors.Is(err, ErrNotFound) {
 					return e, err
 				}

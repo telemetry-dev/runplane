@@ -17,6 +17,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
@@ -425,7 +426,7 @@ func cacheHandler(h http.Handler, serverID string) http.Handler {
 	}
 	h = http.StripPrefix("/v1/cache", h)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set(ServerHeader, serverID)
+		r.Header.Set(cache.ServerHeader, serverID)
 		h.ServeHTTP(w, r)
 	})
 }
