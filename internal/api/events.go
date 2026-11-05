@@ -87,7 +87,7 @@ func (h *Handler) streamEvents(ctx context.Context, _ *struct{}, send sse.Sender
 func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 	switch e.Type {
 	case events.SandboxState:
-		if b, ok := as[store.Sandbox](e.Data); ok {
+		if b, ok := events.As[store.Sandbox](e.Data); ok {
 			r, err := h.loadRefs(ctx)
 			if err != nil {
 				return nil, err
@@ -100,7 +100,7 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 		}
 		return convert[Sandbox](e.Data)
 	case events.JobState:
-		if j, ok := as[store.Job](e.Data); ok {
+		if j, ok := events.As[store.Job](e.Data); ok {
 			r, err := h.loadRefs(ctx)
 			if err != nil {
 				return nil, err
@@ -115,7 +115,7 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 	case events.PoolStats:
 		return convert[PoolStats](e.Data)
 	case events.ServerState:
-		if v, ok := as[store.Server](e.Data); ok {
+		if v, ok := events.As[store.Server](e.Data); ok {
 			list, err := h.servers(ctx, []store.Server{v})
 			if err != nil {
 				return nil, err
@@ -124,20 +124,20 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 		}
 		return convert[Server](e.Data)
 	case events.HostStats:
-		if st, ok := as[store.ServerStat](e.Data); ok {
+		if st, ok := events.As[store.ServerStat](e.Data); ok {
 			return HostStats(st), nil
 		}
 		return convert[HostStats](e.Data)
 	case events.RunnerVersion:
-		if b, ok := as[store.RunnerBundle](e.Data); ok {
+		if b, ok := events.As[store.RunnerBundle](e.Data); ok {
 			return runnerVersion(b, time.Now()), nil
 		}
 		return convert[RunnerVersion](e.Data)
 	case events.ImageState:
 		id := ""
-		if img, ok := as[store.Image](e.Data); ok {
+		if img, ok := events.As[store.Image](e.Data); ok {
 			id = img.ID
-		} else if b, ok := as[store.ImageBuild](e.Data); ok {
+		} else if b, ok := events.As[store.ImageBuild](e.Data); ok {
 			id = b.ImageID
 		} else {
 			return convert[Image](e.Data)
@@ -161,7 +161,7 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 		if !auth.CanDo(currentUser(ctx).Role, auth.ActionAdmin) {
 			return nil, nil
 		}
-		if b, ok := as[store.Backup](e.Data); ok {
+		if b, ok := events.As[store.Backup](e.Data); ok {
 			return h.backupOut(b), nil
 		}
 		return convert[Backup](e.Data)
@@ -169,23 +169,9 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 	return nil, nil
 }
 
-// as returns v as a T, also when v is a *T.
-func as[T any](v any) (T, bool) {
-	switch x := v.(type) {
-	case T:
-		return x, true
-	case *T:
-		if x != nil {
-			return *x, true
-		}
-	}
-	var zero T
-	return zero, false
-}
-
 // convert returns v as a T, or through JSON for another type with the same fields.
 func convert[T any](v any) (T, error) {
-	if x, ok := as[T](v); ok {
+	if x, ok := events.As[T](v); ok {
 		return x, nil
 	}
 	var out T

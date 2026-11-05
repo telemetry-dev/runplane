@@ -33,20 +33,6 @@ export function sandboxMode(server: Server): { name: string; detail: string } | 
   return null
 }
 
-type Usage = { cpu: number | null; memory: number | null; disk: number | null }
-
-/**
- * Usage percents from the newer of the server's sample and the last host.stats
- * event. An unreachable server's last sample is old, so its usage is unknown.
- */
-export function currentUsage(server: Server, live: HostStats | undefined): Usage {
-  if (server.status === 'unreachable') return { cpu: null, memory: null, disk: null }
-  if (live && (!server.stats_at || Date.parse(live.at) >= Date.parse(server.stats_at))) {
-    return { cpu: live.cpu_percent, memory: live.memory_percent, disk: live.disk_percent }
-  }
-  return { cpu: server.cpu_percent, memory: server.memory_percent, disk: server.disk_percent }
-}
-
 /** "24 of 64 GB allocated to runners" */
 export function memoryDetail(server: Server): string {
   return `${gigabytes(server.memory_in_use_mb)} of ${gigabytes(server.memory_mb)} GB allocated to runners`
@@ -55,7 +41,6 @@ export function memoryDetail(server: Server): string {
 /** "259 of 960 GB used · NVMe", or "418 GB of 1 TB used · NVMe" when the units differ. */
 export function diskDetail(server: Server, percent: number | null): string {
   if (!server.disk_bytes) return ''
-  const kind = diskKinds[server.disk_kind.toLowerCase()] ?? server.disk_kind.toUpperCase()
   const total = formatBytes(server.disk_bytes)
   let used = total
   if (percent !== null) {
@@ -63,7 +48,7 @@ export function diskDetail(server: Server, percent: number | null): string {
     const [value, unit] = amount.split(' ')
     used = `${unit === total.split(' ')[1] ? value : amount} of ${total} used`
   }
-  return [used, kind].filter(Boolean).join(' · ')
+  return [used, server.disk_kind].filter(Boolean).join(' · ')
 }
 
 /** The doctor needs a server that answers and has finished its install. */
@@ -89,4 +74,3 @@ export function buildOn(image: Image, serverId: string): ImageBuild | undefined 
 
 const checkRank: Record<Check['status'], number> = { fail: 0, warn: 1, ok: 2 }
 
-const diskKinds: Record<string, string> = { nvme: 'NVMe', ssd: 'SSD', hdd: 'HDD' }

@@ -1,5 +1,5 @@
 // Package control is the host side of the control channel between runplane
-// and runplane-init in a sandbox (docs/architecture.md section 4.1).
+// and runplane-init in a sandbox.
 //
 // The guest dials a Unix socket (container mode), vsock (VM mode, which
 // Firecracker forwards to a Unix socket on the host), or one shared TCP port

@@ -34,7 +34,7 @@ type Config struct {
 	// blocked.
 	Allowlist []string
 	// Refresh is how often the Manager resolves the allowlist names again
-	// and repairs the DOCKER-USER rules. Zero means one minute.
+	// and repairs the iptables rules. Zero means one minute.
 	Refresh time.Duration
 }
 

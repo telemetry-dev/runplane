@@ -20,17 +20,12 @@ export function Field({ label, description, wide = false, className, children, .
     <BaseField.Root className={cx('flex flex-col gap-xs', className)} {...props}>
       <BaseField.Label className="text-s font-medium text-neutral-10 data-disabled:text-neutral-6">{label}</BaseField.Label>
       {children}
-      {description && <FieldDescription wide={wide}>{description}</FieldDescription>}
+      {description && (
+        <BaseField.Description className={cx('text-s text-neutral-7 data-disabled:text-neutral-6', !wide && 'max-w-[40ch]')}>
+          {description}
+        </BaseField.Description>
+      )}
       <BaseField.Error className={cx('text-xs text-error data-disabled:text-neutral-6', !wide && 'max-w-[40ch]')} />
     </BaseField.Root>
-  )
-}
-
-/** Help text of a control, for custom layouts inside a Base UI Field.Root. */
-export function FieldDescription({ wide = false, children }: { wide?: boolean; children: ReactNode }) {
-  return (
-    <BaseField.Description className={cx('text-s text-neutral-7 data-disabled:text-neutral-6', !wide && 'max-w-[40ch]')}>
-      {children}
-    </BaseField.Description>
   )
 }

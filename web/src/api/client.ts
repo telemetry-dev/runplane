@@ -4,7 +4,7 @@ import { useMemo } from 'react'
 import type { components, paths } from './schema'
 
 export type Schemas = components['schemas']
-export type Problem = Schemas['ErrorModel']
+type Problem = Schemas['ErrorModel']
 
 /**
  * A non-2xx API response. It carries the fields of the problem JSON (RFC 9457)

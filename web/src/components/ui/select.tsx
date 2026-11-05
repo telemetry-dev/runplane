@@ -18,7 +18,6 @@ import { option, popupMotion, popupSurface } from './popup'
 // before the popup first opens.
 
 export const Select = BaseSelect.Root
-export const SelectGroup = BaseSelect.Group
 
 export function SelectLabel({ children }: { children: ReactNode }) {
   return (
@@ -55,15 +54,14 @@ export function SelectTrigger({ placeholder, className, ...props }: SelectTrigge
 type SelectPopupProps = {
   /** Minimum popup width in pixels, for triggers narrower than their options. */
   minWidth?: number
-  align?: BaseSelect.Positioner.Props['align']
   children: ReactNode
 }
 
 /** Opens below the trigger, as wide as the trigger (or `minWidth`), and scrolls when it is taller than the space. */
-export function SelectPopup({ minWidth = 0, align = 'start', children }: SelectPopupProps) {
+export function SelectPopup({ minWidth = 0, children }: SelectPopupProps) {
   return (
     <BaseSelect.Portal>
-      <BaseSelect.Positioner alignItemWithTrigger={false} side="bottom" align={align} sideOffset={3} className="z-20 outline-none">
+      <BaseSelect.Positioner alignItemWithTrigger={false} side="bottom" align="start" sideOffset={3} className="z-20 outline-none">
         <BaseSelect.Popup
           className={cx(
             'rounded-s p-xxs',
@@ -96,12 +94,4 @@ export function SelectItem({ children, ...props }: SelectItemProps) {
       </BaseSelect.ItemIndicator>
     </BaseSelect.Item>
   )
-}
-
-export function SelectGroupLabel({ children }: { children: ReactNode }) {
-  return <BaseSelect.GroupLabel className="px-xs pt-xs pb-xxs text-xs font-medium text-neutral-6">{children}</BaseSelect.GroupLabel>
-}
-
-export function SelectSeparator() {
-  return <BaseSelect.Separator className="my-xxs h-px shrink-0 shadow-[inset_0_1px_0_var(--neutral-4)]" />
 }

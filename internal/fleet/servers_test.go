@@ -213,12 +213,12 @@ func TestHostStats(t *testing.T) {
 	sample(90)
 	waitFor(t, "the host.stats event", func() bool { return statsEvents() == 1 })
 	h.f.flushStats(ctx)
-	list, err := h.st.ListServerStats(ctx, id, at.Add(-time.Minute))
+	latest, err := h.st.LatestServerStats(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].CPUPercent != 52 || list[0].MemoryPercent != 38 || list[0].DiskPercent != 90 {
-		t.Errorf("stored samples %+v, want the one sample", list)
+	if st := latest[id]; st.CPUPercent != 52 || st.MemoryPercent != 38 || st.DiskPercent != 90 {
+		t.Errorf("stored sample %+v, want the one sample", st)
 	}
 
 	// 10% free is below the 15% minimum. A second low sample sends nothing;

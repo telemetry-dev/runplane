@@ -133,7 +133,7 @@ Restart=always" rp-e2e-net
 	done
 }
 
-# unit writes and enables the service rp-e2e-$1 with the [Service] lines $2,
+# unit writes and enables the service $1 with the [Service] lines $2,
 # after the unit $3. At a shutdown, systemd stops it after runplane, so that
 # the runners can report the end of their jobs.
 unit() {

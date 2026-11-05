@@ -16,8 +16,7 @@ import (
 
 // serveServicePort serves the service port of the sandboxes on all
 // addresses: /v2/ goes to the registry mirror, all other paths to the
-// Actions cache (docs/architecture.md section 5.1). The returned function
-// stops the listener.
+// Actions cache. The returned function stops the listener.
 func serveServicePort(cfg config.Config, mirror, cache http.Handler, log *slog.Logger) (func(), error) {
 	ln, err := net.Listen("tcp", servicePortAddr(cfg))
 	if err != nil {

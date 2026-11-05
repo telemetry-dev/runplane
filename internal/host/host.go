@@ -374,14 +374,14 @@ func defaultInterface(r io.Reader) string {
 	return best
 }
 
-// existingParent returns path or its nearest parent that exists, so that a
-// check before the install still finds the disk.
 // DiskSpace returns the size and the free bytes of the file system that
 // holds path, or its nearest parent that exists.
 func DiskSpace(path string) (total, free int64, err error) {
 	return diskSpace(existingParent(path))
 }
 
+// existingParent returns path or its nearest parent that exists, so that a
+// check before the install still finds the disk.
 func existingParent(path string) string {
 	for {
 		if _, err := os.Stat(path); err == nil || path == filepath.Dir(path) {

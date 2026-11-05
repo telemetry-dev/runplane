@@ -20,9 +20,6 @@ const (
 	Test Type = "test"
 )
 
-// Types lists the events that a channel can receive.
-var Types = []Type{JobFailed, ServerUnreachable, DiskLow, RunnerDeprecation, UpdateAvailable, BackupFailed}
-
 // Event is one notification.
 type Event struct {
 	Type  Type

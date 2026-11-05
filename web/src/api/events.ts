@@ -2,8 +2,8 @@ import { skipToken, useQuery, useQueryClient, type QueryClient, type QueryKey } 
 import { useEffect } from 'react'
 import type { Schemas } from './client'
 
-/** SSE event names of GET /api/events (docs/architecture.md section 9). */
-export const liveEvents = [
+/** SSE event names of GET /api/events. */
+const liveEvents = [
   'sandbox.state',
   'job.state',
   'pool.stats',
@@ -102,9 +102,9 @@ export function useHostStats(serverId: string): HostStats | undefined {
 /**
  * Returns a function that applies one event to the cache. Objects in the event
  * payload go straight into cached queries. Queries that the event makes stale
- * are refetched once per `delayMs`, so a burst of events causes one request each.
+ * are refetched once per 300ms, so a burst of events causes one request each.
  */
-export function createEventHandler(client: QueryClient, delayMs = 300) {
+export function createEventHandler(client: QueryClient) {
   const stale = new Map<string, Stale>()
   let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -120,7 +120,7 @@ export function createEventHandler(client: QueryClient, delayMs = 300) {
         })
       }
       stale.clear()
-    }, delayMs)
+    }, 300)
   }
 }
 

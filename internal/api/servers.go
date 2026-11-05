@@ -43,7 +43,7 @@ type Server struct {
 	Region             string     `json:"region" doc:"Region or location of the cloud provider, for example fsn1. Empty if unknown."`
 	OS                 string     `json:"os"`
 	Kernel             string     `json:"kernel"`
-	DiskKind           string     `json:"disk_kind" doc:"For example nvme, ssd, or hdd."`
+	DiskKind           string     `json:"disk_kind" doc:"NVMe, SSD, HDD, or empty if unknown."`
 	KVM                bool       `json:"kvm"`
 	DockerVersion      string     `json:"docker_version"`
 	SysboxVersion      string     `json:"sysbox_version"`

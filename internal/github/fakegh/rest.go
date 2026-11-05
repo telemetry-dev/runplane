@@ -22,7 +22,6 @@ func (s *Server) routes() {
 		s.mux.HandleFunc(pattern, h)
 		s.mux.HandleFunc(method+" /api/v3"+path, h)
 	}
-	rest("GET /app", appAuth(s.getApp))
 	rest("GET /app/installations", appAuth(s.listInstallations))
 	rest("GET /app/installations/{id}", appAuth(s.getInstallation))
 	rest("POST /app/installations/{id}/access_tokens", appAuth(s.createAccessToken))
@@ -35,9 +34,7 @@ func (s *Server) routes() {
 	rest("GET /repos/{owner}/{repo}/actions/runners", s.listRunners)
 	rest("GET /repos/{owner}/{repo}", s.getRepo)
 	rest("GET /repos/{owner}/{repo}/actions/runs/{run}", s.getRun)
-	rest("GET /repos/{owner}/{repo}/actions/runs/{run}/attempts/{attempt}", s.getRun)
 	rest("GET /repos/{owner}/{repo}/actions/runs/{run}/jobs", s.listRunJobs)
-	rest("GET /repos/{owner}/{repo}/actions/runs/{run}/attempts/{attempt}/jobs", s.listRunJobs)
 	rest("GET /repos/{owner}/{repo}/actions/jobs/{job}", s.getJob)
 	rest("GET /repos/{owner}/{repo}/actions/jobs/{job}/logs", s.jobLogs)
 	rest("POST /repos/{owner}/{repo}/actions/jobs/{job}/rerun", s.rerunJob)
@@ -96,12 +93,6 @@ func (s *Server) appJSON(r *http.Request) map[string]any {
 		"events":              []string{},
 		"installations_count": len(s.installs),
 	}
-}
-
-func (s *Server) getApp(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	writeJSON(w, http.StatusOK, s.appJSON(r))
 }
 
 func (s *Server) installationJSON(r *http.Request, inst *installation) map[string]any {
@@ -406,28 +397,11 @@ func (s *Server) runOf(w http.ResponseWriter, r *http.Request) *run {
 	return rn
 }
 
-// attemptOf returns the job of the attempt in the path, or the latest.
-func attemptOf(w http.ResponseWriter, r *http.Request, rn *run) *job {
-	if v := r.PathValue("attempt"); v != "" {
-		n, _ := strconv.Atoi(v)
-		if n < 1 || n > len(rn.jobs) {
-			restError(w, http.StatusNotFound, "Not Found")
-			return nil
-		}
-		return rn.jobs[n-1]
-	}
-	return rn.latest()
-}
-
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rn := s.runOf(w, r)
-	if rn == nil {
-		return
-	}
-	if j := attemptOf(w, r, rn); j != nil {
-		writeJSON(w, http.StatusOK, s.runJSON(r, j))
+	if rn := s.runOf(w, r); rn != nil {
+		writeJSON(w, http.StatusOK, s.runJSON(r, rn.latest()))
 	}
 }
 
@@ -490,12 +464,8 @@ func (s *Server) listRunJobs(w http.ResponseWriter, r *http.Request) {
 	if rn == nil {
 		return
 	}
-	j := attemptOf(w, r, rn)
-	if j == nil {
-		return
-	}
-	jobs := []*job{j}
-	if r.PathValue("attempt") == "" && r.URL.Query().Get("filter") == "all" {
+	jobs := []*job{rn.latest()}
+	if r.URL.Query().Get("filter") == "all" {
 		jobs = rn.jobs
 	}
 	var out []any

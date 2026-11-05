@@ -11,6 +11,7 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { StatusIcon } from '~/components/app/status-icon'
 import { SkeletonRows } from '~/components/pages/runners/skeleton-rows'
 import { Spinner } from '~/components/ui/spinner'
@@ -78,7 +79,7 @@ function ImageRow({ image, build, vm, digest }: ImageRowProps) {
           {build?.digest ? (
             <span className="truncate font-code text-xs leading-s tracking-m">{shortDigest(build.digest)}</span>
           ) : (
-            <span className="text-neutral-6">—</span>
+            <None />
           )}
         </DataTableCell>
       )}

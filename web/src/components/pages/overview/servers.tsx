@@ -7,7 +7,7 @@ import { SectionButton, SectionHeader, SectionLink } from '~/components/app/sect
 import { StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { AddServerDialog } from '~/components/pages/servers/add-server-dialog'
-import { jobCount } from '~/components/pages/servers/server-info'
+import { jobCount, statusNames } from '~/components/pages/servers/server-info'
 import { formatMegabytes } from '~/lib/format'
 
 type Server = Schemas['ServerSummary']
@@ -87,15 +87,7 @@ function ServerUsage({ server }: { server: Server }) {
   if (reporting(server) && cpu !== null) {
     return <UsageBar value={cpu} label={`${server.name} CPU`} showValue className="w-[calc(92px+var(--space-s)+4ch)] text-xs" />
   }
-  return <span className="block min-w-0 truncate text-xs text-neutral-7">{reporting(server) ? 'No data yet' : states[server.status]}</span>
-}
-
-const states: Record<Server['status'], string> = {
-  online: 'Online',
-  installing: 'Installing',
-  unreachable: 'Unreachable',
-  draining: 'Draining',
-  disabled: 'Disabled',
+  return <span className="block min-w-0 truncate text-xs text-neutral-7">{reporting(server) ? 'No data yet' : statusNames[server.status]}</span>
 }
 
 /** Online and draining servers run jobs and send stats. */

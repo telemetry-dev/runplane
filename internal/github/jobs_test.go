@@ -18,7 +18,7 @@ import (
 
 // runJSON is a workflow run as GitHub sends it, with the fields runplane reads.
 func runJSON(headRepoID int64, event string) map[string]any {
-	run := map[string]any{
+	return map[string]any{
 		"id": 555, "name": "CI", "run_number": 81, "run_attempt": 2, "event": event,
 		"head_branch": "fix-cache", "head_sha": "3f2a9c1e", "html_url": "https://github.com/acme/web/actions/runs/555",
 		"actor":            map[string]any{"login": "alice"},
@@ -28,7 +28,6 @@ func runJSON(headRepoID int64, event string) map[string]any {
 		"repository":       map[string]any{"id": 100, "full_name": "acme/web", "private": true},
 		"head_repository":  map[string]any{"id": headRepoID, "full_name": "someone/web", "private": false},
 	}
-	return run
 }
 
 func jobsJSON() map[string]any {

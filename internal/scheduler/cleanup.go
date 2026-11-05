@@ -322,7 +322,7 @@ func (s *Scheduler) retention(ctx context.Context) {
 			s.log.Warn("retention: delete jobs", "err", err)
 		}
 		s.removeLogs(ids)
-		if _, err := s.st.DeleteSandboxesBefore(ctx, before); err != nil {
+		if err := s.st.DeleteSandboxesBefore(ctx, before); err != nil {
 			s.log.Warn("retention: delete sandboxes", "err", err)
 		}
 	}
@@ -336,7 +336,7 @@ func (s *Scheduler) retention(ctx context.Context) {
 	if err := s.st.DeleteExpired(ctx, now); err != nil {
 		s.log.Warn("retention: delete expired rows", "err", err)
 	}
-	if _, err := s.st.PruneServerStats(ctx, now.Add(-statsRetention)); err != nil {
+	if err := s.st.PruneServerStats(ctx, now.Add(-statsRetention)); err != nil {
 		s.log.Warn("retention: prune server stats", "err", err)
 	}
 	if err := s.st.PruneCacheStats(ctx, now.Add(-statsRetention)); err != nil {

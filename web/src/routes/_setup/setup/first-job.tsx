@@ -4,8 +4,9 @@ import { githubQuery, statusQuery } from '~/api/queries'
 import { CodeBlock } from '~/components/app/code-block'
 import { ConnectedAccounts, JobWait, LabelTable, workflowDiff } from '~/components/pages/github/first-job'
 import { Loading } from '~/components/pages/github/parts'
-import { poolsQuery } from '~/components/pages/github/queries'
 import { suggestedLabel } from '~/components/pages/overview/no-jobs'
+import { poolsQuery } from '~/components/pages/runners/queries'
+import { SetupHeader } from '~/components/pages/setup/parts'
 import { pageHead } from '~/lib/head'
 
 export const Route = createFileRoute('/_setup/setup/first-job')({
@@ -48,11 +49,8 @@ function FirstJobStep() {
 
 function Header() {
   return (
-    <header className="flex flex-col gap-s">
-      <h1 className="type-display text-neutral-10">Run your first job</h1>
-      <p className="text-m tracking-l text-neutral-8">
-        Change one line in any workflow. Jobs with a runplane label run on your servers; everything else stays on GitHub.
-      </p>
-    </header>
+    <SetupHeader title="Run your first job">
+      Change one line in any workflow. Jobs with a runplane label run on your servers; everything else stays on GitHub.
+    </SetupHeader>
   )
 }

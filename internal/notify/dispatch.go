@@ -169,17 +169,17 @@ func (d *Dispatcher) Run(ctx context.Context, bus *events.Bus) {
 func (d *Dispatcher) handle(ctx context.Context, e events.Event) {
 	switch e.Type {
 	case events.SettingsChanged:
-		if st, ok := as[store.Settings](e.Data); ok {
+		if st, ok := events.As[store.Settings](e.Data); ok {
 			d.lock()
 			d.minFree = st.MinFreeDiskPercent
 			d.mu.Unlock()
 		}
 	case events.JobState:
-		if job, ok := as[store.Job](e.Data); ok && job.State == store.JobCompleted && job.Result == store.ResultFailed {
+		if job, ok := events.As[store.Job](e.Data); ok && job.State == store.JobCompleted && job.Result == store.ResultFailed {
 			d.jobDone(ctx, job)
 		}
 	case events.ServerState:
-		v, ok := as[store.Server](e.Data)
+		v, ok := events.As[store.Server](e.Data)
 		if !ok {
 			return
 		}
@@ -196,7 +196,7 @@ func (d *Dispatcher) handle(ctx context.Context, e events.Event) {
 			d.mu.Unlock()
 		}
 	case events.HostStats:
-		if s, ok := as[store.ServerStat](e.Data); ok {
+		if s, ok := events.As[store.ServerStat](e.Data); ok {
 			d.hostStats(ctx, s)
 		}
 	}
@@ -321,18 +321,4 @@ func dashboard(st store.Settings) string {
 		return "https://" + st.Domain
 	}
 	return ""
-}
-
-// as returns v as a T, also when v is a *T.
-func as[T any](v any) (T, bool) {
-	switch x := v.(type) {
-	case T:
-		return x, true
-	case *T:
-		if x != nil {
-			return *x, true
-		}
-	}
-	var zero T
-	return zero, false
 }

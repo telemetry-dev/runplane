@@ -24,7 +24,7 @@ export function SetupColumn({ children }: { children: ReactNode }) {
   return <main className="mt-xxl flex w-full max-w-[560px] flex-col gap-xl">{children}</main>
 }
 
-export const setupSteps = ['Server', 'GitHub', 'First job'] as const
+const setupSteps = ['Server', 'GitHub', 'First job'] as const
 
 /** The three setup steps; steps before `current` show as done. `current` counts from 1. */
 export function SetupStepper({ current }: { current: number }) {

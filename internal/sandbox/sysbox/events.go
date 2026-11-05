@@ -104,8 +104,8 @@ func (d *Driver) readEvents(ctx context.Context, res client.EventsResult) {
 	}
 }
 
-// tick runs the periodic work: metrics of busy sandboxes, the sweep, and
-// the sysbox watchdog.
+// tick runs the periodic work: metrics of busy sandboxes, the sweep, the
+// sysbox watchdog, and the disk check.
 func (d *Driver) tick() {
 	defer d.loops.Done()
 	metrics := time.NewTicker(metricsEvery)

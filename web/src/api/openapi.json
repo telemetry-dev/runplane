@@ -2729,7 +2729,7 @@
             "type": "integer"
           },
           "disk_kind": {
-            "description": "For example nvme, ssd, or hdd.",
+            "description": "NVMe, SSD, HDD, or empty if unknown.",
             "type": "string"
           },
           "disk_percent": {

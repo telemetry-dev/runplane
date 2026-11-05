@@ -4,17 +4,19 @@ import { useState } from 'react'
 import { $api, api, errorMessage, type Schemas } from '~/api/client'
 import { sessionQuery } from '~/api/queries'
 import { DataTable, DataTableCell, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Avatar } from '~/components/ui/avatar'
 import { Button, IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { Select, SelectItem, SelectPopup, SelectTrigger } from '~/components/ui/select'
+import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { Activity } from './activity'
 import { relativeTime } from './format'
 import { Invites } from './invites'
 import { membersQuery, roles, type Members, type Role } from './members-api'
-import { Bar, LoadError, ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
+import { LoadError, ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
 import { useIsAdmin } from './settings-api'
 
 type User = Schemas['User']
@@ -120,7 +122,7 @@ function UserRow({ user, me, onlyAdmin, shown }: UserRowProps) {
         </Select>
       </DataTableCell>
       {shown.login && (
-        <DataTableCell>{user.last_login_at ? relativeTime(user.last_login_at) : <span className="text-neutral-6">—</span>}</DataTableCell>
+        <DataTableCell>{user.last_login_at ? relativeTime(user.last_login_at) : <None />}</DataTableCell>
       )}
       <DataTableCell align="end">
         {!me && (
@@ -240,19 +242,19 @@ function SkeletonRows({ shown }: { shown: Shown }) {
     <DataTableRow key={index}>
       {shown.avatar && (
         <DataTableCell>
-          <Bar className="size-[28px] rounded-full" />
+          <Skeleton className="size-[28px] rounded-full" />
         </DataTableCell>
       )}
       <DataTableCell className="flex-col items-start gap-0">
-        <Bar className="my-[3px] h-[12px] w-[96px] rounded-xs" />
-        <Bar className="my-[2px] h-[10px] w-[120px] rounded-xs" />
+        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
+        <Skeleton className="my-[2px] h-[10px] w-[120px]" />
       </DataTableCell>
       <DataTableCell>
-        <Bar className="h-[calc(var(--line-s)+2*var(--space-xs))] w-[120px] rounded-s" />
+        <Skeleton className="h-[calc(var(--line-s)+2*var(--space-xs))] w-[120px] rounded-s" />
       </DataTableCell>
       {shown.login && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[64px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[64px]" />
         </DataTableCell>
       )}
       <DataTableCell />

@@ -103,7 +103,7 @@ func (l *Listener) accept(ctx context.Context, conn net.Conn) {
 	}
 }
 
-// open runs the handshake of section 5 and starts yamux.
+// open runs the agent handshake and starts yamux.
 func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()

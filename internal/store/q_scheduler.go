@@ -12,10 +12,13 @@ import (
 // sandboxRank orders the sandbox states. gone and failed share the last rank.
 const sandboxRank = `CASE %s WHEN 'starting' THEN 0 WHEN 'idle' THEN 1 WHEN 'busy' THEN 2 WHEN 'stopping' THEN 3 ELSE 4 END`
 
-// AdvanceSandboxState is SetSandboxState for a state that comes after the
-// current one. It returns the row and false, with no change, if the sandbox
-// is already in that state or a later one. Events can arrive out of order,
-// and a late "listening" must not make a busy sandbox idle again.
+// AdvanceSandboxState records a change at t to a state that comes after the
+// current one, and returns the row and true. The first change to idle, busy,
+// or a done state sets idle_at, busy_at, or stopped_at. For failed, reason
+// goes to error; for stopping and gone, to exit_reason. The first reason
+// stays. It returns the row and false, with no change, if the sandbox is
+// already in that state or a later one. Events can arrive out of order, and
+// a late "listening" must not make a busy sandbox idle again.
 func (s *Store) AdvanceSandboxState(ctx context.Context, id string, state sandbox.State, reason string, t time.Time) (Sandbox, bool, error) {
 	b, err := scanSandbox(s.w.QueryRowContext(ctx, `UPDATE sandboxes SET
 			state = ?1,

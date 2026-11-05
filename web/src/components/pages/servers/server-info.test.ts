@@ -83,11 +83,6 @@ describe('row text', () => {
     expect(serverHardware(primary)).toBe('x64 · 1.9 TB NVMe')
   })
 
-  test('writes the disk kinds of the API doc (nvme, ssd, hdd) in capitals', () => {
-    expect(serverHardware({ ...primary, disk_kind: 'nvme' })).toBe('x64 · 1.9 TB NVMe')
-    expect(serverHardware({ ...primary, arch: 'arm64', disk_bytes: 320 * 2 ** 30, disk_kind: 'ssd' })).toBe('arm64 · 320 GB SSD')
-  })
-
   test('leaves out facts a new server has not reported', () => {
     expect(serverOrigin({ ...fresh, address: '51.68.42.111' })).toBe('51.68.42.111')
     expect(serverSize(fresh)).toBe('')
@@ -120,19 +115,23 @@ test('sortServers keeps working servers first, then installing, then unreachable
 })
 
 describe('currentUsage', () => {
-  const live = { server_id: primary.id, cpu_percent: 71, memory_percent: 40.5, disk_percent: 34, at: '2026-11-04T04:49:52Z' }
+  const live = { server_id: primary.id, cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, at: '2026-11-04T04:49:52Z' }
 
   test('takes a host.stats event that is newer than the list sample', () => {
-    expect(currentUsage(primary, live)).toEqual({ cpu: 71, memory: 40.5 })
+    expect(currentUsage(primary, live)).toEqual({ cpu: 71, memory: 40.5, disk: 35 })
   })
 
   test('keeps a refetched list sample that is newer than the last event', () => {
-    expect(currentUsage({ ...primary, stats_at: '2026-11-04T04:50:02.5Z' }, live)).toEqual({ cpu: 52, memory: 38 })
+    expect(currentUsage({ ...primary, stats_at: '2026-11-04T04:50:02.5Z' }, live)).toEqual({ cpu: 52, memory: 38, disk: 34 })
   })
 
   test('takes the event when the list has no sample', () => {
-    expect(currentUsage(fresh, live)).toEqual({ cpu: 71, memory: 40.5 })
-    expect(currentUsage(fresh, undefined)).toEqual({ cpu: null, memory: null })
+    expect(currentUsage(fresh, live)).toEqual({ cpu: 71, memory: 40.5, disk: 35 })
+    expect(currentUsage(fresh, undefined)).toEqual({ cpu: null, memory: null, disk: null })
+  })
+
+  test('an unreachable server has no current usage', () => {
+    expect(currentUsage({ ...primary, status: 'unreachable' }, live)).toEqual({ cpu: null, memory: null, disk: null })
   })
 })
 

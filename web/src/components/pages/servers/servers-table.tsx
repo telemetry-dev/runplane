@@ -11,6 +11,7 @@ import {
   RowLink,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { Spinner } from '~/components/ui/spinner'
@@ -172,8 +173,4 @@ function ServerUsage({ server, shown }: { server: Server; shown: Shown }) {
 function Usage({ value, label }: { value: number | null; label: string }) {
   if (value === null) return <None />
   return <UsageBar value={value} label={label} showValue className={bar} />
-}
-
-function None() {
-  return <span className="text-neutral-6">—</span>
 }

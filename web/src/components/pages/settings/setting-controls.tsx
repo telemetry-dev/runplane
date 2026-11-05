@@ -196,7 +196,7 @@ export function SwitchSetting({ name, label, description, disabled, checked }: S
     <Switch
       label={label}
       description={description}
-      error={save.error ? saveError(save.error) : undefined}
+      error={saveError(save.error)}
       checked={checked}
       disabled={disabled}
       onCheckedChange={(next) => save.mutate({ body: { [name]: next } })}

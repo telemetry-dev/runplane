@@ -11,9 +11,11 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { StatusIcon } from '~/components/app/status-icon'
+import { Skeleton } from '~/components/ui/skeleton'
 import { formatDate } from '~/lib/format'
-import { Badge, Bar, ErrorHint, LoadError, SettingsSection } from './parts'
+import { Badge, ErrorHint, LoadError, SettingsSection } from './parts'
 import { groupVersions } from './runner-info'
 
 /** GET /api/runner-versions. runner.version events refetch it. */
@@ -56,11 +58,11 @@ export function RunnerVersions() {
                   {group.inUse && <Badge>{group.inUse}</Badge>}
                 </DataTableCell>
                 {shown.architectures && <DataTableCell>{group.architectures}</DataTableCell>}
-                {shown.released && <DataTableCell>{group.released_at ? formatDate(group.released_at) : <Missing />}</DataTableCell>}
+                {shown.released && <DataTableCell>{group.released_at ? formatDate(group.released_at) : <None />}</DataTableCell>}
                 {shown.endDate && (
                   <DataTableCell>
                     {!group.end_date ? (
-                      <Missing />
+                      <None />
                     ) : group.ends_soon ? (
                       <span className="flex items-center gap-xs font-medium text-neutral-10">
                         <TriangleAlert size={14} className="shrink-0" aria-hidden />
@@ -90,36 +92,28 @@ export function RunnerVersions() {
   )
 }
 
-function Missing() {
-  return (
-    <span className="text-neutral-6" aria-label="None">
-      —
-    </span>
-  )
-}
-
 function SkeletonRows({ shown }: { shown: Record<'architectures' | 'released' | 'endDate', boolean> }) {
   return Array.from({ length: 2 }, (_, index) => (
     <DataTableRow key={index}>
       <DataTableCell>
-        <Bar className="size-[16px] rounded-full" />
+        <Skeleton className="size-[16px] rounded-full" />
       </DataTableCell>
       <DataTableCell>
-        <Bar className="my-[3px] h-[12px] w-[64px] rounded-xs" />
+        <Skeleton className="my-[3px] h-[12px] w-[64px]" />
       </DataTableCell>
       {shown.architectures && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[72px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[72px]" />
         </DataTableCell>
       )}
       {shown.released && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[80px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[80px]" />
         </DataTableCell>
       )}
       {shown.endDate && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[24px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[24px]" />
         </DataTableCell>
       )}
     </DataTableRow>

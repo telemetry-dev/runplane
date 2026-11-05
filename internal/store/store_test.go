@@ -22,7 +22,7 @@ func openTest(t *testing.T) *Store {
 	return s
 }
 
-// The columns of docs/architecture.md section 6.
+// The tables and columns that the migrations must make.
 var contractSchema = map[string]string{
 	"settings":              "key value",
 	"users":                 "id email name password_hash role created_at last_login_at",
@@ -236,8 +236,8 @@ func TestServerTokenSingleUse(t *testing.T) {
 	if len(list) != 1 || list[0].ID != "s1" {
 		t.Fatalf("servers = %+v, want only s1", list)
 	}
-	if got, err := s.GetServerBySecretHash(ctx, "secret-s1"); err != nil || got.ID != "s1" {
-		t.Fatalf("by secret: %q, %v", got.ID, err)
+	if got, err := s.GetServer(ctx, "s1"); err != nil || got.SecretHash != "secret-s1" {
+		t.Fatalf("secret hash = %q, %v; want secret-s1", got.SecretHash, err)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestServerTokenForSSHInstall(t *testing.T) {
 	}
 }
 
-func TestSetSandboxStateTimes(t *testing.T) {
+func TestAdvanceSandboxStateTimes(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	t0 := time.UnixMilli(1_700_000_000_000).UTC()
@@ -289,7 +289,7 @@ func TestSetSandboxStateTimes(t *testing.T) {
 		{sandbox.StateIdle, "", 30}, // a done sandbox keeps its state
 	} {
 		var err error
-		b, err = s.SetSandboxState(ctx, "b1", step.state, step.reason, t0.Add(time.Duration(step.sec)*time.Second))
+		b, _, err = s.AdvanceSandboxState(ctx, "b1", step.state, step.reason, t0.Add(time.Duration(step.sec)*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -311,7 +311,7 @@ func TestSetSandboxStateTimes(t *testing.T) {
 		t.Errorf("exit reason %q, error %q", b.ExitReason, b.Error)
 	}
 
-	if _, err := s.SetSandboxState(ctx, "missing", sandbox.StateIdle, "", t0); !errors.Is(err, ErrNotFound) {
+	if _, _, err := s.AdvanceSandboxState(ctx, "missing", sandbox.StateIdle, "", t0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown sandbox: err = %v, want ErrNotFound", err)
 	}
 }

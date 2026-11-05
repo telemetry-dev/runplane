@@ -77,9 +77,9 @@ func (s *Service) startListener(ctx context.Context, row store.ScaleSet, t targe
 	return l
 }
 
-// stopListener stops the listener and waits for it. With detach, the
-// scheduler drops the scale set.
-func (s *Service) stopListener(id string, detach bool) {
+// stopListener stops the listener and waits for it. Then the scheduler
+// drops the scale set.
+func (s *Service) stopListener(id string) {
 	s.lmu.Lock()
 	l := s.listeners[id]
 	delete(s.listeners, id)
@@ -89,9 +89,7 @@ func (s *Service) stopListener(id string, detach bool) {
 	}
 	l.cancel()
 	<-l.done
-	if detach {
-		s.sched.Detach(id)
-	}
+	s.sched.Detach(id)
 }
 
 // stopListeners stops all listeners for shutdown. The scheduler keeps the

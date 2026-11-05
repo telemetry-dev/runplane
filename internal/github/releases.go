@@ -198,7 +198,6 @@ func (s *Service) warnEnds(ctx context.Context, arches []string) error {
 	return nil
 }
 
-// serverArches returns the arches of the servers.
 func (s *Service) serverArches(ctx context.Context) ([]string, error) {
 	servers, err := s.st.ListServers(ctx)
 	if err != nil {

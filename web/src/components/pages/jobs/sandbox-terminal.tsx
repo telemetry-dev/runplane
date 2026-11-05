@@ -3,7 +3,7 @@ import { Terminal, type ITheme } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
 import { terminalColors } from '~/components/app/log-viewer'
-import { TextButton } from './text-button'
+import { TextButton } from '~/components/app/text-button'
 
 type Status = { state: 'connecting' } | { state: 'open' } | { state: 'closed'; message: string }
 

@@ -311,8 +311,6 @@ The tests of netlink, nftables, loop devices, and mounts must have root access o
 docker run --rm --privileged -v "$PWD":/src -v "$HOME/go/pkg/mod":/go/pkg/mod -w /src golang:1.27 go test ./internal/...
 ```
 
-`docs/architecture.md` is the contract between the packages. `BACKEND.md` gives the reasons for the design.
-
 ## Release
 
 1. Make an ed25519 key one time: `openssl genpkey -algorithm ed25519 -out runplane-signing.pem`.

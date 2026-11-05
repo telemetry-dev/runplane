@@ -65,10 +65,9 @@ type Config struct {
 
 // Server is the SSH gateway.
 type Server struct {
-	cfg     Config
-	ssh     *ssh.ServerConfig
-	hostKey ssh.PublicKey
-	ln      net.Listener
+	cfg Config
+	ssh *ssh.ServerConfig
+	ln  net.Listener
 
 	ctx    context.Context // ends at Close
 	cancel context.CancelFunc
@@ -111,7 +110,7 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen for ssh: %w", err)
 	}
-	s := &Server{cfg: cfg, hostKey: hostKey.PublicKey(), ln: ln, conns: map[net.Conn]struct{}{}}
+	s := &Server{cfg: cfg, ln: ln, conns: map[net.Conn]struct{}{}}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.ssh = &ssh.ServerConfig{
 		PublicKeyCallback:         s.authorize,
@@ -124,10 +123,6 @@ func New(cfg Config) (*Server, error) {
 
 // Addr is the address that the gateway listens on.
 func (s *Server) Addr() net.Addr { return s.ln.Addr() }
-
-// HostKey is the public host key, for the known_hosts line that the
-// dashboard can show.
-func (s *Server) HostKey() ssh.PublicKey { return s.hostKey }
 
 // Serve accepts connections until ctx ends or Close is called. Then it
 // closes the gateway and returns nil.

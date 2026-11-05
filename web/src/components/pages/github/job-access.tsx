@@ -1,9 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { $api, errorMessage, type Schemas } from '~/api/client'
 import { SectionHeader } from '~/components/app/section-header'
+import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { Switch } from '~/components/ui/switch'
 import { cx } from '~/lib/cx'
-import { settingsQuery } from './queries'
 
 type Access = Partial<Pick<Schemas['Settings'], 'allow_public_repos' | 'allow_fork_prs'>>
 

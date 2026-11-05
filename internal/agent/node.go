@@ -1,6 +1,5 @@
-// Package agent connects the servers of runplane (docs/architecture.md
-// section 5). The primary operates its own server through a LocalNode and
-// each agent through a Session: Listener accepts the agent connections on
+// Package agent connects the servers of runplane. The primary operates its
+// own server through a LocalNode and each agent through a Session: Listener accepts the agent connections on
 // the primary, and Run operates the agent end on the other servers.
 package agent
 
@@ -52,7 +51,7 @@ type LocalConfig struct {
 	Driver  sandbox.Driver
 	Images  *image.Manager
 	Bundles *image.Bundles
-	Updater *update.Updater // nil: update.New()
+	Updater *update.Updater
 	// Doctor holds the doctor options of this server. Its DataDir also
 	// selects the disk for the facts and the stats. Configure sets
 	// MinFreeDiskPercent.
@@ -74,10 +73,10 @@ type LocalNode struct {
 }
 
 func NewLocal(cfg LocalConfig) (*LocalNode, error) {
-	if cfg.Driver == nil || cfg.Images == nil || cfg.Bundles == nil {
-		return nil, errors.New("new local node: Driver, Images, and Bundles are required")
+	if cfg.Driver == nil || cfg.Images == nil || cfg.Bundles == nil || cfg.Updater == nil {
+		return nil, errors.New("new local node: Driver, Images, Bundles, and Updater are required")
 	}
-	n := &LocalNode{
+	return &LocalNode{
 		driver:  cfg.Driver,
 		images:  cfg.Images,
 		bundles: cfg.Bundles,
@@ -85,11 +84,7 @@ func NewLocal(cfg LocalConfig) (*LocalNode, error) {
 		log:     orDiscard(cfg.Logger),
 		stats:   make(chan host.Stats, 1),
 		doctor:  cfg.Doctor,
-	}
-	if n.updater == nil {
-		n.updater = update.New()
-	}
-	return n, nil
+	}, nil
 }
 
 // Run samples the host stats for Stats until ctx ends.

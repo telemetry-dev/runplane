@@ -12,12 +12,14 @@ import {
   RowLink,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { jobStatus, StatusIcon } from '~/components/app/status-icon'
+import { Skeleton } from '~/components/ui/skeleton'
 import { cx } from '~/lib/cx'
 import { formatDuration, formatRelativeTime } from '~/lib/format'
+import { useNow } from '~/lib/use-now'
 import { jobOrigin, queueTime, runTime } from './job-format'
-import { useNow } from './use-now'
 
 // A narrow table drops Server first, then Queued, Runner, Branch, and Started.
 const columns = {
@@ -92,15 +94,15 @@ function JobRow({ job, now, shown }: { job: Schemas['JobSummary']; now: number; 
           <BranchRef branch={job.head_branch} sha={job.head_sha} />
         </DataTableCell>
       )}
-      {shown.runner && <DataTableCell>{job.pool_label ? <RunnerLabel>{job.pool_label}</RunnerLabel> : <Missing />}</DataTableCell>}
-      {shown.server && <DataTableCell>{job.server_name ? <span className="truncate">{job.server_name}</span> : <Missing />}</DataTableCell>}
+      {shown.runner && <DataTableCell>{job.pool_label ? <RunnerLabel>{job.pool_label}</RunnerLabel> : <None />}</DataTableCell>}
+      {shown.server && <DataTableCell>{job.server_name ? <span className="truncate">{job.server_name}</span> : <None />}</DataTableCell>}
       {shown.queued && (
         <DataTableCell align="end" className={cx('tabular-nums', job.state === 'queued' && 'text-neutral-10')}>
           {formatDuration(queued)}
         </DataTableCell>
       )}
       <DataTableCell align="end" className={cx('tabular-nums', job.state !== 'completed' && 'text-neutral-10')}>
-        {duration === null ? <Missing /> : formatDuration(duration)}
+        {duration === null ? <None /> : formatDuration(duration)}
       </DataTableCell>
       {shown.started && (
         <DataTableCell align="end" className="text-neutral-7">
@@ -108,15 +110,6 @@ function JobRow({ job, now, shown }: { job: Schemas['JobSummary']; now: number; 
         </DataTableCell>
       )}
     </DataTableRow>
-  )
-}
-
-function Missing() {
-  return (
-    <span className="text-neutral-6">
-      <span aria-hidden>—</span>
-      <span className="sr-only">None</span>
-    </span>
   )
 }
 
@@ -128,42 +121,38 @@ function SkeletonRows({ shown }: { shown: Shown }) {
         <span aria-hidden className="block size-[16px] animate-pulse rounded-full bg-neutral-3" />
       </DataTableCell>
       <DataTableCell className="flex-col items-start gap-0">
-        <Bar className="my-[3px] h-[12px] w-[140px]" />
-        <Bar className="my-[2px] h-[10px] w-[200px]" />
+        <Skeleton className="my-[3px] h-[12px] w-[140px]" />
+        <Skeleton className="my-[2px] h-[10px] w-[200px]" />
       </DataTableCell>
       {shown.branch && (
         <DataTableCell className="flex-col items-start gap-0">
-          <Bar className="my-[3px] h-[12px] w-[120px]" />
-          <Bar className="my-[2px] h-[10px] w-[56px]" />
+          <Skeleton className="my-[3px] h-[12px] w-[120px]" />
+          <Skeleton className="my-[2px] h-[10px] w-[56px]" />
         </DataTableCell>
       )}
       {shown.runner && (
         <DataTableCell>
-          <Bar className="h-[10px] w-[96px]" />
+          <Skeleton className="h-[10px] w-[96px]" />
         </DataTableCell>
       )}
       {shown.server && (
         <DataTableCell>
-          <Bar className="h-[12px] w-[80px]" />
+          <Skeleton className="h-[12px] w-[80px]" />
         </DataTableCell>
       )}
       {shown.queued && (
         <DataTableCell align="end">
-          <Bar className="h-[12px] w-[24px]" />
+          <Skeleton className="h-[12px] w-[24px]" />
         </DataTableCell>
       )}
       <DataTableCell align="end">
-        <Bar className="h-[12px] w-[40px]" />
+        <Skeleton className="h-[12px] w-[40px]" />
       </DataTableCell>
       {shown.started && (
         <DataTableCell align="end">
-          <Bar className="h-[12px] w-[48px]" />
+          <Skeleton className="h-[12px] w-[48px]" />
         </DataTableCell>
       )}
     </DataTableRow>
   ))
-}
-
-function Bar({ className }: { className: string }) {
-  return <span aria-hidden className={cx('block animate-pulse rounded-xs bg-neutral-3', className)} />
 }

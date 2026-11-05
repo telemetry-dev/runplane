@@ -3,10 +3,11 @@ import { Link, useParams } from '@tanstack/react-router'
 import { errorMessage, isApiError } from '~/api/client'
 import { sessionQuery } from '~/api/queries'
 import { SectionHeader } from '~/components/app/section-header'
-import { TextButton } from '~/components/pages/jobs/text-button'
+import { TextButton } from '~/components/app/text-button'
 import { LiveRunnersTable } from '~/components/pages/runners/live-runners-table'
 import { imagesQuery, sandboxesQuery } from '~/components/pages/runners/queries'
 import { Button, buttonClassName } from '~/components/ui/button'
+import { Skeleton } from '~/components/ui/skeleton'
 import { DoctorSection } from './doctor-section'
 import { ImagesTable } from './images-table'
 import { serverQuery, useDoctor } from './queries'
@@ -94,21 +95,20 @@ function ServerError({ error, onRetry }: { error: unknown; onRetry: () => void }
 
 /** The page while the server loads: the shapes of the header, facts, and usage. */
 export function ServerPageSkeleton() {
-  const bar = 'block animate-pulse rounded-xs bg-neutral-3'
   return (
     <div aria-busy className="flex flex-col gap-xxl">
       <p className="sr-only" role="status">
         Loading the server
       </p>
       <div className="flex flex-col gap-s" aria-hidden>
-        <span className={`${bar} my-[3px] h-[12px] w-[160px]`} />
-        <span className={`${bar} my-[3px] h-[24px] w-[220px]`} />
+        <Skeleton className="my-[3px] h-[12px] w-[160px]" />
+        <Skeleton className="my-[3px] h-[24px] w-[220px]" />
       </div>
       <div className="-mt-m flex flex-wrap gap-xxl" aria-hidden>
         {[96, 112, 96, 128, 120, 140].map((width, index) => (
           <span key={index} className="flex flex-col gap-xs">
-            <span className={`${bar} h-[10px]`} style={{ width: width / 2 }} />
-            <span className={`${bar} h-[14px]`} style={{ width }} />
+            <Skeleton className="h-[10px]" style={{ width: width / 2 }} />
+            <Skeleton className="h-[14px]" style={{ width }} />
           </span>
         ))}
       </div>

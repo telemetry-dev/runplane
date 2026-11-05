@@ -13,14 +13,15 @@ import {
   useFittingColumns,
   type DataTableColumn,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { UsageBar } from '~/components/app/usage-bar'
-import { useNow } from '~/components/pages/jobs/use-now'
 import { SkeletonRows } from '~/components/pages/runners/skeleton-rows'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
 import { formatBytes, formatCount, formatTimeAgo } from '~/lib/format'
+import { useNow } from '~/lib/use-now'
 import { repositoryHitRate, type CacheOverview, type CacheRepository } from './cache-format'
 import { cacheQuery } from './queries'
 
@@ -188,8 +189,4 @@ function RemoveEntriesDialog({ repo, open, onOpenChange }: RemoveEntriesDialogPr
       </AlertDialogPopup>
     </AlertDialog>
   )
-}
-
-function None() {
-  return <span className="text-neutral-6">—</span>
 }

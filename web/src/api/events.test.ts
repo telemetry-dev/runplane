@@ -6,9 +6,11 @@ const jobKey = (id: string) => ['get', '/api/jobs/{id}', { params: { path: { id 
 const metricsKey = (id: string) => ['get', '/api/jobs/{id}/metrics', { params: { path: { id } } }]
 const jobListKey = ['get', '/api/jobs', { params: { query: { status: 'running' } } }]
 const serverListKey = ['get', '/api/servers']
+const serverKey = (id: string) => ['get', '/api/servers/{id}', { params: { path: { id } } }]
 
 describe('createEventHandler', () => {
   let client: QueryClient
+  const invalidated = (key: unknown[]) => client.getQueryState(key)?.isInvalidated
 
   beforeEach(() => {
     vi.useFakeTimers()
@@ -27,7 +29,7 @@ describe('createEventHandler', () => {
     client.setQueryData(metricsKey('j2'), { samples: [] })
     client.setQueryData(jobListKey, { items: [] })
     client.setQueryData(serverListKey, [])
-    const handle = createEventHandler(client, 300)
+    const handle = createEventHandler(client)
 
     handle('job.state', { id: 'j1', state: 'completed', result: 'failed' })
 
@@ -40,7 +42,6 @@ describe('createEventHandler', () => {
     expect(client.getQueryData(jobKey('j2'))).toEqual({ id: 'j2', state: 'queued' })
 
     await vi.advanceTimersByTimeAsync(300)
-    const invalidated = (key: unknown[]) => client.getQueryState(key)?.isInvalidated
     expect(invalidated(jobKey('j1'))).toBe(true)
     expect(invalidated(metricsKey('j1'))).toBe(true)
     expect(invalidated(jobListKey)).toBe(true)
@@ -51,18 +52,16 @@ describe('createEventHandler', () => {
 
   test('sandbox.state refetches that sandbox, the server list and its server, and the job it runs', async () => {
     const sandboxKey = (id: string) => ['get', '/api/sandboxes/{id}', { params: { path: { id } } }]
-    const serverKey = (id: string) => ['get', '/api/servers/{id}', { params: { path: { id } } }]
     for (const key of [sandboxKey('sb1'), sandboxKey('sb2'), serverKey('s1'), serverKey('s2'), jobKey('j1'), jobKey('j2')]) {
       client.setQueryData(key, {})
     }
     client.setQueryData(['get', '/api/sandboxes'], [])
     client.setQueryData(serverListKey, [])
-    const handle = createEventHandler(client, 300)
+    const handle = createEventHandler(client)
 
     handle('sandbox.state', stoppedDebugSandbox)
     await vi.advanceTimersByTimeAsync(300)
 
-    const invalidated = (key: unknown[]) => client.getQueryState(key)?.isInvalidated
     expect(invalidated(['get', '/api/sandboxes'])).toBe(true)
     expect(invalidated(serverListKey)).toBe(true)
     expect(invalidated(sandboxKey('sb1'))).toBe(true)
@@ -74,7 +73,6 @@ describe('createEventHandler', () => {
   })
 
   test('server.state puts the server into its detail and the server list, and refetches the lists that count servers', async () => {
-    const serverKey = (id: string) => ['get', '/api/servers/{id}', { params: { path: { id } } }]
     const other = { ...drainingServer, id: 's2', name: 'fsn1-ax52-b', status: 'online', update_state: 'current' }
     client.setQueryData(serverKey('s1'), { ...drainingServer, status: 'online', update_state: 'available' })
     client.setQueryData(serverKey('s2'), other)
@@ -82,7 +80,7 @@ describe('createEventHandler', () => {
     client.setQueryData(['get', '/api/pools'], [])
     client.setQueryData(['get', '/api/overview', { params: { query: { range: '24h' } } }], {})
     client.setQueryData(['get', '/api/jobs'], { items: [] })
-    const handle = createEventHandler(client, 300)
+    const handle = createEventHandler(client)
 
     handle('server.state', drainingServer)
 
@@ -90,7 +88,6 @@ describe('createEventHandler', () => {
     expect(client.getQueryData(serverKey('s2'))).toEqual(other)
     expect(client.getQueryData(serverListKey)).toEqual([drainingServer, other])
     await vi.advanceTimersByTimeAsync(300)
-    const invalidated = (key: unknown[]) => client.getQueryState(key)?.isInvalidated
     expect(invalidated(serverListKey)).toBe(false)
     expect(invalidated(serverKey('s1'))).toBe(false)
     expect(invalidated(['get', '/api/pools'])).toBe(true)
@@ -100,7 +97,7 @@ describe('createEventHandler', () => {
 
   test('server.state of a server that the list lacks refetches the list', async () => {
     client.setQueryData(serverListKey, [{ ...drainingServer, id: 's2', name: 'fsn1-ax52-b' }])
-    const handle = createEventHandler(client, 300)
+    const handle = createEventHandler(client)
 
     handle('server.state', { ...drainingServer, id: 's3', name: 'gra-b2-30', status: 'installing' })
 
@@ -113,7 +110,7 @@ describe('createEventHandler', () => {
     client.setQueryData(['get', '/api/github'], { connected: false, installations: [], scale_sets: [] })
     client.setQueryData(['get', '/api/backups'], [])
     client.setQueryData(serverListKey, [])
-    const handle = createEventHandler(client, 300)
+    const handle = createEventHandler(client)
 
     handle('github.state', status)
     handle('backup.state', { id: 'bk1', status: 'running' })
@@ -136,7 +133,7 @@ describe('createEventHandler', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(fetches).toBe(1)
 
-    const handle = createEventHandler(client, 300)
+    const handle = createEventHandler(client)
     for (let i = 0; i < 20; i++) handle('job.state', { id: `j${i}`, state: 'running' })
     await vi.advanceTimersByTimeAsync(300)
 

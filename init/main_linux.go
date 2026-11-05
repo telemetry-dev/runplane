@@ -1,8 +1,7 @@
 //go:build linux
 
-// runplane-init is the first process in each runplane sandbox
-// (docs/architecture.md section 4.2). It gets the job config from the host,
-// starts dockerd and the GitHub Actions runner, reports the runner state,
+// runplane-init is the first process in each runplane sandbox. It gets the
+// job config from the host, starts dockerd and the GitHub Actions runner, reports the runner state,
 // streams the logs, serves debug shells, and stops the sandbox after the job.
 package main
 

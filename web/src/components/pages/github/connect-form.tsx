@@ -11,8 +11,8 @@ import { borderedList, borderedRow } from './parts'
 
 type AccountType = Schemas['ManifestRequest']['account_type']
 
-// The permissions of the manifest (docs/architecture.md section 1). Runners of
-// a personal account are repository runners, which need Administration.
+// The permissions of the manifest. Runners of a personal account are
+// repository runners, which need Administration.
 const permissions: Record<AccountType, ReadonlyArray<[name: string, access: string]>> = {
   organization: [
     ['Self-hosted runners', 'Read and write'],

@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { $api, api, errorMessage } from '~/api/client'
 import { abortOnPageHide, usePageShows } from '~/api/open-requests'
 import { LogViewer } from '~/components/app/log-viewer'
+import { TextButton } from '~/components/app/text-button'
 import { Drawer, DrawerPopup } from '~/components/ui/drawer'
 import { stateNames, type Sandbox } from './runner-format'
 
@@ -46,9 +47,7 @@ function RunnerLog({ id, failed }: { id: string; failed?: string }) {
   const failure = log.error ? (
     <span role="alert" className="block">
       Could not load {log.text ? 'the rest of the log' : 'the log'}: {errorMessage(log.error)}{' '}
-      <button type="button" className="font-medium text-neutral-10 underline underline-offset-2" onClick={log.retry}>
-        Try again
-      </button>
+      <TextButton onClick={log.retry}>Try again</TextButton>
     </span>
   ) : undefined
   const reason = failed ? (

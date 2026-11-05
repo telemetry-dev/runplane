@@ -189,7 +189,7 @@ func TestPublicReposNeedVMOnEachServer(t *testing.T) {
 
 	res := b.do("PATCH", "/api/settings", on, nil)
 	res.want(t, 422)
-	if p := res.problem(t); !contains(p.locations(), "body.allow_public_repos") || !strings.Contains(p.Errors[0].Message, "hel1-agent") {
+	if p := res.problem(t); !slices.Contains(p.locations(), "body.allow_public_repos") || !strings.Contains(p.Errors[0].Message, "hel1-agent") {
 		t.Fatalf("problem %+v, want one on allow_public_repos that names hel1-agent", p)
 	}
 
@@ -250,7 +250,7 @@ func TestPoolWithAGoneServerStillChanges(t *testing.T) {
 	b.do("PATCH", "/api/pools/p1", map[string]any{"server_ids": []string{"s1", "gone"}}, nil).want(t, 200)
 	res := b.do("PATCH", "/api/pools/p1", map[string]any{"server_ids": []string{"s1", "other"}}, nil)
 	res.want(t, 422)
-	if locs := res.problem(t).locations(); !contains(locs, "body.server_ids[1]") {
+	if locs := res.problem(t).locations(); !slices.Contains(locs, "body.server_ids[1]") {
 		t.Fatalf("error locations %v, want body.server_ids[1]", locs)
 	}
 }

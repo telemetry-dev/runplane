@@ -47,8 +47,8 @@ const (
 	maxQueued = 4096
 )
 
-// Run connects the agent to the primary and serves the agent routes of
-// section 5 from cfg.Node until ctx ends. It connects again after each
+// Run connects the agent to the primary and serves the agent routes from
+// cfg.Node until ctx ends. It connects again after each
 // disconnect, and the sandboxes keep operating in the meantime. Run
 // returns nil when ctx ends, ErrUpdated after an update, or an error if
 // agent.json is not valid.

@@ -12,9 +12,8 @@ import { popupMotion, popupSurface } from './popup'
 
 export const Popover = BasePopover.Root
 export const PopoverTrigger = BasePopover.Trigger
-export const PopoverClose = BasePopover.Close
 
-type PopoverPopupProps = Pick<BasePopover.Positioner.Props, 'side' | 'align'> & {
+type PopoverPopupProps = {
   title?: ReactNode
   description?: ReactNode
   className?: string
@@ -22,10 +21,10 @@ type PopoverPopupProps = Pick<BasePopover.Positioner.Props, 'side' | 'align'> & 
 }
 
 /** A 300px panel, narrower when the space is smaller; it scrolls when taller than the space. */
-export function PopoverPopup({ side = 'bottom', align = 'center', title, description, className, children }: PopoverPopupProps) {
+export function PopoverPopup({ title, description, className, children }: PopoverPopupProps) {
   return (
     <BasePopover.Portal>
-      <BasePopover.Positioner side={side} align={align} sideOffset={6} collisionPadding={12} className="z-20 outline-none">
+      <BasePopover.Positioner side="bottom" align="center" sideOffset={6} collisionPadding={12} className="z-20 outline-none">
         <BasePopover.Popup
           className={cx(
             'flex w-[min(300px,var(--available-width),calc(100vw-var(--space-xl)))] flex-col gap-xs rounded-m p-m',

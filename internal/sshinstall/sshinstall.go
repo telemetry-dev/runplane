@@ -84,8 +84,8 @@ func newKey(path string) ([]byte, error) {
 // Target is the SSH address of a server.
 type Target struct {
 	Host string
-	Port int    // 22 if zero
-	User string // root if empty
+	Port int
+	User string
 }
 
 // Install connects to the target, runs command with stdin as its input, and
@@ -98,12 +98,6 @@ type Target struct {
 // A command that exits with a status other than 0 gives an error that wraps
 // *ssh.ExitError.
 func Install(ctx context.Context, t Target, signer ssh.Signer, knownHostKey string, command string, stdin io.Reader, onLine func(string)) (hostKey string, err error) {
-	if t.Port == 0 {
-		t.Port = 22
-	}
-	if t.User == "" {
-		t.User = "root"
-	}
 	addr := net.JoinHostPort(t.Host, strconv.Itoa(t.Port))
 
 	config := &ssh.ClientConfig{

@@ -61,8 +61,8 @@ func (s *Service) Manifest(ctx context.Context, base, accountType, organization 
 	return action + "?state=" + url.QueryEscape(state), string(manifest), nil
 }
 
-// permissions are the app permissions of docs/architecture.md, section 1.
-// An organization uses organization runners; a personal account can only
+// permissions are the GitHub App permissions of an account type. An
+// organization uses organization runners; a personal account can only
 // use repository runners, which need administration.
 func permissions(accountType string) map[string]string {
 	p := map[string]string{"actions": "write", "metadata": "read"}
@@ -247,7 +247,7 @@ func (s *Service) removeApp(ctx context.Context) error {
 	}
 	var failed []string
 	for _, set := range sets {
-		s.stopListener(set.ID, true)
+		s.stopListener(set.ID)
 		if err := s.deleteRemote(ctx, set.ID); err != nil {
 			s.log.Warn("delete scale set on GitHub", "scale_set", set.Name, "err", err)
 			failed = append(failed, set.Name)

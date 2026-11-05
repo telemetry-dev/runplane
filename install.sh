@@ -379,10 +379,6 @@ ensure_docker() {
 		return
 	fi
 
-	case $OS_ID in
-	ubuntu | debian) ;;
-	*) die "the Docker Engine install supports Ubuntu and Debian only" ;;
-	esac
 	[ -n "$OS_CODENAME" ] || die "/etc/os-release gives no release code name"
 	say "Install Docker Engine from download.docker.com"
 	run install -m 0755 -d /etc/apt/keyrings
@@ -912,8 +908,6 @@ remove_docker_rules() {
 		done
 	done
 }
-
-# Helpers.
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }

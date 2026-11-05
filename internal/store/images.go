@@ -1,14 +1,14 @@
 package store
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/runplane/runplane/internal/update"
 )
 
 type Image struct {
@@ -94,15 +94,6 @@ func (s *Store) GetImage(ctx context.Context, id string) (Image, error) {
 	i, err := scanImage(s.r.QueryRowContext(ctx, "SELECT "+imageCols+" FROM images WHERE id = ?", id))
 	if err != nil {
 		return Image{}, fmt.Errorf("get image: %w", dbErr(err))
-	}
-	return i, nil
-}
-
-// GetDefaultImage returns ErrNotFound if no image is the default.
-func (s *Store) GetDefaultImage(ctx context.Context) (Image, error) {
-	i, err := scanImage(s.r.QueryRowContext(ctx, "SELECT "+imageCols+" FROM images WHERE is_default = 1"))
-	if err != nil {
-		return Image{}, fmt.Errorf("get default image: %w", dbErr(err))
 	}
 	return i, nil
 }
@@ -246,27 +237,9 @@ func (s *Store) LatestReadyBundle(ctx context.Context, arch string) (RunnerBundl
 // sortBundles sorts by version, highest first, then by arch.
 func sortBundles(list []RunnerBundle) {
 	slices.SortFunc(list, func(a, b RunnerBundle) int {
-		if c := compareVersions(b.Version, a.Version); c != 0 {
+		if c := update.Compare(b.Version, a.Version); c != 0 {
 			return c
 		}
 		return strings.Compare(a.Arch, b.Arch)
 	})
-}
-
-// compareVersions compares dotted numbers such as "2.330.0", so "2.330.0" > "2.99.0".
-func compareVersions(a, b string) int {
-	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
-	for i := range max(len(pa), len(pb)) {
-		var x, y int
-		if i < len(pa) {
-			x, _ = strconv.Atoi(pa[i])
-		}
-		if i < len(pb) {
-			y, _ = strconv.Atoi(pb[i])
-		}
-		if c := cmp.Compare(x, y); c != 0 {
-			return c
-		}
-	}
-	return 0
 }

@@ -111,6 +111,19 @@ func (s *Service) Setup(ctx context.Context, code, name, email, password, ip, us
 	return u, token, nil
 }
 
+// SetupCodeValid reports whether code is an unused setup code that has not
+// expired. Unlike Setup, it does not use the code.
+func (s *Service) SetupCodeValid(ctx context.Context, code string) (bool, error) {
+	var n int
+	err := s.store.DB().QueryRowContext(ctx,
+		"SELECT count(*) FROM setup_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
+		hashCode(code), s.now().UnixMilli()).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check setup code: %w", err)
+	}
+	return n > 0, nil
+}
+
 // Login checks the password and returns the user and a new session token.
 // After 10 failures in 15 minutes for the IP address or the email, it
 // returns ErrRateLimited. device is the device token of the browser (see

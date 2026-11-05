@@ -77,7 +77,7 @@ func (c *containerFlow) sandboxRuntime() {
 	if fields[0] != "sysbox-runc" || fields[1] != "runplane.slice" {
 		c.t.Errorf("sandbox runtime %s in %s, want sysbox-runc in runplane.slice", fields[0], fields[1])
 	}
-	if warm.IP == "" || !strings.HasPrefix(warm.IP, "10.213.") {
+	if !strings.HasPrefix(warm.IP, "10.213.") {
 		c.t.Errorf("sandbox IP %q, want an address of the runplane network 10.213.0.0/16", warm.IP)
 	}
 

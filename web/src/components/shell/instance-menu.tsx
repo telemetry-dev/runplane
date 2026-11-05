@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronsUpDown, Copy, Settings2, Users } from 'lucide-react'
 import { sessionQuery, statusQuery } from '~/api/queries'
+import { copyText } from '~/components/app/copy-button'
 import { LogoMark } from '~/components/ui/brand'
 import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { useFrameSubscribed } from './pending'
@@ -33,7 +34,7 @@ export function InstanceMenu() {
           </MenuLinkItem>
         )}
         <MenuSeparator />
-        <MenuItem icon={<Copy />} onClick={() => void navigator.clipboard.writeText(location.origin)}>
+        <MenuItem icon={<Copy />} onClick={() => void copyText(location.origin)}>
           Copy URL
         </MenuItem>
       </MenuPopup>

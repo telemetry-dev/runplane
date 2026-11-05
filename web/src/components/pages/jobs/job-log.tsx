@@ -4,11 +4,11 @@ import { api, errorMessage, type Schemas } from '~/api/client'
 import { abortOnPageHide, usePageShows } from '~/api/open-requests'
 import { LogViewer } from '~/components/app/log-viewer'
 import { stepStatus } from '~/components/app/status-icon'
+import { TextButton } from '~/components/app/text-button'
 import { formatDuration } from '~/lib/format'
 import { noLogReason, runTime, stepTime } from './job-format'
 import { logQuery } from './job-queries'
 import { withoutRunGroups } from './job-steps'
-import { TextButton } from './text-button'
 
 type JobLogProps = {
   job: Schemas['Job']

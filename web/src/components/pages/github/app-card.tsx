@@ -1,11 +1,12 @@
 import { Check } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import type { Schemas } from '~/api/client'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { CheckIcon } from '~/components/app/status-icon'
 import { GithubIcon } from '~/components/ui/icons'
 import { Spinner } from '~/components/ui/spinner'
 import { formatDate, formatRelativeTime } from '~/lib/format'
+import { useNow } from '~/lib/use-now'
 import { summarizeListeners } from './listener'
 
 type GitHubCardProps = {
@@ -44,7 +45,7 @@ export function GitHubAppCard({ app, ...props }: Omit<GitHubCardProps, 'title' |
 
 /** Where the design shows the webhook: the state of the listeners that poll GitHub for jobs. */
 export function ListenerStatus({ scaleSets }: { scaleSets: Schemas['ScaleSetStatus'][] }) {
-  const now = useNow()
+  const now = useNow(1000)
   const { state, total, failing, errors, lastPoll, runnerGroups } = summarizeListeners(scaleSets)
 
   return (
@@ -88,14 +89,4 @@ export function ListenerStatus({ scaleSets }: { scaleSets: Schemas['ScaleSetStat
       )}
     </>
   )
-}
-
-/** The current time, updated each second, for relative times that count up. */
-function useNow(): number {
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [])
-  return now
 }

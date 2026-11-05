@@ -285,13 +285,6 @@ func TestRunnerRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	bundles := image.NewBundles(image.BundleConfig{Dir: t.TempDir(), HTTP: &http.Client{Transport: tr}})
-	rel, err := bundles.Latest(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rel.Version != "2.331.0" || len(rel.SHA256) != 2 {
-		t.Fatalf("latest release = %+v, want 2.331.0 with x64 and arm64", rel)
-	}
 	b, err := bundles.Ensure(t.Context(), "2.331.0", "arm64")
 	if err != nil {
 		t.Fatal(err)
