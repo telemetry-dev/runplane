@@ -55,7 +55,6 @@ func create(path string) ([]byte, error) {
 	return key, nil
 }
 
-// Box seals and opens values with AES-256-GCM.
 type Box struct {
 	aead cipher.AEAD
 }
