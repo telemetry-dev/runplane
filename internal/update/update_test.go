@@ -127,7 +127,7 @@ func TestApplyFollowsSymlink(t *testing.T) {
 	os.Symlink(real, link)
 
 	u := &Updater{Repo: "acme/runplane", PublicKey: releaseKey, DownloadURL: srv.URL, Exe: link}
-	if err := u.Apply(context.Background(), "0.5.0"); err != nil {
+	if err := u.Apply(context.Background(), "v0.5.0"); err != nil {
 		t.Fatal(err)
 	}
 	if target, err := os.Readlink(link); err != nil || target != real {
@@ -166,42 +166,6 @@ func TestCheck(t *testing.T) {
 		}
 		if st.Available != tt.want || st.Latest != "v0.10.0" || st.URL != "https://github.com/acme/runplane/releases/tag/v0.10.0" {
 			t.Errorf("current %s: %+v, want available %v", tt.current, st, tt.want)
-		}
-	}
-}
-
-func TestCompare(t *testing.T) {
-	// Each version is older than the next one (semver.org, section 11).
-	ordered := []string{
-		"v0.4.2",
-		"v0.10.0",
-		"v1.0.0-alpha",
-		"v1.0.0-alpha.1",
-		"v1.0.0-alpha.beta",
-		"v1.0.0-beta",
-		"v1.0.0-beta.2",
-		"v1.0.0-beta.11",
-		"v1.0.0-rc.1",
-		"1.0.0",
-		"v1.0.1",
-		"v1.2.0",
-		"v10.0.0",
-	}
-	for i := 0; i+1 < len(ordered); i++ {
-		a, b := ordered[i], ordered[i+1]
-		if Compare(a, b) != -1 || Compare(b, a) != 1 {
-			t.Errorf("Compare(%s, %s) = %d, want -1", a, b, Compare(a, b))
-		}
-	}
-	equal := [][2]string{{"v1.2.3", "1.2.3"}, {"v1.2.3+build.5", "v1.2.3"}}
-	for _, p := range equal {
-		if c := Compare(p[0], p[1]); c != 0 {
-			t.Errorf("Compare(%s, %s) = %d, want 0", p[0], p[1], c)
-		}
-	}
-	for _, bad := range []string{"dev", "v1.2", "v1.2.x", "v1.2.3-", "v+1.2.3"} {
-		if Compare(bad, "v0.0.1") != -1 {
-			t.Errorf("invalid version %q does not sort first", bad)
 		}
 	}
 }

@@ -73,8 +73,8 @@ type Status struct {
 	PublishedAt time.Time
 }
 
-// Check reads the latest release. A development build ("dev") never has an
-// update available.
+// Check reads the latest release. Only a release build can have an update
+// available.
 func (u *Updater) Check(ctx context.Context) (Status, error) {
 	var rel struct {
 		TagName     string    `json:"tag_name"`
@@ -104,13 +104,10 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetaSize)).Decode(&rel); err != nil {
 		return Status{}, fmt.Errorf("check update: decode release: %w", err)
 	}
-	// Compare sorts a version that does not parse first, so it would give
-	// a development build an update.
-	_, release := parse(u.Current)
 	return Status{
 		Current:     u.Current,
 		Latest:      rel.TagName,
-		Available:   release && Compare(rel.TagName, u.Current) > 0,
+		Available:   version.IsRelease(u.Current) && version.Compare(rel.TagName, u.Current) > 0,
 		URL:         rel.HTMLURL,
 		Notes:       rel.Body,
 		PublishedAt: rel.PublishedAt,
@@ -124,15 +121,15 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 // binary runs after the process restarts; the caller exits so that systemd
 // starts it again.
 func (u *Updater) Apply(ctx context.Context, v string) error {
-	if _, ok := parse(v); !ok {
-		return fmt.Errorf("update: %q is not a version", v)
+	if !version.IsRelease(v) {
+		return fmt.Errorf("update: %q is not a release version", v)
 	}
 	pub, err := u.publicKey()
 	if err != nil {
 		return err
 	}
 	num := strings.TrimPrefix(v, "v")
-	base := cmp.Or(u.DownloadURL, "https://github.com") + "/" + u.Repo + "/releases/download/v" + num + "/"
+	base := cmp.Or(u.DownloadURL, "https://github.com") + "/" + u.Repo + "/releases/download/" + v + "/"
 
 	var sums, sig bytes.Buffer
 	if err := u.download(ctx, base+"SHA256SUMS", &sums, maxMetaSize); err != nil {

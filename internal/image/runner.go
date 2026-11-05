@@ -23,7 +23,7 @@ import (
 	"strings"
 
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/update"
+	"github.com/runplane/runplane/internal/version"
 )
 
 var runnerArches = []string{"x64", "arm64"}
@@ -449,7 +449,7 @@ func (b *Bundles) prune(keep []string) error {
 		}
 	}
 	for arch, list := range versions {
-		slices.SortFunc(list, func(x, y string) int { return update.Compare(y, x) })
+		slices.SortFunc(list, func(x, y string) int { return version.Compare(y, x) })
 		for i, version := range list {
 			if i < 2 || slices.Contains(keep, version) {
 				continue
