@@ -31,3 +31,6 @@ func (m *Manager) AddPort(string, net.HardwareAddr, netip.Addr) error {
 func (m *Manager) RemovePort(string) error    { return errLinuxOnly }
 func HostPeer(string, string) (string, error) { return "", errLinuxOnly }
 func (m *Manager) Close() error               { return nil }
+
+func Available() bool      { return false }
+func DropChains() []string { return nil }

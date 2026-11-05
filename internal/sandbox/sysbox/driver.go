@@ -169,7 +169,7 @@ func (d *Driver) setup() error {
 		}
 	}
 	if p.tcpControl {
-		if d.tcp, err = control.ListenTCP(":"+strconv.Itoa(d.opts.ServicePort+1), d.serviceHost, d.log); err != nil {
+		if d.tcp, err = control.ListenTCP(ControlAddr(d.opts.ServicePort), d.serviceHost, d.log); err != nil {
 			return err
 		}
 	}
@@ -227,6 +227,10 @@ func (d *Driver) byContainer(containerID string) *box {
 	}
 	return nil
 }
+
+// ControlAddr is the TCP address of the control channels of the Dev
+// profile: the port after the service port.
+func ControlAddr(servicePort int) string { return ":" + strconv.Itoa(servicePort+1) }
 
 func serviceURL(host string, port int) string {
 	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))

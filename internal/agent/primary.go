@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"github.com/runplane/runplane/internal/cache"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
@@ -247,9 +248,9 @@ func (s *Session) Facts(ctx context.Context) (host.Info, error) {
 	return rep.Info.info(), err
 }
 
-func (s *Session) Doctor(ctx context.Context, minFreeDiskPercent float64) ([]host.Check, error) {
+func (s *Session) Doctor(ctx context.Context, minFreeDiskPercent float64) (doctor.Report, error) {
 	rep, err := call(ctx, s, opHost, hostQuery{Doctor: true, MinFreeDiskPercent: minFreeDiskPercent})
-	return checks(rep.Doctor), err
+	return doctor.Report{Info: rep.Info.info(), Checks: checks(rep.Doctor)}, err
 }
 
 func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {

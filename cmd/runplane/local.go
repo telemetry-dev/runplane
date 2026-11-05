@@ -13,7 +13,6 @@ import (
 
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/datadisk"
@@ -42,8 +41,8 @@ type local struct {
 type localConfig struct {
 	mode     sandbox.Mode
 	settings sandbox.Settings // the first driver settings
-	unit     string           // systemd unit of this process, for the doctor
-	listen   []string         // TCP addresses of this process, for the doctor
+	agent    bool             // the process is an agent, not the primary
+	domain   string           // the HTTPS domain of the primary
 	// token gives a GitHub token for the runner release reads. Optional.
 	token func(context.Context) (string, error)
 }
@@ -132,10 +131,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	l.node, err = agent.NewLocal(agent.LocalConfig{
 		Driver: l.driver, Images: images, Bundles: bundles, Updater: update.New(cfg.KernelPath()),
 		Mirror: mirror.Config{Dir: cfg.MirrorDir(), Allow: allow(isSandbox), Logger: log.With("component", "mirror")},
-		Doctor: host.Options{
-			DataDir: cfg.DataDir, GuestKernel: cfg.KernelPath(), Listen: lc.listen, Serving: true, Unit: lc.unit,
-			BaseImage: baseImage,
-		},
+		Doctor: doctorOptions(cfg, lc.mode, lc.agent, lc.domain),
 		Logger: log.With("component", "node"),
 	})
 	if err != nil {
@@ -170,14 +166,6 @@ func dockerClient(ctx context.Context, mode sandbox.Mode) (*client.Client, error
 		return nil, nil
 	}
 	return docker, nil
-}
-
-// baseImage tries to pull the default builtin image, for the doctor.
-func baseImage(ctx context.Context) (string, error) {
-	ref := images.Ref(version.Repo, images.Default)
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return ref, image.CanPull(ctx, ref)
 }
 
 // serveServicePort serves the service port of the sandboxes on all

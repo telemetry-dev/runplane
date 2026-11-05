@@ -26,7 +26,7 @@ type command struct {
 var commands = map[string]command{
 	"serve":          {"run the primary: dashboard, API, and sandboxes", serve},
 	"agent":          {"run an agent: operate sandboxes for a primary (agent.json)", runAgent},
-	"doctor":         {"check this server for runplane", doctor},
+	"doctor":         {"check this server for runplane", runDoctor},
 	"update":         {"install the latest release (-check: only report it)", updateCmd},
 	"setup-code":     {"print a new one-time setup code for the first admin", setupCode},
 	"reset-password": {"set a new random password for a user: reset-password <email>", resetPassword},

@@ -25,7 +25,7 @@ func runAgent(ctx context.Context, args []string) error {
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-	l, err := newLocal(ctx, cfg, localConfig{mode: cfg.Mode, unit: "runplane-agent", listen: []string{servicePortAddr(cfg)}}, log)
+	l, err := newLocal(ctx, cfg, localConfig{mode: cfg.Mode, agent: true}, log)
 	if err != nil {
 		return err
 	}

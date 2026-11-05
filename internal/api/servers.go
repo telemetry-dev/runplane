@@ -8,9 +8,9 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
@@ -379,7 +379,7 @@ func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult
 	return reply(h.saveDoctor(ctx, v.ID, checks(list)))
 }
 
-func checks(list []host.Check) []Check {
+func checks(list []doctor.Check) []Check {
 	out := make([]Check, len(list))
 	for i, c := range list {
 		out[i] = Check{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}

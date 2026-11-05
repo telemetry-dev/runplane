@@ -31,6 +31,14 @@ func TestRefusesWithoutDevInsecure(t *testing.T) {
 	}
 }
 
+// The control channels of dev sandboxes listen on the port after the
+// service port, so the doctor checks that port too.
+func TestDoctorChecksTheControlPort(t *testing.T) {
+	if got := devdocker.Requirements(8486, "/etc/runplane/runplane.env").Listen; !slices.Equal(got, []string{":8487"}) {
+		t.Errorf("the doctor checks the ports %v, want [:8487]", got)
+	}
+}
+
 // TestSandbox starts real sandboxes on Docker with RUNPLANE_TEST_DOCKER=1.
 // It uses the image in RUNPLANE_TEST_IMAGE, by default the local build of
 // the base image: docker build -t runplane/runner-ubuntu-24.04:local --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images

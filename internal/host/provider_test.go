@@ -14,24 +14,24 @@ func TestProvider(t *testing.T) {
 		provider      string
 		virtual       bool
 	}{
-		{"hetzner-cloud", "ubuntu-8gb-fsn1-1", providerHetzner, true},
-		{"digitalocean", "droplet-1", providerDigitalOcean, true},
-		{"vultr", "vultr-guest", providerVultr, true},
-		{"linode", "localhost", providerLinode, true},
-		{"aws-nitro", "ip-172-31-5-10", providerEC2, false},
-		{"aws-xen", "ip-172-31-5-11", providerEC2, true},
-		{"gce", "instance-1", providerGCE, false},
-		{"azure", "vm1", providerAzure, true},
+		{"hetzner-cloud", "ubuntu-8gb-fsn1-1", ProviderHetzner, true},
+		{"digitalocean", "droplet-1", ProviderDigitalOcean, true},
+		{"vultr", "vultr-guest", ProviderVultr, true},
+		{"linode", "localhost", ProviderLinode, true},
+		{"aws-nitro", "ip-172-31-5-10", ProviderEC2, false},
+		{"aws-xen", "ip-172-31-5-11", ProviderEC2, true},
+		{"gce", "instance-1", ProviderGCE, false},
+		{"azure", "vm1", ProviderAzure, true},
 		// Hyper-V outside Azure has the same vendor and product.
 		{"hyperv", "lab", "", true},
-		{"openstack", "vps-1a2b3c4d.vps.ovh.net", providerOVH, true},
-		{"openstack", "ns3012345.ip-51-68-1.eu", providerOVH, true},
+		{"openstack", "vps-1a2b3c4d.vps.ovh.net", ProviderOVH, true},
+		{"openstack", "ns3012345.ip-51-68-1.eu", ProviderOVH, true},
 		{"openstack", "web-1", "", true},
-		{"qemu", "vmi1234567.contaboserver.net", providerContabo, true},
-		{"qemu", "vmi1234567", providerContabo, true},
-		{"qemu", "v2202301234567890123.megasrv.de", providerNetcup, true},
+		{"qemu", "vmi1234567.contaboserver.net", ProviderContabo, true},
+		{"qemu", "vmi1234567", ProviderContabo, true},
+		{"qemu", "v2202301234567890123.megasrv.de", ProviderNetcup, true},
 		{"qemu", "builder", "", true},
-		{"netcup", "builder", providerNetcup, true},
+		{"netcup", "builder", ProviderNetcup, true},
 		{"bare-metal", "Ubuntu-2404-noble-amd64-base", "", false},
 	}
 	for _, tt := range tests {
@@ -87,13 +87,13 @@ func metadataServer(t *testing.T) string {
 func TestRegion(t *testing.T) {
 	base := metadataServer(t)
 	tests := map[string]string{
-		providerEC2:     "eu-central-1",
-		providerLinode:  "us-iad",
-		providerGCE:     "europe-west1-b",
-		providerAzure:   "westeurope",
-		providerHetzner: "fsn1-dc14",
-		providerVultr:   "", // 404 from this server
-		providerContabo: "", // no metadata service
+		ProviderEC2:     "eu-central-1",
+		ProviderLinode:  "us-iad",
+		ProviderGCE:     "europe-west1-b",
+		ProviderAzure:   "westeurope",
+		ProviderHetzner: "fsn1-dc14",
+		ProviderVultr:   "", // 404 from this server
+		ProviderContabo: "", // no metadata service
 	}
 	for provider, want := range tests {
 		if got := region(context.Background(), base, provider); got != want {

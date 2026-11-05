@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -21,7 +21,7 @@ import (
 type fakeServers struct {
 	Servers
 	names   []string
-	checks  []host.Check
+	checks  []doctor.Check
 	states  map[string]fleet.UpdateState // update state by server ID
 	updated []string                     // server IDs of the UpdateAgent calls
 	limits  map[string]sandbox.Limits    // the connected servers
@@ -54,7 +54,7 @@ func (f *fakeServers) NewToken(_ context.Context, _, name, _ string) (fleet.Toke
 	return fleet.Token{ID: "tok1", Token: "rp_srv_x", Command: "curl", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (f *fakeServers) Doctor(context.Context, string) ([]host.Check, error) { return f.checks, nil }
+func (f *fakeServers) Doctor(context.Context, string) ([]doctor.Check, error) { return f.checks, nil }
 
 func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	servers := &fakeServers{}
@@ -90,8 +90,8 @@ func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 }
 
 func TestDoctorResultIsKept(t *testing.T) {
-	servers := &fakeServers{checks: []host.Check{
-		{ID: "clock", Name: "Time synchronization", Status: host.StatusWarn, Detail: "Not synchronized",
+	servers := &fakeServers{checks: []doctor.Check{
+		{ID: "clock", Name: "Time synchronization", Status: doctor.StatusWarn, Detail: "Not synchronized",
 			Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"},
 	}}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })

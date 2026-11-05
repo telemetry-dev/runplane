@@ -73,7 +73,7 @@ func New(opts Options) (*Driver, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("firecracker: %w: linux only", errors.ErrUnsupported)
 	}
-	ids, err := readIDRange("runplane-vm", "/etc/subuid", "/etc/subgid")
+	ids, err := readIDRange(jailerUser, subuidFile, subgidFile)
 	if err != nil {
 		return nil, err
 	}
@@ -105,8 +105,8 @@ func newDriver(opts Options, ids idRange, sys hostOps) *Driver {
 		opts:        opts,
 		log:         opts.Logger,
 		ids:         ids,
-		firecracker: "/usr/local/bin/firecracker",
-		jailer:      "/usr/local/bin/jailer",
+		firecracker: firecrackerBin,
+		jailer:      jailerBin,
 		cgroupRoot:  "/sys/fs/cgroup",
 		sys:         sys,
 		disks:       scratch.New(opts.ScratchTemplates),

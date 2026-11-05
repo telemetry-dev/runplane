@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -18,12 +19,11 @@ import (
 // ErrLocalServer means that RemoveServer got the server of the primary.
 var ErrLocalServer = errors.New("the primary server cannot be removed")
 
-// HostCheck is the server of the primary with its doctor checks, for the
-// setup page.
+// HostCheck is the doctor report of the server of the primary, for the setup
+// page.
 type HostCheck struct {
-	Info   host.Info
-	Mode   sandbox.Mode
-	Checks []host.Check
+	doctor.Report
+	Mode sandbox.Mode
 }
 
 // startLocal records the server of the primary and connects its node.
@@ -320,38 +320,34 @@ func (f *Fleet) RemoveServer(ctx context.Context, serverID string) error {
 }
 
 // Doctor runs the doctor checks on a connected server.
-func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]host.Check, error) {
+func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]doctor.Check, error) {
 	n := f.node(serverID)
 	if n == nil {
 		return nil, ErrNotConnected
 	}
-	return f.doctor(ctx, n)
+	r, err := f.doctor(ctx, n)
+	return r.Checks, err
 }
 
-// Check reads the server of the primary and runs its doctor checks for the
-// setup page.
+// Check runs the doctor on the server of the primary, for the setup page.
 func (f *Fleet) Check(ctx context.Context) (HostCheck, error) {
-	info, err := f.local.Facts(ctx)
-	if err != nil {
-		return HostCheck{}, fmt.Errorf("read host facts: %w", err)
-	}
-	checks, err := f.doctor(ctx, f.local)
+	r, err := f.doctor(ctx, f.local)
 	if err != nil {
 		return HostCheck{}, err
 	}
-	return HostCheck{Info: info, Mode: f.local.Driver().Mode(), Checks: checks}, nil
+	return HostCheck{Report: r, Mode: f.local.Driver().Mode()}, nil
 }
 
-func (f *Fleet) doctor(ctx context.Context, n agent.Node) ([]host.Check, error) {
+func (f *Fleet) doctor(ctx context.Context, n agent.Node) (doctor.Report, error) {
 	st, err := f.st.GetSettings(ctx)
 	if err != nil {
-		return nil, err
+		return doctor.Report{}, err
 	}
-	checks, err := n.Doctor(ctx, st.MinFreeDiskPercent)
+	r, err := n.Doctor(ctx, st.MinFreeDiskPercent)
 	if err != nil {
-		return nil, fmt.Errorf("run the doctor: %w", err)
+		return doctor.Report{}, fmt.Errorf("run the doctor: %w", err)
 	}
-	return checks, nil
+	return r, nil
 }
 
 // SettingsChanged sends the new settings to each connected server.

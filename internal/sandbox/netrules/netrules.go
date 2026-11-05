@@ -18,6 +18,9 @@ import (
 // until its lease opens.
 const TapPrefix = "rp-"
 
+// TunDevice is the device through which the kernel makes TAP devices.
+const TunDevice = "/dev/net/tun"
+
 // DefaultTapSubnet is the VM mode address range. Each VM gets one /30 of it.
 var DefaultTapSubnet = netip.MustParsePrefix("10.214.0.0/16")
 
