@@ -43,10 +43,10 @@ export function mirrorHitRate(mirror: Schemas['MirrorStats']): string | null {
 
 /** "since runplane started 2h ago", or "… on Oct 2" a week or more later. The mirror counts start over at each start. */
 export function mirrorSince(startedAt: string, now = Date.now()): string {
-  const ago = formatRelativeTime(startedAt, now)
-  if (ago === 'now') return 'since runplane started just now'
   const week = 7 * 86_400_000
-  return now - Date.parse(startedAt) < week ? `since runplane started ${ago}` : `since runplane started on ${formatDate(startedAt)}`
+  return now - Date.parse(startedAt) < week
+    ? `since runplane started ${formatRelativeTime(startedAt, now)}`
+    : `since runplane started on ${formatDate(startedAt)}`
 }
 
 export function pulls(count: number): string {

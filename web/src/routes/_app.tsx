@@ -1,17 +1,16 @@
-import { createFileRoute, Outlet, redirect } from '@tanstack/react-router'
+import { createFileRoute, Outlet } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { useLiveEvents } from '~/api/events'
-import { githubQuery, runningJobsQuery, sessionQuery, statusQuery } from '~/api/queries'
+import { githubQuery } from '~/api/github'
+import { runningJobsQuery } from '~/api/jobs'
+import { requireSession, sessionQuery, statusQuery } from '~/api/session'
 import { AppSidebar } from '~/components/shell/app-sidebar'
 import { ChildPending, frameDelayMs, PendingFrame, useCachedData, useElapsed } from '~/components/shell/pending'
 
 // Layout of all signed-in pages: sidebar and the content column of the app designs.
 export const Route = createFileRoute('/_app')({
   beforeLoad: async ({ context: { queryClient }, location }) => {
-    const status = await queryClient.ensureQueryData(statusQuery)
-    if (status.needs_setup) throw redirect({ to: '/setup' })
-    const user = await queryClient.ensureQueryData(sessionQuery)
-    if (!user) throw redirect({ to: '/login', search: { redirect: location.href } })
+    await requireSession(queryClient, location.href)
   },
   // Starts the sidebar's requests next to the page's, so a pending frame can show their data.
   loader: ({ context: { queryClient } }) => {

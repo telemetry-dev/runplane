@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { ApiError } from '~/api/client'
-import { draftFrom, labelProblems, poolChanges, poolRequest, poolUpdate, type Draft } from './label-form'
+import { draftFrom, poolChanges, poolRequest, poolUpdate, type Draft } from './label-form'
 import type { Pool } from './runner-format'
 
 // A pool as GET /api/pools returns it (the seeded runplane-16cpu).
@@ -97,30 +96,5 @@ describe('poolUpdate', () => {
     const initial = draftFrom(stale, 'x64', undefined)
     const after = poolRequest({ ...initial, vcpu: 8 }, serverArch)!
     expect(poolUpdate(stale, initial, after, serverArch)).toEqual({ vcpu: 8, server_ids: ['primary'] })
-  })
-})
-
-describe('labelProblems', () => {
-  function invalid(...errors: { location: string; message: string }[]) {
-    return new ApiError(422, { type: 'about:blank', title: 'Unprocessable Entity', status: 422, detail: 'validation failed', errors }, 'Unprocessable Entity')
-  }
-
-  test('a problem with a server or the image shows at that control, not only in an alert', () => {
-    const error = invalid(
-      { location: 'body.server_ids[1]', message: 'No server has this ID.' },
-      { location: 'body.image_id', message: 'No image has this ID.' },
-    )
-    expect(labelProblems(error)).toEqual({ errors: {}, servers: 'No server has this ID.', image: 'No image has this ID.', alert: null })
-  })
-
-  test('a field problem goes under its field', () => {
-    const error = invalid({ location: 'body.min_idle', message: 'Warm runners cannot be more than max runners.' })
-    expect(labelProblems(error)).toEqual({ errors: { min_idle: 'Warm runners cannot be more than max runners.' }, alert: null })
-  })
-
-  test('a problem that no control shows goes to the alert', () => {
-    expect(labelProblems(invalid({ location: 'body.arch', message: 'Use x64 or arm64.' }))).toEqual({ errors: {}, alert: 'Use x64 or arm64.' })
-    const conflict = new ApiError(409, { type: 'about:blank', title: 'Conflict', status: 409, detail: 'A label has this name.' }, 'Conflict')
-    expect(labelProblems(conflict)).toEqual({ errors: {}, alert: 'A label has this name.' })
   })
 })

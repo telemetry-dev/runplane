@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { diskDetail, lastSeen, shortDigest, sortChecks, statusDetail, type Check, type Server } from './server-format'
+import { diskDetail, shortDigest, statusDetail, type Server } from './server-format'
 
 // A server as GET /api/servers/{id} returns it (the seeded fsn1-ax52-b).
 const agent: Server = {
@@ -42,29 +42,19 @@ const now = Date.parse('2026-11-04T04:49:51.447Z')
 
 describe('statusDetail', () => {
   test('an agent shows when it was last seen', () => {
-    expect(statusDetail(agent, agent.last_seen_at, now)).toBe('seen 12s ago')
-    expect(statusDetail(agent, '2026-11-04T04:49:49.447Z', now)).toBe('seen just now')
+    expect(statusDetail(agent, now)).toBe('seen 12s ago')
+    expect(statusDetail({ ...agent, last_seen_at: '2026-11-04T04:49:49.447Z' }, now)).toBe('seen just now')
   })
 
   test('the primary reports no heartbeat', () => {
-    expect(statusDetail({ ...agent, kind: 'local' }, agent.last_seen_at, now)).toBe('')
+    expect(statusDetail({ ...agent, kind: 'local' }, now)).toBe('')
   })
 
   test('an installing or unreachable server shows its detail, or else when it was seen', () => {
-    expect(statusDetail({ ...agent, status: 'installing', status_detail: 'pulling runner image' }, null, now)).toBe('pulling runner image')
-    expect(statusDetail({ ...agent, status: 'unreachable' }, '2026-11-04T02:49:51.447Z', now)).toBe('seen 2h ago')
-  })
-})
-
-describe('lastSeen', () => {
-  const stats = { server_id: agent.id, cpu_percent: 40, memory_percent: 25, disk_percent: 38, at: '2026-11-04T04:49:49.447Z' }
-
-  test('a newer host sample counts as a sign of life', () => {
-    expect(lastSeen(agent, stats)).toBe('2026-11-04T04:49:49.447Z')
-  })
-
-  test('an older sample does not move the time back', () => {
-    expect(lastSeen(agent, { ...stats, at: '2026-11-04T04:40:00Z' })).toBe(agent.last_seen_at)
+    expect(statusDetail({ ...agent, status: 'installing', status_detail: 'pulling runner image', last_seen_at: null }, now)).toBe(
+      'pulling runner image',
+    )
+    expect(statusDetail({ ...agent, status: 'unreachable', last_seen_at: '2026-11-04T02:49:51.447Z' }, now)).toBe('seen 2h ago')
   })
 })
 
@@ -79,14 +69,6 @@ describe('diskDetail', () => {
 
   test('the size alone without a sample', () => {
     expect(diskDetail({ ...agent, disk_kind: 'SSD' }, null)).toBe('1 TB · SSD')
-  })
-})
-
-describe('sortChecks', () => {
-  test('failures, then warnings, then passed checks in the doctor order', () => {
-    const check = (id: string, status: Check['status']): Check => ({ id, name: id, status, detail: '', fix: '', command: '' })
-    const sorted = sortChecks([check('mode', 'ok'), check('time', 'warn'), check('kernel', 'ok'), check('nft', 'fail'), check('kvm', 'ok')])
-    expect(sorted.map((item) => item.id)).toEqual(['nft', 'time', 'mode', 'kernel', 'kvm'])
   })
 })
 

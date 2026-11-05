@@ -1,11 +1,15 @@
 import { Field as BaseField } from '@base-ui/react/field'
 import { RadioGroup } from '@base-ui/react/radio-group'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useId, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
-import { serversQuery } from '~/components/pages/servers/queries'
-import { serverSize, sortServers, statusNames } from '~/components/pages/servers/server-info'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
+import { useFormProblems } from '~/api/form-problems'
+import { imagesQuery } from '~/api/images'
+import { placementQuery, putPool, refreshRunners } from '~/api/pools'
+import { serversQuery } from '~/api/servers'
+import { settingsQuery } from '~/api/settings'
+import { serverStatusNames } from '~/components/app/status-dot'
+import { serverSize, sortServers } from '~/components/pages/servers/server-info'
 import { Button } from '~/components/ui/button'
 import { Checkbox } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
@@ -18,8 +22,7 @@ import { Select, SelectItem, SelectLabel, SelectPopup, SelectTrigger } from '~/c
 import { Spinner } from '~/components/ui/spinner'
 import { toastManager } from '~/components/ui/toast'
 import { cx } from '~/lib/cx'
-import { draftFrom, labelPattern, labelProblems, poolRequest, poolUpdate, type Arch, type Draft } from './label-form'
-import { imagesQuery, putPool, refreshRunners } from './queries'
+import { draftFrom, formFields, labelPattern, poolRequest, poolUpdate, type Arch, type Draft } from './label-form'
 import { formatTimeLimit, type Pool } from './runner-format'
 
 type Server = Schemas['Server']
@@ -130,13 +133,12 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
     else update.mutate({ params: { path: { id: pool.id } }, body: changes })
   }
 
-  // One object until the error changes, so the Form shows its errors again only for a new one.
-  const problems = useMemo(() => labelProblems(save.error), [save.error])
+  const problems = useFormProblems(save.error, { fields: formFields })
   const archServers = sortServers(servers.filter((server) => server.arch === draft.arch))
   const label = draft.label.trim()
 
   return (
-    <Form errors={problems.errors} onFormSubmit={submit} className="gap-l">
+    <Form errors={problems.fields} onFormSubmit={submit} className="gap-l">
       <Field name="label" label="Label" validate={validateLabel}>
         <Input
           ref={labelInput}
@@ -189,7 +191,7 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
           pool={pool}
           value={draft.imageId}
           onValueChange={(imageId) => change({ imageId })}
-          error={problems.image}
+          error={problems.fields.image_id}
         />
       </div>
 
@@ -219,7 +221,7 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
           setNoServers(false)
           change(values)
         }}
-        error={noServers ? 'Select at least one server.' : problems.servers}
+        error={noServers ? 'Select at least one server.' : problems.fields.server_ids}
       />
 
       {problems.alert && (
@@ -252,7 +254,7 @@ function FitHint({ draft }: { draft: Draft }) {
     // The API reads the server IDs as one comma-separated value.
     server_ids: serverIds.length > 0 ? [serverIds.join(',')] : undefined,
   }
-  const placement = $api.useQuery('get', '/api/pools/placement', { params: { query } }, { enabled: sized, placeholderData: keepPreviousData }).data
+  const placement = useQuery({ ...placementQuery(query), enabled: sized, placeholderData: keepPreviousData }).data
   if (!sized || !placement) return null
   const { placeable_servers: fits, online_servers: total } = placement
   if (total === 0) return <p className="text-xs text-neutral-10">No {arch} server is online.</p>
@@ -437,7 +439,7 @@ function muted(server: Server): boolean {
 function serverDetail(server: Server): string {
   const size = serverSize(server)
   if (server.status === 'online') return size
-  return [statusNames[server.status], size].filter(Boolean).join(' · ')
+  return [serverStatusNames[server.status], size].filter(Boolean).join(' · ')
 }
 
 const archOptions = [

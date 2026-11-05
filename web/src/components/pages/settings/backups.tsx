@@ -1,7 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
+import { backupsQuery } from '~/api/backups'
 import { $api, errorMessage, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { useSaveSettings } from '~/api/settings'
 import {
   DataTable,
   DataTableCell,
@@ -20,17 +23,14 @@ import { Form } from '~/components/ui/form'
 import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { Tooltip } from '~/components/ui/tooltip'
-import { formatBytes } from '~/lib/format'
+import { formatBytes, formatDateTime } from '~/lib/format'
 import { backupStatus, storedOn } from './backup-info'
-import { fullDateTime, shortDateTime } from './format'
 import { CardTitle, ErrorHint, LoadError, SettingRows, SettingsCard, SettingsSection } from './parts'
+import { showSaved } from './save'
 import { NumberSetting, SwitchSetting } from './setting-controls'
-import { showSaved, useFormErrors, useSaveSettings, type Settings } from './settings-api'
-
-const backupsQuery = $api.queryOptions('get', '/api/backups')
 
 /** The Backups section: the daily backup, how many to keep, the S3 upload, and the list of backups. */
-export function Backups({ settings }: { settings: Settings }) {
+export function Backups({ settings }: { settings: Schemas['Settings'] }) {
   const client = useQueryClient()
   const create = $api.useMutation('post', '/api/backups', {
     onSuccess: (backup) =>
@@ -108,12 +108,12 @@ function S3Card({ s3 }: { s3: Schemas['BackupS3'] }) {
   }
 
   // The API reports "body.backup_s3.bucket"; the fields are named "bucket".
-  const errors = useFormErrors(save.error, 'backup_s3.')
+  const problems = useFormProblems(save.error, { prefix: 'backup_s3.' })
 
   return (
     <SettingsCard className="gap-l">
       <CardTitle title="Upload to S3">Optional. Without a bucket, backups stay on this server only.</CardTitle>
-      <Form errors={errors.fields} onSubmit={submit} className="gap-l">
+      <Form errors={problems.fields} onSubmit={submit} className="gap-l">
         <div className="grid grid-cols-1 gap-x-l gap-y-m @min-[480px]:grid-cols-2">
           {s3Fields.map(({ name, label, ...field }) => (
             <Field key={name} name={name} label={label}>
@@ -137,9 +137,9 @@ function S3Card({ s3 }: { s3: Schemas['BackupS3'] }) {
           </Field>
         </div>
         <div className="flex items-center justify-end gap-m">
-          {errors.other && (
+          {problems.alert && (
             <p role="alert" className="min-w-0 text-s text-error">
-              {errors.other}
+              {problems.alert}
             </p>
           )}
           <Button type="submit" disabled={!dirty} loading={save.isPending}>
@@ -151,7 +151,7 @@ function S3Card({ s3 }: { s3: Schemas['BackupS3'] }) {
   )
 }
 
-/** The backups, newest first. backup.state events refetch the list. */
+/** The backups, newest first. */
 function BackupTable() {
   const backups = useQuery(backupsQuery)
   // A narrow table drops Stored on, then Size.
@@ -195,7 +195,7 @@ function BackupTable() {
 type Shown = Record<'size' | 'place', boolean>
 
 function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown }) {
-  const created = shortDateTime(backup.created_at)
+  const created = formatDateTime(backup.created_at)
   const status = backupStatus(backup)
   const place = storedOn(backup)
   const uploadFailed = backup.status === 'failed' && backup.available
@@ -212,7 +212,7 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
         )}
       </DataTableCell>
       <DataTableCell>
-        <Tooltip content={fullDateTime(backup.created_at)}>
+        <Tooltip content={formatDateTime(backup.created_at, { full: true })}>
           <time dateTime={backup.created_at} className="truncate text-neutral-10">
             {created}
           </time>

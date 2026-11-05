@@ -1,19 +1,19 @@
 import type { ReactNode } from 'react'
-import { useHostStats } from '~/api/events'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { None } from '~/components/app/none'
 import { Stat } from '~/components/app/stat'
+import { serverStatusNames } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
-import { agentUpdateNote, currentUsage, serverLocation, statusNames } from '~/components/pages/servers/server-info'
+import { agentUpdateNote, currentUsage, serverLocation } from '~/components/pages/servers/server-info'
 import { Tooltip } from '~/components/ui/tooltip'
 import { formatPercent } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
-import { diskDetail, lastSeen, memoryDetail, sandboxMode, statusDetail, type Server } from './server-format'
+import { diskDetail, memoryDetail, sandboxMode, statusDetail, type Server } from './server-format'
 
 /** The facts row under the title: status, address, provider, system, mode, KVM, and version. */
 export function ServerFacts({ server }: { server: Server }) {
   const now = useNow(5000)
-  const detail = statusDetail(server, lastSeen(server, useHostStats(server.id)), now)
+  const detail = statusDetail(server, now)
   const mode = sandboxMode(server)
   const reported = server.arch !== ''
   const update = agentUpdateNote(server)
@@ -23,7 +23,7 @@ export function ServerFacts({ server }: { server: Server }) {
     // The facts sit closer to the title than the page gap, as in Job detail.
     <KeyValueList className="-mt-m">
       <KeyValue label="Status">
-        {statusNames[server.status]}
+        {serverStatusNames[server.status]}
         {detail && <span className="text-neutral-7"> · {detail}</span>}
       </KeyValue>
       <KeyValue label="Address">{server.address || <None />}</KeyValue>
@@ -49,9 +49,9 @@ export function ServerFacts({ server }: { server: Server }) {
   )
 }
 
-/** CPU, memory, and disk of the host. host.stats events update them each 10 seconds. */
+/** CPU, memory, and disk of the host. */
 export function ServerUsage({ server }: { server: Server }) {
-  const usage = currentUsage(server, useHostStats(server.id))
+  const usage = currentUsage(server)
   const vcpu = server.vcpu ? `${server.vcpu_in_use} of ${server.vcpu} vCPU allocated to runners` : ''
   return (
     <div className="@container">

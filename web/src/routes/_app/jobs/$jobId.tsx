@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { jobQuery } from '~/api/jobs'
 import { JobPage, JobPageSkeleton } from '~/components/pages/jobs/job-page'
-import { jobQuery } from '~/components/pages/jobs/job-queries'
 import { parseJobSearch } from '~/components/pages/jobs/job-steps'
 import { pageHead } from '~/lib/head'
 

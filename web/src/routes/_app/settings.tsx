@@ -1,6 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
 import { createFileRoute, Outlet } from '@tanstack/react-router'
-import { sessionQuery } from '~/api/queries'
+import { useIsAdmin } from '~/api/session'
 import { NestedRouteError } from '~/components/route-error'
 import { ChildPending } from '~/components/shell/pending'
 import { PageHeader } from '~/components/ui/page-header'
@@ -47,7 +46,7 @@ const sections = [
 ] as const
 
 function SettingsHeader() {
-  const admin = useQuery(sessionQuery).data?.role === 'admin'
+  const admin = useIsAdmin()
   return (
     <div className="flex flex-col gap-l">
       <PageHeader title="Settings" />

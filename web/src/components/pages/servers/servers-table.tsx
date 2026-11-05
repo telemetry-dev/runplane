@@ -1,4 +1,3 @@
-import { useHostStats } from '~/api/events'
 import {
   CellTitle,
   DataTable,
@@ -48,7 +47,7 @@ const columns = {
 
 type Shown = Record<keyof typeof columns, boolean>
 
-/** The table of the Servers design. CPU and memory follow the host.stats events. */
+/** The table of the Servers design. */
 export function ServersTable({ servers, admin }: ServersTableProps) {
   const { ref, shown, columns: widths } = useFittingColumns(columns)
 
@@ -146,7 +145,7 @@ function NameWithUpdate({ server }: { server: Server }) {
 }
 
 function ServerUsage({ server, shown }: { server: Server; shown: Shown }) {
-  const { cpu, memory } = currentUsage(server, useHostStats(server.id))
+  const { cpu, memory } = currentUsage(server)
   const paused = server.status === 'draining' ? 'Draining' : server.status === 'disabled' ? 'Disabled' : undefined
   return (
     <>

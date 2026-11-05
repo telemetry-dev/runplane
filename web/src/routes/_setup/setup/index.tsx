@@ -2,10 +2,10 @@ import { useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useEffectEvent, useMemo, useState } from 'react'
 import { $api, isApiError } from '~/api/client'
-import { sessionQuery, statusQuery } from '~/api/queries'
+import { formProblems } from '~/api/form-problems'
+import { sessionQuery, statusQuery } from '~/api/session'
 import { HostCheck, useHostCheck } from '~/components/pages/setup/host-check'
 import { FormAlert, FormPanel, SetupHeader } from '~/components/pages/setup/parts'
-import { submitProblems } from '~/components/pages/setup/problems'
 import { Button } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
@@ -48,9 +48,8 @@ function ServerStep() {
   // Problems from the server refer to the values sent, so an edit clears them
   // (see onChange below).
   const { errors, alert } = useMemo(() => {
-    const problems = submitProblems(create.error, fields)
-    if (host.codeError) problems.errors = { code: host.codeError, ...problems.errors }
-    return problems
+    const problems = formProblems(create.error, { fields })
+    return { errors: host.codeError ? { code: host.codeError, ...problems.fields } : problems.fields, alert: problems.alert }
   }, [create.error, host.codeError])
 
   return (

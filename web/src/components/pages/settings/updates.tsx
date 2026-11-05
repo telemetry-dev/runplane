@@ -2,7 +2,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { $api, errorMessage, isApiError, type Schemas } from '~/api/client'
-import { statusQuery } from '~/api/queries'
+import { statusQuery } from '~/api/session'
+import { updateQuery } from '~/api/update'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup, AlertDialogTrigger } from '~/components/ui/alert-dialog'
 import { Button } from '~/components/ui/button'
 import { Spinner } from '~/components/ui/spinner'
@@ -10,12 +11,7 @@ import { formatDate } from '~/lib/format'
 import { LoadError, quietAction, SettingRow, SettingRows, SettingsSection, SettingRowsSkeleton } from './parts'
 import { SwitchSetting } from './setting-controls'
 
-const updateQuery = $api.queryOptions('get', '/api/update')
-
-/**
- * The Updates section: the running version, the newest release, and the auto
- * update switch. GET /api/update answers 503 when this build has no updater.
- */
+/** The Updates section: the running version, the newest release, and the auto update switch. */
 export function Updates({ autoUpdate }: { autoUpdate: boolean }) {
   const update = useQuery({
     ...updateQuery,

@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { auditQuery } from '~/api/audit'
 import {
   DataTable,
   DataTableCell,
@@ -15,9 +16,8 @@ import { Avatar } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
 import { Skeleton } from '~/components/ui/skeleton'
 import { Tooltip } from '~/components/ui/tooltip'
+import { formatDateTime } from '~/lib/format'
 import { auditActor, auditChange, auditTarget, auditTime, type AuditEntry } from './audit-format'
-import { fullDateTime } from './format'
-import { auditQuery } from './members-api'
 import { LoadError, SettingsSection } from './parts'
 
 /** The Activity section of Settings · Members: the audit log in pages, newest first. For admins. */
@@ -79,7 +79,7 @@ function AuditRow({ entry, target }: { entry: AuditEntry; target: boolean }) {
   return (
     <DataTableRow>
       <DataTableCell>
-        <Tooltip content={fullDateTime(entry.at)}>
+        <Tooltip content={formatDateTime(entry.at, { full: true })}>
           <time dateTime={entry.at} className="truncate">
             {auditTime(entry.at)}
           </time>

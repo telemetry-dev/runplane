@@ -1,14 +1,15 @@
 import { errorMessage } from '~/api/client'
+import type { Doctor } from '~/api/servers'
 import { DataTable, DataTableEmpty } from '~/components/app/data-table'
 import { CheckIcon } from '~/components/app/status-icon'
 import { FixCommand } from '~/components/pages/servers/fix-command'
+import { sortChecks, type Check } from '~/components/pages/servers/server-info'
 import { Button } from '~/components/ui/button'
 import { Spinner } from '~/components/ui/spinner'
 import { cx } from '~/lib/cx'
 import { formatTimeAgo } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
-import type { Doctor } from './queries'
-import { canRunDoctor, sortChecks, type Check, type Server } from './server-format'
+import { canRunDoctor, type Server } from './server-format'
 
 type DoctorSectionProps = {
   server: Server

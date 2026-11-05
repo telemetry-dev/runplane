@@ -1,5 +1,5 @@
 import type { Schemas } from '~/api/client'
-import { relativeTime, shortDateTime } from './format'
+import { formatDateTime, formatRelativeTime } from '~/lib/format'
 
 // The rows of Settings · Members › Activity, from the entries of GET /api/audit.
 
@@ -28,9 +28,9 @@ export function auditTarget(entry: AuditEntry): { name: string; label: boolean }
   return name ? { name, label: false } : undefined
 }
 
-/** "25 min ago" or "3 hours ago", then "Nov 3, 18:12" from the time relativeTime would say "1 day ago". */
+/** "25 min ago" or "3 hours ago", then "Nov 3, 18:12" from the time the long relative form would say "1 day ago". */
 export function auditTime(at: string, now = Date.now()): string {
-  return Math.round((now - Date.parse(at)) / hour) < 24 ? relativeTime(at, now) : shortDateTime(at)
+  return Math.round((now - Date.parse(at)) / hour) < 24 ? formatRelativeTime(at, now, { long: true }) : formatDateTime(at)
 }
 
 const hour = 60 * 60 * 1000

@@ -1,16 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
+import { putDoctor } from '~/api/servers'
 import { CheckIcon } from '~/components/app/status-icon'
-import { doctorQuery } from '~/components/pages/server-detail/queries'
-import { sortChecks } from '~/components/pages/server-detail/server-format'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
 import { Spinner } from '~/components/ui/spinner'
 import { FixCommand } from './fix-command'
-import type { Server } from './server-info'
-
-type Check = Schemas['Check']
+import { sortChecks, type Check, type Server } from './server-info'
 
 type DoctorDialogProps = { server: Server; open: boolean; onOpenChange: (open: boolean) => void }
 
@@ -32,7 +29,7 @@ function DoctorChecks({ serverId }: { serverId: string }) {
   const doctor = $api.useMutation('post', '/api/servers/{id}/doctor', {
     onSuccess: (data) => {
       setResult(data)
-      client.setQueryData(doctorQuery(serverId).queryKey, data)
+      putDoctor(client, serverId, data)
     },
   })
   const { mutate } = doctor

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { TriangleAlert } from 'lucide-react'
-import { $api } from '~/api/client'
+import { runnerVersionsQuery } from '~/api/runner-versions'
 import {
   DataTable,
   DataTableCell,
@@ -17,9 +17,6 @@ import { Skeleton } from '~/components/ui/skeleton'
 import { formatDate } from '~/lib/format'
 import { Badge, ErrorHint, LoadError, SettingsSection } from './parts'
 import { groupVersions } from './runner-info'
-
-/** GET /api/runner-versions. runner.version events refetch it. */
-const runnerVersionsQuery = $api.queryOptions('get', '/api/runner-versions')
 
 /** The GitHub runner versions that runplane has downloaded, newest first. */
 export function RunnerVersions() {

@@ -1,5 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
-import { $api, errorMessage, isApiError, type Schemas } from '~/api/client'
+import { errorMessage, isApiError, type Schemas } from '~/api/client'
+import { setupHostQuery } from '~/api/setup'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { SectionButton } from '~/components/app/section-header'
 import { CheckIcon } from '~/components/app/status-icon'
@@ -25,12 +27,7 @@ export function useHostCheck(code: string) {
   const typed = code.replace(/\s/g, '').toUpperCase()
   const checked = useDebouncedValue(typed, 300)
   const ready = isSetupCode(checked)
-  const query = $api.useQuery(
-    'get',
-    '/api/setup/host',
-    { params: { query: { code: checked } } },
-    { enabled: ready, retry: false, staleTime: Infinity, refetchOnWindowFocus: false },
-  )
+  const query = useQuery({ ...setupHostQuery(checked), enabled: ready, retry: false, staleTime: Infinity, refetchOnWindowFocus: false })
   const codeError = typed === checked && isApiError(query.error, 422) ? errorMessage(query.error) : null
   return { query, ready, codeError }
 }

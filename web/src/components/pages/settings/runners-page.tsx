@@ -1,14 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
-import { $api } from '~/api/client'
-import { statusQuery } from '~/api/queries'
+import type { Schemas } from '~/api/client'
+import { cachesQuery } from '~/api/caches'
+import { statusQuery, useIsAdmin } from '~/api/session'
+import { settingsQuery } from '~/api/settings'
 import { formatBytes } from '~/lib/format'
 import { Images } from './images'
 import { LoadError, ReadOnlyNote, SettingRow, SettingRows, SettingsColumn, SettingsSection, SettingRowsSkeleton } from './parts'
 import { RunnerVersions } from './runner-versions'
 import { ListSetting, NumberSetting, SwitchSetting, useNumberSetting } from './setting-controls'
-import { settingsQuery, useIsAdmin, type Settings } from './settings-api'
 
-const cachesQuery = $api.queryOptions('get', '/api/caches')
+type Settings = Schemas['Settings']
 
 /** Settings · Runners: capacity, job limits, images, runner versions, network, and caches. */
 export function RunnerSettings() {

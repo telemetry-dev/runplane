@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { $api, errorMessage } from '~/api/client'
+import { errorMessage } from '~/api/client'
+import { overviewQuery } from '~/api/overview'
 import { Button } from '~/components/ui/button'
 import { PageHeader } from '~/components/ui/page-header'
 import { SegmentedControl } from '~/components/ui/segmented'
@@ -11,10 +12,6 @@ import { NoJobs } from './no-jobs'
 import { ServerList, ServersCard } from './servers'
 import { OverviewStats, statsGrid } from './stats'
 
-export function overviewQuery(range: Range) {
-  return $api.queryOptions('get', '/api/overview', { params: { query: { range } } })
-}
-
 const rangeOptions = ranges.map((range) => ({ value: range, label: range }))
 
 type OverviewPageProps = {
@@ -22,11 +19,7 @@ type OverviewPageProps = {
   onRangeChange: (range: Range) => void
 }
 
-/**
- * The Overview page. Events keep it current: job.state and server.state refetch
- * it, and host.stats moves the server CPU bars. While another range loads, the
- * page keeps the last one and shows a spinner by the range control.
- */
+/** The Overview page. While another range loads, the page keeps the last one and shows a spinner by the range control. */
 export function OverviewPage({ range, onRangeChange }: OverviewPageProps) {
   const query = useQuery({ ...overviewQuery(range), placeholderData: keepPreviousData })
   const { data } = query

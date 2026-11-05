@@ -5,7 +5,7 @@ import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { CheckIcon } from '~/components/app/status-icon'
 import { GithubIcon } from '~/components/ui/icons'
 import { Spinner } from '~/components/ui/spinner'
-import { formatDate, formatRelativeTime } from '~/lib/format'
+import { formatDate, formatDateTime, formatRelativeTime } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
 import { summarizeListeners } from './listener'
 
@@ -64,7 +64,7 @@ export function ListenerStatus({ scaleSets }: { scaleSets: Schemas['ScaleSetStat
         </KeyValue>
         <KeyValue label="Last poll">
           {lastPoll ? (
-            <time dateTime={lastPoll} title={new Date(lastPoll).toLocaleString()}>
+            <time dateTime={lastPoll} title={formatDateTime(lastPoll, { full: true })}>
               {formatRelativeTime(lastPoll, now)}
             </time>
           ) : (

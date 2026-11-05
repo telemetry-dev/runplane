@@ -1,11 +1,11 @@
-import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { githubQuery, statusQuery } from '~/api/queries'
+import { githubQuery } from '~/api/github'
+import { poolsQuery } from '~/api/pools'
 import { CodeBlock } from '~/components/app/code-block'
 import { ConnectedAccounts, JobWait, LabelTable, workflowDiff } from '~/components/pages/github/first-job'
 import { Loading } from '~/components/pages/github/parts'
 import { suggestedLabel } from '~/components/pages/overview/no-jobs'
-import { poolsQuery } from '~/components/pages/runners/queries'
 import { SetupHeader } from '~/components/pages/setup/parts'
 import { pageHead } from '~/lib/head'
 
@@ -23,18 +23,11 @@ export const Route = createFileRoute('/_setup/setup/first-job')({
 })
 
 function FirstJobStep() {
-  const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { installations } = useSuspenseQuery(githubQuery).data
   const pools = useSuspenseQuery(poolsQuery).data
   const labels = pools.filter((pool) => pool.enabled)
   const label = suggestedLabel(pools)
-
-  async function openDashboard() {
-    // The overview reads has_jobs from the status to leave its empty state.
-    await queryClient.invalidateQueries({ queryKey: statusQuery.queryKey })
-    await navigate({ to: '/' })
-  }
 
   return (
     <>
@@ -42,7 +35,7 @@ function FirstJobStep() {
       <ConnectedAccounts installations={installations} />
       {label && <CodeBlock title=".github/workflows/ci.yml" code={workflowDiff(label)} copyable />}
       <LabelTable pools={labels} />
-      <JobWait onJob={() => void openDashboard()} />
+      <JobWait onJob={() => void navigate({ to: '/' })} />
     </>
   )
 }

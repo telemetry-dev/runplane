@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Ellipsis, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { cachesQuery } from '~/api/caches'
 import { $api, errorMessage } from '~/api/client'
 import {
   DataTable,
@@ -23,7 +24,6 @@ import { toastManager } from '~/components/ui/toast'
 import { formatBytes, formatCount, formatTimeAgo } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
 import { repositoryHitRate, type CacheOverview, type CacheRepository } from './cache-format'
-import { cacheQuery } from './queries'
 
 type RepositoriesTableProps = {
   /** Undefined while the overview loads. */
@@ -163,7 +163,7 @@ function RemoveEntriesDialog({ repo, open, onOpenChange }: RemoveEntriesDialogPr
       onOpenChangeComplete={(isOpen) => {
         if (isOpen) return
         // Refetch after the close animation; the dialog lives in the row it may remove.
-        if (remove.isSuccess) void client.invalidateQueries({ queryKey: cacheQuery.queryKey })
+        if (remove.isSuccess) void client.invalidateQueries({ queryKey: cachesQuery.queryKey })
         remove.reset()
       }}
     >

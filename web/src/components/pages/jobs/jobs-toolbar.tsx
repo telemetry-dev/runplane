@@ -1,11 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { $api } from '~/api/client'
+import { facetsQuery } from '~/api/jobs'
 import { FilterSelect } from '~/components/app/filter-select'
 import { SearchInput } from '~/components/ui/input'
 import { rangeOptions, statusOptions, type JobsSearch } from './jobs-search'
-
-export const facetsQuery = $api.queryOptions('get', '/api/jobs/facets')
 
 type JobsToolbarProps = {
   search: JobsSearch

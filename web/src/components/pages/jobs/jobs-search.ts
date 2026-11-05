@@ -1,10 +1,11 @@
+import type { JobsQuery } from '~/api/jobs'
+import { jobStatusNames } from '~/components/app/status-icon'
 import { formatCount } from '~/lib/format'
-import type { paths } from '~/api/schema'
 
 // Search params of the Jobs page. Each filter lives in the URL, so a filtered
 // list can be shared and survives a reload.
 
-export type JobsStatus = 'running' | 'queued' | 'succeeded' | 'failed' | 'cancelled'
+export type JobsStatus = NonNullable<JobsQuery['status']>
 /** Time range of the list. `7d` is the default and stays out of the URL. */
 export type JobsRange = '24h' | '7d' | '30d' | 'all'
 
@@ -20,13 +21,9 @@ export type JobsSearch = {
   cursor?: string
 }
 
-export const statusOptions: ReadonlyArray<{ value: JobsStatus; label: string }> = [
-  { value: 'running', label: 'Running' },
-  { value: 'queued', label: 'Queued' },
-  { value: 'succeeded', label: 'Succeeded' },
-  { value: 'failed', label: 'Failed' },
-  { value: 'cancelled', label: 'Cancelled' },
-]
+const statuses: readonly JobsStatus[] = ['running', 'queued', 'succeeded', 'failed', 'cancelled']
+
+export const statusOptions = statuses.map((value) => ({ value, label: jobStatusNames[value] }))
 
 export const rangeOptions: ReadonlyArray<{ value: JobsRange; label: string }> = [
   { value: '24h', label: 'Last 24 hours' },
@@ -41,7 +38,7 @@ export const pageSize = 50
 export function parseJobsSearch(search: Record<string, unknown>): JobsSearch {
   return {
     q: text(search.q),
-    status: oneOf(search.status, statusOptions.map((option) => option.value)),
+    status: oneOf(search.status, statuses),
     repository: text(search.repository),
     pool: text(search.pool),
     server: text(search.server),
@@ -49,8 +46,6 @@ export function parseJobsSearch(search: Record<string, unknown>): JobsSearch {
     cursor: text(search.cursor),
   }
 }
-
-type JobsQuery = NonNullable<paths['/api/jobs']['get']['parameters']['query']>
 
 /** The GET /api/jobs query for the search params. */
 export function jobsApiQuery(search: JobsSearch): JobsQuery {

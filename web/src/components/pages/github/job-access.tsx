@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { $api, errorMessage, type Schemas } from '~/api/client'
+import { settingsQuery } from '~/api/settings'
 import { SectionHeader } from '~/components/app/section-header'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { Switch } from '~/components/ui/switch'
 import { cx } from '~/lib/cx'
 

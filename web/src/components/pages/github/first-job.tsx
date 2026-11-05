@@ -1,10 +1,9 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useEffect, useEffectEvent } from 'react'
 import type { Schemas } from '~/api/client'
-import type { LiveEvent } from '~/api/events'
-import { usePageShows } from '~/api/open-requests'
-import { statusQuery } from '~/api/queries'
+import { useLiveEvents } from '~/api/events'
+import { statusQuery } from '~/api/session'
 import { DataTable, DataTableCell, DataTableEmpty, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
 import { buttonClassName } from '~/components/ui/button'
 import { GithubIcon } from '~/components/ui/icons'
@@ -101,9 +100,9 @@ export function LabelTable({ pools }: { pools: Schemas['Pool'][] }) {
   )
 }
 
-/** The waiting row. `onJob` runs when runplane has a job, or reports the state of one. */
+/** The waiting row. `onJob` runs when runplane has a job. */
 export function JobWait({ onJob }: { onJob: () => void }) {
-  useJobEvents(onJob)
+  useFirstJob(onJob)
   return (
     <div className="flex flex-wrap items-center justify-between gap-m rounded-m bg-neutral-2 p-m">
       <p role="status" className="flex items-center gap-s text-s font-medium text-neutral-10">
@@ -117,33 +116,17 @@ export function JobWait({ onJob }: { onJob: () => void }) {
   )
 }
 
-const jobState: LiveEvent = 'job.state'
-
-// The setup pages have no app layout, so no shared event stream; this page
-// opens its own. runplane sees only jobs that ask for one of its labels, so
-// any job event means the first job has arrived. The stream sends no past
-// events, so each time it opens, has_jobs of the status tells whether a job
-// came before.
-function useJobEvents(onJob: () => void) {
+// runplane sees only jobs that ask for one of its labels, so any job means
+// that the first job has arrived. A job event refetches the status, and the
+// stream sends no past events, so each time it opens, the status tells
+// whether a job came before.
+function useFirstJob(onJob: () => void) {
   const queryClient = useQueryClient()
   const handle = useEffectEvent(onJob)
-  const shows = usePageShows()
+  const hasJobs = useQuery(statusQuery).data?.has_jobs
+  useLiveEvents({ onOpen: () => void queryClient.invalidateQueries({ queryKey: statusQuery.queryKey }) })
 
   useEffect(() => {
-    const source = new EventSource('/api/events')
-    source.onopen = () => {
-      queryClient.fetchQuery({ ...statusQuery, staleTime: 0 }).then(
-        (status) => status.has_jobs && handle(),
-        () => {}, // The stream still waits for a job.
-      )
-    }
-    source.addEventListener(jobState, () => handle())
-    // A page in the back/forward cache keeps its stream open otherwise; `shows` opens it again.
-    const close = () => source.close()
-    addEventListener('pagehide', close)
-    return () => {
-      removeEventListener('pagehide', close)
-      close()
-    }
-  }, [queryClient, shows])
+    if (hasJobs) handle()
+  }, [hasJobs])
 }

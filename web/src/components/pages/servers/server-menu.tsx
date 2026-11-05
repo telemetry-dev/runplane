@@ -3,12 +3,12 @@ import { Link } from '@tanstack/react-router'
 import { ArrowRight, Ellipsis, Pause, Play, Stethoscope, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, errorMessage } from '~/api/client'
+import { applyChange, dropServer } from '~/api/events'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
 import { DoctorDialog } from './doctor-dialog'
-import { dropServer, updateServer } from './queries'
 import { removeDescription, type Server } from './server-info'
 import { UpdateAgentItem } from './update-agent-item'
 
@@ -19,7 +19,7 @@ export function ServerMenu({ server }: { server: Server }) {
   const paused = server.status === 'draining' || server.status === 'disabled'
 
   const update = $api.useMutation('patch', '/api/servers/{id}', {
-    onSuccess: (updated) => updateServer(client, updated),
+    onSuccess: (updated) => applyChange(client, 'server.state', updated),
     onError: (error) =>
       toastManager.add({ title: `Could not ${paused ? 'resume' : 'drain'} ${server.name}`, description: errorMessage(error) }),
   })

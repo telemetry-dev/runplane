@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { imagesQuery, sandboxesQuery } from '~/components/pages/runners/queries'
-import { doctorQuery, serverQuery } from '~/components/pages/server-detail/queries'
+import { imagesQuery } from '~/api/images'
+import { sandboxesQuery } from '~/api/sandboxes'
+import { doctorQuery, serverQuery } from '~/api/servers'
 import { ServerPage, ServerPageSkeleton } from '~/components/pages/server-detail/server-page'
 import { pageHead } from '~/lib/head'
 

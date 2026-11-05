@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest'
-import { fieldErrors, toApiError } from './client'
+import { toApiError } from './client'
+import { formProblems } from './form-problems'
 
 test('a validation problem gives its detail as message and its body fields as form errors', async () => {
   const response = new Response(
@@ -19,7 +20,7 @@ test('a validation problem gives its detail as message and its body fields as fo
 
   expect(error.status).toBe(422)
   expect(error.message).toBe('validation failed')
-  expect(fieldErrors(error)).toEqual({ new_password: 'expected length >= 8' })
+  expect(formProblems(error).fields).toEqual({ new_password: 'expected length >= 8' })
 })
 
 test('a non-JSON error page from a proxy falls back to the status text', async () => {
@@ -29,5 +30,5 @@ test('a non-JSON error page from a proxy falls back to the status text', async (
 
   expect(error.status).toBe(502)
   expect(error.message).toBe('Bad Gateway')
-  expect(fieldErrors(error)).toEqual({})
+  expect(formProblems(error).fields).toEqual({})
 })

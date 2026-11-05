@@ -1,24 +1,21 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useLocation, useNavigate, useSearch, type HistoryState } from '@tanstack/react-router'
 import { useCallback } from 'react'
-import { $api, errorMessage } from '~/api/client'
-import { statusQuery } from '~/api/queries'
+import { errorMessage } from '~/api/client'
+import { jobsQuery } from '~/api/jobs'
+import { statusQuery } from '~/api/session'
 import { Button } from '~/components/ui/button'
 import { PageHeader } from '~/components/ui/page-header'
 import { hasFilters, jobsApiQuery, pageRange, pageSize, rangeOptions, type JobsSearch } from './jobs-search'
 import { JobsTable } from './jobs-table'
 import { JobsToolbar } from './jobs-toolbar'
 
-export function jobsQuery(search: JobsSearch) {
-  return $api.queryOptions('get', '/api/jobs', { params: { query: jobsApiQuery(search) } })
-}
-
-/** The "Jobs" design: search and filters, the jobs table, and cursor pages. job.state events refresh the list. */
+/** The "Jobs" design: search and filters, the jobs table, and cursor pages. */
 export function JobsPage() {
   const search = useSearch({ from: '/_app/jobs/' })
   const navigate = useNavigate({ from: '/jobs/' })
   const before = useLocation({ select: (location) => previousCursors(location.state) })
-  const jobs = useQuery({ ...jobsQuery(search), placeholderData: keepPreviousData })
+  const jobs = useQuery({ ...jobsQuery(jobsApiQuery(search)), placeholderData: keepPreviousData })
 
   const change = useCallback(
     (next: Partial<JobsSearch>, typing = false) => {

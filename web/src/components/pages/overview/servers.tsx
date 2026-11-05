@@ -1,13 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
 import type { Schemas } from '~/api/client'
-import { useHostStats } from '~/api/events'
-import { sessionQuery } from '~/api/queries'
+import { useIsAdmin } from '~/api/session'
 import { CellTitle, DataTable, DataTableCell, DataTableRow, RowLink, useFittingColumns } from '~/components/app/data-table'
 import { SectionButton, SectionHeader, SectionLink } from '~/components/app/section-header'
-import { StatusDot } from '~/components/app/status-dot'
+import { serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { AddServerDialog } from '~/components/pages/servers/add-server-dialog'
-import { jobCount, statusNames } from '~/components/pages/servers/server-info'
+import { jobCount } from '~/components/pages/servers/server-info'
 import { formatMegabytes } from '~/lib/format'
 
 type Server = Schemas['ServerSummary']
@@ -40,7 +38,7 @@ export function ServersCard({ servers }: { servers: readonly Server[] }) {
 
 /** The servers under "No jobs yet", where the next step may be to add one. */
 export function ServerList({ servers }: { servers: readonly Server[] }) {
-  const admin = useQuery(sessionQuery).data?.role === 'admin'
+  const admin = useIsAdmin()
   const fit = useFittingColumns({ status: 16, server: 'grow', cpu: { width: 132, drop: 1 }, jobs: 56 })
   return (
     <section className="flex flex-col gap-s">
@@ -79,15 +77,14 @@ function ServerName({ server, detail }: { server: Server; detail: string }) {
   )
 }
 
-/** CPU of a server that reports it, from the live host.stats events once they arrive; its state otherwise. */
+/** CPU of a server that reports it; its state otherwise. */
 function ServerUsage({ server }: { server: Server }) {
-  const live = useHostStats(server.id)
-  const cpu = live?.cpu_percent ?? server.cpu_percent
+  const cpu = server.cpu_percent
   // A 92px bar, as in the designs. The root also holds the gap and the 4ch percent.
   if (reporting(server) && cpu !== null) {
     return <UsageBar value={cpu} label={`${server.name} CPU`} showValue className="w-[calc(92px+var(--space-s)+4ch)] text-xs" />
   }
-  return <span className="block min-w-0 truncate text-xs text-neutral-7">{reporting(server) ? 'No data yet' : statusNames[server.status]}</span>
+  return <span className="block min-w-0 truncate text-xs text-neutral-7">{reporting(server) ? 'No data yet' : serverStatusNames[server.status]}</span>
 }
 
 /** Online and draining servers run jobs and send stats. */

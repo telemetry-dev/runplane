@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import { ApiError } from '~/api/client'
 import { lineNumber, listItems } from './list-text'
-import { saveError } from './settings-api'
+import { saveError } from './save'
 
 test('DNS servers split on commas and spaces', () => {
   expect(listItems('1.1.1.1, 8.8.8.8  9.9.9.9,', false)).toEqual(['1.1.1.1', '8.8.8.8', '9.9.9.9'])

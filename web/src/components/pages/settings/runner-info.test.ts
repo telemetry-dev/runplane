@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { Schemas } from '~/api/client'
-import { buildLabel, buildSummary, groupVersions } from './runner-info'
+import { buildSummary, groupVersions } from './runner-info'
 
 function build(status: Schemas['ImageBuild']['status'], server = 'fsn1-ax52-a'): Schemas['ImageBuild'] {
   return {
@@ -35,7 +35,6 @@ test('the servers summary counts states in a fixed order, pending as waiting', (
   const builds = [build('pending'), build('ready'), build('failed'), build('ready'), build('pulling')]
   expect(buildSummary(builds)).toBe('2 ready · 1 pulling · 1 waiting · 1 failed')
   expect(buildSummary([])).toBe('')
-  expect(buildLabel('pending')).toBe('Waiting')
 })
 
 const both = { x64: '2.340.0', arm64: '2.340.0' }

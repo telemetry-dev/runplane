@@ -1,8 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { imagesQuery, poolsQuery, sandboxesQuery } from '~/components/pages/runners/queries'
+import { imagesQuery } from '~/api/images'
+import { poolsQuery } from '~/api/pools'
+import { sandboxesQuery } from '~/api/sandboxes'
+import { serversQuery } from '~/api/servers'
+import { settingsQuery } from '~/api/settings'
 import { RunnersPage, RunnersSkeleton } from '~/components/pages/runners/runners-page'
-import { serversQuery } from '~/components/pages/servers/queries'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { pageHead } from '~/lib/head'
 
 export const Route = createFileRoute('/_app/runners')({

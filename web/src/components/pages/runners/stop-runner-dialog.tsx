@@ -1,9 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { $api, errorMessage } from '~/api/client'
+import { applyChange } from '~/api/events'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button } from '~/components/ui/button'
 import { toastManager } from '~/components/ui/toast'
-import { refreshRunners } from './queries'
 import type { Sandbox } from './runner-format'
 
 type StopRunnerDialogProps = {
@@ -12,14 +12,14 @@ type StopRunnerDialogProps = {
   onOpenChange: (open: boolean) => void
 }
 
-/** Confirms POST /api/sandboxes/{id}/stop. */
+/** Confirms the stop of a runner. */
 export function StopRunnerDialog({ sandbox, open, onOpenChange }: StopRunnerDialogProps) {
   const client = useQueryClient()
   const stop = $api.useMutation('post', '/api/sandboxes/{id}/stop', {
     onSuccess: () => {
       onOpenChange(false)
       toastManager.add({ title: `Stopping ${sandbox.runner_name}` })
-      void refreshRunners(client)
+      void applyChange(client, 'sandbox.state', sandbox)
     },
   })
 

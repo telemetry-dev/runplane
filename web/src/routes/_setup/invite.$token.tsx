@@ -1,10 +1,11 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { $api, errorMessage, isApiError, type Schemas } from '~/api/client'
-import { sessionQuery } from '~/api/queries'
+import { useFormProblems } from '~/api/form-problems'
+import { inviteQuery } from '~/api/invites'
+import { sessionQuery } from '~/api/session'
 import { FormAlert, FormPanel, SetupHeader } from '~/components/pages/setup/parts'
-import { submitProblems } from '~/components/pages/setup/problems'
 import { SetupColumn } from '~/components/shell/setup'
 import { Button, buttonClassName } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
@@ -20,7 +21,7 @@ export const Route = createFileRoute('/_setup/invite/$token')({
 function InvitePage() {
   const { token } = Route.useParams()
   // A query, not a loader, so that a used or expired invite gets its own page.
-  const invite = $api.useQuery('get', '/api/invites/{id}', { params: { path: { id: token } } }, { staleTime: Infinity })
+  const invite = useQuery(inviteQuery(token))
 
   if (invite.isPending) return <InviteLoading />
   if (isApiError(invite.error, 404)) return <InvalidInvite />
@@ -39,7 +40,7 @@ function AcceptForm({ token, invite }: { token: string; invite: Schemas['InviteI
       await navigate({ to: '/' })
     },
   })
-  const { errors, alert } = useMemo(() => submitProblems(accept.error, fields), [accept.error])
+  const { fields: errors, alert } = useFormProblems(accept.error, { fields })
 
   // Used or expired since the page opened.
   if (isApiError(accept.error, 404)) return <InvalidInvite />
