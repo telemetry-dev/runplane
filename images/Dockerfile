@@ -1,11 +1,17 @@
-# runplane base image for GitHub Actions jobs: Ubuntu 24.04.
+# runplane base image for GitHub Actions jobs. The build args select the
+# Ubuntu release: UBUNTU is the tag of the ubuntu image, and IMAGE_OS is the
+# ImageOS of the GitHub-hosted runners for that release. images/images.go
+# names the builtin images and gives their build args.
 #
 # runplane starts runplane-init as the first process of each sandbox, so this
 # image has no ENTRYPOINT. runplane-init starts dockerd and the runner as the
 # user "runner". See images/README.md for custom images FROM this image.
-FROM ubuntu:24.04
+ARG UBUNTU
+FROM ubuntu:${UBUNTU}
+ARG UBUNTU
+ARG IMAGE_OS
 
-LABEL org.opencontainers.image.title="runplane runner, Ubuntu 24.04" \
+LABEL org.opencontainers.image.title="runplane runner, Ubuntu ${UBUNTU}" \
       org.opencontainers.image.description="Base image for runplane sandboxes" \
       org.opencontainers.image.source="https://github.com/runplane/runplane" \
       dev.runplane.managed=true
@@ -18,7 +24,7 @@ ARG GO_VERSIONS="1.27"
 
 ENV LANG=C.UTF-8 \
     TZ=Etc/UTC \
-    ImageOS=ubuntu24 \
+    ImageOS=${IMAGE_OS} \
     RUNNER_TOOL_CACHE=/opt/hostedtoolcache \
     AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
 

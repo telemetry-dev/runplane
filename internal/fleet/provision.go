@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/runplane/runplane/images"
@@ -16,6 +14,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/image"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
@@ -31,18 +30,11 @@ func (f *Fleet) seedImages(ctx context.Context) (bool, error) {
 	if err != nil || len(list) > 0 {
 		return false, err
 	}
-	dirs, err := fs.ReadDir(images.FS, ".")
-	if err != nil {
-		return false, fmt.Errorf("list builtin images: %w", err)
-	}
 	now := f.now()
-	for _, d := range dirs {
-		if !d.IsDir() {
-			continue
-		}
+	for _, name := range images.Names {
 		img := store.Image{
-			ID: ids.New(), Name: d.Name(), Ref: "builtin:" + d.Name(), IsDefault: d.Name() == images.Default,
-			Source: "builtin", CreatedAt: now, UpdatedAt: now,
+			ID: ids.New(), Name: name, Ref: images.Prefix + name, IsDefault: name == images.Default,
+			Source: images.Source, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := f.st.CreateImage(ctx, img); err != nil {
 			return false, fmt.Errorf("add builtin image: %w", err)
@@ -290,13 +282,11 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 			errs = append(errs, fmt.Errorf("server %s: %w", n.id, err))
 			// A lost connection says nothing about the bundle.
 			if ctx.Err() == nil && !errors.Is(err, agent.ErrClosed) {
-				f.saveBundle(ctx, store.RunnerBundle{Version: v, Arch: n.arch, Status: store.BundleFailed, Error: err.Error()})
+				f.runners.Built(ctx, v, n.arch, runner.Bundle{}, err)
 			}
 			continue
 		}
-		f.saveBundle(ctx, store.RunnerBundle{
-			Version: v, Arch: b.Arch, SHA256: b.SHA256, Patched: b.Patched, Status: store.BundleReady, Path: b.Dir,
-		})
+		f.runners.Built(ctx, v, n.arch, b, nil)
 		f.mu.Lock()
 		first := n.runner == ""
 		if first || version.Compare(v, n.runner) > 0 {
@@ -319,45 +309,6 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 	f.mu.Lock()
 	n.runnerFailed = f.now()
 	f.mu.Unlock()
-	return errors.Join(errs...)
-}
-
-// saveBundle records a bundle build and publishes the row when its status
-// or error changed.
-func (f *Fleet) saveBundle(ctx context.Context, b store.RunnerBundle) {
-	before, _ := f.st.GetRunnerBundle(ctx, b.Version, b.Arch)
-	if err := f.st.SetRunnerBundleBuild(ctx, b); err != nil {
-		f.log.Warn("record runner bundle", "version", b.Version, "arch", b.Arch, "err", err)
-		return
-	}
-	after, err := f.st.GetRunnerBundle(ctx, b.Version, b.Arch)
-	if err != nil || after.Status == before.Status && after.Error == before.Error {
-		return
-	}
-	f.bus.Publish(events.RunnerVersion(after))
-}
-
-// EnsureLatest makes the runner bundle of v ready on each online server.
-// The github package calls it for a new runner release. Servers use the
-// version for new sandboxes as soon as it is ready there.
-func (f *Fleet) EnsureLatest(ctx context.Context, v string) error {
-	f.mu.Lock()
-	if version.Compare(v, f.latest) > 0 {
-		f.latest = v
-	}
-	var list []*node
-	for _, n := range f.nodes {
-		if n.status == store.ServerOnline {
-			list = append(list, n)
-		}
-	}
-	f.mu.Unlock()
-	errs := make([]error, len(list))
-	var wg sync.WaitGroup
-	for i, n := range list {
-		wg.Go(func() { errs[i] = f.ensureRunner(ctx, n, []string{v}) })
-	}
-	wg.Wait()
 	return errors.Join(errs...)
 }
 

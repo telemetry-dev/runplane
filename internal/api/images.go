@@ -9,6 +9,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
@@ -128,7 +129,7 @@ func (h *Handler) updateImage(ctx context.Context, in *struct {
 	if b.IsDefault != nil && !*b.IsDefault && img.IsDefault {
 		return nil, invalid("body.is_default", "Make another image the default instead.", false)
 	}
-	if b.Ref != nil && *b.Ref != img.Ref && img.Source == "builtin" {
+	if b.Ref != nil && *b.Ref != img.Ref && img.Source == images.Source {
 		return nil, invalid("body.ref", "The ref of a built-in image cannot change. Add a new image instead.", *b.Ref)
 	}
 	newName, ref := img.Name, img.Ref

@@ -24,6 +24,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
+	"github.com/runplane/runplane/internal/ext4"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
@@ -71,7 +72,7 @@ func (m *Manager) ensureRootDisk(ctx context.Context, src source, r *reporter) (
 	}
 
 	r.status(StatusConverting)
-	out.Size, err = writeExt4(out.Path, func(w io.Writer) error {
+	out.Size, err = ext4.Write(out.Path, func(w io.Writer) error {
 		return rootfs(w, mutate.Extract(layersImage{img, layers}), init.bin)
 	})
 	if err != nil {
@@ -122,7 +123,7 @@ func (m *Manager) buildRootDisk(ctx context.Context, src source, init []byte, r 
 		read += n
 		r.bytes(StatusConverting, read, size)
 	}}
-	out.Size, err = writeExt4(out.Path, func(w io.Writer) error {
+	out.Size, err = ext4.Write(out.Path, func(w io.Writer) error {
 		return rootfs(w, readCloser{counted, files}, init)
 	})
 	if err != nil {

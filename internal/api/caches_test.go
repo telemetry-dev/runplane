@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/runplane/runplane/internal/auth"
@@ -27,6 +28,48 @@ func TestCachesReportTheLimitOfTheCacheServer(t *testing.T) {
 	if out.MaxBytes != 10<<30 {
 		t.Fatalf("max_bytes = %d, want %d, the limit of the cache server", out.MaxBytes, int64(10<<30))
 	}
+}
+
+// deletingCaches is a cache server with the entries of one repository.
+type deletingCaches struct {
+	Caches
+	ids  map[string]bool
+	repo map[string]int
+}
+
+func (f deletingCaches) Delete(_ context.Context, id string) error {
+	if !f.ids[id] {
+		return fmt.Errorf("get entry: %w", store.ErrNotFound)
+	}
+	return nil
+}
+
+func (f deletingCaches) DeleteRepository(_ context.Context, repository string) (int, error) {
+	return f.repo[repository], nil
+}
+
+func TestDeleteCaches(t *testing.T) {
+	caches := deletingCaches{ids: map[string]bool{"e1": true}, repo: map[string]int{"acme/app": 3}}
+	e := newEnv(t, func(d *Deps) { d.Caches = caches })
+	b := e.login("ada@example.com", auth.RoleAdmin)
+	tests := []struct {
+		query  string
+		status int
+		want   int
+	}{
+		{"?id=e1", 200, 1},
+		{"?id=e1&repository=other/lib", 200, 1}, // the ID wins
+		{"?id=gone", 404, 0},
+		{"?repository=acme/app", 200, 3},
+	}
+	for _, tt := range tests {
+		var out DeletedCaches
+		b.do("DELETE", "/api/caches"+tt.query, nil, &out).want(t, tt.status)
+		if out.Deleted != tt.want {
+			t.Errorf("DELETE %s: deleted %d, want %d", tt.query, out.Deleted, tt.want)
+		}
+	}
+	b.do("DELETE", "/api/caches", nil, nil).wantField(t, 422, "query.repository")
 }
 
 func TestRunnerVersionsCurrentIsTheNewestReady(t *testing.T) {

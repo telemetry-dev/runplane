@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/runplane/runplane/internal/datadisk"
 )
 
 // dirBytes is the size of all files under dir.
@@ -83,10 +85,9 @@ func TestOpenUploadsPerSandbox(t *testing.T) {
 func TestCacheLeavesFreeDisk(t *testing.T) {
 	f := newFixture(t, 0)
 	var used atomic.Int64 // bytes of other programs on a 10 000-byte disk
-	f.srv.cfg.DiskSpace = func() (int64, int64, error) {
-		return 10_000, 10_000 - used.Load() - dirBytes(t, f.dir), nil
+	f.disk = func() datadisk.Space {
+		return datadisk.Limits(datadisk.Settings{MinFreePercent: 15}, 10_000, 10_000-used.Load()-dirBytes(t, f.dir))
 	}
-	f.srv.cfg.MinFreePercent = func() float64 { return 15 }
 	c := client{t: t, url: f.url}
 	c.save("a", version, bytes.Repeat([]byte("a"), 1000))
 	c.save("b", version, bytes.Repeat([]byte("b"), 1000))
@@ -110,8 +111,8 @@ func TestCacheLeavesFreeDisk(t *testing.T) {
 
 // With a small disk, the limit is a quarter of the disk, not cache_max_gb.
 func TestLimitIsAQuarterOfTheDiskAtMost(t *testing.T) {
-	f := newFixture(t, 50<<30)
-	f.srv.cfg.DiskSpace = func() (int64, int64, error) { return 400, 400, nil }
+	f := newFixture(t, 0)
+	f.disk = func() datadisk.Space { return datadisk.Limits(datadisk.Settings{CacheMaxGB: 50}, 400, 400) }
 	c := client{t: t, url: f.url}
 	u := c.reserve("big", version)
 	if status := c.put(u, bytes.Repeat([]byte("x"), 101), nil); status != http.StatusRequestEntityTooLarge {

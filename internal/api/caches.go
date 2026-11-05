@@ -12,8 +12,8 @@ import (
 
 type CacheOverview struct {
 	Enabled       bool              `json:"enabled" doc:"The actions_cache setting."`
-	SizeBytes     int64             `json:"size_bytes" doc:"Size of all entries, also the unfinished uploads."`
-	MaxBytes      int64             `json:"max_bytes" doc:"The limit of the cache: the cache_max_gb setting in bytes, at most a quarter of the disk of the cache. runplane removes the least recently used entries above it."`
+	SizeBytes     int64             `json:"size_bytes" doc:"Size of all entries and of the files of the unfinished uploads."`
+	MaxBytes      int64             `json:"max_bytes" doc:"The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it. 0 when the cache server is not available."`
 	HitRate       float64           `json:"hit_rate" doc:"Hits / (hits + misses) of the last 7 days, 0 to 1."`
 	Repositories  []CacheRepository `json:"repositories" doc:"Largest first."`
 	MirrorEnabled bool              `json:"mirror_enabled" doc:"The registry_mirror setting."`
@@ -62,7 +62,7 @@ func (h *Handler) getCaches(ctx context.Context, _ *struct{}) (*body[CacheOvervi
 		return nil, err
 	}
 	out := CacheOverview{
-		Enabled: settings.ActionsCache, SizeBytes: size, MaxBytes: int64(settings.CacheMaxGB) << 30,
+		Enabled: settings.ActionsCache, SizeBytes: size.Entries + size.Uploads,
 		MirrorEnabled: settings.RegistryMirror, Repositories: []CacheRepository{},
 	}
 	// A repository with hits in the window but no entries now also shows.
@@ -157,9 +157,15 @@ func (h *Handler) deleteCacheEntries(ctx context.Context, in *deleteCachesInput)
 	if h.d.Caches == nil {
 		return nil, unavailable("The cache server")
 	}
-	n, err := h.d.Caches.Delete(ctx, in.Repository, in.ID)
+	n := 1
+	var err error
+	if in.ID != "" {
+		err = h.d.Caches.Delete(ctx, in.ID)
+	} else {
+		n, err = h.d.Caches.DeleteRepository(ctx, in.Repository)
+	}
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, h.serviceErr(notFound(err, "No cache entry has this ID."))
 	}
 	h.audit(ctx, "cache.delete", cmp.Or(in.ID, in.Repository), map[string]any{"repository": in.Repository, "id": in.ID, "deleted": n})
 	return &body[DeletedCaches]{DeletedCaches{Deleted: n}}, nil
@@ -190,12 +196,10 @@ type RunnerCurrent struct {
 	ARM64 string `json:"arm64"`
 }
 
-const endsSoon = 14 * 24 * time.Hour
-
 func runnerVersion(b store.RunnerBundle, now time.Time) RunnerVersion {
 	return RunnerVersion{
 		Version: b.Version, Arch: b.Arch, Status: b.Status, Patched: b.Patched, SHA256: b.SHA256, Error: b.Error,
-		EndDate: b.EndDate, EndsSoon: b.EndDate != nil && b.EndDate.Sub(now) < endsSoon,
+		EndDate: b.EndDate, EndsSoon: b.EndsSoon(now),
 		ReleasedAt: b.ReleasedAt, CreatedAt: b.CreatedAt,
 	}
 }

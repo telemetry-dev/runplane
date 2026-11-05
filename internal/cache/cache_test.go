@@ -135,8 +135,11 @@ func TestBranchRules(t *testing.T) {
 	main.save("k", version, []byte("from main"))
 	pr1.save("k", version, []byte("from pr 1"))
 	pr1.save("pr1-only", version, []byte("pr 1 data"))
+	pr1.save("x-old", version, []byte("old on pr 1"))
 	feature.save("feature-only", version, []byte("feature data"))
 	develop.save("develop-only", version, []byte("develop data"))
+	f.clock.advance(time.Minute)
+	main.save("x-new", version, []byte("new on main"))
 
 	tests := []struct {
 		name string
@@ -145,6 +148,7 @@ func TestBranchRules(t *testing.T) {
 		want string
 	}{
 		{"a pull request reads its own ref first", pr1, "k", "from pr 1"},
+		{"a pull request reads its own ref before a newer entry of the default branch", pr1, "x-", "old on pr 1"},
 		{"a pull request reads the default branch", pr2, "k", "from main"},
 		{"a pull request reads its base branch", pr3, "develop-only", "develop data"},
 		{"a pull request cannot read a different pull request", pr2, "pr1-only", ""},
@@ -427,7 +431,7 @@ func TestCleanup(t *testing.T) {
 	f.clock.advance(2 * time.Minute)
 	f.srv.removeOrphans(ctx, "blobs")
 	f.srv.cleanup(ctx)
-	if _, err := f.st.GetCacheEntryByKey(ctx, "acme/app", "refs/heads/main", "abandoned", version); !errors.Is(err, ErrNotFound) {
+	if _, err := f.st.GetCacheEntryByKey(ctx, "acme/app", "refs/heads/main", "abandoned", version); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("abandoned upload still in the index: %v", err)
 	}
 	if staged, _ := os.ReadDir(filepath.Join(f.dir, "uploads")); len(staged) != 0 {
@@ -448,7 +452,7 @@ func TestDamagedBlobIsAMiss(t *testing.T) {
 	f.clock.advance(time.Minute)
 	c.save("deps-new", version, []byte("new"))
 	e, _ := f.st.GetCacheEntryByKey(context.Background(), "acme/app", "refs/heads/main", "deps-new", version)
-	os.Truncate(filepath.Join(f.dir, e.Path), 1)
+	os.Truncate(filepath.Join(f.dir, "blobs", e.ID), 1)
 
 	// A download URL is a promise: BuildKit fails the build on a 404.
 	if matched, data := c.restore(version, "deps-"); matched != "deps-old" || string(data) != "old" {
@@ -485,9 +489,8 @@ func TestResultsProxy(t *testing.T) {
 		io.WriteString(w, `{"ok":true}`)
 	}))
 	defer upstream.Close()
-	f := newFixture(t, 0)
 	u, _ := url.Parse(upstream.URL)
-	f.srv.proxy = newProxy(u, f.srv.cfg.Logger)
+	f := newFixture(t, 0, func(c *Config) { c.Results = u })
 
 	const path = "/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact"
 	req, _ := http.NewRequest(http.MethodPost, f.proxied+path, strings.NewReader(`{"name":"dist"}`))
@@ -581,23 +584,22 @@ func TestCacheRequestWaitsForTheJob(t *testing.T) {
 
 func TestStatsAddPerHour(t *testing.T) {
 	st := openStore(t)
-	s := NewStats(st, slog.New(slog.DiscardHandler))
 	t0 := time.Date(2026, 11, 4, 10, 15, 0, 0, time.UTC)
 	now := t0
-	s.now = func() time.Time { return now }
-	s.Add("acme/api", store.CacheCounts{Hits: 1, BytesRead: 100})
+	s := newStats(st, slog.New(slog.DiscardHandler), func() time.Time { return now })
+	s.add("acme/api", store.CacheCounts{Hits: 1, BytesRead: 100})
 	now = t0.Add(30 * time.Minute)
-	s.Add("acme/api", store.CacheCounts{Misses: 1})
-	s.Add("acme/web", store.CacheCounts{BytesWritten: 7})
+	s.add("acme/api", store.CacheCounts{Misses: 1})
+	s.add("acme/web", store.CacheCounts{BytesWritten: 7})
 	now = t0.Add(time.Hour)
-	s.Add("acme/api", store.CacheCounts{Hits: 2})
+	s.add("acme/api", store.CacheCounts{Hits: 2})
 
-	// Run writes the counts when it ends.
+	// run writes the counts when it ends.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s.Run(ctx)
+	s.run(ctx)
 	// A later flush adds to the rows that exist.
-	s.Add("acme/api", store.CacheCounts{Hits: 1})
+	s.add("acme/api", store.CacheCounts{Hits: 1})
 	s.flush(context.Background())
 
 	tests := []struct {

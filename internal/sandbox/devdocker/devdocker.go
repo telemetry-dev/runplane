@@ -13,7 +13,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/image"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
 )
@@ -27,7 +27,7 @@ type Options struct {
 	// Config gives the data folders and the service port. The control
 	// channel listens on the service port + 1. DevInsecure must be set.
 	Config   config.Config
-	Bundle   func(ctx context.Context, version, arch string) (image.Bundle, error)
+	Bundle   func(ctx context.Context, version, arch string) (runner.Bundle, error)
 	InitPath func() (string, error)
 	Settings sandbox.Settings
 	Logger   *slog.Logger

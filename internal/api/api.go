@@ -169,13 +169,15 @@ type Images interface {
 }
 
 type Caches interface {
-	// Delete removes the cache entry id, or all entries of repository if id
-	// is empty, with their blobs. It returns the count of removed entries.
-	Delete(ctx context.Context, repository, id string) (int, error)
+	// Delete removes the cache entry id with its blob. It returns
+	// store.ErrNotFound if no entry has the ID.
+	Delete(ctx context.Context, id string) error
+	// DeleteRepository removes the entries of a repository with their blobs,
+	// and returns the count.
+	DeleteRepository(ctx context.Context, repository string) (int, error)
 	// MirrorStats returns the counts of the mirror. The API sets StartedAt.
 	MirrorStats(ctx context.Context) (MirrorStats, error)
-	// MaxBytes returns the limit that the cache server uses now: the
-	// cache_max_gb setting, at most a quarter of the disk of the cache.
+	// MaxBytes returns the byte limit that the cache server uses now.
 	MaxBytes() int64
 }
 

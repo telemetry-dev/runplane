@@ -27,10 +27,7 @@ type disk struct {
 	root string
 }
 
-// blobPath is the path of the blob of an entry, relative to the cache folder.
-func blobPath(id string) string { return filepath.Join("blobs", id) }
-
-func (d disk) blob(id string) string    { return filepath.Join(d.root, blobPath(id)) }
+func (d disk) blob(id string) string    { return filepath.Join(d.root, "blobs", id) }
 func (d disk) staging(id string) string { return filepath.Join(d.root, "uploads", id) }
 
 func (d disk) init() error {

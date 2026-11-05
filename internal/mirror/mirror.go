@@ -20,16 +20,23 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/blob"
+	"github.com/runplane/runplane/internal/datadisk"
 )
 
 // tagTTL is how long a tag is trusted before a check with upstream.
 const tagTTL = 10 * time.Minute
 
 type Config struct {
-	Dir      string                   // cache folder, for example /var/lib/runplane/mirror
-	MaxBytes int64                    // size limit of the cache; 0 = no limit
-	Allow    func(ip netip.Addr) bool // reports if a client address can use the mirror
-	Logger   *slog.Logger
+	Dir string // cache folder, for example /var/lib/runplane/mirror
+	// Space returns the room of the mirror on the data disk now
+	// (datadisk.Limits). Below min_free_disk_percent, the mirror keeps no
+	// new content and removes the least recently used files.
+	Space  func() datadisk.Space
+	Allow  func(ip netip.Addr) bool // reports if a client address can use the mirror
+	Logger *slog.Logger
+	Now    func() time.Time // nil: time.Now
+	// Upstream is the registry that the mirror pulls from. "": Docker Hub.
+	Upstream string
 }
 
 // Stats counts the use of the mirror since the start. A request for a
@@ -57,6 +64,7 @@ type Mirror struct {
 	tags  *tagIndex
 	allow func(netip.Addr) bool
 	log   *slog.Logger
+	now   func() time.Time
 
 	ctx    context.Context // ends at Close
 	cancel context.CancelFunc
@@ -73,22 +81,28 @@ type Mirror struct {
 
 // New opens the cache in cfg.Dir. Call Close after the HTTP server stops.
 func New(cfg Config) (*Mirror, error) {
-	s, err := openStore(cfg.Dir, cfg.MaxBytes)
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	s, err := openStore(cfg.Dir, cfg.Space)
 	if err != nil {
 		return nil, fmt.Errorf("open mirror cache: %w", err)
 	}
-	tags, err := openTags(filepath.Join(cfg.Dir, "tags"))
+	tags, err := openTags(filepath.Join(cfg.Dir, "tags"), cfg.Now)
 	if err != nil {
 		return nil, fmt.Errorf("open mirror cache: %w", err)
 	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.ResponseHeaderTimeout = time.Minute
 	m := &Mirror{
-		up:        &upstream{base: "https://registry-1.docker.io", client: &http.Client{Transport: t}},
+		up: &upstream{
+			base: cmp.Or(cfg.Upstream, "https://registry-1.docker.io"), client: &http.Client{Transport: t}, now: cfg.Now,
+		},
 		store:     s,
 		tags:      tags,
 		allow:     cfg.Allow,
 		log:       cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)),
+		now:       cfg.Now,
 		downloads: map[string]*download{},
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())

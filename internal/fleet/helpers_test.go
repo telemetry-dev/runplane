@@ -23,6 +23,8 @@ import (
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
+	"github.com/runplane/runplane/internal/runner"
+	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/tlsutil"
@@ -67,6 +69,7 @@ func newHarness(t *testing.T, local *fakeNode) *harness {
 	h.f = New(Config{
 		Store: st, Bus: h.bus, Log: h.log.With("side", "fleet"), Config: h.cfg, Local: local, AgentFingerprint: fp,
 		OnEvent: func(string, sandbox.Event) {}, CapacityChanged: func() { h.capacity.Add(1) }, Notifier: h.notes, Now: h.clock.now,
+		Runners: versions.New(versions.Config{Store: st, Bus: h.bus}),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &agent.Listener{Cert: cert, Authenticate: h.f.Authenticate, OnSession: h.f.AddSession, Logger: h.log.With("side", "listener")}
@@ -329,14 +332,14 @@ func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(im
 	return sandbox.ImageRef{Ref: ref, Digest: digest}, nil
 }
 
-func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (image.Bundle, error) {
+func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (runner.Bundle, error) {
 	n.record("EnsureRunner", version)
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !n.runners[version] {
-		return image.Bundle{}, fmt.Errorf("download runner %s: 404 Not Found", version)
+		return runner.Bundle{}, fmt.Errorf("download runner %s: 404 Not Found", version)
 	}
-	return image.Bundle{Version: version, Arch: arch, SHA256: "9e2f" + version, Patched: true, Dir: "/var/lib/runplane/runners/" + version + "-" + arch}, nil
+	return runner.Bundle{Version: version, Arch: arch, SHA256: "9e2f" + version, Patched: true, Dir: "/var/lib/runplane/runners/" + version + "-" + arch}, nil
 }
 
 func (n *fakeNode) GCImages(_ context.Context, keep []string) error {

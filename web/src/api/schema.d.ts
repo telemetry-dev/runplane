@@ -1086,7 +1086,7 @@ export interface components {
             hit_rate: number;
             /**
              * Format: int64
-             * @description The limit of the cache: the cache_max_gb setting in bytes, at most a quarter of the disk of the cache. runplane removes the least recently used entries above it.
+             * @description The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it. 0 when the cache server is not available.
              */
             max_bytes: number;
             /** @description Absent when the mirror stats are not available. */
@@ -1097,7 +1097,7 @@ export interface components {
             repositories: components["schemas"]["CacheRepository"][];
             /**
              * Format: int64
-             * @description Size of all entries, also the unfinished uploads.
+             * @description Size of all entries and of the files of the unfinished uploads.
              */
             size_bytes: number;
         };

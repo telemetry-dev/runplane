@@ -1,6 +1,7 @@
-package image
+package runner
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -18,6 +19,8 @@ import (
 	"testing"
 	"unicode/utf16"
 
+	"github.com/runplane/runplane/internal/ext4/ext4test"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -39,17 +42,17 @@ func TestRelease(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := NewBundles(BundleConfig{Token: func(context.Context) (string, error) { return "ghs_test", nil }})
 			var auth string
-			fakeGitHub(t, b, map[string][]byte{"/repos/actions/runner/releases/latest": tt.body}, func(r *http.Request) {
+			r := fakeGitHub(t, map[string][]byte{"/repos/actions/runner/releases/latest": tt.body}, func(r *http.Request) {
 				auth = r.Header.Get("Authorization")
 			})
-			version, sums, err := b.release(context.Background(), "/releases/latest")
+			r.Auth = TokenAuth(func(context.Context) (string, error) { return "ghs_test", nil })
+			rel, err := r.Latest(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if auth != "Bearer ghs_test" || version != "2.338.2" || !maps.Equal(sums, want) {
-				t.Errorf("auth %q, version %q, SHA-256 %v; want %v", auth, version, sums, want)
+			if auth != "Bearer ghs_test" || rel.Version != "2.338.2" || !maps.Equal(rel.SHA256, want) {
+				t.Errorf("auth %q, version %q, SHA-256 %v; want %v", auth, rel.Version, rel.SHA256, want)
 			}
 		})
 	}
@@ -59,8 +62,8 @@ func TestEnsureBundle(t *testing.T) {
 	dll := bytes.Join([][]byte{[]byte("MZ"), utf16Bytes("ACTIONS_RESULTS_URL"), {0, 0}, utf16Bytes("ACTIONS_RESULTS_URL")}, nil)
 	archive := runnerArchive(t, dll)
 	dir := t.TempDir()
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: dir})
-	requests := serveRunner(t, b, "2.338.2", "arm64", archive, sha256.Sum256(archive))
+	releases, requests := serveRunner(t, "2.338.2", "arm64", archive, sha256.Sum256(archive))
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: dir, Releases: releases})
 
 	bundle, err := b.Ensure(context.Background(), "2.338.2", "arm64")
 	if err != nil {
@@ -90,9 +93,9 @@ func TestEnsureBundle(t *testing.T) {
 	if target, err := os.Readlink(filepath.Join(bundle.Dir, "externals", "node", "bin", "npm")); err != nil || target != "../lib/npm-cli.js" {
 		t.Errorf("npm link = %q, %v", target, err)
 	}
-	assertExt4(t, bundle.Ext4Path)
-	debugfs(t, bundle.Ext4Path, "cat /bin/Runner.Worker.dll", string(wantDLL))
-	debugfs(t, bundle.Ext4Path, "stat /externals/node/bin/npm", `Fast link dest: "../lib/npm-cli.js"`)
+	ext4test.Check(t, bundle.Ext4Path)
+	ext4test.Debugfs(t, bundle.Ext4Path, "cat /bin/Runner.Worker.dll", string(wantDLL))
+	ext4test.Debugfs(t, bundle.Ext4Path, "stat /externals/node/bin/npm", `Fast link dest: "../lib/npm-cli.js"`)
 
 	before := requests.Load()
 	again, err := b.Ensure(context.Background(), "2.338.2", "arm64")
@@ -110,8 +113,8 @@ func TestEnsureBundle(t *testing.T) {
 
 func TestEnsureBundleRejectsBadSHA(t *testing.T) {
 	dir := t.TempDir()
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: dir})
-	serveRunner(t, b, "2.338.2", "x64", runnerArchive(t, []byte("MZ")), [32]byte{})
+	releases, _ := serveRunner(t, "2.338.2", "x64", runnerArchive(t, []byte("MZ")), [32]byte{})
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: dir, Releases: releases})
 	if _, err := b.Ensure(context.Background(), "2.338.2", "x64"); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("Ensure error = %v, want a SHA-256 error", err)
 	}
@@ -122,8 +125,8 @@ func TestEnsureBundleRejectsBadSHA(t *testing.T) {
 
 func TestEnsureBundleWithoutPatch(t *testing.T) {
 	archive := runnerArchive(t, []byte("MZ no results url here"))
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir()})
-	serveRunner(t, b, "2.400.0", "x64", archive, sha256.Sum256(archive))
+	releases, _ := serveRunner(t, "2.400.0", "x64", archive, sha256.Sum256(archive))
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), Releases: releases})
 	bundle, err := b.Ensure(context.Background(), "2.400.0", "x64")
 	if err != nil {
 		t.Fatal(err)
@@ -157,8 +160,8 @@ func TestPrune(t *testing.T) {
 	}
 }
 
-// fakeGitHub serves files by path, and points the GitHub URLs of b at it.
-func fakeGitHub(t *testing.T, b *Bundles, files map[string][]byte, seen func(*http.Request)) {
+// fakeGitHub serves files by path, and returns the Releases that read it.
+func fakeGitHub(t *testing.T, files map[string][]byte, seen func(*http.Request)) Releases {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if seen != nil {
 			seen(r)
@@ -171,33 +174,48 @@ func fakeGitHub(t *testing.T, b *Bundles, files map[string][]byte, seen func(*ht
 		w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
-	b.api.URL, b.web = srv.URL, srv.URL
+	return Releases{API: ghrest.Client{URL: srv.URL}, Web: srv.URL}
 }
 
 // serveRunner serves a runner release whose notes give sum for the archive,
-// and returns the count of requests.
-func serveRunner(t *testing.T, b *Bundles, version, arch string, archive []byte, sum [32]byte) *atomic.Int32 {
+// and returns the Releases that read it and the count of requests.
+func serveRunner(t *testing.T, version, arch string, archive []byte, sum [32]byte) (Releases, *atomic.Int32) {
 	release := fmt.Appendf(nil, `{"tag_name":"v%s","body":"<!-- BEGIN SHA linux-%s -->%x<!-- END SHA linux-%s -->","assets":[]}`,
 		version, arch, sum, arch)
 	download := fmt.Sprintf("/actions/runner/releases/download/v%s/actions-runner-linux-%s-%s.tar.gz", version, arch, version)
 	var requests atomic.Int32
-	fakeGitHub(t, b, map[string][]byte{"/repos/actions/runner/releases/tags/v" + version: release, download: archive},
+	r := fakeGitHub(t, map[string][]byte{"/repos/actions/runner/releases/tags/v" + version: release, download: archive},
 		func(*http.Request) { requests.Add(1) })
-	return &requests
+	return r, &requests
 }
 
 func runnerArchive(t *testing.T, dll []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
-	gz.Write(tarBytes(t,
-		dirEntry("./", 0o755),
-		dirEntry("./bin/", 0o755),
-		fileEntry("./bin/Runner.Worker.dll", string(dll), 0o644),
-		fileEntry("./run.sh", "#!/bin/bash\n", 0o755),
-		fileEntry("./externals/node/lib/npm-cli.js", "npm", 0o644),
-		linkEntry("./externals/node/bin/npm", "../lib/npm-cli.js"),
-	))
+	tw := tar.NewWriter(gz)
+	for _, f := range []struct {
+		hdr  tar.Header
+		body string
+	}{
+		{tar.Header{Typeflag: tar.TypeDir, Name: "./", Mode: 0o755}, ""},
+		{tar.Header{Typeflag: tar.TypeDir, Name: "./bin/", Mode: 0o755}, ""},
+		{tar.Header{Typeflag: tar.TypeReg, Name: "./bin/Runner.Worker.dll", Mode: 0o644}, string(dll)},
+		{tar.Header{Typeflag: tar.TypeReg, Name: "./run.sh", Mode: 0o755}, "#!/bin/bash\n"},
+		{tar.Header{Typeflag: tar.TypeReg, Name: "./externals/node/lib/npm-cli.js", Mode: 0o644}, "npm"},
+		{tar.Header{Typeflag: tar.TypeSymlink, Name: "./externals/node/bin/npm", Linkname: "../lib/npm-cli.js", Mode: 0o777}, ""},
+	} {
+		f.hdr.Size = int64(len(f.body))
+		if err := tw.WriteHeader(&f.hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(f.body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -210,6 +228,19 @@ func utf16Bytes(s string) []byte {
 		b = binary.LittleEndian.AppendUint16(b, u)
 	}
 	return b
+}
+
+func names(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	return strings.Join(out, " ")
 }
 
 // assertNoTemp fails if dir has a temp file of an Ensure call.

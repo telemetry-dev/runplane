@@ -1,0 +1,2 @@
+-- Reserved for work package D, which adds the migration 0005. Remove this
+-- file when that migration merges.

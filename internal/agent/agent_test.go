@@ -20,6 +20,7 @@ import (
 	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
 )
@@ -190,7 +191,7 @@ func TestCalls(t *testing.T) {
 	_, err = s.EnsureImage(ctx, "missing:latest", nil)
 	checkErr("missing image", err, "pull missing:latest: not found")
 	b, err := s.EnsureRunner(ctx, "2.330.0", "arm64")
-	check("runner", b, err, image.Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/2.330.0-arm64"})
+	check("runner", b, err, runner.Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/2.330.0-arm64"})
 	m, err := s.MirrorStats(ctx)
 	check("mirror stats", m, err, testMirror)
 	keep := []string{"sha256:5f1c", "sha256:9e2f"}

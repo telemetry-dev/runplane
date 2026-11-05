@@ -264,7 +264,7 @@
             "type": "number"
           },
           "max_bytes": {
-            "description": "The limit of the cache: the cache_max_gb setting in bytes, at most a quarter of the disk of the cache. runplane removes the least recently used entries above it.",
+            "description": "The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it. 0 when the cache server is not available.",
             "format": "int64",
             "type": "integer"
           },
@@ -284,7 +284,7 @@
             "type": "array"
           },
           "size_bytes": {
-            "description": "Size of all entries, also the unfinished uploads.",
+            "description": "Size of all entries and of the files of the unfinished uploads.",
             "format": "int64",
             "type": "integer"
           }

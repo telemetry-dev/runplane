@@ -1,6 +1,6 @@
 //go:build unix
 
-package image
+package runner
 
 import (
 	"context"
@@ -20,8 +20,8 @@ func TestEnsureBundleModesWithStrictUmask(t *testing.T) {
 	t.Cleanup(func() { syscall.Umask(old) })
 
 	archive := runnerArchive(t, []byte("MZ"))
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir()})
-	serveRunner(t, b, "2.338.2", "x64", archive, sha256.Sum256(archive))
+	releases, _ := serveRunner(t, "2.338.2", "x64", archive, sha256.Sum256(archive))
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), Releases: releases})
 	bundle, err := b.Ensure(context.Background(), "2.338.2", "x64")
 	if err != nil {
 		t.Fatal(err)

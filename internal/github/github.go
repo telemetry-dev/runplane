@@ -1,6 +1,6 @@
 // Package github connects runplane to GitHub: the GitHub App manifest flow,
 // app and installation tokens, REST calls, runner scale sets with their
-// listeners, job data for the scheduler, and runner releases.
+// listeners, and job data for the scheduler.
 package github
 
 import (
@@ -17,7 +17,6 @@ import (
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ghrest"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
@@ -33,37 +32,24 @@ type Scheduler interface {
 	Detach(scaleSetID string)
 }
 
-// Bundles makes the runner bundles of a version on each server.
-type Bundles interface {
-	EnsureLatest(ctx context.Context, version string) error
-}
-
-type Notifier interface {
-	Notify(ctx context.Context, e notify.Event) error
-}
-
 type Config struct {
 	Store     *store.Store
 	Box       *secret.Box
 	Bus       *events.Bus
 	Log       *slog.Logger
 	Scheduler Scheduler
-	Bundles   Bundles
-	Notifier  Notifier
 }
 
 // Service implements api.GitHub and scheduler.GitHub.
 type Service struct {
-	st      *store.Store
-	box     *secret.Box
-	bus     *events.Bus
-	log     *slog.Logger
-	sched   Scheduler
-	bundles Bundles
-	notify  Notifier
-	api     ghrest.Client
-	web     string
-	owner   string // names the listener sessions on GitHub
+	st    *store.Store
+	box   *secret.Box
+	bus   *events.Bus
+	log   *slog.Logger
+	sched Scheduler
+	api   ghrest.Client
+	web   string
+	owner string // names the listener sessions on GitHub
 
 	// ops serializes the changes of installations and scale sets.
 	ops  sync.Mutex
@@ -85,10 +71,6 @@ type Service struct {
 	checkMu sync.Mutex
 	checks  map[int64]runCheck // CheckJob results by run ID
 
-	// warned has the runner versions with a sent end date warning. Only
-	// releaseLoop uses it.
-	warned map[string]bool
-
 	pollEvent atomic.Int64 // unix ms of the last github.state event for a poll
 }
 
@@ -101,8 +83,6 @@ func New(cfg Config) *Service {
 		bus:       cfg.Bus,
 		log:       cfg.Log,
 		sched:     cfg.Scheduler,
-		bundles:   cfg.Bundles,
-		notify:    cfg.Notifier,
 		web:       ghrest.Web,
 		owner:     cmp.Or(owner, "runplane"),
 		poke:      make(chan struct{}, 1),
@@ -111,19 +91,14 @@ func New(cfg Config) *Service {
 		tokens:    map[int64]token{},
 		listeners: map[string]*setListener{},
 		checks:    map[int64]runCheck{},
-		warned:    map[string]bool{},
 	}
 }
 
 // Run syncs the installations and starts the scale set listeners, then
 // keeps them in step with GitHub, the pools, and the settings. It syncs each
-// 5 minutes and checks the runner releases each hour. It returns after ctx
-// ends and all listeners have stopped.
+// 5 minutes. It returns after ctx ends and all listeners have stopped.
 func (s *Service) Run(ctx context.Context) {
 	settings := events.Subscribe[events.SettingsChanged](ctx, s.bus)
-
-	var wg sync.WaitGroup
-	wg.Go(func() { s.releaseLoop(ctx) })
 
 	s.syncAll(ctx)
 	tick := time.NewTicker(5 * time.Minute)
@@ -133,7 +108,6 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			s.stop()
 			s.stopListeners()
-			wg.Wait()
 			return
 		case <-tick.C:
 			s.syncAll(ctx)

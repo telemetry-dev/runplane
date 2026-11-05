@@ -32,9 +32,8 @@ func TestActionsCacheClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := newFixture(t, 0)
 	// The clock of the fixture stays still; the client needs real expiry times.
-	f.srv.now = time.Now
+	f := newFixture(t, 0, func(c *Config) { c.Now = time.Now })
 	var blocks, blockLists atomic.Int64
 	var sandboxID atomic.Value // of the next client run
 	proxied := f.srv.Proxied()
@@ -177,8 +176,7 @@ func TestBuildKitClient(t *testing.T) {
 	run(t, mod, "go", "get", "github.com/tonistiigi/go-actions-cache@latest")
 	run(t, mod, "go", "build", "-o", "client", ".")
 
-	f := newFixture(t, 0)
-	f.srv.now = time.Now
+	f := newFixture(t, 0, func(c *Config) { c.Now = time.Now })
 	server := httptest.NewServer(f.srv)
 	defer server.Close()
 

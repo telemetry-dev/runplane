@@ -1,9 +1,13 @@
 //go:build integration
 
-package image
+package runner
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -14,13 +18,45 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 
+	"github.com/runplane/runplane/internal/ext4/ext4test"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
+// These tests use the network, and the Docker test uses the Docker daemon
+// from the environment: go test -tags integration ./internal/runner/
+
+func TestRealRunnerBundle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	rel, err := Releases{}.Latest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("latest runner %s", rel.Version)
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeVM, Dir: t.TempDir(), Logger: testLogger(t)})
+	bundle, err := b.Ensure(ctx, rel.Version, "arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bundle.Patched {
+		t.Fatalf("runner %s is not patched", rel.Version)
+	}
+	dll, err := os.ReadFile(filepath.Join(bundle.Dir, "bin", "Runner.Worker.dll"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := bytes.Count(dll, utf16Bytes("ACTIONS_RESULTS_URL")); n != 0 {
+		t.Errorf("%d matches are left", n)
+	}
+	t.Logf("Runner.Worker.dll: %d bytes, %d patches", len(dll), bytes.Count(dll, utf16Bytes("ACTIONS_RESULTS_ORL")))
+	ext4test.Check(t, bundle.Ext4Path)
+	ext4test.Debugfs(t, bundle.Ext4Path, "ls -l /bin/", "Runner.Worker.dll")
+}
+
 // baseImage is the base image that "make runner-smoke" tests. Build it with:
 //
-//	docker build -t runplane/runner-ubuntu-24.04:local images/ubuntu-24.04
+//	docker build -t runplane/runner-ubuntu-24.04:local --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images
 const baseImage = "runplane/runner-ubuntu-24.04:local"
 
 // TestRealRunnerInBaseImage starts the real runner of this arch (linux-arm64
@@ -37,11 +73,12 @@ func TestRealRunnerInBaseImage(t *testing.T) {
 	if _, err := docker.ImageInspect(ctx, baseImage); err != nil {
 		t.Skipf("no image %s: %v", baseImage, err)
 	}
-	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), Logger: testLogger(t)})
-	version, _, err := b.release(ctx, "/releases/latest")
+	rel, err := Releases{}.Latest(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	version := rel.Version
+	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), Logger: testLogger(t)})
 	arch := map[string]string{"amd64": "x64", "arm64": "arm64"}[runtime.GOARCH]
 	bundle, err := b.Ensure(ctx, version, arch)
 	if err != nil {
@@ -108,4 +145,18 @@ func runRunner(t *testing.T, docker *client.Client, bundle string, args ...strin
 		t.Fatal(err)
 	}
 	return out.String(), code
+}
+
+func dockerClient(t *testing.T) *client.Client {
+	t.Helper()
+	docker, err := client.New(client.FromEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { docker.Close() })
+	return docker
+}
+
+func testLogger(t *testing.T) *slog.Logger {
+	return slog.New(slog.NewTextHandler(t.Output(), nil))
 }

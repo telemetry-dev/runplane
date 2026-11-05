@@ -28,7 +28,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/runplane/runplane/internal/events"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
@@ -63,8 +62,6 @@ type env struct {
 	srv      *httptest.Server
 	svc      *Service
 	sched    *fakeScheduler
-	bundles  *fakeBundles
-	notifier *fakeNotifier
 	tokens   atomic.Int32 // installation tokens that the fake made
 	tokenTTL time.Duration
 }
@@ -81,8 +78,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	e := &env{t: t, st: st, box: box, bus: &events.Bus{}, mux: http.NewServeMux(), tokenTTL: time.Hour,
-		sched:   &fakeScheduler{got: make(chan *scaleset.RunnerScaleSetMessage, 16)},
-		bundles: &fakeBundles{}, notifier: &fakeNotifier{}}
+		sched: &fakeScheduler{got: make(chan *scaleset.RunnerScaleSetMessage, 16)}}
 	e.srv = httptest.NewServer(e.mux)
 	t.Cleanup(e.srv.Close)
 	e.mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -92,8 +88,7 @@ func newEnv(t *testing.T) *env {
 			"expires_at": time.Now().Add(e.tokenTTL),
 		})
 	})
-	e.svc = New(Config{Store: st, Box: box, Bus: e.bus, Log: slog.New(slog.DiscardHandler), Scheduler: e.sched,
-		Bundles: e.bundles, Notifier: e.notifier})
+	e.svc = New(Config{Store: st, Box: box, Bus: e.bus, Log: slog.New(slog.DiscardHandler), Scheduler: e.sched})
 	e.svc.web, e.svc.api.URL = e.srv.URL, e.srv.URL+"/api/v3"
 	t.Cleanup(func() {
 		e.svc.stop()
@@ -181,20 +176,6 @@ func eventually(t *testing.T, what string, cond func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-}
-
-type fakeBundles struct{ versions []string }
-
-func (f *fakeBundles) EnsureLatest(_ context.Context, version string) error {
-	f.versions = append(f.versions, version)
-	return nil
-}
-
-type fakeNotifier struct{ sent []notify.Event }
-
-func (f *fakeNotifier) Notify(_ context.Context, e notify.Event) error {
-	f.sent = append(f.sent, e)
-	return nil
 }
 
 // fakeScheduler acquires every available job, like the real scheduler does

@@ -91,16 +91,16 @@ func (m *Manager) pull(ctx context.Context, ref string, r *reporter) error {
 }
 
 func (m *Manager) build(ctx context.Context, name, tag string) error {
-	dir, err := fs.Sub(images.FS, name)
-	if err != nil {
-		return fmt.Errorf("build %s: %w", name, err)
+	args := map[string]*string{}
+	for k, v := range images.BuildArgs(name) {
+		args[k] = &v
 	}
 	pr, pw := io.Pipe()
 	defer pr.Close()
-	go func() { pw.CloseWithError(writeContext(pw, dir)) }()
+	go func() { pw.CloseWithError(writeContext(pw, images.FS)) }()
 	res, err := m.cfg.Docker.ImageBuild(ctx, pr, client.ImageBuildOptions{
 		Tags:      []string{tag},
-		Labels:    map[string]string{guest.LabelManaged: "true"},
+		BuildArgs: args,
 		Version:   build.BuilderBuildKit,
 		Remove:    true,
 		Platforms: []ocispec.Platform{platform},

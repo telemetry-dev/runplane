@@ -69,7 +69,7 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 	// 2.330.0 is the newest release, but it does not download on this
 	// server. 2.329.0 is ready on other servers.
 	now := time.Now()
-	if err := h.st.UpsertRunnerBundle(ctx, store.RunnerBundle{Version: "2.329.0", Arch: "arm64", Status: store.BundleReady, CreatedAt: now}); err != nil {
+	if err := h.st.SetRunnerBundleBuild(ctx, store.RunnerBundle{Version: "2.329.0", Arch: "arm64", Status: store.BundleReady}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.st.SetRunnerBundleDates(ctx, "2.330.0", "arm64", &now, nil); err != nil {
@@ -121,16 +121,14 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 		t.Errorf("bundle 2.330.0: status %q, error %q; want failed with the download error", b.Status, b.Error)
 	}
 
+	// The server tries the newest version again after a wait.
 	local.set(func(n *fakeNode) { n.runners["2.330.0"] = true })
-	if err := h.f.EnsureLatest(ctx, "2.330.0"); err != nil {
-		t.Fatal(err)
-	}
-	if v, _ := h.f.RunnerVersion(id); v != "2.330.0" {
-		t.Errorf("runner version %q after EnsureLatest, want 2.330.0", v)
-	}
+	h.clock.add(retryAfter)
+	h.f.provision(ctx)
+	waitFor(t, "runner version 2.330.0", func() bool { v, _ := h.f.RunnerVersion(id); return v == "2.330.0" })
 	b, _ := h.st.GetRunnerBundle(ctx, "2.330.0", "arm64")
-	if b.Status != store.BundleReady || b.SHA256 != "9e2f2.330.0" || b.Path != "/var/lib/runplane/runners/2.330.0-arm64" || b.ReleasedAt == nil {
-		t.Errorf("bundle 2.330.0 after EnsureLatest: %+v; want ready with its build and its release date", b)
+	if b.Status != store.BundleReady || b.SHA256 != "9e2f2.330.0" || b.ReleasedAt == nil {
+		t.Errorf("bundle 2.330.0 after the second try: %+v; want ready with its build and its release date", b)
 	}
 
 	// An agent where no runner downloads gets no runner version, and its
@@ -266,15 +264,15 @@ func TestNewRunnerPrunesOldBundlesOnAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.f.EnsureLatest(ctx, "2.331.0"); err != nil {
+	now := time.Now()
+	if err := h.st.SetRunnerBundleDates(ctx, "2.331.0", "arm64", &now, nil); err != nil {
 		t.Fatal(err)
 	}
+	h.f.provision(ctx)
 	waitFor(t, "a prune on the agent that keeps the live version", func() bool {
 		return slices.ContainsFunc(agentNode.args("PruneRunners"), func(keep any) bool { return slices.Equal(keep.([]string), []string{"2.328.0"}) })
 	})
-	if len(local.args("PruneRunners")) == 0 {
-		t.Error("no prune on the primary")
-	}
+	waitFor(t, "a prune on the primary", func() bool { return len(local.args("PruneRunners")) > 0 })
 }
 
 // The builtin images get a new build each week under the same tag, so a

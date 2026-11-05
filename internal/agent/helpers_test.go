@@ -21,6 +21,7 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
 )
@@ -316,8 +317,8 @@ func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(imag
 	return sandbox.ImageRef{Ref: ref, Digest: "sha256:5f1c"}, nil
 }
 
-func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (image.Bundle, error) {
-	return image.Bundle{Version: version, Arch: arch, SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/" + version + "-" + arch}, nil
+func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (runner.Bundle, error) {
+	return runner.Bundle{Version: version, Arch: arch, SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/" + version + "-" + arch}, nil
 }
 
 func (n *fakeNode) GCImages(_ context.Context, keep []string) error {

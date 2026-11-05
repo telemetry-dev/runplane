@@ -9,14 +9,11 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// ErrNotFound means that no cache entry has the ID.
-var ErrNotFound = store.ErrNotFound
-
-// Stats records cache use for each repository in the cache_stats table. The
-// server counts on request paths, so Add only adds to counts in memory, and
-// Run writes them each minute.
-type Stats struct {
-	st  *store.Store
+// stats records the cache use of each repository in the cache_stats table.
+// The server counts on request paths, so add only adds to counts in memory,
+// and run writes them each minute.
+type stats struct {
+	st  Store
 	log *slog.Logger
 	now func() time.Time
 
@@ -25,23 +22,23 @@ type Stats struct {
 }
 
 type hourRepo struct {
-	hour       int64 // unix hour
+	hour       time.Time
 	repository string
 }
 
-func NewStats(st *store.Store, log *slog.Logger) *Stats {
-	return &Stats{st: st, log: log, now: time.Now, pending: map[hourRepo]store.CacheCounts{}}
+func newStats(st Store, log *slog.Logger, now func() time.Time) *stats {
+	return &stats{st: st, log: log, now: now, pending: map[hourRepo]store.CacheCounts{}}
 }
 
-func (s *Stats) Add(repository string, c store.CacheCounts) {
-	k := hourRepo{s.now().Unix() / 3600, repository}
+func (s *stats) add(repository string, c store.CacheCounts) {
+	k := hourRepo{s.now().UTC().Truncate(time.Hour), repository}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pending[k] = sum(s.pending[k], c)
 }
 
-// Run writes the counts each minute, and a last time when ctx ends.
-func (s *Stats) Run(ctx context.Context) {
+// run writes the counts each minute, and a last time when ctx ends.
+func (s *stats) run(ctx context.Context) {
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for {
@@ -57,13 +54,13 @@ func (s *Stats) Run(ctx context.Context) {
 
 // flush writes the pending counts. Counts that fail to write wait for the
 // next flush.
-func (s *Stats) flush(ctx context.Context) {
+func (s *stats) flush(ctx context.Context) {
 	s.mu.Lock()
 	batch := s.pending
 	s.pending = map[hourRepo]store.CacheCounts{}
 	s.mu.Unlock()
 	for k, c := range batch {
-		if err := s.st.AddCacheStats(ctx, time.Unix(k.hour*3600, 0), k.repository, c); err != nil {
+		if err := s.st.AddCacheStats(ctx, k.hour, k.repository, c); err != nil {
 			s.log.Warn("record cache stats", "repository", k.repository, "err", err)
 			s.mu.Lock()
 			s.pending[k] = sum(s.pending[k], c)

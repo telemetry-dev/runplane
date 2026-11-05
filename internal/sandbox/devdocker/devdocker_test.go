@@ -33,7 +33,7 @@ func TestRefusesWithoutDevInsecure(t *testing.T) {
 
 // TestSandbox starts real sandboxes on Docker with RUNPLANE_TEST_DOCKER=1.
 // It uses the image in RUNPLANE_TEST_IMAGE, by default the local build of
-// the base image: docker build -t runplane/runner-ubuntu-24.04:local images/ubuntu-24.04
+// the base image: docker build -t runplane/runner-ubuntu-24.04:local --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images
 func TestSandbox(t *testing.T) {
 	if os.Getenv("RUNPLANE_TEST_DOCKER") != "1" {
 		t.Skip("set RUNPLANE_TEST_DOCKER=1 to start sandboxes on Docker")
@@ -53,7 +53,7 @@ func TestSandbox(t *testing.T) {
 	}
 	img, err := docker.ImageInspect(ctx, ref)
 	if err != nil {
-		t.Fatalf("inspect %s: %v; build it with: docker build -t %[1]s images/ubuntu-24.04", ref, err)
+		t.Fatalf("inspect %s: %v; build it with: docker build -t %[1]s --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images", ref, err)
 	}
 
 	work := t.TempDir()

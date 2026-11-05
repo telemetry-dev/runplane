@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -42,6 +42,7 @@ func (c *clock) advance(d time.Duration) { c.ns.Add(int64(d)) }
 
 type fixture struct {
 	limit   atomic.Int64
+	disk    func() datadisk.Space // if set, the room of the cache instead of limit
 	srv     *Server
 	st      *store.Store
 	clock   clock
@@ -52,13 +53,13 @@ type fixture struct {
 
 // newFixture starts a server whose requests from 127.0.0.1 belong to
 // sandbox "sb-1" with a push job on main of acme/app. The other sandboxes
-// send through the trusted proxy (see via).
-func newFixture(t *testing.T, maxBytes int64) *fixture {
+// send through the trusted proxy (see via). opts change the config.
+func newFixture(t *testing.T, maxBytes int64, opts ...func(*Config)) *fixture {
 	t.Helper()
 	f := &fixture{st: openStore(t), dir: t.TempDir()}
 	f.limit.Store(maxBytes)
 	f.clock.ns.Store(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixNano())
-	srv, err := New(Config{
+	cfg := Config{
 		Dir:   f.dir,
 		Store: f.st,
 		Resolver: sandboxes{
@@ -75,15 +76,21 @@ func newFixture(t *testing.T, maxBytes int64) *fixture {
 			"sb-idle":    {SandboxID: "sb-idle"},
 			"10.213.0.5": {SandboxID: "sb-idle"},
 		},
-		Stats:          NewStats(f.st, slog.New(slog.DiscardHandler)),
-		MaxBytes:       f.limit.Load,
-		DiskSpace:      func() (int64, int64, error) { return 0, 0, nil },
-		MinFreePercent: func() float64 { return 0 },
-	})
+		Space: func() datadisk.Space {
+			if f.disk != nil {
+				return f.disk()
+			}
+			return datadisk.Space{Cache: f.limit.Load()}
+		},
+		Now: f.clock.now,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.now = f.clock.now
 	srv.jobWait = 100 * time.Millisecond
 	f.srv = srv
 	direct := httptest.NewServer(srv)
@@ -96,7 +103,7 @@ func newFixture(t *testing.T, maxBytes int64) *fixture {
 
 // counts returns the cache statistics of a repository.
 func (f *fixture) counts(t *testing.T, repository string) store.CacheCounts {
-	f.srv.cfg.Stats.flush(t.Context())
+	f.srv.stats.flush(t.Context())
 	counts, err := f.st.CacheStatsByRepository(t.Context(), time.Time{})
 	if err != nil {
 		t.Fatal(err)

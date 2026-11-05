@@ -1,4 +1,4 @@
-// Package image makes sandbox images and runner bundles ready on a server.
+// Package image makes sandbox images ready on a server.
 //
 // In container and dev mode, Docker pulls or builds each image. In VM mode,
 // each image becomes a read-only ext4 root disk that holds runplane-init, so
@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,8 +24,8 @@ import (
 
 	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/blob"
+	"github.com/runplane/runplane/internal/keylock"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/version"
 )
 
 type Status string
@@ -62,6 +61,9 @@ type Image struct {
 type Config struct {
 	Mode      sandbox.Mode
 	ImagesDir string // VM mode: the root disks
+	// Repo is the repository that publishes the builtin images, for example
+	// "runplane/runplane" (version.Repo).
+	Repo string
 	// Docker is necessary in container and dev mode. In VM mode it is
 	// optional: with it, runplane can build a builtin image that it cannot pull.
 	Docker *client.Client
@@ -74,7 +76,7 @@ type Manager struct {
 	cfg  Config
 	log  *slog.Logger
 	init func() (initFile, error)
-	work keyLock
+	work keylock.Map
 
 	freshMu sync.Mutex
 	fresh   map[string]bool // digests that Ensure returned since the last GC
@@ -114,11 +116,10 @@ func New(cfg Config) (*Manager, error) {
 }
 
 // Ensure makes the image ready on this server and returns it. ref is an OCI
-// reference, or "builtin:<name>" for a folder of the images package, for
-// example "builtin:ubuntu-24.04". A builtin image comes from
-// ghcr.io/<version.Repo>/runner-<name>:latest, or from a local build when
-// that pull fails. progress, if not nil, gets each step. Calls for the same
-// ref wait for each other.
+// reference, or "builtin:<name>" for a builtin image of the images package,
+// for example "builtin:ubuntu-24.04". A builtin image comes from images.Ref
+// of Config.Repo, or from a local build when that pull fails. progress, if
+// not nil, gets each step. Calls for the same ref wait for each other.
 func (m *Manager) Ensure(ctx context.Context, ref string, progress func(Progress)) (Image, error) {
 	r := &reporter{fn: progress}
 	r.status(StatusPending)
@@ -142,7 +143,7 @@ func (m *Manager) ensure(ctx context.Context, ref string, r *reporter) (Image, e
 	if err != nil {
 		return Image{}, err
 	}
-	unlock, err := m.work.lock(ctx, ref)
+	unlock, err := m.work.Lock(ctx, ref)
 	if err != nil {
 		return Image{}, err
 	}
@@ -172,7 +173,7 @@ func (m *Manager) RootDisk(digest string) (string, error) {
 // does nothing while Ensure operates.
 func (m *Manager) GC(ctx context.Context, keep []string) error {
 	var err error
-	ran := m.work.idle(func() {
+	ran := m.work.Idle(func() {
 		m.freshMu.Lock()
 		set := m.fresh
 		m.fresh = map[string]bool{}
@@ -200,23 +201,14 @@ type source struct {
 }
 
 func (m *Manager) source(ref string) (source, error) {
-	name, ok := strings.CutPrefix(ref, "builtin:")
-	if !ok {
+	if !strings.HasPrefix(ref, images.Prefix) {
 		return source{ref: ref}, nil
 	}
-	if !fs.ValidPath(name) || strings.Contains(name, "/") {
-		return source{}, fmt.Errorf("unknown builtin image %q", name)
+	name, ok := images.Name(ref)
+	if !ok {
+		return source{}, fmt.Errorf("unknown builtin image %q", strings.TrimPrefix(ref, images.Prefix))
 	}
-	if _, err := fs.Stat(images.FS, name+"/Dockerfile"); err != nil {
-		return source{}, fmt.Errorf("unknown builtin image %q", name)
-	}
-	return source{ref: BuiltinRef(name), builtin: name}, nil
-}
-
-// BuiltinRef is the registry reference of the builtin image name, which the
-// images workflow of the release repository publishes.
-func BuiltinRef(name string) string {
-	return "ghcr.io/" + strings.ToLower(version.Repo) + "/runner-" + name + ":latest"
+	return source{ref: images.Ref(m.cfg.Repo, name), builtin: name}, nil
 }
 
 // CanPull reads the manifest and the config of ref for this platform, as

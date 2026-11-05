@@ -19,6 +19,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/notify"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -48,6 +49,12 @@ type Notifier interface {
 	Notify(ctx context.Context, e notify.Event) error
 }
 
+// Runners records the runner bundle builds of the servers: the Built method
+// of the runner versions service.
+type Runners interface {
+	Built(ctx context.Context, version, arch string, b runner.Bundle, err error)
+}
+
 type Config struct {
 	Store  *store.Store
 	Bus    *events.Bus
@@ -66,6 +73,7 @@ type Config struct {
 	// scheduler.
 	CapacityChanged func()
 	Notifier        Notifier
+	Runners         Runners
 	Now             func() time.Time // nil: time.Now
 }
 
@@ -80,6 +88,7 @@ type Fleet struct {
 	onEvent         func(string, sandbox.Event)
 	capacityChanged func()
 	notifier        Notifier
+	runners         Runners
 	now             func() time.Time
 
 	// bg is the context of the work that outlives a call. Run cancels it.
@@ -147,6 +156,7 @@ func New(c Config) *Fleet {
 		onEvent:         c.OnEvent,
 		capacityChanged: c.CapacityChanged,
 		notifier:        c.Notifier,
+		runners:         c.Runners,
 		now:             c.Now,
 		bg:              bg,
 		stopBg:          stop,
@@ -308,6 +318,20 @@ func (f *Fleet) RunnerVersion(serverID string) (string, bool) {
 		return n.runner, true
 	}
 	return "", false
+}
+
+// RunnerVersions returns the runner versions that the online servers give
+// new sandboxes.
+func (f *Fleet) RunnerVersions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var list []string
+	for _, n := range f.nodes {
+		if n.status == store.ServerOnline && n.runner != "" && !slices.Contains(list, n.runner) {
+			list = append(list, n.runner)
+		}
+	}
+	return list
 }
 
 func (f *Fleet) node(id string) *node {
