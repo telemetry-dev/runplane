@@ -5,21 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
+	"io"
 	"time"
 
-	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/store"
 )
 
-var (
-	// GitHub can need some time after a job before its log is ready.
-	logWaits = []time.Duration{0, 10 * time.Second, 30 * time.Second, 2 * time.Minute}
-	// stepsEvery is how often the scheduler reads the steps of a running job.
-	// Each read is one GitHub request.
-	stepsEvery = 30 * time.Second
-)
+// stepsEvery is how often the scheduler reads the steps of a running job.
+// Each read is one GitHub request.
+var stepsEvery = 30 * time.Second
 
 // finish starts the steps after a job completes, unless they already run
 // for the job: the debug hold, the run data and the log from GitHub, and the
@@ -69,7 +64,7 @@ func (s *Scheduler) finishJob(ctx context.Context, jobID string) {
 	// A job that never ran has no log, for example when GitHub cancelled
 	// an assignment that no runner took in time.
 	if job.LogState != store.LogStored && job.Ran() {
-		s.storeLog(ctx, job)
+		s.jobLogs.Fetch(ctx, job.ID, func(ctx context.Context) (io.ReadCloser, error) { return s.gh.DownloadLog(ctx, job) })
 	}
 	wctx := context.WithoutCancel(ctx)
 	summary, err := s.st.JobMetricsSummary(wctx, job.ID)
@@ -102,40 +97,6 @@ func (s *Scheduler) readRunData(ctx context.Context, job store.Job) (store.Job, 
 		}
 	}
 	return s.st.GetJob(ctx, job.ID)
-}
-
-// storeLog downloads the job log from GitHub to the logs folder. It writes
-// the file in one step, so that the file is never a partial log, and it
-// writes no log state when ctx ends first.
-func (s *Scheduler) storeLog(ctx context.Context, job store.Job) {
-	var err error
-	for _, wait := range logWaits {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-		if err = s.downloadLog(ctx, job); err == nil {
-			break
-		}
-	}
-	state := store.LogStored
-	if err != nil {
-		s.log.Warn("download job log", "job", job.ID, "err", err)
-		state = store.LogNone
-	}
-	if err := s.st.SetJobLogState(ctx, job.ID, state); err != nil {
-		s.log.Warn("save job log state", "job", job.ID, "err", err)
-	}
-}
-
-func (s *Scheduler) downloadLog(ctx context.Context, job store.Job) error {
-	log, err := s.gh.DownloadLog(ctx, job)
-	if err != nil {
-		return err
-	}
-	defer log.Close()
-	return atomicfile.Write(filepath.Join(s.logsDir, job.ID+".log"), log, 0o600)
 }
 
 // enrich reads the run data of a started job from GitHub in the background.

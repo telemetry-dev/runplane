@@ -56,10 +56,14 @@ func (h *fakeHost) calls(list *[]string) []string {
 // testDriver is a driver with its data folder and cgroup tree in root.
 func testDriver(t *testing.T, root string, sys hostOps) *Driver {
 	t.Helper()
+	data := filepath.Join(root, "data")
 	d := newDriver(Options{
-		DataDir:     filepath.Join(root, "data"),
-		ServicePort: 8486,
-		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		DataDir:      data,
+		SandboxesDir: filepath.Join(data, "sandboxes"),
+		ScratchDir:   filepath.Join(data, "scratch-templates"),
+		JailDir:      filepath.Join(data, "jail"),
+		ServicePort:  8486,
+		Logger:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}, idRange{uid: os.Getuid(), gid: os.Getgid(), count: 16}, sys)
 	d.cgroupRoot = filepath.Join(root, "cgroup")
 	t.Cleanup(func() { d.Close() })

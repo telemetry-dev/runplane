@@ -1,4 +1,4 @@
-package main
+package joblog
 
 import (
 	"context"
@@ -10,9 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielgtaylor/huma/v2"
-
-	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -85,10 +82,7 @@ func TestStepLines(t *testing.T) {
 func TestJobLog(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
-	cfg := config.Config{DataDir: t.TempDir()}
-	if err := os.MkdirAll(cfg.LogsDir(), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	dir := t.TempDir()
 	newJob := func(id int64, state, logState, sandboxID string) store.Job {
 		t.Helper()
 		j, _, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: state, Repository: "acme/api"}, time.Now())
@@ -109,7 +103,7 @@ func TestJobLog(t *testing.T) {
 	if err := st.SetJobEnrichment(ctx, stored.ID, store.JobEnrichment{Steps: jobSteps()}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg.JobLogPath(stored.ID), []byte(jobLog), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, stored.ID+".log"), []byte(jobLog), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.InsertSandbox(ctx, store.Sandbox{ID: "box", PoolID: "p", ServerID: "s1", Mode: sandbox.ModeDev,
@@ -124,14 +118,14 @@ func TestJobLog(t *testing.T) {
 		"2026-11-04T10:00:01.500Z diag 2026-11-04T10:00:01.4000000Z ##[group]Run make test\n" +
 		"2026-11-04T10:00:02.000Z dockerd API listen on /var/run/docker.sock\n" +
 		"2026-11-04T10:00:02.500Z diag 2026-11-04T10:00:02.4000000Z ok\n"
-	l := logs{st: st, cfg: cfg, driver: func(serverID string) sandbox.Driver {
+	l := New(Config{Dir: dir, Store: st, Driver: func(serverID string) sandbox.Driver {
 		if serverID != "s1" {
 			return nil
 		}
 		return consoleDriver{log: console}
-	}}
+	}})
 
-	rc, live, err := l.JobLog(ctx, stored.ID, 3, false)
+	rc, live, err := l.Job(ctx, stored.ID, 3, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +136,7 @@ func TestJobLog(t *testing.T) {
 	// The live log has no step marks, so a step gives the whole log.
 	want := "2026-11-04T10:00:01.4000000Z ##[group]Run make test\n2026-11-04T10:00:02.4000000Z ok\n"
 	for _, step := range []int{0, 2} {
-		rc, live, err = l.JobLog(ctx, running.ID, step, true)
+		rc, live, err = l.Job(ctx, running.ID, step, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -151,13 +145,12 @@ func TestJobLog(t *testing.T) {
 		}
 	}
 
-	var se huma.StatusError
-	if _, _, err := l.JobLog(ctx, expired.ID, 0, false); !errors.As(err, &se) || se.GetStatus() != 404 {
-		t.Errorf("log of an expired job: %v, want 404", err)
+	if _, _, err := l.Job(ctx, expired.ID, 0, false); !errors.Is(err, ErrExpired) {
+		t.Errorf("log of an expired job: %v, want ErrExpired", err)
 	}
 }
 
-// consoleDriver is a driver whose sandboxes all have one console log. JobLog
+// consoleDriver is a driver whose sandboxes all have one console log. Job
 // calls no other method of the driver.
 type consoleDriver struct {
 	sandbox.Driver

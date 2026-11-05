@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
@@ -315,22 +313,11 @@ func (s *Scheduler) retention(ctx context.Context) {
 	if err != nil {
 		s.log.Warn("retention: delete jobs", "err", err)
 	}
-	s.removeLogs(ids)
+	s.jobLogs.Remove(ids)
 	if err := s.st.DeleteSandboxesBefore(ctx, before); err != nil {
 		s.log.Warn("retention: delete sandboxes", "err", err)
 	}
-	ids, err = s.st.ExpireJobLogs(ctx, now.AddDate(0, 0, -st.LogRetentionDays))
-	if err != nil {
+	if err := s.jobLogs.Expire(ctx, now.AddDate(0, 0, -st.LogRetentionDays)); err != nil {
 		s.log.Warn("retention: expire logs", "err", err)
-	}
-	s.removeLogs(ids)
-}
-
-func (s *Scheduler) removeLogs(jobIDs []string) {
-	for _, id := range jobIDs {
-		err := os.Remove(filepath.Join(s.logsDir, id+".log"))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			s.log.Warn("retention: remove job log", "job", id, "err", err)
-		}
 	}
 }

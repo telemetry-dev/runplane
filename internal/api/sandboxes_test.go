@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -144,11 +145,38 @@ func TestCloseReasonKeepsWholeCharacters(t *testing.T) {
 type fakeLogs struct {
 	log  io.ReadCloser
 	live bool
+	err  error
 }
 
-func (f fakeLogs) SandboxLog(context.Context, string, bool) (io.ReadCloser, error) { return f.log, nil }
-func (f fakeLogs) JobLog(context.Context, string, int, bool) (io.ReadCloser, bool, error) {
-	return f.log, f.live, nil
+func (f fakeLogs) Sandbox(context.Context, string, bool) (io.ReadCloser, error) { return f.log, f.err }
+func (f fakeLogs) Job(context.Context, string, int, bool) (io.ReadCloser, bool, error) {
+	return f.log, f.live, f.err
+}
+
+// A log that is not there is a 404, and a server that is not connected a
+// 503, so that the page tells why it shows no log.
+func TestMissingLogs(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		status int
+	}{
+		{joblog.ErrMissing, 404},
+		{joblog.ErrExpired, 404},
+		{joblog.ErrNoGitHubLog, 404},
+		{joblog.ErrNotYet, 404},
+		{joblog.ErrSandboxStopped, 404},
+		{joblog.ErrNotConnected, 503},
+	} {
+		e := newEnv(t, func(d *Deps) { d.Logs = fakeLogs{err: tc.err} })
+		e.addSandbox("sb1", sandbox.StateBusy)
+		j := e.addJob(1, "acme/api", time.Now())
+		b := e.login("bob@example.com", auth.RoleMember)
+		for _, path := range []string{"/api/sandboxes/sb1/log", "/api/jobs/" + j.ID + "/log"} {
+			if res := b.do("GET", path, nil, nil); res.StatusCode != tc.status {
+				t.Errorf("%s with %v: status %d, want %d", path, tc.err, res.StatusCode, tc.status)
+			}
+		}
+	}
 }
 
 func TestFollowedLogStreamsEachLine(t *testing.T) {

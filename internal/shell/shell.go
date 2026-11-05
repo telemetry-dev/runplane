@@ -46,7 +46,7 @@ var (
 )
 
 type Config struct {
-	Addr        string // default ":2222"
+	Addr        string
 	HostKeyPath string // ed25519 host key; New makes it if the file does not exist
 	Opener      Opener
 	// Lookup returns the live sandbox whose ID is name or starts with name,
@@ -87,11 +87,8 @@ const (
 // New loads or makes the host key and listens on cfg.Addr. Call Serve to
 // accept connections.
 func New(cfg Config) (*Server, error) {
-	if cfg.Opener == nil || cfg.Lookup == nil || cfg.HostKeyPath == "" {
-		return nil, errors.New("new ssh gateway: Opener, Lookup, and HostKeyPath are required")
-	}
-	if cfg.Addr == "" {
-		cfg.Addr = ":2222"
+	if cfg.Addr == "" || cfg.Opener == nil || cfg.Lookup == nil || cfg.HostKeyPath == "" {
+		return nil, errors.New("new ssh gateway: Addr, Opener, Lookup, and HostKeyPath are required")
 	}
 	if cfg.Keys == nil {
 		cfg.Keys = NewGitHubKeys(nil).Keys

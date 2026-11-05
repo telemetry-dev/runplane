@@ -29,11 +29,9 @@ const (
 // guest.VsockPort to controlSocket.
 var controlSocket = vsockFile + "_" + strconv.Itoa(guest.VsockPort)
 
-func (d *Driver) chrootBase() string { return filepath.Join(d.opts.DataDir, "jail") }
-
 // jails holds the folder that the jailer makes for each VM.
 func (d *Driver) jails() string {
-	return filepath.Join(d.chrootBase(), filepath.Base(d.firecracker))
+	return filepath.Join(d.opts.JailDir, filepath.Base(d.firecracker))
 }
 
 // jailDir is the folder of one VM. Its root folder is the chroot.
@@ -65,7 +63,7 @@ func (d *Driver) jailerCommand(id string, uid, gid int) *exec.Cmd {
 		"--exec-file", d.firecracker,
 		"--uid", strconv.Itoa(uid),
 		"--gid", strconv.Itoa(gid),
-		"--chroot-base-dir", d.chrootBase(),
+		"--chroot-base-dir", d.opts.JailDir,
 		// With cgroup v2 and no --cgroup values, the jailer only moves
 		// itself to this cgroup: the scope that it is in already.
 		"--cgroup-version", "2",

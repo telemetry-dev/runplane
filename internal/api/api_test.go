@@ -42,10 +42,9 @@ func newEnv(t *testing.T, with ...func(*Deps)) *env {
 	t.Cleanup(func() { st.Close() })
 	box, err := secret.NewBox(bytes.Repeat([]byte{7}, secret.KeySize))
 	must(t, err)
-	d := Deps{
-		Store: st, Auth: auth.NewService(st, []byte("device key")), Bus: &events.Bus{}, Box: box,
-		Config: config.Config{DataDir: dir, ConfigDir: dir, Mode: sandbox.ModeContainer},
-	}
+	cfg := config.Default()
+	cfg.DataDir, cfg.ConfigDir, cfg.Mode = dir, dir, sandbox.ModeContainer
+	d := Deps{Store: st, Auth: auth.NewService(st, []byte("device key")), Bus: &events.Bus{}, Box: box, Config: cfg}
 	for _, f := range with {
 		f(&d)
 	}

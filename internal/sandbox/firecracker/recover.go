@@ -16,7 +16,7 @@ import (
 // whose scope still has a process, and removes the parts of all others:
 // records, chroots, TAPs, and scopes.
 func (d *Driver) recover() error {
-	dir := filepath.Join(d.opts.DataDir, "sandboxes")
+	dir := d.opts.SandboxesDir
 	entries, err := os.ReadDir(dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read the sandbox folder: %w", err)

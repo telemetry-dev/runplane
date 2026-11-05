@@ -116,6 +116,7 @@
             "type": "integer"
           },
           "status": {
+            "description": "failed: the backup or its upload to S3 failed, and error tells why. After a failed upload, the file stays on this server.",
             "enum": [
               "running",
               "done",

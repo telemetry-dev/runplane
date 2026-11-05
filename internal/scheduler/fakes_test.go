@@ -15,6 +15,7 @@ import (
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -357,9 +358,17 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	e.gh = &fakeGitHub{rec: e.rec, checks: map[string]JobCheck{}, results: map[int64]string{}}
 	e.setSettings(func(s *store.Settings) { s.Mode = sandbox.ModeContainer })
-	e.s = New(Config{Store: st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, LogsDir: e.logs, Now: e.clock.now})
-	t.Cleanup(e.s.stopBg)
+	e.newScheduler()
 	return e
+}
+
+// newScheduler makes the scheduler of the env, as at a start of runplane.
+// The download of a job log tries once after each of logWaits; none means
+// the waits of production.
+func (e *testEnv) newScheduler(logWaits ...time.Duration) {
+	logs := joblog.New(joblog.Config{Dir: e.logs, Store: e.st, Waits: logWaits})
+	e.s = New(Config{Store: e.st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, JobLogs: logs, Now: e.clock.now})
+	e.t.Cleanup(e.s.stopBg)
 }
 
 func (e *testEnv) setSettings(fn func(*store.Settings)) {

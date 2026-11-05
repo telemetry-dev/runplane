@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -17,7 +18,24 @@ type fakeCaches struct {
 
 func (f fakeCaches) MaxBytes() int64 { return f.limit }
 
-func (f fakeCaches) MirrorStats(context.Context) (MirrorStats, error) { return MirrorStats{}, nil }
+type fakeMirrors mirror.Stats
+
+func (f fakeMirrors) MirrorStats(context.Context) mirror.Stats { return mirror.Stats(f) }
+
+func TestCachesReportTheMirrorsOfAllServers(t *testing.T) {
+	e := newEnv(t, func(d *Deps) {
+		d.Mirrors = fakeMirrors{Hits: 6, Misses: 5, HitBytes: 600, MissBytes: 500, SizeBytes: 1300}
+	})
+	var out CacheOverview
+	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/caches", nil, &out).want(t, 200)
+	want := MirrorStats{Hits: 6, Misses: 5, HitBytes: 600, MissBytes: 500, SizeBytes: 1300}
+	if m := out.Mirror; m == nil || m.StartedAt.IsZero() {
+		t.Fatalf("mirror %+v, want the counts since the start", m)
+	}
+	if want.StartedAt = out.Mirror.StartedAt; *out.Mirror != want {
+		t.Errorf("mirror %+v, want %+v", *out.Mirror, want)
+	}
+}
 
 func TestCachesReportTheLimitOfTheCacheServer(t *testing.T) {
 	// cache_max_gb is 50 by default, but a 40 GB disk allows 10 GB.

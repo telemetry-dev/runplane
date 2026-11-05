@@ -31,9 +31,12 @@ import (
 const vmOverheadMB = 64
 
 type Options struct {
-	DataDir     string
-	Kernel      string
-	ServicePort int // cache server and registry mirror on the gateway of each VM
+	DataDir      string // the disk of the VMs, for the capacity
+	SandboxesDir string // one folder for each VM
+	ScratchDir   string // the templates of the scratch disks
+	JailDir      string // the chroots of the jailer
+	Kernel       string
+	ServicePort  int // cache server and registry mirror on the gateway of each VM
 	// RootDisk returns the ext4 root disk of a ready image.
 	RootDisk func(digest string) (string, error)
 	// RunnerDrive returns the ext4 drive of a ready runner bundle, and if
@@ -120,7 +123,7 @@ func newDriver(opts Options, ids idRange, sys hostOps) *Driver {
 		cgroupRoot:  "/sys/fs/cgroup",
 		sys:         sys,
 		taps:        netrules.NewAllocator(netrules.DefaultTapSubnet),
-		disks:       scratch.New(filepath.Join(opts.DataDir, "scratch-templates")),
+		disks:       scratch.New(opts.ScratchDir),
 		events:      newEventQueue(),
 		vms:         map[string]*vm{},
 		settings:    settingsDefaults(opts.Settings),
@@ -356,7 +359,7 @@ func (d *Driver) ready(id string) (*vm, error) {
 }
 
 func (d *Driver) sandboxDir(id string) string {
-	return filepath.Join(d.opts.DataDir, "sandboxes", id)
+	return filepath.Join(d.opts.SandboxesDir, id)
 }
 
 // eventQueue delivers events in order without blocking the sender.

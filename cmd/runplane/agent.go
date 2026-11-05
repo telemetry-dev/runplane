@@ -17,7 +17,8 @@ import (
 // runAgent operates the sandboxes of this server for the primary in
 // agent.json. The primary sends the settings when the agent connects.
 func runAgent(ctx context.Context, args []string) error {
-	cfg, err := config.Parse(flag.NewFlagSet("agent", flag.ContinueOnError), args)
+	cfg, err := config.Parse(flag.NewFlagSet("agent", flag.ContinueOnError), args,
+		config.ServicePort, config.DataDir, config.Mode, config.Dev, config.DevInsecure)
 	if err != nil {
 		return err
 	}

@@ -28,8 +28,7 @@ import (
 )
 
 func setupCode(ctx context.Context, args []string) error {
-	config.LoadEnvFile()
-	cfg, err := config.Parse(flag.NewFlagSet("setup-code", flag.ContinueOnError), args)
+	cfg, err := config.Parse(flag.NewFlagSet("setup-code", flag.ContinueOnError), args, config.DataDir)
 	if err != nil {
 		return err
 	}
@@ -52,8 +51,8 @@ func setupCode(ctx context.Context, args []string) error {
 // doctor runs the checks of the host package for this server: a primary,
 // or an agent when agent.json exists. It fails when a check fails.
 func doctor(ctx context.Context, args []string) error {
-	config.LoadEnvFile()
-	cfg, err := config.Parse(flag.NewFlagSet("doctor", flag.ContinueOnError), args)
+	cfg, err := config.Parse(flag.NewFlagSet("doctor", flag.ContinueOnError), args,
+		config.Listen, config.AgentListen, config.ServicePort, config.DataDir, config.Mode, config.SSHListen)
 	if err != nil {
 		return err
 	}
@@ -113,15 +112,23 @@ func internetProbe(cfg config.Config, mode sandbox.Mode, dns []string) (sysbox.P
 	return o, nil
 }
 
+// errAgentUpdate is the error of runplane update on an agent. An agent runs the
+// release of its primary, so that the two speak the same protocol, and only
+// the primary knows that release.
+var errAgentUpdate = errors.New("this server is an agent, so it runs the release of its primary: " +
+	"select Update agent on the Servers page of the dashboard, or run curl -fsSL <dashboard URL>/install.sh | sudo sh")
+
 func updateCmd(ctx context.Context, args []string) error {
-	config.LoadEnvFile()
 	flags := flag.NewFlagSet("update", flag.ContinueOnError)
 	check := flags.Bool("check", false, "only report the latest release")
-	cfg, err := config.Parse(flags, args)
+	cfg, err := config.Parse(flags, args, config.DataDir)
 	if err != nil {
 		return err
 	}
-	u := update.New(cfg.KernelPath())
+	if exists(cfg.AgentConfigPath()) {
+		return errAgentUpdate
+	}
+	u := update.NewService(update.Config{Updater: update.New(cfg.KernelPath())})
 	s, err := u.Check(ctx)
 	if err != nil {
 		return err
@@ -134,7 +141,7 @@ func updateCmd(ctx context.Context, args []string) error {
 	if *check {
 		return nil
 	}
-	if err := u.Apply(ctx, s.Latest); err != nil {
+	if _, err := u.Apply(ctx); err != nil {
 		return err
 	}
 	fmt.Printf("Installed runplane %s.\n", s.Latest)
@@ -142,8 +149,8 @@ func updateCmd(ctx context.Context, args []string) error {
 		fmt.Println("Restart runplane to run the new version.")
 		return nil
 	}
-	// try-restart restarts only the units that run.
-	out, err := exec.CommandContext(ctx, "systemctl", "try-restart", "runplane.service", "runplane-agent.service").CombinedOutput()
+	// try-restart restarts the unit only if it runs.
+	out, err := exec.CommandContext(ctx, "systemctl", "try-restart", "runplane.service").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("restart runplane: %w: %s", err, out)
 	}
@@ -154,9 +161,8 @@ func updateCmd(ctx context.Context, args []string) error {
 // resetPassword gives a user a new random password and ends the sessions
 // of the user.
 func resetPassword(ctx context.Context, args []string) error {
-	config.LoadEnvFile()
 	flags := flag.NewFlagSet("reset-password", flag.ContinueOnError)
-	cfg, err := config.Parse(flags, args)
+	cfg, err := config.Parse(flags, args, config.DataDir)
 	if err != nil {
 		return err
 	}
@@ -193,9 +199,8 @@ func resetPassword(ctx context.Context, args []string) error {
 // first start, the settings win over RUNPLANE_MODE, so install.sh calls
 // setMode for --mode. The mode applies when runplane starts again.
 func setMode(ctx context.Context, args []string) error {
-	config.LoadEnvFile()
 	flags := flag.NewFlagSet("set-mode", flag.ContinueOnError)
-	cfg, err := config.Parse(flags, args)
+	cfg, err := config.Parse(flags, args, config.DataDir, config.DevInsecure)
 	if err != nil {
 		return err
 	}
@@ -267,9 +272,8 @@ func printVersion(_ context.Context, args []string) error {
 // install sets the domain before the first start. HTTPS for the domain
 // starts when runplane starts again.
 func setDomain(ctx context.Context, args []string) error {
-	config.LoadEnvFile()
 	flags := flag.NewFlagSet("set-domain", flag.ContinueOnError)
-	cfg, err := config.Parse(flags, args)
+	cfg, err := config.Parse(flags, args, config.DataDir)
 	if err != nil {
 		return err
 	}

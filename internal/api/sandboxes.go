@@ -15,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -146,11 +147,30 @@ func (h *Handler) sandboxLog(ctx context.Context, in *sandboxLogInput) (*huma.St
 	if _, err := h.d.Store.GetSandbox(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No sandbox has this ID.")
 	}
-	rc, err := h.d.Logs.SandboxLog(ctx, in.ID, in.Follow)
+	rc, err := h.d.Logs.Sandbox(ctx, in.ID, in.Follow)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, h.logErr(err)
 	}
 	return h.stream(rc, "text/plain; charset=utf-8", in.Follow), nil
+}
+
+// logErr changes the errors of a log read into problems.
+func (h *Handler) logErr(err error) error {
+	switch {
+	case errors.Is(err, joblog.ErrMissing):
+		return huma.Error404NotFound("The log file of this job is missing.")
+	case errors.Is(err, joblog.ErrExpired):
+		return huma.Error404NotFound("The log of this job expired.")
+	case errors.Is(err, joblog.ErrNoGitHubLog):
+		return huma.Error404NotFound("GitHub has no log for this job.")
+	case errors.Is(err, joblog.ErrNotYet):
+		return huma.Error404NotFound("This job has no log yet.")
+	case errors.Is(err, joblog.ErrSandboxStopped):
+		return huma.Error404NotFound("The sandbox stopped, and its log went with it.")
+	case errors.Is(err, joblog.ErrNotConnected):
+		return huma.Error503ServiceUnavailable("The server of this sandbox is not connected.")
+	}
+	return h.serviceErr(err)
 }
 
 type shellInput struct {
@@ -230,14 +250,11 @@ func shellAllowed(b store.Sandbox, now time.Time) error {
 	return huma.Error409Conflict("The sandbox has no job yet. Open the shell when its job runs.")
 }
 
-// sshPort is the port of the SSH gateway from RUNPLANE_SSH_LISTEN, or the
-// default 2222 when the config has no address.
+// sshPort is the port of the SSH gateway from RUNPLANE_SSH_LISTEN.
 func (h *Handler) sshPort() int {
 	_, port, _ := net.SplitHostPort(h.d.Config.SSHListen)
-	if n, err := strconv.Atoi(port); err == nil {
-		return n
-	}
-	return 2222
+	n, _ := strconv.Atoi(port)
+	return n
 }
 
 func (h *Handler) sshCommand(ctx context.Context, sandboxID string) (string, error) {

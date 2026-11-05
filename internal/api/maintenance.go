@@ -1,8 +1,8 @@
 package api
 
 import (
-	"cmp"
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/update"
 )
 
 type Backup struct {
@@ -21,7 +22,7 @@ type Backup struct {
 	CreatedAt time.Time `json:"created_at"`
 	SizeBytes int64     `json:"size_bytes"`
 	S3Key     string    `json:"s3_key" doc:"Object key in the S3 bucket. Empty if not uploaded."`
-	Status    string    `json:"status" enum:"running,done,uploading,uploaded,failed"`
+	Status    string    `json:"status" enum:"running,done,uploading,uploaded,failed" doc:"failed: the backup or its upload to S3 failed, and error tells why. After a failed upload, the file stays on this server."`
 	Error     string    `json:"error"`
 	Available bool      `json:"available" doc:"The file is on this server, so it can be downloaded."`
 }
@@ -50,7 +51,7 @@ func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*body[Backup],
 	if h.d.Backups == nil {
 		return nil, unavailable("Backups")
 	}
-	id, err := h.d.Backups.Run(ctx)
+	id, err := h.d.Backups.Create(ctx)
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
@@ -118,35 +119,29 @@ func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*body[UpdateStatu
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	u.AutoUpdate = st.AutoUpdate
-	h.updateMu.Lock()
-	u.State = cmp.Or(h.updating, u.State, "idle")
-	h.updateMu.Unlock()
-	return &body[UpdateStatus]{u}, nil
+	out := UpdateStatus{
+		Current: u.Current, Latest: u.Latest, Available: u.Available, URL: u.URL, Notes: u.Notes,
+		AutoUpdate: st.AutoUpdate, State: string(h.d.Updater.State()),
+	}
+	if !u.PublishedAt.IsZero() {
+		out.PublishedAt = &u.PublishedAt
+	}
+	return &body[UpdateStatus]{out}, nil
 }
 
 func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) {
 	if h.d.Updater == nil {
 		return nil, unavailable("The updater")
 	}
-	h.updateMu.Lock()
-	if h.updating != "" {
-		h.updateMu.Unlock()
-		return nil, huma.Error409Conflict("An update is being installed.")
-	}
-	h.updating = "applying"
-	h.updateMu.Unlock()
 	h.audit(ctx, "update.apply", "", nil)
 	// The update goes on when the admin closes the page.
-	err := h.d.Updater.Apply(context.WithoutCancel(ctx))
-	next := "restarting"
-	if err != nil {
-		next = ""
-	}
-	h.updateMu.Lock()
-	h.updating = next
-	h.updateMu.Unlock()
-	if err != nil {
+	u, err := h.d.Updater.Apply(context.WithoutCancel(ctx))
+	switch {
+	case errors.Is(err, update.ErrBusy):
+		return nil, huma.Error409Conflict("An update is being installed.")
+	case errors.Is(err, update.ErrNoUpdate):
+		return nil, huma.Error409Conflict("runplane " + u.Current + " is the latest version.")
+	case err != nil:
 		return nil, h.serviceErr(err)
 	}
 	return nil, nil

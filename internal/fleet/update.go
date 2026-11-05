@@ -119,7 +119,7 @@ func (f *Fleet) failUpdate(ctx context.Context, serverID, why string) {
 	if err != nil {
 		return
 	}
-	detail := truncate(why + " Run sudo runplane update on this server.")
+	detail := truncate(why + " Select Update agent to try again, or run curl -fsSL <dashboard URL>/install.sh | sudo sh on this server.")
 	if err := f.st.SetServerStatus(ctx, serverID, v.Status, detail); err != nil {
 		f.log.Warn("set server status", "server_id", serverID, "err", err)
 	}

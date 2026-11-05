@@ -1037,7 +1037,10 @@ export interface components {
             s3_key: string;
             /** Format: int64 */
             size_bytes: number;
-            /** @enum {string} */
+            /**
+             * @description failed: the backup or its upload to S3 failed, and error tells why. After a failed upload, the file stays on this server.
+             * @enum {string}
+             */
             status: "running" | "done" | "uploading" | "uploaded" | "failed";
         };
         BackupS3: {

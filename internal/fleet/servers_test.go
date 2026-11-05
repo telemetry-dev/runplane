@@ -141,11 +141,13 @@ func TestOldSessionEndKeepsNewSession(t *testing.T) {
 }
 
 // A connected agent records its region apart from its provider, runs the
-// doctor, and adds its registry mirror to the stats of GET /api/caches.
+// doctor, and adds its registry mirror to the one of the primary in the
+// stats of GET /api/caches.
 func TestConnectedAgents(t *testing.T) {
 	ctx := t.Context()
 	local := newFakeNode("arm64")
 	local.info.Region = "fsn1"
+	local.mirror = mirror.Stats{Hits: 2, Misses: 1, HitBytes: 20, MissBytes: 10, SizeBytes: 30}
 	h := newHarness(t, local)
 	h.run()
 	a, b := newFakeNode("arm64"), newFakeNode("x64")
@@ -162,9 +164,9 @@ func TestConnectedAgents(t *testing.T) {
 	if v := h.server(idA); v.Provider != "Hetzner" {
 		t.Errorf("provider %q, want Hetzner without the region", v.Provider)
 	}
-	want := mirror.Stats{Hits: 6, Misses: 5, HitBytes: 600, MissBytes: 500, SizeBytes: 1300}
-	if got := h.f.AgentMirrorStats(ctx); got != want {
-		t.Errorf("agent mirror stats %+v, want %+v", got, want)
+	want := mirror.Stats{Hits: 8, Misses: 6, HitBytes: 620, MissBytes: 510, SizeBytes: 1330}
+	if got := h.f.MirrorStats(ctx); got != want {
+		t.Errorf("mirror stats %+v, want %+v", got, want)
 	}
 	checks, err := h.f.Doctor(ctx, idA)
 	if err != nil || len(checks) != 1 || checks[0].Detail != "6.1.0-agent" || checks[0].Status != "ok" {

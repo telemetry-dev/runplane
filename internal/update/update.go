@@ -1,4 +1,5 @@
-// Package update replaces the runplane binary with a signed GitHub release.
+// Package update replaces the runplane binary with a signed GitHub release,
+// and runs the updates of a runplane process.
 package update
 
 import (
@@ -138,7 +139,8 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 	if err != nil {
 		return err
 	}
-	// kernel/build.sh and install.sh name the kernel with the arch of uname -m.
+	// kernel/build.sh and install.sh name the kernel with the arch name of
+	// Linux: x86_64 or arm64.
 	kernelName := "vmlinux-" + runtime.GOARCH
 	if runtime.GOARCH == "amd64" {
 		kernelName = "vmlinux-x86_64"
@@ -258,17 +260,13 @@ func parseSums(sums []byte) map[string]string {
 }
 
 // findArchive returns the name of the archive for this version and arch.
+// The Makefile and the release workflow name it.
 func findArchive(hashes map[string]string, num, arch string) (string, error) {
-	names := []string{
-		"runplane_" + num + "_linux_" + arch + ".tar.gz",
-		"runplane_v" + num + "_linux_" + arch + ".tar.gz",
+	name := "runplane_" + num + "_linux_" + arch + ".tar.gz"
+	if _, ok := hashes[name]; !ok {
+		return "", fmt.Errorf("update: SHA256SUMS has no entry for %s", name)
 	}
-	for _, name := range names {
-		if _, ok := hashes[name]; ok {
-			return name, nil
-		}
-	}
-	return "", fmt.Errorf("update: SHA256SUMS has no entry for %s", names[0])
+	return name, nil
 }
 
 // extract writes the runplane binary of the archive to a new file for exe.

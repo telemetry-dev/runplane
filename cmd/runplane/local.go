@@ -105,7 +105,8 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		l.driver, probe = drv, drv.Probe
 	case sandbox.ModeVM:
 		drv, err := firecracker.New(firecracker.Options{
-			DataDir: cfg.DataDir, Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: images.RootDisk,
+			DataDir: cfg.DataDir, SandboxesDir: cfg.SandboxesDir(), ScratchDir: cfg.ScratchTemplatesDir(), JailDir: cfg.JailDir(),
+			Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: images.RootDisk,
 			RunnerDrive: func(ctx context.Context, version, arch string) (string, bool, error) {
 				b, err := bundles.Ensure(ctx, version, arch)
 				return b.Ext4Path, b.Patched, err

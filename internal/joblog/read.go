@@ -1,4 +1,4 @@
-package main
+package joblog
 
 import (
 	"bufio"
@@ -10,43 +10,35 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danielgtaylor/huma/v2"
-
-	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/store"
 )
 
-// logs serves the sandbox and job logs: the api Logs service.
-type logs struct {
-	st     *store.Store
-	cfg    config.Config
-	driver func(serverID string) sandbox.Driver
-}
+// The errors of a read: the job or the sandbox has no log to give.
+var (
+	ErrMissing        = errors.New("the log file of the job is missing")
+	ErrExpired        = errors.New("the log of the job expired")
+	ErrNoGitHubLog    = errors.New("GitHub has no log for the job")
+	ErrNotYet         = errors.New("the job has no log yet")
+	ErrSandboxStopped = errors.New("the sandbox stopped, and its log went with it")
+	ErrNotConnected   = errors.New("the server of the sandbox is not connected")
+)
 
-func (l logs) SandboxLog(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
-	b, err := l.st.GetSandbox(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return l.sandboxLog(ctx, b, follow)
-}
-
-// JobLog returns the stored GitHub log of a finished job. While the job
-// operates, it returns the step output that the sandbox streams: the "diag"
-// lines of the sandbox log, which have the GitHub log format. The live log
-// has no step marks, so it has all steps whatever step is.
-func (l logs) JobLog(ctx context.Context, jobID string, step int, follow bool) (_ io.ReadCloser, live bool, _ error) {
-	job, err := l.st.GetJob(ctx, jobID)
+// Job returns the stored GitHub log of a finished job. While the job runs,
+// it returns the step output that the sandbox streams: the "diag" lines of
+// the sandbox log, which have the GitHub log format. The live log has no
+// step marks, so live is true and the log has all steps whatever step is.
+// step 0 means all steps.
+func (l *Logs) Job(ctx context.Context, jobID string, step int, follow bool) (_ io.ReadCloser, live bool, _ error) {
+	job, err := l.cfg.Store.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, false, err
 	}
 	if job.LogState == store.LogStored {
-		f, err := os.Open(l.cfg.JobLogPath(job.ID))
+		f, err := os.Open(l.path(job.ID))
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, huma.Error404NotFound("The log file of this job is missing.")
+			return nil, false, ErrMissing
 		}
 		if err != nil {
 			return nil, false, err
@@ -57,31 +49,41 @@ func (l logs) JobLog(ctx context.Context, jobID string, step int, follow bool) (
 		return f, false, nil
 	}
 	if job.SandboxID != "" {
-		// sandboxLog fails for a sandbox that stopped.
-		if b, err := l.st.GetSandbox(ctx, job.SandboxID); err == nil {
-			if rc, err := l.sandboxLog(ctx, b, follow); err == nil {
+		// The sandbox log fails for a sandbox that stopped.
+		if b, err := l.cfg.Store.GetSandbox(ctx, job.SandboxID); err == nil {
+			if rc, err := l.sandbox(ctx, b, follow); err == nil {
 				return filterLines(rc, diagLines), true, nil
 			}
 		}
 	}
 	switch job.LogState {
 	case store.LogExpired:
-		return nil, false, huma.Error404NotFound("The log of this job expired.")
+		return nil, false, ErrExpired
 	case store.LogNone:
 		if job.State == store.JobCompleted {
-			return nil, false, huma.Error404NotFound("GitHub has no log for this job.")
+			return nil, false, ErrNoGitHubLog
 		}
 	}
-	return nil, false, huma.Error404NotFound("This job has no log yet.")
+	return nil, false, ErrNotYet
 }
 
-func (l logs) sandboxLog(ctx context.Context, b store.Sandbox, follow bool) (io.ReadCloser, error) {
-	if b.State.Done() {
-		return nil, huma.Error404NotFound("The sandbox stopped, and its log went with it.")
+// Sandbox returns the console and runner log of a sandbox. With follow,
+// the reader stays open until the sandbox stops or ctx ends.
+func (l *Logs) Sandbox(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+	b, err := l.cfg.Store.GetSandbox(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	drv := l.driver(b.ServerID)
+	return l.sandbox(ctx, b, follow)
+}
+
+func (l *Logs) sandbox(ctx context.Context, b store.Sandbox, follow bool) (io.ReadCloser, error) {
+	if b.State.Done() {
+		return nil, ErrSandboxStopped
+	}
+	drv := l.cfg.Driver(b.ServerID)
 	if drv == nil {
-		return nil, huma.Error503ServiceUnavailable("The server of this sandbox is not connected.")
+		return nil, ErrNotConnected
 	}
 	return drv.Logs(ctx, b.ID, follow)
 }

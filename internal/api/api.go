@@ -20,9 +20,12 @@ import (
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/tlsutil"
+	"github.com/runplane/runplane/internal/update"
 	"github.com/runplane/runplane/internal/version"
 	"github.com/runplane/runplane/internal/webui"
 )
@@ -38,9 +41,6 @@ type Handler struct {
 	closeOnce sync.Once
 
 	started time.Time // the start of this process, near enough
-
-	updateMu sync.Mutex
-	updating string // state of an update that POST /api/update applies; empty when idle
 }
 
 // Deps are the parts that the API uses. Store, Auth, Bus, Box, and Config are
@@ -62,6 +62,7 @@ type Deps struct {
 	Servers       Servers
 	Images        Images
 	Caches        Caches
+	Mirrors       Mirrors
 	Backups       Backups
 	Updater       Updater
 	Notifier      Notifier
@@ -176,36 +177,45 @@ type Caches interface {
 	// DeleteRepository removes the entries of a repository with their blobs,
 	// and returns the count.
 	DeleteRepository(ctx context.Context, repository string) (int, error)
-	// MirrorStats returns the counts of the mirror. The API sets StartedAt.
-	MirrorStats(ctx context.Context) (MirrorStats, error)
 	// MaxBytes returns the byte limit that the cache server uses now.
 	MaxBytes() int64
 }
 
+type Mirrors interface {
+	// MirrorStats sums the counts of the registry mirrors of all servers.
+	MirrorStats(ctx context.Context) mirror.Stats
+}
+
 type Backups interface {
-	Run(ctx context.Context) (backupID string, err error)
+	// Create makes a backup now.
+	Create(ctx context.Context) (backupID string, err error)
 }
 
 type Updater interface {
-	// Check reads the latest release. It sets State while an update that
-	// did not come through the API (auto update) runs.
-	Check(ctx context.Context) (UpdateStatus, error)
-	// Apply installs the latest release. The process restarts afterwards.
-	Apply(ctx context.Context) error
+	// Check returns the latest release.
+	Check(ctx context.Context) (update.Status, error)
+	// State tells if an update of this process runs, also an auto update.
+	State() update.State
+	// Apply installs the latest release, and the process restarts. It
+	// returns update.ErrNoUpdate when no newer release exists, and
+	// update.ErrBusy while an update runs.
+	Apply(ctx context.Context) (update.Status, error)
 }
 
 type Notifier interface {
 	Test(ctx context.Context, base, kind, url string) error
 }
 
+// Logs gives the logs of the sandboxes and jobs. Its errors are the errors
+// of joblog.
 type Logs interface {
-	// SandboxLog returns the console and runner log of a sandbox. With
-	// follow, the reader stays open until the sandbox stops or ctx ends.
-	SandboxLog(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
-	// JobLog returns the log of a job: the stored GitHub log after the job,
+	// Sandbox returns the console and runner log of a sandbox. With follow,
+	// the reader stays open until the sandbox stops or ctx ends.
+	Sandbox(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+	// Job returns the log of a job: the stored GitHub log after the job,
 	// the sandbox log while it runs. step 0 means all steps. The sandbox log
 	// has no step marks, so it always has all steps: live is true for it.
-	JobLog(ctx context.Context, jobID string, step int, follow bool) (log io.ReadCloser, live bool, err error)
+	Job(ctx context.Context, jobID string, step int, follow bool) (log io.ReadCloser, live bool, err error)
 }
 
 type Shell interface {
@@ -232,7 +242,7 @@ type SettingsHook interface {
 // HTTPS reports the ACME certificate of the domain setting. Without it, the
 // settings have no https field.
 type HTTPS interface {
-	CertificateStatus(ctx context.Context) HTTPSStatus
+	Status(ctx context.Context) tlsutil.CertStatus
 }
 
 // Handlers send [] for empty lists, never null.
