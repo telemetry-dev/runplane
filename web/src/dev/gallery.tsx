@@ -126,7 +126,6 @@ function Specimen({ label, children, className }: { label: string; children: Rea
   )
 }
 
-/** A neutral-2 card, as the panels of the designs. */
 function Card({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={`flex flex-col gap-l rounded-m bg-neutral-2 p-l ${className ?? ''}`}>{children}</div>
 }
@@ -1209,7 +1208,6 @@ const designLog = [
   '##[error]Process completed with exit code 1.',
 ].join('\n')
 
-/** The 100,000-line log, then 20 more lines each 100ms, as a running job streams them. */
 function useLiveLog(running: boolean): string {
   const [log, setLog] = useState('')
   useEffect(() => {
@@ -1225,7 +1223,6 @@ function useLiveLog(running: boolean): string {
   return log
 }
 
-/** A log of `count` lines with folded groups, colors, and an error every 5,000 lines. */
 function bigLog(count: number): string {
   const lines: string[] = []
   for (let i = 0; i < count; i++) {
@@ -1261,7 +1258,6 @@ function Logs() {
   )
 }
 
-/** "15:00" for hour 15. */
 function hours(hour: number): string {
   return `${String(hour).padStart(2, '0')}:00`
 }
