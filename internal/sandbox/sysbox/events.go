@@ -15,74 +15,30 @@ import (
 )
 
 const (
-	metricsEvery  = 5 * time.Second
 	sweepEvery    = 30 * time.Second
 	watchdogEvery = 10 * time.Second
 	// diskEvery is how often the driver measures the writes of each
 	// sandbox. Docker walks the writable layer of the container for it.
 	diskEvery = time.Minute
-	// limitGrace is the time that runplane-init gets to end a sandbox at its
-	// time limit before the driver removes it.
-	limitGrace = 5 * time.Minute
 )
-
-// emit queues an event. The queue has no limit, so a slow reader of Events
-// never blocks a sandbox.
-func (d *Driver) emit(ev sandbox.Event) {
-	d.qmu.Lock()
-	d.queue = append(d.queue, ev)
-	d.qmu.Unlock()
-	select {
-	case d.wake <- struct{}{}:
-	default:
-	}
-}
-
-func (d *Driver) emitState(id string, st sandbox.State, reason string) {
-	d.emit(sandbox.Event{SandboxID: id, Type: sandbox.EventState, Time: time.Now().UTC(), State: st, Reason: reason})
-}
-
-// pump moves the queue to the Events channel until Close.
-func (d *Driver) pump() {
-	defer close(d.events)
-	for {
-		d.qmu.Lock()
-		batch := d.queue
-		d.queue = nil
-		d.qmu.Unlock()
-		for _, ev := range batch {
-			select {
-			case d.events <- ev:
-			case <-d.done:
-				return
-			}
-		}
-		select {
-		case <-d.wake:
-		case <-d.done:
-			return
-		}
-	}
-}
 
 // watchDocker follows the Docker events of sandbox containers. After each
 // (re)connect it sweeps, so an exit while no stream was open is not lost.
-func (d *Driver) watchDocker() {
-	defer d.loops.Done()
-	for d.ctx.Err() == nil {
-		ctx, cancel := context.WithCancel(d.ctx)
-		res := d.docker.Events(ctx, client.EventsListOptions{
+func (d *Driver) watchDocker(ctx context.Context) {
+	for ctx.Err() == nil {
+		streamCtx, cancel := context.WithCancel(ctx)
+		res := d.docker.Events(streamCtx, client.EventsListOptions{
 			Filters: d.owned(client.Filters{}.
 				Add("type", string(events.ContainerEventType)).
-				Add("label", sandbox.LabelSandbox).
+				Add("label", labelSandbox).
 				Add("event", string(events.ActionDie), string(events.ActionDestroy))),
 		})
-		d.sweep(ctx)
-		d.readEvents(ctx, res)
+		d.sweep(streamCtx)
+		d.readEvents(streamCtx, res)
 		cancel()
 		select {
 		case <-time.After(time.Second):
-		case <-d.ctx.Done():
+		case <-ctx.Done():
 		}
 	}
 }
@@ -92,7 +48,7 @@ func (d *Driver) readEvents(ctx context.Context, res client.EventsResult) {
 		select {
 		case msg := <-res.Messages:
 			if b := d.byContainer(msg.Actor.ID); b != nil {
-				go d.remove(b)
+				b.MarkExited()
 			}
 		case err := <-res.Err:
 			if err != nil && ctx.Err() == nil {
@@ -103,54 +59,45 @@ func (d *Driver) readEvents(ctx context.Context, res client.EventsResult) {
 	}
 }
 
-// tick runs the periodic work: metrics of busy sandboxes, the sweep, the
-// sysbox watchdog, and the disk check.
-func (d *Driver) tick() {
-	defer d.loops.Done()
-	metrics := time.NewTicker(metricsEvery)
+// tick runs the sweep, the sysbox watchdog, and the disk check.
+func (d *Driver) tick(ctx context.Context) {
 	sweep := time.NewTicker(sweepEvery)
 	dog := time.NewTicker(watchdogEvery)
 	disks := time.NewTicker(diskEvery)
-	defer metrics.Stop()
 	defer sweep.Stop()
 	defer dog.Stop()
 	defer disks.Stop()
 	for {
 		select {
-		case <-metrics.C:
-			d.sampleMetrics(d.ctx)
 		case <-sweep.C:
-			d.sweep(d.ctx)
+			d.sweep(ctx)
 		case <-dog.C:
 			if d.dog != nil {
 				d.checkSysboxFS()
 			}
 		case <-disks.C:
-			d.checkDisks(d.ctx)
-		case <-d.ctx.Done():
+			d.checkDisks(ctx)
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// sweep compares the sandboxes with the containers of Docker. It removes
-// sandboxes whose container stopped or went away, the containers of
-// sandboxes that runplane no longer knows, and sandboxes past their time
-// limit.
+// sweep compares the sandboxes with the containers of Docker. It ends the
+// sandboxes whose container stopped or went away, and removes the stopped
+// containers that no sandbox owns.
 func (d *Driver) sweep(ctx context.Context) {
 	// Take the sandboxes before the list, so that a container that Start
 	// makes during the list does not look gone.
-	d.mu.Lock()
 	known := map[*box]string{}
-	for _, b := range d.boxes {
-		if b.containerID != "" {
-			known[b] = b.containerID
+	for _, b := range d.Boxes() {
+		if id, _ := b.Host.get(); id != "" {
+			known[b] = id
 		}
 	}
-	d.mu.Unlock()
 	res, err := d.docker.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: d.owned(client.Filters{}.Add("label", sandbox.LabelSandbox)),
+		Filters: d.owned(client.Filters{}.Add("label", labelSandbox)),
 	})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -165,25 +112,14 @@ func (d *Driver) sweep(ctx context.Context) {
 			continue
 		}
 		if b := d.byContainer(c.ID); b != nil {
-			go d.remove(b)
+			b.MarkExited()
 		} else {
-			d.removeOrphan(ctx, c.ID, c.Labels[sandbox.LabelSandbox])
+			d.removeOrphan(ctx, c.ID)
 		}
 	}
-	now := time.Now()
 	for b, id := range known {
 		if !seen[id] {
-			go d.remove(b)
-			continue
-		}
-		d.mu.Lock()
-		late := pastLimit(b, now) && b.failure == ""
-		if late {
-			b.failure = "the sandbox passed its time limit"
-		}
-		d.mu.Unlock()
-		if late {
-			go d.stop(context.Background(), b)
+			b.MarkExited()
 		}
 	}
 }
@@ -194,37 +130,27 @@ func (d *Driver) sweep(ctx context.Context) {
 // rest, such as apt installs, go to the container root, which has no limit
 // of its own.
 func (d *Driver) checkDisks(ctx context.Context) {
-	d.mu.Lock()
-	var list []*box
-	for _, b := range d.boxes {
-		if b.containerID != "" && b.spec.DiskGB > 0 && (b.state == sandbox.StateIdle || b.state == sandbox.StateBusy) {
-			list = append(list, b)
+	for _, b := range d.Boxes() {
+		id, _ := b.Host.get()
+		st, size := b.State(), b.Spec().DiskGB
+		if id == "" || size <= 0 || (st != sandbox.StateIdle && st != sandbox.StateBusy) {
+			continue
 		}
-	}
-	d.mu.Unlock()
-	for _, b := range list {
-		used, err := d.diskUse(ctx, b)
+		used, err := d.diskUse(ctx, b, id)
 		if err != nil {
 			if ctx.Err() == nil {
-				d.log.Warn("measure the disk use of a sandbox", "sandbox", b.id, "err", err)
+				b.Log().Warn("measure the disk use of a sandbox", "err", err)
 			}
 			continue
 		}
-		if used <= int64(b.spec.DiskGB)<<30 {
-			continue
+		if used > int64(size)<<30 {
+			b.Fail(fmt.Sprintf("the sandbox wrote more than its disk size of %d GB", size))
 		}
-		d.mu.Lock()
-		if b.failure == "" {
-			b.failure = fmt.Sprintf("the sandbox wrote more than its disk size of %d GB", b.spec.DiskGB)
-		}
-		d.mu.Unlock()
-		d.log.Warn("sandbox passed its disk size", "sandbox", b.id, "bytes", used, "disk_gb", b.spec.DiskGB)
-		go d.stop(context.Background(), b)
 	}
 }
 
-func (d *Driver) diskUse(ctx context.Context, b *box) (int64, error) {
-	res, err := d.docker.ContainerInspect(ctx, d.containerID(b), client.ContainerInspectOptions{Size: true})
+func (d *Driver) diskUse(ctx context.Context, b *box, containerID string) (int64, error) {
+	res, err := d.docker.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{Size: true})
 	if err != nil {
 		return 0, err
 	}
@@ -233,42 +159,13 @@ func (d *Driver) diskUse(ctx context.Context, b *box) (int64, error) {
 		n = *res.Container.SizeRw
 	}
 	var scratchBytes int64
-	switch d.opts.Scratch {
-	case ScratchLoop:
-		scratchBytes, err = scratch.Used(filepath.Join(b.dir, "scratch"))
-	case ScratchVolume:
+	if d.opts.Profile.loopScratch {
+		scratchBytes, err = scratch.Used(filepath.Join(b.Dir, "scratch"))
+	} else {
 		var v client.VolumeInspectResult
-		if v, err = d.docker.VolumeInspect(ctx, volumeName(b.id), client.VolumeInspectOptions{}); err == nil {
+		if v, err = d.docker.VolumeInspect(ctx, volumeName(b.ID), client.VolumeInspectOptions{}); err == nil {
 			scratchBytes, err = scratch.Usage(v.Volume.Mountpoint)
 		}
 	}
 	return n + scratchBytes, err
-}
-
-// pastLimit reports if a sandbox operates longer than its time limit, or
-// than its debug hold. runplane-init ends the job at the limit; this is the
-// fallback when init does not.
-func pastLimit(b *box, now time.Time) bool {
-	if b.spec.TimeLimit <= 0 {
-		return false
-	}
-	end := sandbox.Deadline(b.created, b.busyAt, b.spec.TimeLimit)
-	if b.holdUntil.After(end) {
-		end = b.holdUntil
-	}
-	return now.After(end.Add(limitGrace))
-}
-
-// removeOrphan removes a stopped container with the sandbox label that no
-// sandbox of this driver owns, and the files of its sandbox.
-func (d *Driver) removeOrphan(ctx context.Context, containerID, id string) {
-	_, err := d.docker.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
-	if err != nil {
-		d.log.Warn("remove old sandbox container", "container", containerID, "err", err)
-		return
-	}
-	d.log.Info("removed old sandbox container", "sandbox", id, "container", containerID)
-	if idPattern.MatchString(id) && d.get(id) == nil {
-		d.removeFiles(ctx, id)
-	}
 }

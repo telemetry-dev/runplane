@@ -7,6 +7,7 @@ package fleet
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"slices"
@@ -20,6 +21,7 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -257,16 +259,16 @@ func (f *Fleet) kick() {
 }
 
 // Online returns the connected servers with the status online.
-func (f *Fleet) Online() []sandbox.Host {
+func (f *Fleet) Online() []scheduler.Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var hosts []sandbox.Host
+	var hosts []scheduler.Host
 	for _, n := range f.nodes {
 		if n.status == store.ServerOnline {
-			hosts = append(hosts, sandbox.Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
+			hosts = append(hosts, scheduler.Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
 		}
 	}
-	slices.SortFunc(hosts, func(a, b sandbox.Host) int {
+	slices.SortFunc(hosts, func(a, b scheduler.Host) int {
 		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ServerID, b.ServerID))
 	})
 	return hosts
@@ -308,6 +310,15 @@ func (f *Fleet) RunnerVersion(serverID string) (string, bool) {
 		return n.runner, true
 	}
 	return "", false
+}
+
+// Capacity reads the capacity of a connected server from its driver.
+func (f *Fleet) Capacity(ctx context.Context, serverID string) (sandbox.Capacity, error) {
+	n := f.node(serverID)
+	if n == nil {
+		return sandbox.Capacity{}, errors.New("the server is not connected")
+	}
+	return n.Driver().Capacity(ctx)
 }
 
 func (f *Fleet) node(id string) *node {

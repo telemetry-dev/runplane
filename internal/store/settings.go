@@ -51,6 +51,11 @@ func (s Settings) DashboardURL() string {
 	return ""
 }
 
+// Reserve is the part of each server that the sandboxes do not get.
+func (s Settings) Reserve() sandbox.Reserve {
+	return sandbox.Reserve{VCPU: s.ReserveVCPU, MemoryMB: s.ReserveMemoryMB, Overcommit: s.CPUOvercommit}
+}
+
 type BackupS3 struct {
 	Endpoint     string `json:"endpoint,omitempty"`
 	Region       string `json:"region,omitempty"`

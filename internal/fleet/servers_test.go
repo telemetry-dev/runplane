@@ -16,6 +16,7 @@ import (
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -117,7 +118,7 @@ func TestConnectedAgentStaysOnline(t *testing.T) {
 		t.Errorf("status %q of a connected agent, want online", got)
 	}
 	waitFor(t, "the agent in Online", func() bool {
-		return slices.ContainsFunc(h.f.Online(), func(s sandbox.Host) bool { return s.ServerID == id })
+		return slices.ContainsFunc(h.f.Online(), func(s scheduler.Host) bool { return s.ServerID == id })
 	})
 }
 
@@ -218,12 +219,11 @@ func TestSettingsReachServers(t *testing.T) {
 	h := newHarness(t, local)
 	h.run()
 	agentNode := newFakeNode("x64")
-	h.connectAgent("build-x64", agentNode)
+	_, agentID := h.connectAgent("build-x64", agentNode)
 
 	waitFor(t, "the settings of the new agent", func() bool { return len(agentNode.args("Configure")) == 1 })
 	defaults := sandbox.Settings{
-		ReserveVCPU: 1, ReserveMemoryMB: 2048, Overcommit: 1, MinFreeDiskPercent: 15, DNS: []string{"1.1.1.1", "8.8.8.8"},
-		EgressAllowlist: []string{}, RegistryMirror: true, ActionsCache: true,
+		DNS: []string{"1.1.1.1", "8.8.8.8"}, EgressAllowlist: []string{}, RegistryMirror: true, ActionsCache: true,
 	}
 	if got := agentNode.args("Configure")[0]; !reflect.DeepEqual(got, defaults) {
 		t.Errorf("settings at connect:\n%+v\nwant\n%+v", got, defaults)
@@ -236,15 +236,19 @@ func TestSettingsReachServers(t *testing.T) {
 	next.DNSServers, next.EgressAllowlist = []string{"9.9.9.9"}, []string{"10.0.0.0/8"}
 	next.BandwidthMbps, next.RegistryMirror, next.ActionsCache = 100, false, false
 	h.f.SettingsChanged(ctx, prev, next)
-	want := sandbox.Settings{
-		ReserveVCPU: 2, ReserveMemoryMB: 4096, Overcommit: 1.5, MinFreeDiskPercent: 13, DNS: []string{"9.9.9.9"},
-		EgressAllowlist: []string{"10.0.0.0/8"}, BandwidthMbps: 100,
-	}
+	want := sandbox.Settings{DNS: []string{"9.9.9.9"}, EgressAllowlist: []string{"10.0.0.0/8"}, BandwidthMbps: 100}
 	for name, n := range map[string]*fakeNode{"local": local, "agent": agentNode} {
 		waitFor(t, "the new settings on the "+name+" server", func() bool {
 			list := n.args("Configure")
 			return len(list) > 0 && reflect.DeepEqual(list[len(list)-1], want)
 		})
+	}
+	// The doctor of each server gets the min_free_disk_percent setting.
+	if _, err := h.f.Doctor(ctx, agentID); err != nil {
+		t.Fatal(err)
+	}
+	if got := agentNode.args("Doctor"); !reflect.DeepEqual(got, []any{12.5}) {
+		t.Errorf("doctor of the agent got the minimum free disk %v, want 12.5", got)
 	}
 }
 

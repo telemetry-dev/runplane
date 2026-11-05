@@ -303,7 +303,8 @@ func (n *fakeNode) Driver() sandbox.Driver                   { return n }
 func (n *fakeNode) Facts(context.Context) (host.Info, error) { return n.info, nil }
 func (n *fakeNode) Stats() <-chan host.Stats                 { return n.stats }
 
-func (n *fakeNode) Doctor(context.Context) ([]host.Check, error) {
+func (n *fakeNode) Doctor(_ context.Context, minFree float64) ([]host.Check, error) {
+	n.record("Doctor", minFree)
 	return []host.Check{{ID: "kernel", Name: "Kernel", Status: host.StatusOK, Detail: n.info.Kernel}}, nil
 }
 

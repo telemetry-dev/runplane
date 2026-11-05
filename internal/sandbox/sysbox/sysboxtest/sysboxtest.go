@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -62,9 +61,10 @@ func NewBundle(t *testing.T, dir string) Bundle {
 	return Bundle{Dir: dir}
 }
 
-// Ensure stands in for (*image.Bundles).Ensure.
-func (b Bundle) Ensure(_ context.Context, version, arch string) (image.Bundle, error) {
-	return image.Bundle{Version: version, Arch: arch, Dir: b.Dir, Patched: true}, nil
+// Runner stands in for the Runner option of the driver: a bundle with the
+// runner patch.
+func (b Bundle) Runner(context.Context, string, string) (string, bool, error) {
+	return b.Dir, true, nil
 }
 
 // Signal makes the file <name>-<jit config> that the fake runner waits for.

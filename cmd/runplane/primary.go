@@ -246,7 +246,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	})
 	p.run(p.gh.Run)
 
-	c, err := p.serveCaches(key, mode, local.driver)
+	c, err := p.serveCaches(key, local)
 	if err != nil {
 		return nil, err
 	}
@@ -314,8 +314,8 @@ func (p *primary) stop() {
 
 // serveCaches starts the Actions cache server and the registry mirror, and
 // serves them on the service port.
-func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver) (caches, error) {
-	resolver := cache.NewSandboxResolver(p.st, drv.List)
+func (p *primary) serveCaches(key []byte, l *local) (caches, error) {
+	resolver := cache.NewSandboxResolver(p.st, l.driver.List)
 	stats := cache.NewStats(p.st, p.log.With("component", "cache"))
 	srv, err := cache.New(cache.Config{
 		Dir: p.cfg.CacheDir(), Store: p.st, Resolver: resolver, Stats: stats,
@@ -329,7 +329,7 @@ func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver)
 	}
 	p.run(stats.Run)
 	p.run(func(ctx context.Context) { srv.Run(ctx) })
-	mir, stopPort, err := serveServicePort(p.cfg, mode, resolver.Allow, srv, p.log)
+	mir, stopPort, err := serveServicePort(p.cfg, l.allow(resolver.Allow), srv, p.log)
 	if err != nil {
 		return caches{}, err
 	}

@@ -46,7 +46,7 @@ type Pool struct {
 // resources now.
 type PoolPlacement struct {
 	OnlineServers      int      `json:"online_servers" doc:"Online servers with the arch, limited to server_ids if the pool has them."`
-	PlaceableServers   int      `json:"placeable_servers" doc:"Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start."`
+	PlaceableServers   int      `json:"placeable_servers" doc:"Of online_servers, the servers whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start."`
 	PlaceableServerIDs []string `json:"placeable_server_ids"`
 }
 
@@ -320,8 +320,11 @@ func (h *Handler) getPlacement(ctx context.Context, in *placementInput) (*body[P
 }
 
 type placer struct {
-	servers  []store.Server
-	settings store.Settings
+	servers []store.Server
+	reserve sandbox.Reserve
+	// limits are the capacities of the connected servers, for the limits
+	// of their drivers.
+	limits map[string]sandbox.Capacity
 }
 
 func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
@@ -333,11 +336,20 @@ func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
 	if err != nil {
 		return placer{}, err
 	}
-	p := placer{settings: settings}
+	p := placer{reserve: settings.Reserve(), limits: map[string]sandbox.Capacity{}}
 	for _, v := range list {
-		if v.Status == store.ServerOnline {
-			p.servers = append(p.servers, v)
+		if v.Status != store.ServerOnline {
+			continue
 		}
+		p.servers = append(p.servers, v)
+		if h.d.Servers == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		if c, err := h.d.Servers.Capacity(ctx, v.ID); err == nil {
+			p.limits[v.ID] = c
+		}
+		cancel()
 	}
 	return p, nil
 }
@@ -349,11 +361,9 @@ func (p placer) place(arch string, vcpu, memoryMB int, serverIDs []string) PoolP
 			continue
 		}
 		out.OnlineServers++
-		c := sandbox.Capacity{
-			VCPU: v.VCPU, MemoryMB: v.MemoryMB, ReserveVCPU: p.settings.ReserveVCPU,
-			ReserveMemoryMB: p.settings.ReserveMemoryMB, Overcommit: p.settings.CPUOvercommit,
-		}
-		if c.Fits(vcpu, memoryMB) {
+		l := p.limits[v.ID]
+		empty := sandbox.Capacity{VCPU: v.VCPU, MemoryMB: v.MemoryMB, OverheadMB: l.OverheadMB, MaxVCPU: l.MaxVCPU, MaxSandboxes: l.MaxSandboxes}
+		if empty.Room(vcpu, memoryMB, p.reserve) > 0 {
 			out.PlaceableServerIDs = append(out.PlaceableServerIDs, v.ID)
 		}
 	}

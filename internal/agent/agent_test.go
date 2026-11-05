@@ -162,7 +162,7 @@ func TestCalls(t *testing.T) {
 		RunnerVersion: "2.330.0", Arch: "arm64", VCPU: 2, MemoryMB: 4096, DiskGB: 20,
 		TimeLimit: 6 * time.Hour, JITConfig: "jit-secret",
 		Env:   map[string]string{"ACTIONS_RESULTS_URL": "http://10.0.0.1:8486/"},
-		Debug: true, Labels: map[string]string{sandbox.LabelSandbox: "sb1"},
+		Debug: true,
 	}
 	check("mode", s.Mode(), nil, sandbox.ModeContainer)
 	check("start", nil, s.Start(ctx, spec), nil, []any{"Start", spec})
@@ -178,11 +178,15 @@ func TestCalls(t *testing.T) {
 	check("stop", nil, s.Stop(ctx, "sb1"), nil, []any{"Stop", "sb1"})
 	list, err = s.List(ctx)
 	check("list after stop", list, err, []sandbox.Sandbox{})
+	if err := s.Hold(ctx, "sb1", until); !errors.Is(err, sandbox.ErrNotFound) {
+		t.Errorf("hold of a stopped sandbox: %v, want sandbox.ErrNotFound", err)
+	}
+	check("probe", nil, s.Probe(ctx), nil, []any{"Probe"})
 
 	info, err := s.Facts(ctx)
 	check("facts", info, err, testInfo)
-	checks, err := s.Doctor(ctx)
-	check("doctor", checks, err, testChecks)
+	checks, err := s.Doctor(ctx, 12.5)
+	check("doctor", checks, err, testChecks, []any{"Doctor", 12.5})
 	var steps []image.Progress
 	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p image.Progress) { steps = append(steps, p) })
 	check("image", ref, err, sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"})
@@ -197,7 +201,6 @@ func TestCalls(t *testing.T) {
 	check("image GC", nil, s.GCImages(ctx, keep), nil, []any{"GCImages", keep})
 	check("runner prune", nil, s.PruneRunners(ctx, []string{"2.329.0"}), nil, []any{"PruneRunners", []string{"2.329.0"}})
 	settings := sandbox.Settings{
-		ReserveVCPU: 1, ReserveMemoryMB: 2048, Overcommit: 1.5, MinFreeDiskPercent: 15,
 		DNS: []string{"1.1.1.1"}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 100,
 		RegistryMirror: true, ActionsCache: true,
 	}

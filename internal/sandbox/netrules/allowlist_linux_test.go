@@ -13,7 +13,7 @@ import (
 )
 
 func TestAllowlistKeepsAddressesUntilTheyExpire(t *testing.T) {
-	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)), netip.Prefix{})
 	cfg := Config{Allowlist: []string{"GitHub.com.", "140.82.112.0/20", "203.0.113.7", "*.example.com", "::1"}}
 	addrs := func(s ...string) []netip.Addr {
 		var a []netip.Addr

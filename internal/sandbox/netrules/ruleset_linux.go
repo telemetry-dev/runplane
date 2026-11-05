@@ -39,6 +39,7 @@ var blockedNets = []netip.Prefix{
 // policy is everything that the tables hold.
 type policy struct {
 	cfg     Config
+	taps    netip.Prefix // the VM TAP range, zero in container mode
 	links   map[string]link
 	ports   map[string]port
 	allowed []netip.Prefix // used only if cfg.Allowlist is not empty
@@ -82,8 +83,8 @@ func writeTable(p policy) error {
 
 	ifaceSpans := []span{wildcard(TapPrefix)}
 	var netSpans []span
-	if p.cfg.TapSubnet.IsValid() {
-		netSpans = append(netSpans, prefixSpan(p.cfg.TapSubnet))
+	if p.taps.IsValid() {
+		netSpans = append(netSpans, prefixSpan(p.taps))
 	}
 	var srcElems, gwElems []nftables.SetElement
 	for _, name := range slices.Sorted(maps.Keys(p.links)) {

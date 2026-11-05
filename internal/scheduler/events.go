@@ -1,10 +1,8 @@
 package scheduler
 
 import (
-	"cmp"
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -58,34 +56,26 @@ func (s *Scheduler) onRunner(ctx context.Context, serverID string, ev sandbox.Ev
 	if !ok {
 		return
 	}
-	switch ev.Runner.Kind {
-	case sandbox.RunnerListening:
-		s.setStateAt(ctx, b.ID, sandbox.StateIdle, "", ev.Time)
-	case sandbox.RunnerJobStarted:
-		s.setStateAt(ctx, b.ID, sandbox.StateBusy, "", ev.Time)
-	case sandbox.RunnerJobCompleted:
-		// The hold must come before init stops the sandbox, so do not wait
-		// for the JobCompleted message.
-		if b.JobID == "" {
-			return
-		}
-		job, err := s.st.GetJob(ctx, b.JobID)
-		if err != nil {
-			s.log.Warn("read job", "job", b.JobID, "err", err)
-			return
-		}
-		if job.State != store.JobCompleted && ev.Runner.Result != "" {
-			s.mu.Lock()
-			s.results[job.ID] = runnerResult{jobResult(ev.Runner.Result), s.now()}
-			s.mu.Unlock()
-		}
-		if job.Debug {
-			s.hold(ctx, b)
-		}
-	case sandbox.RunnerExited:
-		// The driver sends failed with the same error when the sandbox ends.
-		reason := cmp.Or(ev.Runner.Error, fmt.Sprintf("runner exited with code %d", ev.Runner.ExitCode))
-		s.setStateAt(ctx, b.ID, sandbox.StateStopping, reason, ev.Time)
+	if st, reason, ok := ev.Runner.State(); ok {
+		s.setStateAt(ctx, b.ID, st, reason, ev.Time)
+	}
+	// The hold must come before init stops the sandbox, so do not wait for
+	// the JobCompleted message.
+	if ev.Runner.Kind != sandbox.RunnerJobCompleted || b.JobID == "" {
+		return
+	}
+	job, err := s.st.GetJob(ctx, b.JobID)
+	if err != nil {
+		s.log.Warn("read job", "job", b.JobID, "err", err)
+		return
+	}
+	if job.State != store.JobCompleted && ev.Runner.Result != "" {
+		s.mu.Lock()
+		s.results[job.ID] = runnerResult{jobResult(ev.Runner.Result), s.now()}
+		s.mu.Unlock()
+	}
+	if job.Debug {
+		s.hold(ctx, b)
 	}
 }
 

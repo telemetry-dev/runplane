@@ -130,8 +130,8 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 	if b.State != sandbox.StateStarting || b.ScaleSetID != set.ID || b.RunnerID == 0 || b.RunnerName != "runplane-"+spec.ID[len(spec.ID)-8:] {
 		t.Errorf("row = %+v", b)
 	}
-	if spec.TimeLimit != 360*time.Minute || spec.JITConfig == "" || spec.Labels[sandbox.LabelSandbox] != spec.ID ||
-		spec.Labels["dev.runplane.pool"] != pool.ID || spec.Image.Digest != b.ImageDigest || spec.RunnerVersion != "2.330.0" {
+	if spec.TimeLimit != 360*time.Minute || spec.JITConfig == "" || spec.PoolID != pool.ID ||
+		spec.Image.Digest != b.ImageDigest || spec.RunnerVersion != "2.330.0" {
 		t.Errorf("spec = %+v", spec)
 	}
 

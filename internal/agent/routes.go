@@ -28,6 +28,7 @@ func (a *agent) newRoutes() http.Handler {
 	mux.HandleFunc("POST /v1/runners/ensure", a.ensureRunner)
 	mux.HandleFunc("POST /v1/runners/prune", a.pruneRunners)
 	mux.HandleFunc("POST /v1/settings", a.configure)
+	mux.HandleFunc("POST /v1/probe", a.probe)
 	mux.HandleFunc("POST /v1/update", a.update)
 	return mux
 }
@@ -55,7 +56,7 @@ func (a *agent) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 	follow := r.URL.Query().Get("follow") == "1"
 	rc, err := a.Node.Driver().Logs(r.Context(), r.PathValue("id"), follow)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, err)
 		return
 	}
 	defer rc.Close()
@@ -101,7 +102,7 @@ func (a *agent) sandboxShell(w http.ResponseWriter, r *http.Request) {
 	}
 	term, err := a.Node.Driver().Shell(r.Context(), r.PathValue("id"), sandbox.TermSize{Rows: uint16(rows), Cols: uint16(cols)})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, err)
 		return
 	}
 	defer term.Close()
@@ -130,12 +131,13 @@ func (a *agent) readCapacity(w http.ResponseWriter, r *http.Request) {
 }
 
 // readHost returns the host facts, and with doctor=1 also the doctor
-// checks.
+// checks for min_free_disk_percent.
 func (a *agent) readHost(w http.ResponseWriter, r *http.Request) {
 	info, err := a.Node.Facts(r.Context())
 	rep := hostReport{Info: info}
-	if err == nil && r.URL.Query().Get("doctor") == "1" {
-		rep.Doctor, err = a.Node.Doctor(r.Context())
+	if q := r.URL.Query(); err == nil && q.Get("doctor") == "1" {
+		minFree, _ := strconv.ParseFloat(q.Get("min_free_disk_percent"), 64)
+		rep.Doctor, err = a.Node.Doctor(r.Context(), minFree)
 	}
 	writeJSON(w, rep, err)
 }
@@ -197,8 +199,12 @@ func (a *agent) ensureRunner(w http.ResponseWriter, r *http.Request) {
 func (a *agent) configure(w http.ResponseWriter, r *http.Request) {
 	var s sandbox.Settings
 	if decode(w, r, &s) {
-		writeDone(w, a.Node.Configure(r.Context(), s))
+		writeDone(w, a.Node.Driver().Configure(r.Context(), s))
 	}
+}
+
+func (a *agent) probe(w http.ResponseWriter, r *http.Request) {
+	writeDone(w, a.Node.Driver().Probe(r.Context()))
 }
 
 // update replaces the binary. After the answer is out, Run returns
@@ -228,7 +234,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 
 func writeDone(w http.ResponseWriter, err error) {
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -236,9 +242,19 @@ func writeDone(w http.ResponseWriter, err error) {
 
 func writeJSON(w http.ResponseWriter, v any, err error) {
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// writeError answers 404 for sandbox.ErrNotFound, which Session turns back
+// into the error.
+func writeError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, sandbox.ErrNotFound) {
+		status = http.StatusNotFound
+	}
+	http.Error(w, err.Error(), status)
 }

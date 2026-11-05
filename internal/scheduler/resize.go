@@ -13,9 +13,6 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// labelPool is the container or VM label with the pool ID of a sandbox.
-const labelPool = "dev.runplane.pool"
-
 func (s *Scheduler) resizeAll(ctx context.Context) {
 	for _, h := range s.attached() {
 		h.mu.Lock()
@@ -133,7 +130,6 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		TimeLimit:     timeLimit(pool, st),
 		JITConfig:     jit.Encoded,
 		Debug:         debug,
-		Labels:        map[string]string{sandbox.LabelSandbox: id, labelPool: pool.ID},
 	}
 	if err := s.launch(ctx, p, b, spec); err == nil {
 		return

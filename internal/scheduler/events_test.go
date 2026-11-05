@@ -37,7 +37,7 @@ func TestRunnerAndStateEvents(t *testing.T) {
 		}
 	}
 	got := e.sandbox(b.ID)
-	if got.StoppedAt == nil || !got.StoppedAt.Equal(start.Add(6*time.Second)) || got.ExitReason != "runner exited with code 0" {
+	if got.StoppedAt == nil || !got.StoppedAt.Equal(start.Add(6*time.Second)) || got.ExitReason != "the runner exited with code 0" {
 		t.Errorf("stopped at %v, exit reason %q", got.StoppedAt, got.ExitReason)
 	}
 

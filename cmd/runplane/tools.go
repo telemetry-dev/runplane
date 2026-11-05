@@ -75,15 +75,14 @@ func doctor(ctx context.Context, args []string) error {
 		opts.MinFreeDiskPercent = settings.MinFreeDiskPercent
 		dns = settings.DNSServers
 	}
-	// The probe needs the runplane network and the firewall rules, which the
-	// running service makes. In VM mode only the service can add the rule.
-	opts.Internet = func(context.Context) error { return host.ErrProbeInService }
-	if mode == sandbox.ModeContainer || mode == sandbox.ModeDev {
-		probe, err := internetProbe(cfg, mode, dns)
+	opts.Internet = func(context.Context) error { return sandbox.ErrProbeInService }
+	if profile, ok := probeProfile(mode); ok {
+		docker, err := client.New(client.FromEnv)
 		if err != nil {
-			return err
+			return fmt.Errorf("connect to Docker: %w", err)
 		}
-		defer probe.Docker.Close()
+		defer docker.Close()
+		probe := sysbox.ProbeOptions{Docker: docker, Profile: profile, DataDir: cfg.DataDir, DNS: sandbox.Settings{DNS: dns}.IPv4DNS()}
 		opts.Internet = func(ctx context.Context) error { return sysbox.Probe(ctx, probe) }
 	}
 	checks := host.Doctor(ctx, mode, opts)
@@ -96,21 +95,17 @@ func doctor(ctx context.Context, args []string) error {
 	return nil
 }
 
-// internetProbe returns the options of the sandbox internet probe for the
-// container and dev mode drivers, with the runtimes and the cgroup parent
-// of sysbox.New and devdocker.New.
-func internetProbe(cfg config.Config, mode sandbox.Mode, dns []string) (sysbox.ProbeOptions, error) {
-	o := sysbox.ProbeOptions{DataDir: cfg.DataDir, Runtime: "runc"}
-	if mode == sandbox.ModeContainer {
-		o.Runtime, o.CgroupParent = "sysbox-runc", "runplane.slice"
+// probeProfile returns the profile of the sandbox internet probe of a mode.
+// The probe needs the runplane network and the firewall rules, which the
+// running service makes. In VM mode only the service can add the rule.
+func probeProfile(mode sandbox.Mode) (sysbox.Profile, bool) {
+	switch mode {
+	case sandbox.ModeContainer:
+		return sysbox.Container, true
+	case sandbox.ModeDev:
+		return sysbox.Dev, true
 	}
-	o.DNS = sandbox.Settings{DNS: dns}.IPv4DNS()
-	docker, err := client.New(client.FromEnv)
-	if err != nil {
-		return o, fmt.Errorf("connect to Docker: %w", err)
-	}
-	o.Docker = docker
-	return o, nil
+	return sysbox.Profile{}, false
 }
 
 func updateCmd(ctx context.Context, args []string) error {

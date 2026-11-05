@@ -17,7 +17,7 @@ type reservation struct {
 
 // placement is where a new sandbox goes.
 type placement struct {
-	host          sandbox.Host
+	host          Host
 	image         sandbox.ImageRef
 	runnerVersion string
 }
@@ -25,7 +25,7 @@ type placement struct {
 // hostCapacity is an online server and its capacity, with its reservations
 // counted as allocated.
 type hostCapacity struct {
-	sandbox.Host
+	Host
 	cap sandbox.Capacity
 }
 
@@ -42,15 +42,16 @@ func (s *Scheduler) place(ctx context.Context, pool store.Pool, st store.Setting
 	defer s.placeMu.Unlock()
 	var best placement
 	bestFree := -1
+	r := st.Reserve()
 	for _, h := range s.hosts(ctx) {
-		if !h.cap.Fits(pool.VCPU, pool.MemoryMB) {
+		if h.cap.Room(pool.VCPU, pool.MemoryMB, r) == 0 {
 			continue
 		}
 		img, version, ok := s.offer(h, pool, st)
 		if !ok {
 			continue
 		}
-		if free := h.cap.FreeMemoryMB(); free > bestFree {
+		if free := h.cap.FreeMemoryMB(r); free > bestFree {
 			best, bestFree = placement{h.Host, img, version}, free
 		}
 	}
@@ -92,7 +93,7 @@ func (s *Scheduler) hosts(ctx context.Context) []hostCapacity {
 		}
 		r := reserved[h.ServerID]
 		c.AllocVCPU += r.vcpu
-		c.AllocMemoryMB += r.memoryMB
+		c.AllocMemoryMB += r.memoryMB + r.count*c.OverheadMB
 		c.Sandboxes += r.count
 		list = append(list, hostCapacity{h, c})
 	}
@@ -120,23 +121,18 @@ func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (s
 }
 
 // canHost tells if the pool allows sandboxes on the server.
-func canHost(h sandbox.Host, pool store.Pool) bool {
+func canHost(h Host, pool store.Pool) bool {
 	return h.Arch == pool.Arch && (len(pool.ServerIDs) == 0 || slices.Contains(pool.ServerIDs, h.ServerID))
 }
 
 // fits counts the new sandboxes of the pool size that the servers can take
-// now: for each server, how many times Capacity.Fits holds.
+// now.
 func (s *Scheduler) fits(hosts []hostCapacity, pool store.Pool, st store.Settings) int {
 	n := 0
 	for _, h := range hosts {
-		if _, _, ok := s.offer(h, pool, st); !ok {
-			continue
+		if _, _, ok := s.offer(h, pool, st); ok {
+			n += h.cap.Room(pool.VCPU, pool.MemoryMB, st.Reserve())
 		}
-		fit := min(h.cap.FreeVCPU()/max(pool.VCPU, 1), h.cap.FreeMemoryMB()/max(pool.MemoryMB, 1))
-		if h.cap.MaxSandboxes > 0 {
-			fit = min(fit, h.cap.MaxSandboxes-h.cap.Sandboxes)
-		}
-		n += max(fit, 0)
 	}
 	return n
 }

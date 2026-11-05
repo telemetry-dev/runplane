@@ -3,7 +3,6 @@ package firecracker
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 	"os/exec"
@@ -17,19 +16,20 @@ import (
 // to systemd.
 type hostOps interface {
 	setupNet(ctx context.Context, cfg netrules.Config) error
-	// addTap makes the TAP of a lease, which only uid and gid can open,
+	acquireTap() (netrules.Lease, error)
+	tapLeases() int
+	// openTap makes the TAP of a lease, which only uid and gid can open,
 	// and lets it through the firewall.
-	addTap(l netrules.Lease, uid, gid int) error
+	openTap(l netrules.Lease, uid, gid int) error
 	// keepTap lets the TAP of a VM from before a restart through again.
 	keepTap(l netrules.Lease) error
-	dropTap(l netrules.Lease) error
+	closeTap(l netrules.Lease) error
 	killScope(unit string) error
 	// stopJobs returns the VM scopes that systemd is about to stop, as at
 	// a host shutdown.
 	stopJobs() (map[string]bool, error)
 	// probe fetches url with the network of a VM on lease l.
 	probe(ctx context.Context, l netrules.Lease, dns netip.Addr, url string) error
-	close() error
 }
 
 type systemHost struct{ net *netrules.Manager }
@@ -38,18 +38,12 @@ func (h systemHost) setupNet(ctx context.Context, cfg netrules.Config) error {
 	return h.net.Setup(ctx, cfg)
 }
 
-func (h systemHost) addTap(l netrules.Lease, uid, gid int) error {
-	if err := netrules.CreateTap(l.Tap, uid, gid, l.HostCIDR()); err != nil {
-		return err
-	}
-	return h.keepTap(l)
-}
+func (h systemHost) acquireTap() (netrules.Lease, error) { return h.net.AcquireTap() }
+func (h systemHost) tapLeases() int                      { return h.net.TapLeases() }
 
-func (h systemHost) keepTap(l netrules.Lease) error { return h.net.AddTap(l.Tap, l.Guest, l.Host) }
-
-func (h systemHost) dropTap(l netrules.Lease) error {
-	return errors.Join(h.net.RemoveTap(l.Tap), netrules.DeleteTap(l.Tap))
-}
+func (h systemHost) openTap(l netrules.Lease, uid, gid int) error { return h.net.OpenTap(l, uid, gid) }
+func (h systemHost) keepTap(l netrules.Lease) error               { return h.net.KeepTap(l) }
+func (h systemHost) closeTap(l netrules.Lease) error              { return h.net.CloseTap(l) }
 
 func (h systemHost) killScope(unit string) error {
 	out, err := exec.Command("systemctl", "kill", "--signal=SIGKILL", unit+".scope").CombinedOutput()
@@ -80,5 +74,3 @@ func parseStopJobs(out []byte) map[string]bool {
 	}
 	return units
 }
-
-func (h systemHost) close() error { return h.net.Close() }

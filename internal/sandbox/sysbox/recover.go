@@ -1,85 +1,89 @@
 package sysbox
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
-	"github.com/moby/moby/api/types/container"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/internal/atomicfile"
-	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/lifecycle"
 )
 
-// meta is the file sandbox.json in the sandbox folder. A new driver reads it
-// after a runplane restart. It never holds the JIT config.
-type meta struct {
-	Spec        sandbox.Spec  `json:"spec"`
-	ContainerID string        `json:"container_id"`
-	IP          string        `json:"ip"`
-	State       sandbox.State `json:"state"`
-	CreatedAt   time.Time     `json:"created_at"`
-	HoldUntil   time.Time     `json:"hold_until,omitzero"`
-	BusyAt      time.Time     `json:"busy_at,omitzero"`
+// Adopt connects to a sandbox container that still operates after a runplane
+// restart. Its guest connects again within a second.
+func (d backend) Adopt(ctx context.Context, b *box) (bool, error) {
+	res, err := d.docker.ContainerInspect(ctx, containerName(b.ID), client.ContainerInspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect container: %w", err)
+	}
+	info := res.Container
+	if info.State == nil || !info.State.Running {
+		return false, nil
+	}
+	b.Host.mu.Lock()
+	b.Host.id = info.ID
+	b.Host.mu.Unlock()
+	ctl, err := d.listen(b, nil)
+	if err != nil {
+		return true, err
+	}
+	b.SetControl(ctl)
+	// The bridge table usually has the binding of the port already.
+	if err := d.bindPort(b, info); err != nil {
+		b.Log().Warn("bind the bridge port of a sandbox", "err", err)
+	}
+	return true, nil
 }
 
-const metaFile = "sandbox.json"
-
-// recover takes over the sandbox containers that still operate after a
-// runplane restart: it opens their control channels again, and the guests
-// connect again within a second. It removes stopped containers and the
-// folders, volumes, and probe containers that no sandbox uses.
+// recover takes over the sandboxes that still operate after a runplane
+// restart. It removes the containers and volumes of sandboxes that have no
+// folder, and the probe containers.
 func (d *Driver) recover(ctx context.Context) error {
+	if _, err := d.Recover(ctx); err != nil {
+		return err
+	}
+	// The folder of a sandbox of another mode stays for its driver.
+	hasFolder := func(id string) bool {
+		if !lifecycle.ValidID(id) {
+			return false
+		}
+		_, err := os.Stat(filepath.Join(d.opts.Sandboxes, id))
+		return err == nil
+	}
 	res, err := d.docker.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: d.owned(client.Filters{}.Add("label", sandbox.LabelSandbox)),
+		Filters: d.owned(client.Filters{}.Add("label", labelSandbox)),
 	})
 	if err != nil {
 		return fmt.Errorf("list sandbox containers: %w", err)
 	}
 	for _, c := range res.Items {
-		id := c.Labels[sandbox.LabelSandbox]
-		if c.State == container.StateRunning && idPattern.MatchString(id) {
-			err := d.adopt(ctx, id, c.ID)
-			if err == nil {
-				continue
-			}
-			d.log.Warn("cannot take over sandbox, removing it", "sandbox", id, "err", err)
-		}
-		d.removeOrphan(ctx, c.ID, id)
-	}
-
-	entries, err := os.ReadDir(d.opts.Config.SandboxesDir())
-	if err != nil {
-		return fmt.Errorf("read sandboxes folder: %w", err)
-	}
-	for _, e := range entries {
-		if e.IsDir() && idPattern.MatchString(e.Name()) && d.get(e.Name()) == nil {
-			d.removeFiles(ctx, e.Name())
+		if !hasFolder(c.Labels[labelSandbox]) {
+			d.removeOrphan(ctx, c.ID)
 		}
 	}
-
-	if d.opts.Scratch == ScratchVolume {
+	if !d.opts.Profile.loopScratch {
 		vols, err := d.docker.VolumeList(ctx, client.VolumeListOptions{
-			Filters: d.owned(client.Filters{}.Add("label", sandbox.LabelSandbox)),
+			Filters: d.owned(client.Filters{}.Add("label", labelSandbox)),
 		})
 		if err != nil {
 			return fmt.Errorf("list scratch volumes: %w", err)
 		}
 		for _, v := range vols.Items {
-			if d.get(v.Labels[sandbox.LabelSandbox]) == nil {
-				d.docker.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true})
+			if hasFolder(v.Labels[labelSandbox]) {
+				continue
+			}
+			if _, err := d.docker.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true}); err != nil {
+				d.log.Warn("remove old scratch volume", "volume", v.Name, "err", err)
 			}
 		}
 	}
-
 	probes, err := d.docker.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
 		Filters: d.owned(client.Filters{}.Add("label", labelProbe)),
@@ -88,92 +92,17 @@ func (d *Driver) recover(ctx context.Context) error {
 		return fmt.Errorf("list probe containers: %w", err)
 	}
 	for _, c := range probes.Items {
-		d.docker.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
+		d.removeOrphan(ctx, c.ID)
 	}
 	return nil
 }
 
-func (d *Driver) adopt(ctx context.Context, id, containerID string) error {
-	dir := d.opts.Config.SandboxDir(id)
-	m, err := readMeta(dir)
-	if err != nil {
-		return err
+// removeOrphan removes a container of this driver that no sandbox owns.
+func (d *Driver) removeOrphan(ctx context.Context, containerID string) {
+	_, err := d.docker.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+	if err != nil && !cerrdefs.IsNotFound(err) {
+		d.log.Warn("remove old sandbox container", "container", containerID, "err", err)
+		return
 	}
-	if m.ContainerID != containerID {
-		return errors.New("the sandbox folder belongs to a different container")
-	}
-	b := &box{
-		id:          id,
-		dir:         dir,
-		created:     m.CreatedAt,
-		spec:        m.Spec,
-		removed:     make(chan struct{}),
-		containerID: containerID,
-		ip:          m.IP,
-		state:       m.State,
-		holdUntil:   m.HoldUntil,
-		busyAt:      m.BusyAt,
-		// A running sandbox in the stopping state was in a Stop call.
-		stopAsked: m.State == sandbox.StateStopping,
-	}
-	if b.logs, err = control.OpenLogFile(dir); err != nil {
-		return err
-	}
-	if b.ctl, err = d.listen(b, nil); err != nil {
-		b.logs.Close()
-		return err
-	}
-	d.mu.Lock()
-	d.boxes[id] = b
-	d.mu.Unlock()
-	d.log.Info("took over sandbox", "sandbox", id, "state", b.state)
-	if b.state == sandbox.StateStopping {
-		go d.stop(context.Background(), b)
-	}
-
-	// The bridge table usually has the binding of the port already.
-	info, err := d.docker.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
-	if err == nil {
-		err = d.bindPort(b, info.Container)
-	}
-	if err != nil {
-		d.log.Warn("bind the bridge port of a sandbox", "sandbox", id, "err", err)
-	}
-	return nil
-}
-
-// save writes the meta file of b. Call it with d.mu held. Only a sandbox
-// with a container needs one.
-func (d *Driver) save(b *box) error {
-	if b.containerID == "" || b.state.Done() {
-		return nil
-	}
-	data, err := json.Marshal(meta{
-		Spec:        b.spec,
-		ContainerID: b.containerID,
-		IP:          b.ip,
-		State:       b.state,
-		CreatedAt:   b.created,
-		HoldUntil:   b.holdUntil,
-		BusyAt:      b.busyAt,
-	})
-	if err != nil {
-		return err
-	}
-	if err := atomicfile.Write(filepath.Join(b.dir, metaFile), bytes.NewReader(data), 0o600); err != nil {
-		return fmt.Errorf("save sandbox state: %w", err)
-	}
-	return nil
-}
-
-func readMeta(dir string) (meta, error) {
-	var m meta
-	data, err := os.ReadFile(filepath.Join(dir, metaFile))
-	if err != nil {
-		return m, fmt.Errorf("read sandbox state: %w", err)
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return m, fmt.Errorf("read sandbox state: %w", err)
-	}
-	return m, nil
+	d.log.Info("removed old sandbox container", "container", containerID)
 }

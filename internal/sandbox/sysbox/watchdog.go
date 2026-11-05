@@ -123,19 +123,14 @@ func (w *watchdog) sysboxConnections() map[string]string {
 	return conns
 }
 
-// checkSysboxFS removes the sandboxes that the watchdog finds hung. The
+// checkSysboxFS kills the sandboxes that the watchdog finds hung. The
 // scheduler then starts new ones.
 func (d *Driver) checkSysboxFS() {
 	ours := func(containerID string) bool { return d.byContainer(containerID) != nil }
 	for _, containerID := range d.dog.check(time.Now(), ours) {
-		b := d.byContainer(containerID)
-		if b == nil {
-			continue
+		if b := d.byContainer(containerID); b != nil {
+			b.Log().Error("sysbox-fs stopped answering, removing the sandbox (sysbox issue #1018)")
+			b.FailNow("sysbox-fs stopped answering (sysbox issue #1018)")
 		}
-		d.log.Error("sysbox-fs stopped answering, removing the sandbox (sysbox issue #1018)", "sandbox", b.id)
-		d.mu.Lock()
-		b.failure = "sysbox-fs stopped answering (sysbox issue #1018)"
-		d.mu.Unlock()
-		go d.remove(b)
 	}
 }

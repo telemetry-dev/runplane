@@ -1,11 +1,12 @@
 //go:build linux
 
-package sysbox_test
+package sysbox
 
 import (
 	"context"
 	"errors"
 	"io/fs"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,19 +19,18 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
-	"github.com/runplane/runplane/internal/sandbox/sysbox"
 	"github.com/runplane/runplane/internal/sandbox/sysbox/sysboxtest"
 )
 
 // TestContainerMode runs the container mode path as root on a Linux Docker
 // host, with RUNPLANE_TEST_DOCKER=1: loop scratch disks, Unix control
 // sockets, the network rules, and runplane.slice. It uses sysbox-runc when
-// Docker has it, else runc. RUNPLANE_TEST_IMAGE must name an image with
-// bash, curl, a user "runner", and the label dev.runplane.managed=true.
+// Docker has it, else runc without the watchdog. RUNPLANE_TEST_IMAGE must
+// name an image with bash, curl, a user "runner", and the label
+// dev.runplane.managed=true.
 func TestContainerMode(t *testing.T) {
 	if os.Getenv("RUNPLANE_TEST_DOCKER") != "1" || os.Getuid() != 0 {
 		t.Skip("set RUNPLANE_TEST_DOCKER=1 and run as root")
@@ -48,11 +48,11 @@ func TestContainerMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := "runc"
-	if _, ok := info.Info.Runtimes["sysbox-runc"]; ok {
-		runtime = "sysbox-runc"
+	profile := Container
+	if _, ok := info.Info.Runtimes["sysbox-runc"]; !ok {
+		profile.runtime, profile.watchdog = "runc", false
 	}
-	t.Logf("runtime %s", runtime)
+	t.Logf("runtime %s", profile.runtime)
 	img, err := docker.ImageInspect(ctx, ref)
 	if err != nil {
 		t.Fatal(err)
@@ -62,22 +62,23 @@ func TestContainerMode(t *testing.T) {
 	log := sysboxtest.Logger(t)
 	bundle := sysboxtest.NewBundle(t, filepath.Join(work, "runner"))
 	initPath := sysboxtest.Init(t, work, "")
-	rules := netrules.New(log)
+	rules := netrules.New(log, netip.Prefix{})
 	defer rules.Teardown()
-	cfg := config.Config{DataDir: filepath.Join(work, "data"), ServicePort: 8486}
-	opts := sysbox.Options{
-		Docker:   docker,
-		Config:   cfg,
-		Mode:     sandbox.ModeContainer,
-		Runtime:  runtime,
-		Scratch:  sysbox.ScratchLoop,
-		Bundle:   bundle.Ensure,
-		InitPath: func() (string, error) { return initPath, nil },
-		NetRules: rules,
-		Settings: sandbox.Settings{DNS: []string{"1.1.1.1"}, ActionsCache: true},
-		Logger:   log,
+	data := filepath.Join(work, "data")
+	opts := Options{
+		Docker:           docker,
+		DataDir:          data,
+		Sandboxes:        filepath.Join(data, "sandboxes"),
+		ScratchTemplates: filepath.Join(data, "scratch-templates"),
+		ServicePort:      8486,
+		Profile:          profile,
+		Runner:           bundle.Runner,
+		InitPath:         func() (string, error) { return initPath, nil },
+		NetRules:         rules,
+		Settings:         sandbox.Settings{DNS: []string{"1.1.1.1"}, ActionsCache: true},
+		Logger:           log,
 	}
-	drv, err := sysbox.New(opts)
+	drv, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,13 +146,13 @@ func TestContainerMode(t *testing.T) {
 		)
 		// The writes to these image folders go to scratch. runc gives the
 		// container root no right to mount.
-		if runtime == "sysbox-runc" {
+		if profile.runtime == "sysbox-runc" {
 			sysboxtest.CheckLines(t, text, "runner mount /home overlay", "runner mount /opt overlay")
 		}
 		if t.Failed() {
 			t.Logf("sandbox log:\n%s", text)
 		}
-		checkRemoved(t, docker, cfg, id)
+		checkRemoved(t, docker, opts.Sandboxes, id)
 		if out, _ := exec.Command("nft", "list", "table", "bridge", "runplane").CombinedOutput(); strings.Contains(string(out), ip+" ") || strings.Contains(string(out), ip+"\n") {
 			t.Errorf("the bridge table keeps the binding of the removed sandbox:\n%s", out)
 		}
@@ -165,7 +166,7 @@ func TestContainerMode(t *testing.T) {
 		}
 		ev.Wait(t, id, sandbox.StateIdle, 2*time.Minute)
 		drv.Close()
-		drv, err = sysbox.New(opts)
+		drv, err = New(opts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,11 +178,11 @@ func TestContainerMode(t *testing.T) {
 		if got, want := ev.States(id), []sandbox.State{"busy", "stopping", "gone"}; !slices.Equal(got, want) {
 			t.Errorf("states after the restart = %v, want %v", got, want)
 		}
-		checkRemoved(t, docker, cfg, id)
+		checkRemoved(t, docker, opts.Sandboxes, id)
 	})
 
-	// runplane stops during a start: the sandbox goes away as gone, since
-	// nothing failed.
+	// runplane stops during a start: the start leaves nothing and sends no
+	// events, and the caller records the end.
 	t.Run("canceled start", func(t *testing.T) {
 		id := ids.New()
 		canceled, cancel := context.WithCancel(ctx)
@@ -189,11 +190,10 @@ func TestContainerMode(t *testing.T) {
 		if err := drv.Start(canceled, spec(id)); !errors.Is(err, context.Canceled) {
 			t.Fatalf("Start = %v, want context.Canceled", err)
 		}
-		end := ev.WaitFor(t, id, "the end", 30*time.Second, func(e sandbox.Event) bool { return e.State.Done() })
-		if end.State != sandbox.StateGone {
-			t.Errorf("the canceled start ended %s (%s), want gone", end.State, end.Reason)
+		if got := ev.States(id); len(got) != 0 {
+			t.Errorf("the canceled start sent the states %v, want none", got)
 		}
-		checkRemoved(t, docker, cfg, id)
+		checkRemoved(t, docker, opts.Sandboxes, id)
 	})
 
 	// The probe passes the firewall rules to the internet.
@@ -206,12 +206,12 @@ func TestContainerMode(t *testing.T) {
 
 // checkRemoved checks that a removed sandbox left no container, mount,
 // loop device, or folder.
-func checkRemoved(t *testing.T, docker *client.Client, cfg config.Config, id string) {
+func checkRemoved(t *testing.T, docker *client.Client, sandboxes, id string) {
 	t.Helper()
 	if _, err := docker.ContainerInspect(context.Background(), "runplane-"+id, client.ContainerInspectOptions{}); !cerrdefs.IsNotFound(err) {
 		t.Errorf("the container is still there (inspect: %v)", err)
 	}
-	dir := cfg.SandboxDir(id)
+	dir := filepath.Join(sandboxes, id)
 	if mounts, _ := os.ReadFile("/proc/self/mounts"); strings.Contains(string(mounts), dir) {
 		t.Errorf("the scratch disk is still mounted:\n%s", mounts)
 	}

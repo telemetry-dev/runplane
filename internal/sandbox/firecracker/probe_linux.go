@@ -18,7 +18,8 @@ import (
 
 // probe fetches url from a network namespace that has the address of a VM
 // on lease l. A veth with the TAP name stands in for the TAP, so the VM
-// firewall rules apply to it.
+// firewall rules apply to it. The caller closes the lease, which also
+// removes the veth.
 func (h systemHost) probe(ctx context.Context, l netrules.Lease, dns netip.Addr, url string) error {
 	ns, err := onOwnThread(netns.New)
 	if err != nil {
@@ -29,7 +30,6 @@ func (h systemHost) probe(ctx context.Context, l netrules.Lease, dns netip.Addr,
 	if err := netlink.LinkAdd(veth); err != nil {
 		return fmt.Errorf("make the probe interface %s: %w", l.Tap, err)
 	}
-	defer netrules.DeleteTap(l.Tap)
 	inside, err := netlink.NewHandleAt(ns)
 	if err != nil {
 		return err
@@ -41,13 +41,12 @@ func (h systemHost) probe(ctx context.Context, l netrules.Lease, dns netip.Addr,
 	if err := setUp(inside, "lo", netip.Prefix{}, netip.Addr{}); err != nil {
 		return err
 	}
-	if err := setUp(inside, "eth0", netip.PrefixFrom(l.Guest, 30), l.Host); err != nil {
+	if err := setUp(inside, "eth0", l.GuestCIDR(), l.Host); err != nil {
 		return err
 	}
-	if err := h.net.AddTap(l.Tap, l.Guest, l.Host); err != nil {
+	if err := h.net.KeepTap(l); err != nil {
 		return err
 	}
-	defer h.net.RemoveTap(l.Tap)
 	return fetchIn(ctx, ns, dns, url)
 }
 

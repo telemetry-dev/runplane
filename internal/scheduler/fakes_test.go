@@ -126,17 +126,17 @@ func (d *fakeDriver) Hold(ctx context.Context, id string, until time.Time) error
 
 type fakeFleet struct {
 	mu       sync.Mutex
-	hosts    []sandbox.Host
+	hosts    []Host
 	noImage  map[string]bool // server IDs without the image
 	offline  map[string]bool // server IDs that are not connected
 	imageRef sandbox.ImageRef
 	runner   string // the runner version for new sandboxes
 }
 
-func (f *fakeFleet) Online() []sandbox.Host {
+func (f *fakeFleet) Online() []Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.DeleteFunc(slices.Clone(f.hosts), func(h sandbox.Host) bool { return f.offline[h.ServerID] })
+	return slices.DeleteFunc(slices.Clone(f.hosts), func(h Host) bool { return f.offline[h.ServerID] })
 }
 
 func (f *fakeFleet) Driver(serverID string) sandbox.Driver {
@@ -332,7 +332,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		runner:   "2.330.0",
 	}
 	e.gh = &fakeGitHub{rec: e.rec, checks: map[string]JobCheck{}}
-	e.setSettings(func(s *store.Settings) { s.Mode = sandbox.ModeContainer })
+	e.setSettings(func(s *store.Settings) { s.Mode, s.ReserveVCPU, s.ReserveMemoryMB = sandbox.ModeContainer, 0, 0 })
 	e.s = New(Config{Store: st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, LogsDir: e.logs, Now: e.clock.now})
 	t.Cleanup(e.s.stopBg)
 	return e
@@ -345,11 +345,12 @@ func (e *testEnv) setSettings(fn func(*store.Settings)) {
 	}
 }
 
-// capacity is a server with no host reserve, so that sizes add up simply.
+// capacity is a server. The settings of the test have no host reserve, so
+// that sizes add up simply.
 func capacity(arch string, vcpu, memoryMB int) sandbox.Capacity {
 	return sandbox.Capacity{
 		Mode: sandbox.ModeContainer, Arch: arch, VCPU: vcpu, MemoryMB: memoryMB,
-		DiskBytes: 500 << 30, FreeDiskBytes: 300 << 30, Overcommit: 1,
+		DiskBytes: 500 << 30, FreeDiskBytes: 300 << 30,
 	}
 }
 
@@ -366,7 +367,7 @@ func (e *testEnv) addServer(name string, c sandbox.Capacity) (string, *fakeDrive
 	}
 	d := &fakeDriver{rec: e.rec, base: c, running: map[string]sandbox.Spec{}, holds: map[string]time.Time{}}
 	e.fleet.mu.Lock()
-	e.fleet.hosts = append(e.fleet.hosts, sandbox.Host{ServerID: id, Name: name, Arch: c.Arch, Driver: d})
+	e.fleet.hosts = append(e.fleet.hosts, Host{ServerID: id, Name: name, Arch: c.Arch, Driver: d})
 	e.fleet.mu.Unlock()
 	return id, d
 }

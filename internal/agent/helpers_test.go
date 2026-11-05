@@ -242,8 +242,8 @@ var (
 	testMirror   = mirror.Stats{Hits: 41, Misses: 3, HitBytes: 9 << 30, MissBytes: 700 << 20, SizeBytes: 12 << 30}
 	fakeCapacity = sandbox.Capacity{
 		Mode: sandbox.ModeContainer, Arch: "arm64", VCPU: 16, MemoryMB: 65536,
-		DiskBytes: 500e9, FreeDiskBytes: 320e9, AllocVCPU: 4, AllocMemoryMB: 8192,
-		ReserveVCPU: 1, ReserveMemoryMB: 2048, Overcommit: 1.5, MaxSandboxes: 10, Sandboxes: 2,
+		DiskBytes: 500e9, FreeDiskBytes: 320e9, AllocVCPU: 4, AllocMemoryMB: 8192, Sandboxes: 2,
+		OverheadMB: 64, MaxVCPU: 32, MaxSandboxes: 10,
 	}
 )
 
@@ -301,10 +301,12 @@ func (n *fakeNode) put(sb sandbox.Sandbox) {
 	n.sandboxes[sb.ID] = sb
 }
 
-func (n *fakeNode) Driver() sandbox.Driver                       { return n }
-func (n *fakeNode) Facts(context.Context) (host.Info, error)     { return testInfo, nil }
-func (n *fakeNode) Doctor(context.Context) ([]host.Check, error) { return testChecks, nil }
-func (n *fakeNode) Stats() <-chan host.Stats                     { return n.stats }
+func (n *fakeNode) Driver() sandbox.Driver                   { return n }
+func (n *fakeNode) Facts(context.Context) (host.Info, error) { return testInfo, nil }
+func (n *fakeNode) Doctor(_ context.Context, minFree float64) ([]host.Check, error) {
+	return testChecks, n.record("Doctor", minFree)
+}
+func (n *fakeNode) Stats() <-chan host.Stats { return n.stats }
 
 func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
 	for _, p := range testProgress {
@@ -388,8 +390,16 @@ func (n *fakeNode) Shell(_ context.Context, _ string, size sandbox.TermSize) (sa
 }
 
 func (n *fakeNode) Hold(_ context.Context, id string, until time.Time) error {
+	n.mu.Lock()
+	_, ok := n.sandboxes[id]
+	n.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("hold sandbox %s: %w", id, sandbox.ErrNotFound)
+	}
 	return n.record("Hold", id, until)
 }
+
+func (n *fakeNode) Probe(context.Context) error { return n.record("Probe") }
 
 func (n *fakeNode) Close() error { return nil }
 

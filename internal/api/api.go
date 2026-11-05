@@ -149,6 +149,8 @@ type Servers interface {
 	// SSHPublicKey returns the runplane SSH key in authorized_keys format.
 	SSHPublicKey(ctx context.Context) (string, error)
 	Doctor(ctx context.Context, serverID string) ([]Check, error)
+	// Capacity reads the capacity of a connected server from its driver.
+	Capacity(ctx context.Context, serverID string) (sandbox.Capacity, error)
 	// Remove stops the sandboxes of an agent and disconnects it. The API
 	// then deletes the server row.
 	Remove(ctx context.Context, serverID string) error

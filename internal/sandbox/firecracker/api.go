@@ -60,7 +60,7 @@ func (a *apiClient) boot(ctx context.Context, spec sandbox.Spec, l netrules.Leas
 		path string
 		body any
 	}
-	steps := []step{{"/boot-source", bootSource{KernelImagePath: "/" + kernelFile, BootArgs: bootArgs(l.Guest, l.Host)}}}
+	steps := []step{{"/boot-source", bootSource{KernelImagePath: "/" + kernelFile, BootArgs: bootArgs(l)}}}
 	drives := [...]drive{
 		guest.DriveRoot:    {ID: "rootfs", Path: "/" + rootFile, Root: true, ReadOnly: true},
 		guest.DriveRunner:  {ID: "runner", Path: "/" + runnerFile, ReadOnly: true},
@@ -112,9 +112,10 @@ func (a *apiClient) ctrlAltDel(ctx context.Context) error {
 // quiet keeps the boot messages off the serial console, where each byte
 // stops the vCPU: the guest then reaches init in half the time. Warnings and
 // panics still print. ip= sets the guest address without DHCP.
-func bootArgs(addr, host netip.Addr) string {
+func bootArgs(l netrules.Lease) string {
+	mask := net.IP(net.CIDRMask(l.GuestCIDR().Bits(), 32))
 	return "console=ttyS0 quiet " + guest.KernelArgs +
-		" ip=" + addr.String() + "::" + host.String() + ":255.255.255.252::eth0:off random.trust_cpu=on"
+		" ip=" + l.Guest.String() + "::" + l.Host.String() + ":" + mask.String() + "::eth0:off random.trust_cpu=on"
 }
 
 // guestMAC is a locally administered address that holds the guest IPv4

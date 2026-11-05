@@ -65,11 +65,19 @@ type JobCheck struct {
 // repository. The scheduler then rejects the job instead of trying again.
 var ErrRunUnreadable = errors.New("runplane cannot read the run")
 
+// Host is one server and its driver, as the scheduler sees it.
+type Host struct {
+	ServerID string
+	Name     string
+	Arch     string // "x64" or "arm64"
+	Driver   sandbox.Driver
+}
+
 // Fleet is the set of servers that can operate sandboxes.
 type Fleet interface {
 	// Online returns the servers that can take new sandboxes now: status
 	// online, connected, and not draining or disabled.
-	Online() []sandbox.Host
+	Online() []Host
 	// Driver returns the driver of a connected server, or nil.
 	Driver(serverID string) sandbox.Driver
 	// Image returns the image for new sandboxes on the server, if the image

@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/host"
@@ -22,7 +21,9 @@ import (
 type Node interface {
 	Driver() sandbox.Driver
 	Facts(ctx context.Context) (host.Info, error)
-	Doctor(ctx context.Context) ([]host.Check, error)
+	// Doctor runs the checks of the server. minFreeDiskPercent is the
+	// min_free_disk_percent setting.
+	Doctor(ctx context.Context, minFreeDiskPercent float64) ([]host.Check, error)
 	// EnsureImage makes an image ready on the server. progress, if not nil,
 	// gets each step.
 	EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error)
@@ -32,7 +33,6 @@ type Node interface {
 	// PruneRunners removes the runner bundles except the two newest and the
 	// versions in keep.
 	PruneRunners(ctx context.Context, keep []string) error
-	Configure(ctx context.Context, s sandbox.Settings) error
 	// Update replaces the runplane binary with a release. The server runs
 	// the new binary after a restart.
 	Update(ctx context.Context, version string) error
@@ -72,8 +72,8 @@ type LocalConfig struct {
 	Bundles *image.Bundles
 	Updater *update.Updater
 	// Doctor holds the doctor options of this server. Its DataDir also
-	// selects the disk for the facts and the stats. Configure sets
-	// MinFreeDiskPercent.
+	// selects the disk for the facts and the stats. Doctor sets
+	// MinFreeDiskPercent, and the internet check is the Probe of Driver.
 	Doctor host.Options
 	Logger *slog.Logger
 }
@@ -81,7 +81,6 @@ type LocalConfig struct {
 // LocalNode is the server that runplane operates on.
 type LocalNode struct {
 	cfg   LocalConfig
-	mu    sync.Mutex // guards cfg.Doctor
 	stats chan host.Stats
 }
 
@@ -115,10 +114,10 @@ func (n *LocalNode) Facts(ctx context.Context) (host.Info, error) {
 	return host.Facts(ctx, n.cfg.Doctor.DataDir)
 }
 
-func (n *LocalNode) Doctor(ctx context.Context) ([]host.Check, error) {
-	n.mu.Lock()
+func (n *LocalNode) Doctor(ctx context.Context, minFreeDiskPercent float64) ([]host.Check, error) {
 	opts := n.cfg.Doctor
-	n.mu.Unlock()
+	opts.MinFreeDiskPercent = minFreeDiskPercent
+	opts.Internet = n.cfg.Driver.Probe
 	return host.Doctor(ctx, n.cfg.Driver.Mode(), opts), nil
 }
 
@@ -140,18 +139,6 @@ func (n *LocalNode) GCImages(ctx context.Context, keep []string) error {
 
 func (n *LocalNode) PruneRunners(_ context.Context, keep []string) error {
 	return n.cfg.Bundles.Prune(keep)
-}
-
-// Configure keeps the free disk limit for the doctor and passes the
-// settings to the driver if it takes them.
-func (n *LocalNode) Configure(_ context.Context, s sandbox.Settings) error {
-	n.mu.Lock()
-	n.cfg.Doctor.MinFreeDiskPercent = float64(s.MinFreeDiskPercent)
-	n.mu.Unlock()
-	if c, ok := n.cfg.Driver.(sandbox.Configurable); ok {
-		return c.Configure(s)
-	}
-	return nil
 }
 
 func (n *LocalNode) Update(ctx context.Context, version string) error {

@@ -1818,7 +1818,7 @@ export interface components {
             placeable_server_ids: string[];
             /**
              * Format: int64
-             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start.
+             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
              */
             placeable_servers: number;
             /**
@@ -1852,7 +1852,7 @@ export interface components {
             placeable_server_ids: string[];
             /**
              * Format: int64
-             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start.
+             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
              */
             placeable_servers: number;
         };

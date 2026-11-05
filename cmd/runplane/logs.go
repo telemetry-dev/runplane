@@ -83,7 +83,11 @@ func (l logs) sandboxLog(ctx context.Context, b store.Sandbox, follow bool) (io.
 	if drv == nil {
 		return nil, huma.Error503ServiceUnavailable("The server of this sandbox is not connected.")
 	}
-	return drv.Logs(ctx, b.ID, follow)
+	rc, err := drv.Logs(ctx, b.ID, follow)
+	if errors.Is(err, sandbox.ErrNotFound) {
+		return nil, huma.Error404NotFound("The sandbox stopped, and its log went with it.")
+	}
+	return rc, err
 }
 
 // diagLines keeps the step output of a sandbox log line.
