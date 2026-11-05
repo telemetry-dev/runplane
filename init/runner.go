@@ -18,7 +18,6 @@ var (
 	completedRe = regexp.MustCompile(`^Job (.+) completed with result: (\S+)$`)
 )
 
-// parseRunnerLine finds the runner lifecycle events in a line of the runner stdout.
 func parseRunnerLine(line string) (sandbox.RunnerEvent, bool) {
 	msg := strings.TrimSpace(line)
 	if loc := stampRe.FindStringIndex(msg); loc != nil {
@@ -36,9 +35,8 @@ func parseRunnerLine(line string) (sandbox.RunnerEvent, bool) {
 	return sandbox.RunnerEvent{}, false
 }
 
-// writeEnvFile writes the runner .env file. The runner sets each
-// "key=value" line as an environment variable, so it skips an entry that
-// cannot fit on one line.
+// The runner sets each "key=value" line of .env as an environment variable,
+// so writeEnvFile skips an entry that cannot fit on one line.
 func writeEnvFile(path string, env map[string]string, log *slog.Logger) error {
 	var b strings.Builder
 	for _, k := range slices.Sorted(maps.Keys(env)) {

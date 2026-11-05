@@ -25,7 +25,6 @@ import {
 import { useThemeMode } from '~/lib/theme-mode'
 import { useFrameSubscribed } from './pending'
 
-/** The user row at the bottom of the sidebar; opens theme mode, password change, and sign out. */
 export function UserMenu() {
   const subscribed = useFrameSubscribed()
   const user = useQuery({ ...sessionQuery, subscribed }).data

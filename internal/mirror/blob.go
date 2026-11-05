@@ -96,11 +96,9 @@ func (m *Mirror) release(d *download) {
 	}
 }
 
-// streamBlob sends the blob to the client while the download runs.
 func (m *Mirror) streamBlob(w http.ResponseWriter, r *http.Request, d *download) {
 	ctx := r.Context()
 	if r.Header.Get("Range") != "" {
-		// Serve the range from the complete file after the download.
 		end, err := d.wait(ctx, math.MaxInt64)
 		if err != nil {
 			m.fail(w, r, err, "BLOB_UNKNOWN")
@@ -167,8 +165,6 @@ func (m *Mirror) endDownload(d *download) {
 	delete(m.downloads, d.digest)
 }
 
-// fetchBlob copies the blob from upstream into a temp file and checks its
-// digest.
 func (m *Mirror) fetchBlob(d *download, name string) error {
 	ctx, cancel := context.WithCancel(m.ctx)
 	defer cancel()
@@ -273,7 +269,6 @@ func (d *download) wait(ctx context.Context, off int64) (int64, error) {
 	}
 }
 
-// stallReader resets the stall timer at each read.
 type stallReader struct {
 	r     io.Reader
 	timer *time.Timer

@@ -3,7 +3,6 @@ import { Fragment, type ReactNode } from 'react'
 import { LogoMark } from '~/components/ui/brand'
 import { cx } from '~/lib/cx'
 
-/** Page frame of the Setup designs, also used by login and invites: top bar, then centered content. */
 export function SetupFrame({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-dvh flex-col bg-neutral-1">
@@ -19,7 +18,6 @@ export function SetupFrame({ children }: { children: ReactNode }) {
   )
 }
 
-/** The 560px content column of the Setup designs. */
 export function SetupColumn({ children }: { children: ReactNode }) {
   return <main className="mt-xxl flex w-full max-w-[560px] flex-col gap-xl">{children}</main>
 }

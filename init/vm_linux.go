@@ -106,7 +106,6 @@ func setupVM() error {
 	return unix.Setrlimit(unix.RLIMIT_NOFILE, &unix.Rlimit{Cur: 65536, Max: 65536})
 }
 
-// pivot makes root the new root mount and drops the old root.
 func pivot(root string) error {
 	if err := unix.Chdir(root); err != nil {
 		return err
@@ -218,7 +217,6 @@ func mount(src, target, fstype string, flags uintptr, data string) error {
 	return nil
 }
 
-// mountOnce mounts unless something is mounted at target already.
 func mountOnce(src, target, fstype string, flags uintptr, data string) error {
 	if isMountPoint(target) {
 		return nil
@@ -226,8 +224,7 @@ func mountOnce(src, target, fstype string, flags uintptr, data string) error {
 	return mount(src, target, fstype, flags, data)
 }
 
-// isMountPoint reports if path is a mount point. Without /proc it reports
-// false.
+// Without /proc, isMountPoint reports false.
 func isMountPoint(path string) bool {
 	info, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {

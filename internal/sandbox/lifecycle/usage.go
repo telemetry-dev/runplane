@@ -30,7 +30,6 @@ func (c *Core[T]) sampleLoop(ctx context.Context) {
 	}
 }
 
-// sample sends the metrics of the busy sandboxes.
 func (c *Core[T]) sample(ctx context.Context) {
 	for _, b := range c.Boxes() {
 		if b.State() != sandbox.StateBusy {

@@ -247,7 +247,6 @@ func loopsAfterRelease(t *testing.T, path string) []string {
 	}
 }
 
-// loopsOf returns the loop devices with path as backing file.
 func loopsOf(t *testing.T, path string) []string {
 	t.Helper()
 	files, err := filepath.Glob("/sys/block/loop*/loop/backing_file")

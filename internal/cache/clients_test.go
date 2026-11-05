@@ -142,7 +142,6 @@ func TestActionsCacheClient(t *testing.T) {
 		t.Errorf("restore by restore key: %v", res)
 	}
 
-	// The feature branch entry is not visible from a pull request.
 	if res := node("sb-pr1", "restore", "npm-linux-abc"); res["matched"] != nil {
 		t.Errorf("pull request restored a feature branch entry: %v", res)
 	}

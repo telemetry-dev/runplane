@@ -275,7 +275,7 @@ func TestShutdownWhileWaitingForConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go link.run(ctx)
-	// As guest.run does: a shutdown ends the wait for the config.
+	// As guestInit.run does: a shutdown ends the wait for the config.
 	configCtx, stop := context.WithCancel(ctx)
 	go func() {
 		<-req.stop
@@ -343,7 +343,6 @@ func (r *recorder) logList() []guest.LogLine {
 	return slices.Clone(r.logs)
 }
 
-// recordConn copies what the guest writes to sent.
 type recordConn struct {
 	net.Conn
 	sent io.Writer
@@ -354,7 +353,6 @@ func (c *recordConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
-// syncBuffer is a bytes.Buffer that goroutines can share.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

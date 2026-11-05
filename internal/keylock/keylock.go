@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// Map holds a lock for each key. The zero value is ready to use.
+// The zero value of Map is ready to use.
 type Map struct {
 	mu   sync.Mutex
 	busy map[string]chan struct{} // closed when the key is free again

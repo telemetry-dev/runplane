@@ -52,8 +52,7 @@ func (s *stats) run(ctx context.Context) {
 	}
 }
 
-// flush writes the pending counts. Counts that fail to write wait for the
-// next flush.
+// Counts that flush fails to write wait for the next flush.
 func (s *stats) flush(ctx context.Context) {
 	s.mu.Lock()
 	batch := s.pending

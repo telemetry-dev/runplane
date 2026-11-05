@@ -42,7 +42,7 @@ func (c *Client) Done() <-chan struct{} { return c.sess.CloseChan() }
 
 func (c *Client) Close() error { return c.sess.Close() }
 
-// Config gets the job config. It returns ErrNoConfig when the host has none.
+// Config returns ErrNoConfig when the host has no job config.
 func (c *Client) Config(ctx context.Context) (Config, error) {
 	var cfg Config
 	resp, err := c.do(ctx, http.MethodGet, PathConfig, "", nil)
@@ -59,7 +59,6 @@ func (c *Client) Config(ctx context.Context) (Config, error) {
 	return cfg, statusError(resp)
 }
 
-// PostEvent sends a runner event.
 func (c *Client) PostEvent(ctx context.Context, ev sandbox.RunnerEvent) error {
 	body, err := json.Marshal(ev)
 	if err != nil {

@@ -143,7 +143,6 @@ func next(t *testing.T, c *Core[note]) sandbox.Event {
 	}
 }
 
-// quiet fails the test if an event comes in a short time.
 func quiet(t *testing.T, c *Core[note]) {
 	t.Helper()
 	select {

@@ -149,7 +149,6 @@ func (s *Service) reconcileNow(ctx context.Context) {
 	s.reconcile(ctx)
 }
 
-// anyInstallation returns an installation that is not suspended.
 func (s *Service) anyInstallation(ctx context.Context) (store.Installation, bool) {
 	list, err := s.st.ListInstallations(ctx)
 	if err != nil {

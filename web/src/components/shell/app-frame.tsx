@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { AppSidebar } from './app-sidebar'
 
-/** The frame of the signed-in pages: a skip link, the sidebar, and the content column. */
 export function AppFrame({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-dvh flex-col md:flex-row">
@@ -12,7 +11,6 @@ export function AppFrame({ children }: { children: ReactNode }) {
           event.preventDefault()
           document.getElementById('content')?.focus()
         }}
-        // Above the viewport until it has the focus.
         className="fixed top-s left-s z-30 -translate-y-[calc(100%+var(--space-xl))] rounded-s bg-neutral-1 px-m py-xs text-s font-medium text-neutral-10 shadow-[0_0_0_1px_var(--neutral-4),var(--shadow-m)] focus:translate-y-0"
       >
         Skip to content

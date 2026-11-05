@@ -95,9 +95,6 @@ func (s *Service) Built(ctx context.Context, version, arch string, b runner.Bund
 	s.cfg.Bus.Publish(events.RunnerVersion(after))
 }
 
-// check records the latest release for the server arches, reads the end
-// dates of the known versions, and warns about the versions in use that end
-// soon.
 func (s *Service) check(ctx context.Context) error {
 	rel, err := runner.Releases{API: s.cfg.API, Auth: runner.TokenAuth(s.cfg.GitHub.Token)}.Latest(ctx)
 	if err != nil {
@@ -163,9 +160,8 @@ func (s *Service) readEndDates(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// earliest returns the earlier time. Each new sandbox registers a JIT
-// runner and then runs a job, so the version ends at the first of the
-// registration and runtime end dates.
+// Each new sandbox registers a JIT runner and then runs a job, so a version
+// ends at the first of its registration and runtime end dates.
 func earliest(a, b *time.Time) *time.Time {
 	switch {
 	case a == nil:

@@ -193,7 +193,6 @@ func TestRepositoryIsolation(t *testing.T) {
 	if matched, _ := other.lookup(version, "k"); matched != "" {
 		t.Errorf("other/lib restored the acme/app entry %q", matched)
 	}
-	// A signed URL of acme/app is useless in a sandbox of other/lib.
 	if status, _ := other.get(strings.Replace(acmeURL, f.url, f.proxied, 1), nil); status != http.StatusForbidden {
 		t.Errorf("download from another repository: %d, want 403", status)
 	}

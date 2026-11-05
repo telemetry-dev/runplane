@@ -35,7 +35,7 @@ type SearchInputProps = Omit<InputProps, 'type'> & {
 
 /**
  * Input with a leading search icon, as "Search job, branch or commit" in Jobs and
- * "Find in logs" in Job detail. The outer field takes the focus outline.
+ * "Find in logs" in Job detail.
  */
 export function SearchInput({ className, ...props }: SearchInputProps) {
   return (

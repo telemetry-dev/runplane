@@ -57,7 +57,6 @@ type SelectPopupProps = {
   children: ReactNode
 }
 
-/** Opens below the trigger, as wide as the trigger (or `minWidth`), and scrolls when it is taller than the space. */
 export function SelectPopup({ minWidth = 0, children }: SelectPopupProps) {
   return (
     <BaseSelect.Portal>

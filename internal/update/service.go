@@ -117,8 +117,7 @@ func (s *Service) Apply(ctx context.Context) (Status, error) {
 	return st, nil
 }
 
-// setState changes the state from from to to. It reports false if the
-// state is not from.
+// setState reports false if the state is not from.
 func (s *Service) setState(from, to State) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

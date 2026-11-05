@@ -63,7 +63,7 @@ func (f *File) Commit() error {
 	return nil
 }
 
-// Close closes the file. Before a Commit, it also removes the file.
+// Before a Commit, Close also removes the file.
 func (f *File) Close() error {
 	err := f.File.Close()
 	if !f.committed {

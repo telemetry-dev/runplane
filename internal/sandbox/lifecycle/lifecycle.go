@@ -43,7 +43,6 @@ const (
 // A sandbox ID is also a folder, a container, a jailer, and a unit name.
 var idPattern = regexp.MustCompile(`^[0-9a-z]{1,64}$`)
 
-// ValidID reports if id can be the ID of a sandbox.
 func ValidID(id string) bool { return idPattern.MatchString(id) }
 
 var errClosed = errors.New("the driver is closed")
@@ -231,7 +230,6 @@ func (c *Core[T]) create(ctx context.Context, b *Box[T], spec sandbox.Spec, s sa
 	return c.backend.Create(ctx, b, spec, s)
 }
 
-// abort removes a sandbox whose start failed.
 func (c *Core[T]) abort(b *Box[T]) {
 	b.detach()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -450,7 +448,6 @@ func (c *Core[T]) watch(ctx context.Context, b *Box[T]) {
 	}
 }
 
-// finish removes a sandbox whose process ended and sends its last state.
 func (c *Core[T]) finish(b *Box[T]) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -492,8 +489,7 @@ func (c *Core[T]) drop(b *Box[T]) {
 	}
 }
 
-// halt does a stop of b: a shutdown request, stopGrace, then a kill. It
-// returns when b is gone.
+// halt returns when b is gone.
 func (c *Core[T]) halt(ctx context.Context, b *Box[T]) error {
 	select {
 	case <-b.started:

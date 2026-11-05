@@ -43,7 +43,6 @@ func TestUseSkipsNamesThatAreNotTaps(t *testing.T) {
 	}
 }
 
-// acquireAll acquires up to n leases and returns their indexes.
 func acquireAll(a *allocator, n int) []int {
 	var got []int
 	for range n {

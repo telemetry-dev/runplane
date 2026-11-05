@@ -16,7 +16,8 @@ LABEL org.opencontainers.image.title="runplane runner, Ubuntu ${UBUNTU}" \
       org.opencontainers.image.source="https://github.com/runplane/runplane" \
       dev.runplane.managed=true
 
-# Major versions for the tool cache. The build installs the latest release of each.
+# Versions for the tool cache: major versions of Node.js, minor versions of
+# Python and Go. The build installs the latest release of each.
 ARG NODE_VERSIONS="22 24 26"
 ARG NODE_DEFAULT=24
 ARG PYTHON_VERSIONS="3.11 3.12 3.13 3.14"
@@ -49,7 +50,6 @@ RUN export DEBIAN_FRONTEND=noninteractive; \
     locale-gen; \
     rm -rf /var/lib/apt/lists/*
 
-# Docker Engine with buildx and compose, and the GitHub CLI.
 RUN export DEBIAN_FRONTEND=noninteractive; \
     arch=$(dpkg --print-architecture); \
     codename=$(. /etc/os-release && echo "$VERSION_CODENAME"); \

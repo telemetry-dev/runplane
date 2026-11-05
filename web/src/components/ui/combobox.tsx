@@ -20,7 +20,6 @@ export const Combobox = BaseCombobox.Root
 
 type ComboboxInputProps = Omit<BaseCombobox.Input.Props, 'className'> & { className?: string }
 
-/** The input field with its chevron trigger. Focus on the input outlines the whole field. */
 export function ComboboxInput({ className, ...props }: ComboboxInputProps) {
   return (
     <BaseCombobox.InputGroup
@@ -53,7 +52,6 @@ type ComboboxPopupProps = {
   children: BaseCombobox.List.Props['children']
 }
 
-/** Anchored to the whole field and as wide as it; scrolls past 360px. */
 export function ComboboxPopup({ empty, children }: ComboboxPopupProps) {
   return (
     <BaseCombobox.Portal>

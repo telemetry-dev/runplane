@@ -45,7 +45,6 @@ export function DrawerPopup({ title, description, width = 420, className, childr
             'transition-transform duration-(--motion-large-duration) ease-large data-swiping:duration-0 data-swiping:select-none',
             '[transform:translateY(var(--drawer-swipe-movement-y))]',
             'data-starting-style:[transform:translateY(100%)] data-ending-style:[transform:translateY(100%)]',
-            // Side panel at the right edge.
             'data-[swipe-direction=right]:max-h-none data-[swipe-direction=right]:rounded-t-zero data-[swipe-direction=right]:rounded-l-m',
             'data-[swipe-direction=right]:[transform:translateX(var(--drawer-swipe-movement-x))]',
             'data-[swipe-direction=right]:data-starting-style:[transform:translateX(100%)]',

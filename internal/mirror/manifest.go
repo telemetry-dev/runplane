@@ -228,7 +228,6 @@ func (t *tagIndex) get(name, tag string) (tagEntry, bool) {
 	return te, ok
 }
 
-// put records that name:tag has the digest now.
 func (t *tagIndex) put(name, tag, digest string) error {
 	te := tagEntry{Name: name, Tag: tag, Digest: digest, Checked: t.now().UTC()}
 	data, err := json.Marshal(te)

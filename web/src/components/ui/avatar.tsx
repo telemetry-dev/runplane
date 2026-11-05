@@ -10,7 +10,6 @@ type AvatarProps = {
   className?: string
 }
 
-/** Round avatar of the designs: the image when it loads, otherwise initials on neutral-3. */
 export function Avatar({ name, src, size = 'm', className }: AvatarProps) {
   return (
     <BaseAvatar.Root

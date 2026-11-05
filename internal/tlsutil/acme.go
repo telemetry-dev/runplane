@@ -127,8 +127,6 @@ func (a *ACME) start(domain, email string, handler http.Handler) error {
 	return nil
 }
 
-// retryLater records why a port did not open, for Status, and starts the
-// timer of the next try. It returns err.
 func (a *ACME) retryLater(err error, domain, email string, handler http.Handler) error {
 	a.portErr = "Cannot open the port: " + err.Error()
 	if op, ok := errors.AsType[*net.OpError](err); ok && op.Addr != nil {
@@ -158,7 +156,6 @@ const (
 	CertError      = "error" // the ports do not open, or no valid certificate and the last request failed
 )
 
-// CertStatus is the state of the certificate of the domain.
 type CertStatus struct {
 	State    string
 	NotAfter time.Time // zero without a valid certificate
@@ -217,8 +214,7 @@ func leafOf(data []byte) *x509.Certificate {
 	}
 }
 
-// Stop stops the HTTPS and HTTP servers. Long requests, such as event
-// streams, are closed when ctx ends.
+// Stop closes long requests, such as event streams, when ctx ends.
 func (a *ACME) Stop(ctx context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -252,8 +248,8 @@ func (a *ACME) serve(name string, serve func() error) {
 	}
 }
 
-// redirect sends plain HTTP requests to the same path on the HTTPS domain.
-// It uses the configured domain, not the request Host header.
+// redirect ignores the request Host header, so port 80 is not an open
+// redirect.
 func redirect(domain string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://"+domain+r.URL.RequestURI(), http.StatusPermanentRedirect)

@@ -76,9 +76,8 @@ func (g *guestInit) prepareRunnerDir(bundle string, acct account) error {
 var writablePaths = []string{"/home", "/root", "/opt", "/usr/local"}
 
 // overlayWritablePaths puts the writes to writablePaths on scratch in
-// container mode: an overlay with the image folder as the lower layer and
-// the upper layer on scratch. Else they go to the container root, which is
-// on the host disk with no limit. Without a scratch disk it does nothing.
+// container mode. Else they go to the container root, which is on the host
+// disk with no limit. Without a scratch disk it does nothing.
 // The sysbox driver stops a sandbox whose writes outside scratch pass its
 // disk size, so a failed overlay leaves the host disk safe.
 func (g *guestInit) overlayWritablePaths() {
@@ -92,7 +91,6 @@ func (g *guestInit) overlayWritablePaths() {
 	}
 }
 
-// overlayOnScratch mounts an overlay on path, with path as the lower layer.
 func overlayOnScratch(path string) error {
 	var st unix.Stat_t
 	if err := unix.Stat(path, &st); errors.Is(err, unix.ENOENT) {
@@ -139,8 +137,6 @@ func (g *guestInit) startDockerd() *child {
 	return c
 }
 
-// dockerDataRoot puts guest.DockerDir on scratch unless something is
-// mounted there already.
 func dockerDataRoot() error {
 	if isMountPoint(guest.DockerDir) || !isMountPoint(guest.ScratchDir) {
 		return nil
@@ -261,7 +257,6 @@ wait:
 	return code, ""
 }
 
-// child is a process that init started and reaps.
 type child struct {
 	pid    int
 	exit   <-chan int

@@ -97,8 +97,8 @@ func (l *guestLink) serve(ctx context.Context, c *guest.Client) {
 	l.mu.Unlock()
 }
 
-// config gets the guest.Config. It waits for a connection and asks again on
-// the next connection if a request fails. Call it one time only.
+// config waits for a connection. When a request fails, it asks again after a
+// second or on the next connection. Call it one time only.
 func (l *guestLink) config(ctx context.Context) (guest.Config, error) {
 	for {
 		c, err := l.wait(ctx)

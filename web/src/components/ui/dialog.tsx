@@ -15,7 +15,7 @@ type DialogPopupProps = Omit<BaseDialog.Popup.Props, 'className' | 'style' | 'ti
   className?: string
 }
 
-/** Modal of gui/components/runplane/dialog.md and the "Servers · Add server" design: title row with close, then content. */
+/** Modal of gui/components/runplane/dialog.md and the "Servers · Add server" design. */
 export function DialogPopup({ title, width = 400, className, children, ...props }: DialogPopupProps) {
   return (
     <BaseDialog.Portal>
@@ -45,7 +45,6 @@ export function DialogFooter({ children }: { children: ReactNode }) {
   return <div className="flex flex-wrap justify-end gap-xs">{children}</div>
 }
 
-// Shared with AlertDialog: a centered popup over a backdrop, both with Large motion.
 export const modalBackdrop = cx(
   'fixed inset-zero z-20 bg-neutral-10-transparent dark:bg-neutral-1-transparent',
   'transition-opacity duration-(--motion-large-duration) ease-large',

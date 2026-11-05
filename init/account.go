@@ -62,8 +62,6 @@ func lookupAccount(name, passwdPath, groupPath string) (account, error) {
 	return a, nil
 }
 
-// env returns the environment for a process of the account: the init
-// environment without TERM, with the account's HOME, USER, LOGNAME, and SHELL.
 func (a account) env(extra ...string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "TERM=") })
 	if os.Getenv("LANG") == "" {

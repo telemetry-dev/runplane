@@ -34,7 +34,6 @@ type Config struct {
 	Log   *slog.Logger // nil: no log
 }
 
-// Logs keeps the logs of the jobs.
 type Logs struct {
 	cfg Config
 	log *slog.Logger

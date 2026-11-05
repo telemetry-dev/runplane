@@ -297,7 +297,6 @@ func names(t *testing.T, dir string) string {
 	return strings.Join(out, " ")
 }
 
-// assertNoTemp fails if dir has a temp file of an Ensure call.
 func assertNoTemp(t *testing.T, dir string) {
 	t.Helper()
 	entries, _ := os.ReadDir(dir)

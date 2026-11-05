@@ -10,10 +10,7 @@ type ScrollAreaProps = {
   children: ReactNode
 }
 
-/**
- * Scroll area of gui/components/runplane/scroll-area.md: native scrolling with
- * thin 6px bars that show when the content overflows. Both axes scroll when needed.
- */
+/** Scroll area of gui/components/runplane/scroll-area.md. */
 export function ScrollArea({ className, contentClassName, children }: ScrollAreaProps) {
   return (
     <BaseScrollArea.Root className={cx('relative min-h-zero overflow-hidden', className)}>

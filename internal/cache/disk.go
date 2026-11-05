@@ -97,7 +97,6 @@ func (d disk) putBlob(id string, body io.Reader, limit int64) error {
 	return os.RemoveAll(dir)
 }
 
-// size returns the size of the committed blob of an entry.
 func (d disk) size(id string) (int64, error) {
 	info, err := os.Stat(d.blob(id))
 	if errors.Is(err, os.ErrNotExist) {
@@ -113,7 +112,6 @@ func (d disk) open(id string) (*os.File, error) {
 	return os.Open(d.blob(id))
 }
 
-// remove deletes the blob and the staged blocks of an entry.
 func (d disk) remove(id string) error {
 	err := os.Remove(d.blob(id))
 	if errors.Is(err, os.ErrNotExist) {
