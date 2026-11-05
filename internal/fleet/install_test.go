@@ -28,10 +28,8 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/runplane/runplane"
-	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/sshinstall/sshtest"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/update"
 )
 
 // printValues parses the flags of install.sh and prints the values that an
@@ -75,32 +73,31 @@ func values(out string) (map[string]string, error) {
 // NewToken makes, and the command that runs the install.sh of the primary
 // with only a token.
 func TestInstallValues(t *testing.T) {
-	h := newHarness(t, newFakeNode("arm64"))
-	h.run()
-	_, port, _ := net.SplitHostPort(h.cfg.AgentListen)
 	tests := []struct {
 		name, version string
 		base          string // of NewToken; "": install.sh of the primary with a token
 		url           string // that curl gets
 		wantVersion   string
-		wantPrimary   string
+		wantHost      string // of the agent address of the primary
 	}{
-		{"script of a release", "v1.4.2", "", "http://ci.example.com:8484/install.sh", "v1.4.2", "ci.example.com:" + port},
-		{"script of a development build", "dev", "", "http://ci.example.com/install.sh", "latest", "ci.example.com:" + port},
-		{"script over IPv6", "v1.4.2", "", "http://[2001:db8::5]:8484/install.sh", "v1.4.2", "[2001:db8::5]:" + port},
-		{"script over an SSH tunnel", "v1.4.2", "", "http://localhost:9000/install.sh", "v1.4.2", "203.0.113.7:" + port},
-		{"command with a public URL", "v1.4.2", "https://ci.example.com", "https://ci.example.com/install.sh", "v1.4.2", "ci.example.com:" + port},
+		{"script of a release", "v1.4.2", "", "http://ci.example.com:8484/install.sh", "v1.4.2", "ci.example.com"},
+		{"script of a development build", "dev", "", "http://ci.example.com/install.sh", "latest", "ci.example.com"},
+		{"script over IPv6", "v1.4.2", "", "http://[2001:db8::5]:8484/install.sh", "v1.4.2", "2001:db8::5"},
+		{"script over an SSH tunnel", "v1.4.2", "", "http://localhost:9000/install.sh", "v1.4.2", "203.0.113.7"},
+		{"command with a public URL", "v1.4.2", "https://ci.example.com", "https://ci.example.com/install.sh", "v1.4.2", "ci.example.com"},
 		// Plain HTTP carries no proof of the primary, so the script comes from GitHub.
 		{"command over an SSH tunnel", "v1.4.2", "http://localhost:9000",
-			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "v1.4.2", "203.0.113.7:" + port},
+			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "v1.4.2", "203.0.113.7"},
 		{"command with no domain", "v1.4.2", "http://203.0.113.7:8484",
-			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "v1.4.2", "203.0.113.7:" + port},
+			"https://github.com/acme/runplane-fork/releases/download/v1.4.2/install.sh", "v1.4.2", "203.0.113.7"},
 		{"command of a development build", "dev", "http://203.0.113.7:8484",
-			"https://github.com/acme/runplane-fork/releases/latest/download/install.sh", "latest", "203.0.113.7:" + port},
+			"https://github.com/acme/runplane-fork/releases/latest/download/install.sh", "latest", "203.0.113.7"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setRelease(t, "acme/runplane-fork", tt.version)
+			h := newHarness(t, newFakeNode("arm64"), func(c *Config) { c.Repo, c.Version = "acme/runplane-fork", tt.version })
+			h.run()
+			_, port, _ := net.SplitHostPort(h.cfg.AgentListen)
 			command, token := "curl -fsSL '"+tt.url+"' | sudo sh -s -- --token rp_srv_TEST", "rp_srv_TEST"
 			if tt.base != "" {
 				tok, err := h.f.NewToken(t.Context(), tt.base, "build-1", "")
@@ -112,7 +109,7 @@ func TestInstallValues(t *testing.T) {
 			// The release script on GitHub has no values of this primary.
 			served := runplane.InstallScript
 			if !strings.HasPrefix(tt.url, "https://github.com/") {
-				served = h.f.Script(httptest.NewRequest("GET", tt.url, nil))
+				served = h.f.Script(httptest.NewRequest("GET", tt.url, nil).Host)
 			}
 			script, err := replaceMain(served, printValues)
 			if err != nil {
@@ -133,7 +130,7 @@ sudo() { "$@"; }
 			}
 			got, err := values(out)
 			want := map[string]string{
-				"REPO": "acme/runplane-fork", "VERSION": tt.wantVersion, "PRIMARY": tt.wantPrimary,
+				"REPO": "acme/runplane-fork", "VERSION": tt.wantVersion, "PRIMARY": net.JoinHostPort(tt.wantHost, port),
 				"FINGERPRINT": h.fp, "TOKEN": token, "ROLE": "agent",
 			}
 			if err != nil || !maps.Equal(got, want) {
@@ -179,8 +176,6 @@ func TestInstallScriptSignature(t *testing.T) {
 	if out, err := exec.Command("openssl", "version").Output(); err != nil || !bytes.HasPrefix(out, []byte("OpenSSL ")) {
 		t.Skip("install.sh checks signatures with OpenSSL 3 or newer")
 	}
-	h := newHarness(t, newFakeNode("arm64"))
-	h.run()
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -189,13 +184,13 @@ func TestInstallScriptSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publicKey := update.PublicKey
-	t.Cleanup(func() { update.PublicKey = publicKey })
-	update.PublicKey = base64.StdEncoding.EncodeToString(pub)
-	setRelease(t, "acme/runplane", "v1.4.2")
+	h := newHarness(t, newFakeNode("arm64"), func(c *Config) {
+		c.Repo, c.Version, c.PublicKey = "acme/runplane", "v1.4.2", base64.StdEncoding.EncodeToString(pub)
+	})
+	h.run()
 	// curl takes the files from $RELEASES: install.sh calls it with
 	// "-o <file> <url>" at the end.
-	script, err := replaceMain(h.f.Script(httptest.NewRequest("GET", "http://ci.example.com/install.sh", nil)), `
+	script, err := replaceMain(h.f.Script("ci.example.com"), `
 curl() {
 	while [ $# -gt 2 ]; do shift; done
 	cp "$RELEASES/${2#https://github.com/}" "$1" 2>/dev/null || return 22
@@ -321,7 +316,7 @@ func TestInstallSSH(t *testing.T) {
 		return 0
 	})
 
-	id, err := h.f.InstallSSH(ctx, "http://localhost:8484", api.SSHInstall{Name: "build-2", Host: "127.0.0.1", Port: port(srv.Addr), User: "deploy"})
+	id, err := h.f.InstallSSH(ctx, "http://localhost:8484", SSHInstall{Name: "build-2", Host: "127.0.0.1", Port: port(srv.Addr), User: "deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +345,7 @@ func TestInstallSSH(t *testing.T) {
 	}
 	fmt.Fprintln(f, knownhosts.Line([]string{srv2.Addr}, clientKey))
 	f.Close()
-	id2, err := h.f.InstallSSH(ctx, "http://localhost:8484", api.SSHInstall{Name: "build-3", Host: "127.0.0.1", Port: port(srv2.Addr), User: "deploy"})
+	id2, err := h.f.InstallSSH(ctx, "http://localhost:8484", SSHInstall{Name: "build-3", Host: "127.0.0.1", Port: port(srv2.Addr), User: "deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}

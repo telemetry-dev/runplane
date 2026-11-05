@@ -78,7 +78,7 @@ func TestDeleteServerLeavesThePools(t *testing.T) {
 		must(t, err)
 	}
 
-	must(t, s.DeleteServer(ctx, "s1"))
+	must(t, s.DeleteServer(ctx, "s1", time.Now()))
 	for _, tt := range tests {
 		p, err := s.GetPool(ctx, tt.label)
 		must(t, err)
@@ -86,7 +86,7 @@ func TestDeleteServerLeavesThePools(t *testing.T) {
 			t.Errorf("pool %s: server_ids %q, enabled %v; want %q, %v", tt.label, p.ServerIDs, p.Enabled, tt.want, tt.enabled)
 		}
 	}
-	if err := s.DeleteServer(ctx, "s1"); !errors.Is(err, ErrNotFound) {
+	if err := s.DeleteServer(ctx, "s1", time.Now()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("second delete: err = %v, want ErrNotFound", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestDoctorResultReplacesTheLastOne(t *testing.T) {
 		t.Fatalf("doctor result %+v, %v; want the second run", r, err)
 	}
 	// The result goes with its server.
-	must(t, s.DeleteServer(ctx, "srv"))
+	must(t, s.DeleteServer(ctx, "srv", time.Now()))
 	if _, err := s.GetDoctorResult(ctx, "srv"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("doctor result after the server is deleted: err = %v, want ErrNotFound", err)
 	}

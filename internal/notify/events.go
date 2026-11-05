@@ -89,11 +89,11 @@ func ServerUnreachableEvent(dashboard, serverID, name string, lastSeen time.Time
 	}
 }
 
-func DiskLowEvent(dashboard, serverID, name string, freePercent float64, minFreePercent int) Event {
+func DiskLowEvent(dashboard, serverID, name string, freePercent, minFreePercent float64) Event {
 	return Event{
 		Type:  DiskLow,
 		Title: "Disk almost full on " + name,
-		Text:  fmt.Sprintf("%.0f%% of the disk is free. New sandboxes start only when more than %d%% is free.", freePercent, minFreePercent),
+		Text:  fmt.Sprintf("%.0f%% of the disk is free. New sandboxes start only when more than %g%% is free.", freePercent, minFreePercent),
 		URL:   link(dashboard, "/servers/"+serverID),
 		Data: map[string]any{
 			"server_id":        serverID,

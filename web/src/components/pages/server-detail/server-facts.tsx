@@ -17,8 +17,7 @@ export function ServerFacts({ server }: { server: Server }) {
   const mode = sandboxMode(server)
   const reported = server.arch !== ''
   const update = agentUpdateNote(server)
-  // The API puts the reason of a failed update in the status detail.
-  const failure = server.update_state === 'failed' ? server.status_detail : ''
+  const failure = server.update_state === 'failed' ? server.update_error : ''
   return (
     // The facts sit closer to the title than the page gap, as in Job detail.
     <KeyValueList className="-mt-m">

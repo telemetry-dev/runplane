@@ -155,6 +155,6 @@ func (h *Handler) installScript(ctx context.Context, _ *struct{}) (*huma.StreamR
 		r, w := humago.Unwrap(hctx)
 		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Write(h.d.InstallScript.Script(r))
+		w.Write(h.d.InstallScript.Script(r.Host))
 	}}, nil
 }

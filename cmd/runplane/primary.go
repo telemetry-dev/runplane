@@ -26,7 +26,6 @@ import (
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/github"
 	"github.com/runplane/runplane/internal/joblog"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -210,7 +209,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	// Release reads with an installation token have a higher rate limit.
 	token := func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
 	local, err := newLocal(context.Background(), cfg, localConfig{
-		mode: mode, settings: fleet.DriverSettings(settings), unit: "runplane", token: token,
+		mode: mode, settings: fleet.NodeSettings(settings).Settings, unit: "runplane", token: token,
 		listen: primaryAddrs(cfg, settings.Domain),
 	}, log)
 	if err != nil {
@@ -219,14 +218,14 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.stops = append(p.stops, local.close)
 	p.run(func(ctx context.Context) { local.node.Run(ctx) })
 
-	notifier := &notify.Dispatcher{Store: st, Box: d.Box, Log: log.With("component", "notify")}
-	p.run(func(ctx context.Context) { notifier.Run(ctx, d.Bus) })
+	notifier := notify.New(notify.Config{Store: st, Box: d.Box, Bus: d.Bus, Log: log.With("component", "notify")})
+	p.run(notifier.Run)
 
 	cert, fingerprint, err := tlsutil.AgentCert(cfg.TLSDir())
 	if err != nil {
 		return nil, fmt.Errorf("make the agent certificate: %w", err)
 	}
-	caches, mir, err := p.serveCaches(key, local)
+	caches, err := p.serveCaches(key, local)
 	if err != nil {
 		return nil, err
 	}
@@ -237,9 +236,9 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	})
 	// The fleet calls the scheduler only after Run starts.
 	p.fleet = fleet.New(fleet.Config{
-		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node, Mirror: mir.Stats,
-		AgentFingerprint: fingerprint, OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() },
-		Notifier: notifier, Runners: runners,
+		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node,
+		AgentFingerprint: fingerprint, Version: version.Version, Repo: version.Repo, PublicKey: update.PublicKey,
+		OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners,
 	})
 	jobLogs := joblog.New(joblog.Config{Dir: cfg.LogsDir(), Store: st, Driver: p.fleet.Driver, Log: log.With("component", "joblog")})
 	p.sched = scheduler.New(scheduler.Config{
@@ -297,7 +296,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	d.Scheduler = pools{p.sched, p.gh}
 	d.GitHub = p.gh
 	d.Servers = p.fleet
-	d.Images = p.fleet.Images()
+	d.Images = p.fleet
 	d.Caches = caches
 	d.Mirrors = p.fleet
 	d.Backups = backups
@@ -352,7 +351,7 @@ func (p *primary) stop() {
 
 // serveCaches starts the Actions cache server and the registry mirror, and
 // serves them on the service port.
-func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, *mirror.Mirror, error) {
+func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, error) {
 	resolver := cache.NewSandboxResolver(p.st, l.driver.List)
 	space := func() datadisk.Space {
 		st := p.settings.Load()
@@ -363,16 +362,16 @@ func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, *mirror.Mirr
 		SigningKey: subkey(key, "runplane cache urls"), Logger: p.log.With("component", "cache"),
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("start the cache server: %w", err)
+		return nil, fmt.Errorf("start the cache server: %w", err)
 	}
 	p.run(srv.Run)
 	p.pruneDaily("cache stats", srv.Prune)
-	mir, stopPort, err := serveServicePort(p.cfg, l.allow(resolver.Allow), srv, space, p.log)
+	stopPort, err := serveServicePort(p.cfg, l.node.Mirror(), srv, p.log)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	p.stops = append(p.stops, stopPort)
-	return srv, mir, nil
+	return srv, nil
 }
 
 func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) error {

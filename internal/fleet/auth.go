@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -68,7 +67,7 @@ func (f *Fleet) register(ctx context.Context, h agent.Hello) (string, string, er
 	// A token made without a name names the server after its host.
 	if v.Name == "" {
 		v.Name = cmp.Or(h.Host.Hostname, "agent-"+v.ID[len(v.ID)-6:])
-		if err := f.st.SetServerName(ctx, v.ID, v.Name); err != nil {
+		if err := f.st.SetServerName(ctx, v.ID, v.Name, now); err != nil {
 			f.log.Warn("name the new server", "server_id", v.ID, "err", err)
 		}
 	}
@@ -96,7 +95,7 @@ func (f *Fleet) registerAgain(ctx context.Context, hash, addr string) (string, s
 		return "", "", errBadToken
 	}
 	secret := rand.Text()
-	if err := f.st.SetServerSecretHash(ctx, u.serverID, hashSecret(secret)); err != nil {
+	if err := f.st.SetServerSecretHash(ctx, u.serverID, hashSecret(secret), f.now()); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return "", "", errBadToken
 		}
@@ -128,14 +127,23 @@ func (f *Fleet) checkSecret(ctx context.Context, h agent.Hello) (string, string,
 	return v.ID, "", nil
 }
 
-// NewToken makes a one-time install token and the command that installs an
-// agent with it.
-func (f *Fleet) NewToken(ctx context.Context, base, name, createdBy string) (api.ServerToken, error) {
+// Token is a one-time install token and the command that installs an agent
+// with it.
+type Token struct {
+	ID        string
+	Token     string
+	Command   string
+	ExpiresAt time.Time
+}
+
+// NewToken makes a one-time install token for a new agent. base is the URL
+// of the dashboard, and an empty name means the host name of the agent.
+func (f *Fleet) NewToken(ctx context.Context, base, name, createdBy string) (Token, error) {
 	token, t, err := f.newToken(ctx, name, createdBy, "")
 	if err != nil {
-		return api.ServerToken{}, err
+		return Token{}, err
 	}
-	return api.ServerToken{ID: t.ID, Token: token, Command: f.installCommand(base, token), ExpiresAt: t.ExpiresAt}, nil
+	return Token{ID: t.ID, Token: token, Command: f.installCommand(base, token), ExpiresAt: t.ExpiresAt}, nil
 }
 
 // newToken records a new install token. serverID is the server row that the

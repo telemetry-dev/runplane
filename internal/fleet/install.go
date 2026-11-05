@@ -4,28 +4,20 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"net"
-	"net/http"
 	"net/url"
-	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/runplane/runplane"
-	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sshinstall"
+	"github.com/runplane/runplane/internal/sshkey"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/update"
 	"github.com/runplane/runplane/internal/version"
 )
 
@@ -34,28 +26,29 @@ import (
 const connectWait = time.Minute
 
 // Script returns install.sh with the values of this primary: the release
-// repository, the agent address for the host of the request, the
-// certificate fingerprint, the version of this binary if it is a release,
-// and the release signing key if the binary has one.
-func (f *Fleet) Script(r *http.Request) []byte {
-	return f.script(f.agentAddr(hostname(r.Host)))
+// repository, the agent address for the agents that reach the primary at
+// host (host[:port] of the request), the certificate fingerprint, the
+// version of this binary if it is a release, and the release signing key if
+// the binary has one.
+func (f *Fleet) Script(host string) []byte {
+	return f.script(f.agentAddr(hostname(host)))
 }
 
 func (f *Fleet) script(primary string) []byte {
 	vars := [][2]string{
-		{"RUNPLANE_REPO", version.Repo},
+		{"RUNPLANE_REPO", f.repo},
 		{"RUNPLANE_PRIMARY", primary},
 		{"RUNPLANE_FINGERPRINT", f.fp},
 	}
 	// An agent gets the release of its primary, so that the two speak the
 	// same protocol.
-	if version.IsRelease(version.Version) {
-		vars = append(vars, [2]string{"RUNPLANE_VERSION", version.Version})
+	if version.IsRelease(f.version) {
+		vars = append(vars, [2]string{"RUNPLANE_VERSION", f.version})
 	}
 	// The key comes from this binary, not from the release: someone who can
 	// change the release files cannot change it.
-	if update.PublicKey != "" {
-		vars = append(vars, [2]string{"RUNPLANE_PUBLIC_KEY", update.PublicKey})
+	if f.publicKey != "" {
+		vars = append(vars, [2]string{"RUNPLANE_PUBLIC_KEY", f.publicKey})
 	}
 	first, rest, _ := bytes.Cut(runplane.InstallScript, []byte("\n"))
 	var b bytes.Buffer
@@ -83,11 +76,11 @@ func (f *Fleet) installCommand(base, token string) string {
 		script := strings.TrimSuffix(u.String(), "/") + "/install.sh"
 		return fmt.Sprintf("curl -fsSL %s | sudo sh -s -- %s", shellQuote(script), flags)
 	}
-	script := "https://github.com/" + version.Repo + "/releases/latest/download/install.sh"
-	release := "--repo " + shellQuote(version.Repo)
-	if version.IsRelease(version.Version) {
-		script = "https://github.com/" + version.Repo + "/releases/download/" + version.Version + "/install.sh"
-		release += " --version " + shellQuote(version.Version)
+	script := "https://github.com/" + f.repo + "/releases/latest/download/install.sh"
+	release := "--repo " + shellQuote(f.repo)
+	if version.IsRelease(f.version) {
+		script = "https://github.com/" + f.repo + "/releases/download/" + f.version + "/install.sh"
+		release += " --version " + shellQuote(f.version)
 	}
 	return fmt.Sprintf("curl -fsSL %s | sudo sh -s -- %s %s", shellQuote(script), release, flags)
 }
@@ -135,10 +128,18 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// SSHInstall is a new server that InstallSSH installs over SSH.
+type SSHInstall struct {
+	Name string
+	Host string // host name or IP address
+	Port int    // 0 means 22
+	User string // "" means root; another user needs sudo without a password
+}
+
 // InstallSSH makes a server row in the status installing and installs the
-// agent over SSH in the background. The status detail shows the output of
-// the install script.
-func (f *Fleet) InstallSSH(ctx context.Context, base string, req api.SSHInstall) (string, error) {
+// agent over SSH in the background. It returns the ID of the new server.
+// The status detail shows the output of the install script.
+func (f *Fleet) InstallSSH(ctx context.Context, base string, req SSHInstall) (string, error) {
 	signer, _, err := f.sshKey()
 	if err != nil {
 		return "", err
@@ -170,7 +171,9 @@ func (f *Fleet) InstallSSH(ctx context.Context, base string, req api.SSHInstall)
 	token, _, err := f.newToken(ctx, req.Name, "", id)
 	if err != nil {
 		done()
-		f.st.DeleteServer(ctx, id)
+		if derr := f.st.DeleteServer(ctx, id, f.now()); derr != nil {
+			f.log.Warn("delete the server of a failed install", "server_id", id, "err", derr)
+		}
 		return "", err
 	}
 	f.publishServer(ctx, id)
@@ -210,15 +213,9 @@ func hostOf(base string) string {
 // agent to connect. The status detail shows the latest line of the script,
 // at most once a second.
 func (f *Fleet) install(ctx context.Context, job installJob) {
-	addr := job.target.Addr
-	known, err := f.knownHostKey(addr)
-	if err != nil {
-		f.installFailed(ctx, job.id, err, "")
-		return
-	}
 	var last string
 	var shown time.Time
-	hostKey, err := sshinstall.Install(ctx, job.target, job.signer, known, job.command, bytes.NewReader(job.script), func(line string) {
+	err := sshinstall.Install(ctx, job.target, job.signer, f.knownHosts, job.command, bytes.NewReader(job.script), func(line string) {
 		line = strings.TrimSpace(strings.TrimPrefix(line, "==> "))
 		if line == "" {
 			return
@@ -229,19 +226,11 @@ func (f *Fleet) install(ctx context.Context, job installJob) {
 			f.setStatusIf(ctx, job.id, store.ServerInstalling, store.ServerInstalling, truncate(line))
 		}
 	})
-	if known == nil && hostKey != nil {
-		if err := f.trustHostKey(addr, hostKey); err != nil {
-			f.log.Warn("save SSH host key", "target", addr, "err", err)
-		}
-	}
 	if err != nil {
-		if strings.Contains(err.Error(), "does not match the known key") {
-			err = fmt.Errorf("%w. If the server was reinstalled, remove its line from %s", err, f.cfg.KnownHostsPath())
-		}
 		f.installFailed(ctx, job.id, err, last)
 		return
 	}
-	f.log.Info("agent installed over SSH", "server_id", job.id, "target", addr)
+	f.log.Info("agent installed over SSH", "server_id", job.id, "target", job.target.Addr)
 	deadline := time.After(connectWait)
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
@@ -270,7 +259,8 @@ func (f *Fleet) installFailed(ctx context.Context, id string, err error, last st
 	f.setStatusIf(ctx, id, store.ServerInstalling, store.ServerUnreachable, truncate(detail))
 }
 
-// truncate cuts s to the 500 characters that a status detail keeps.
+// truncate cuts the text of a status detail or an update error, which can
+// hold the output of a server, to 500 characters.
 func truncate(s string) string {
 	if r := []rune(s); len(r) > 500 {
 		return string(r[:499]) + "…"
@@ -285,47 +275,5 @@ func (f *Fleet) SSHPublicKey(context.Context) (string, error) {
 }
 
 func (f *Fleet) sshKey() (ssh.Signer, string, error) {
-	f.keyMu.Lock()
-	defer f.keyMu.Unlock()
-	return sshinstall.LoadOrCreateKey(f.cfg.SSHKeyPath())
-}
-
-// knownHostKey returns the host key of addr, or nil if runplane has not
-// connected to addr before.
-func (f *Fleet) knownHostKey(addr string) (ssh.PublicKey, error) {
-	f.keyMu.Lock()
-	defer f.keyMu.Unlock()
-	data, err := os.ReadFile(f.cfg.KnownHostsPath())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read known hosts: %w", err)
-	}
-	want := knownhosts.Normalize(addr)
-	for {
-		_, hosts, key, _, rest, err := ssh.ParseKnownHosts(data)
-		if errors.Is(err, io.EOF) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read known hosts %s: %w", f.cfg.KnownHostsPath(), err)
-		}
-		if slices.Contains(hosts, want) {
-			return key, nil
-		}
-		data = rest
-	}
-}
-
-// trustHostKey adds the host key of addr to known_hosts.
-func (f *Fleet) trustHostKey(addr string, key ssh.PublicKey) error {
-	f.keyMu.Lock()
-	defer f.keyMu.Unlock()
-	file, err := os.OpenFile(f.cfg.KnownHostsPath(), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	_, err = file.WriteString(knownhosts.Line([]string{addr}, key) + "\n")
-	return errors.Join(err, file.Close())
+	return sshkey.LoadOrCreate(f.cfg.SSHKeyPath())
 }

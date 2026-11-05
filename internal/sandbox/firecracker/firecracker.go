@@ -113,7 +113,7 @@ func newDriver(opts Options, ids idRange, sys hostOps) *Driver {
 	}
 	d.Core = lifecycle.New(lifecycle.Options[vm]{
 		Mode: sandbox.ModeVM, DataDir: opts.DataDir, Dir: opts.Sandboxes,
-		Limits:  lifecycle.Limits{OverheadMB: vmOverheadMB, MaxVCPU: maxVCPU, MaxSandboxes: min(ids.count, sys.tapLeases())},
+		Limits:  sandbox.Limits{OverheadMB: vmOverheadMB, MaxVCPU: maxVCPU, MaxSandboxes: min(ids.count, sys.tapLeases())},
 		Backend: backend{d}, Settings: opts.Settings, Logger: opts.Logger,
 	})
 	return d

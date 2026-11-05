@@ -10,15 +10,12 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/mirror"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/version"
 )
 
 func TestAgentUnreachableAfterOneMinute(t *testing.T) {
@@ -44,9 +41,6 @@ func TestAgentUnreachableAfterOneMinute(t *testing.T) {
 	waitEvent(t, servers, func(v events.ServerState) bool {
 		return v.ID == id && v.Status == store.ServerUnreachable
 	})
-	if e := recv(t, h.notes); e.Type != notify.ServerUnreachable || e.Data["server_id"] != id || len(h.notes) != 0 {
-		t.Errorf("notification %+v and %d more, want one server.unreachable for %s", e, len(h.notes), id)
-	}
 
 	a.start()
 	waitFor(t, "the agent to connect again", func() bool { return h.f.Driver(id) != nil })
@@ -80,7 +74,7 @@ func TestOnlineServers(t *testing.T) {
 
 	// An admin drains the agent, as PATCH /api/servers/{id} does.
 	setStatus := func(status string) {
-		if err := h.st.SetServerStatus(ctx, agentID, status, ""); err != nil {
+		if err := h.st.SetServerStatus(ctx, agentID, status, "", h.clock.now()); err != nil {
 			t.Fatal(err)
 		}
 		h.bus.Publish(events.ServerState(h.server(agentID)))
@@ -109,7 +103,7 @@ func TestConnectedAgentStaysOnline(t *testing.T) {
 	h.run()
 	_, id := h.connectAgent("build-x64", newFakeNode("x64"))
 
-	if err := h.st.SetServerStatus(ctx, id, store.ServerUnreachable, "No connection to the agent."); err != nil {
+	if err := h.st.SetServerStatus(ctx, id, store.ServerUnreachable, "No connection to the agent.", h.clock.now()); err != nil {
 		t.Fatal(err)
 	}
 	h.bus.Publish(events.ServerState(h.server(id)))
@@ -142,8 +136,9 @@ func TestOldSessionEndKeepsNewSession(t *testing.T) {
 }
 
 // A connected agent records its region apart from its provider, runs the
-// doctor, and adds its registry mirror to the one of the primary in the
-// stats of GET /api/caches.
+// doctor, adds its registry mirror to the one of the primary in the stats
+// of GET /api/caches, and gives the limits of its driver for the placement
+// of the pools.
 func TestConnectedAgents(t *testing.T) {
 	ctx := t.Context()
 	local := newFakeNode("arm64")
@@ -154,6 +149,7 @@ func TestConnectedAgents(t *testing.T) {
 	a, b := newFakeNode("arm64"), newFakeNode("x64")
 	a.info.Region, a.info.Kernel = "nbg1", "6.1.0-agent"
 	a.mirror = mirror.Stats{Hits: 5, Misses: 2, HitBytes: 500, MissBytes: 200, SizeBytes: 900}
+	a.limits = sandbox.Limits{OverheadMB: 64, MaxVCPU: 32, MaxSandboxes: 100}
 	b.mirror = mirror.Stats{Hits: 1, Misses: 3, HitBytes: 100, MissBytes: 300, SizeBytes: 400}
 	agentA, idA := h.connectAgent("arm-1", a)
 	h.connectAgent("amd-1", b)
@@ -169,14 +165,20 @@ func TestConnectedAgents(t *testing.T) {
 	if got := h.f.MirrorStats(ctx); got != want {
 		t.Errorf("mirror stats %+v, want %+v", got, want)
 	}
+	if got, ok := h.f.Limits(idA); !ok || got != a.limits {
+		t.Errorf("limits of the agent %+v, %v; want %+v", got, ok, a.limits)
+	}
 	checks, err := h.f.Doctor(ctx, idA)
 	if err != nil || len(checks) != 1 || checks[0].Detail != "6.1.0-agent" || checks[0].Status != "ok" {
 		t.Errorf("doctor of the agent: %+v, %v", checks, err)
 	}
 	agentA.stop()
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(idA) == nil })
-	if _, err := h.f.Doctor(ctx, idA); err == nil {
-		t.Error("doctor of a disconnected server: no error")
+	if _, err := h.f.Doctor(ctx, idA); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("doctor of a disconnected server: %v, want ErrNotConnected", err)
+	}
+	if _, ok := h.f.Limits(idA); ok {
+		t.Error("a disconnected server has limits")
 	}
 }
 
@@ -192,17 +194,17 @@ func TestRemoveServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.f.Remove(ctx, h.localID()); err == nil {
-		t.Error("Remove of the local server: no error")
+	if err := h.f.RemoveServer(ctx, h.localID()); !errors.Is(err, ErrLocalServer) {
+		t.Errorf("RemoveServer of the local server: %v, want ErrLocalServer", err)
 	}
-	if err := h.f.Remove(ctx, id); err != nil {
+	if err := h.f.RemoveServer(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	if got := node.args("Stop"); !reflect.DeepEqual(got, []any{"sb1", "sb2"}) {
 		t.Errorf("stopped sandboxes %v, want sb1 and sb2", got)
 	}
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(id) == nil })
-	if err := h.st.DeleteServer(ctx, id); err != nil { // as the API does
+	if err := h.st.DeleteServer(ctx, id, h.clock.now()); err != nil { // as the API does
 		t.Fatal(err)
 	}
 
@@ -224,8 +226,11 @@ func TestSettingsReachServers(t *testing.T) {
 	_, agentID := h.connectAgent("build-x64", agentNode)
 
 	waitFor(t, "the settings of the new agent", func() bool { return len(agentNode.args("Configure")) == 1 })
-	defaults := sandbox.Settings{
-		DNS: []string{"1.1.1.1", "8.8.8.8"}, EgressAllowlist: []string{}, RegistryMirror: true, ActionsCache: true,
+	defaults := agent.Settings{
+		Settings: sandbox.Settings{
+			DNS: []string{"1.1.1.1", "8.8.8.8"}, EgressAllowlist: []string{}, RegistryMirror: true, ActionsCache: true,
+		},
+		MinFreeDiskPercent: 15,
 	}
 	if got := agentNode.args("Configure")[0]; !reflect.DeepEqual(got, defaults) {
 		t.Errorf("settings at connect:\n%+v\nwant\n%+v", got, defaults)
@@ -237,8 +242,18 @@ func TestSettingsReachServers(t *testing.T) {
 	next.MinFreeDiskPercent = 12.5
 	next.DNSServers, next.EgressAllowlist = []string{"9.9.9.9"}, []string{"10.0.0.0/8"}
 	next.BandwidthMbps, next.RegistryMirror, next.ActionsCache = 100, false, false
+	// As the API does: it saves the settings, then calls the hook.
+	if _, err := h.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		*s = next
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	h.f.SettingsChanged(ctx, prev, next)
-	want := sandbox.Settings{DNS: []string{"9.9.9.9"}, EgressAllowlist: []string{"10.0.0.0/8"}, BandwidthMbps: 100}
+	want := agent.Settings{
+		Settings:           sandbox.Settings{DNS: []string{"9.9.9.9"}, EgressAllowlist: []string{"10.0.0.0/8"}, BandwidthMbps: 100},
+		MinFreeDiskPercent: 12.5,
+	}
 	for name, n := range map[string]*fakeNode{"local": local, "agent": agentNode} {
 		waitFor(t, "the new settings on the "+name+" server", func() bool {
 			list := n.args("Configure")
@@ -262,13 +277,6 @@ func TestHostStats(t *testing.T) {
 	stats := events.Subscribe[events.HostStats](ctx, h.bus)
 	id := h.localID()
 	at := h.clock.now().Add(-time.Second)
-	// With a domain and no public URL, the links go to the domain.
-	if _, err := h.st.UpdateSettings(ctx, func(s *store.Settings) error {
-		s.Domain = "ci.example.com"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
 	sample := func(diskPercent float64) {
 		local.stats <- host.Stats{At: at, CPUPercent: 52, MemoryPercent: 38, DiskPercent: diskPercent, Resources: host.Resources{DiskBytes: 500e9}}
 		at = at.Add(10 * time.Second)
@@ -286,41 +294,17 @@ func TestHostStats(t *testing.T) {
 	if st := latest[id]; st.CPUPercent != 52 || st.MemoryPercent != 38 || st.DiskPercent != 90 {
 		t.Errorf("stored sample %+v, want the one sample", st)
 	}
-
-	// 10% free is below the 15% minimum. A second low sample sends nothing;
-	// after a recovery, the next drop sends again.
-	sample(91)
-	sample(50)
-	sample(95)
-	var free []float64
-	for range 2 {
-		e := recv(t, h.notes)
-		if e.Type != notify.DiskLow || e.Data["server_id"] != id || e.URL != "https://ci.example.com/servers/"+id {
-			t.Errorf("notification %+v, want disk.low for %s with a link to the domain", e, id)
-		}
-		free = append(free, e.Data["free_percent"].(float64))
-	}
-	slices.Sort(free)
-	if !slices.Equal(free, []float64{5, 10}) || len(h.notes) != 0 {
-		t.Errorf("disk.low notifications for free space %v and %d more, want 10%% and 5%%", free, len(h.notes))
-	}
 }
 
-// setRelease sets the release repository and the version of runplane until
-// the test ends.
-func setRelease(t *testing.T, repo, ver string) {
-	oldRepo, oldVer := version.Repo, version.Version
-	t.Cleanup(func() { version.Repo, version.Version = oldRepo, oldVer })
-	version.Repo, version.Version = repo, ver
-}
+// release makes the primary and its agents run the release v1.4.2.
+func release(c *Config) { c.Version = "v1.4.2" }
 
 // An agent must speak the protocol of the primary, so the fleet updates an
 // agent with another version when it connects. It tries each version one
 // time for each agent and shows a failure on the server.
 func TestUpdateAgentOnConnect(t *testing.T) {
-	h := newHarness(t, newFakeNode("arm64"))
+	h := newHarness(t, newFakeNode("arm64"), release)
 	h.run()
-	setRelease(t, version.Repo, "v1.4.2")
 	agentNode := newFakeNode("arm64")
 	agentNode.updateErr = errors.New("download failed")
 	_, id := h.connectAgent("arm-2", agentNode)
@@ -338,15 +322,15 @@ func TestUpdateAgentOnConnect(t *testing.T) {
 	for _, tt := range tests {
 		before := len(agentNode.args("Update"))
 		n := &node{Node: agentNode, id: tt.id, version: tt.agent}
-		if h.f.beginUpdate(n.id, n.version, false) {
+		if h.f.beginUpdate(t.Context(), n.id, n.version, false) == nil {
 			h.f.runUpdate(t.Context(), n)
 		}
 		if got := agentNode.args("Update")[before:]; !slices.Equal(got, tt.want) {
 			t.Errorf("%s: updates %v, want %v", tt.name, got, tt.want)
 		}
 	}
-	if v := h.server(id); !strings.Contains(v.StatusDetail, "The update to runplane v1.4.2 failed: download failed.") {
-		t.Errorf("status detail %q, want the failed update", v.StatusDetail)
+	if v := h.server(id); !strings.Contains(v.UpdateError, "The update to runplane v1.4.2 failed: download failed.") {
+		t.Errorf("update error %q, want the failed update", v.UpdateError)
 	}
 }
 
@@ -354,12 +338,11 @@ func TestUpdateAgentOnConnect(t *testing.T) {
 // runs until the agent connects again with the new version.
 func TestUpdateAgentByHand(t *testing.T) {
 	ctx := t.Context()
-	h := newHarness(t, newFakeNode("arm64"))
+	h := newHarness(t, newFakeNode("arm64"), release)
 	h.run()
-	setRelease(t, version.Repo, "v1.4.2")
 	agentNode := newFakeNode("arm64")
 	a, id := h.connectAgent("arm-2", agentNode)
-	state := func() string { return h.f.UpdateState(h.server(id)) }
+	state := func() UpdateState { return h.f.UpdateState(h.server(id)) }
 	// olderAgent makes the connected agent look like an agent of v1.4.1.
 	olderAgent := func() {
 		h.f.mu.Lock()
@@ -367,37 +350,37 @@ func TestUpdateAgentByHand(t *testing.T) {
 		h.f.mu.Unlock()
 		v := h.server(id)
 		v.ServerFacts.Version = "v1.4.1"
-		if err := h.st.UpdateServerFacts(ctx, id, v.ServerFacts); err != nil {
+		if err := h.st.UpdateServerFacts(ctx, id, v.ServerFacts, h.clock.now()); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if got := state(); got != api.UpdateCurrent {
+	if got := state(); got != UpdateCurrent {
 		t.Fatalf("update state %q of an agent of the same version, want current", got)
 	}
 	if err := h.f.UpdateAgent(ctx, id); err == nil {
 		t.Fatal("UpdateAgent started an update of an agent of the same version")
 	}
-	if got := h.f.UpdateState(h.server(h.localID())); got != api.UpdateCurrent {
+	if got := h.f.UpdateState(h.server(h.localID())); got != UpdateCurrent {
 		t.Errorf("update state %q of the primary, want current", got)
 	}
 
 	olderAgent()
-	if got := state(); got != api.UpdateAvailable {
+	if got := state(); got != UpdateAvailable {
 		t.Fatalf("update state %q of an older agent, want available", got)
 	}
 	agentNode.set(func(n *fakeNode) { n.updateErr = errors.New("download failed") })
 	if err := h.f.UpdateAgent(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the failed update", func() bool { return state() == api.UpdateFailed })
+	waitFor(t, "the failed update", func() bool { return state() == UpdateFailed })
 	// An admin can try a failed version again.
 	agentNode.set(func(n *fakeNode) { n.updateErr = nil })
 	if err := h.f.UpdateAgent(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the second update call", func() bool { return len(agentNode.args("Update")) == 2 })
-	if got := state(); got != api.UpdateUpdating {
+	if got := state(); got != UpdateUpdating {
 		t.Fatalf("update state %q before the agent restarts, want updating", got)
 	}
 	if err := h.f.UpdateAgent(ctx, id); err == nil {
@@ -408,7 +391,7 @@ func TestUpdateAgentByHand(t *testing.T) {
 	a.stop()
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(id) == nil })
 	a.start()
-	waitFor(t, "the end of the update", func() bool { return h.f.Driver(id) != nil && state() == api.UpdateCurrent })
+	waitFor(t, "the end of the update", func() bool { return h.f.Driver(id) != nil && state() == UpdateCurrent })
 
 	// An agent that does not come back fails the update.
 	olderAgent()
@@ -420,10 +403,10 @@ func TestUpdateAgentByHand(t *testing.T) {
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(id) == nil })
 	h.clock.add(61 * time.Second)
 	h.f.syncServers(ctx)
-	if got := state(); got != api.UpdateFailed {
+	if got := state(); got != UpdateFailed {
 		t.Fatalf("update state %q of an agent that did not come back, want failed", got)
 	}
-	if v := h.server(id); v.Status != store.ServerUnreachable || !strings.Contains(v.StatusDetail, "did not connect again") {
-		t.Errorf("status %q, detail %q; want unreachable after the update", v.Status, v.StatusDetail)
+	if v := h.server(id); v.Status != store.ServerUnreachable || !strings.Contains(v.UpdateError, "did not connect again") {
+		t.Errorf("status %q, update error %q; want unreachable after the update", v.Status, v.UpdateError)
 	}
 }

@@ -165,24 +165,25 @@ func TestCalls(t *testing.T) {
 		Env:   map[string]string{"ACTIONS_RESULTS_URL": "http://10.0.0.1:8486/"},
 		Debug: true,
 	}
-	check("mode", s.Mode(), nil, sandbox.ModeContainer)
-	check("start", nil, s.Start(ctx, spec), nil, []any{"Start", spec})
-	checkErr("start again", s.Start(ctx, spec), "sandbox sb1 exists")
+	d := s.Driver()
+	check("mode", d.Mode(), nil, sandbox.ModeContainer)
+	check("start", nil, d.Start(ctx, spec), nil, []any{"Start", spec})
+	checkErr("start again", d.Start(ctx, spec), "sandbox sb1 exists")
 	stored := spec
 	stored.JITConfig = ""
-	list, err := s.List(ctx)
+	list, err := d.List(ctx)
 	check("list", list, err, []sandbox.Sandbox{{ID: "sb1", PoolID: "pool1", State: sandbox.StateStarting, Spec: stored}})
-	c, err := s.Capacity(ctx)
+	c, err := d.Capacity(ctx)
 	check("capacity", c, err, fakeCapacity)
 	until := time.Date(2026, 11, 4, 12, 30, 0, 0, time.UTC)
-	check("hold", nil, s.Hold(ctx, "sb1", until), nil, []any{"Hold", "sb1", until})
-	check("stop", nil, s.Stop(ctx, "sb1"), nil, []any{"Stop", "sb1"})
-	list, err = s.List(ctx)
+	check("hold", nil, d.Hold(ctx, "sb1", until), nil, []any{"Hold", "sb1", until})
+	check("stop", nil, d.Stop(ctx, "sb1"), nil, []any{"Stop", "sb1"})
+	list, err = d.List(ctx)
 	check("list after stop", list, err, []sandbox.Sandbox{})
-	if err := s.Hold(ctx, "sb1", until); !errors.Is(err, sandbox.ErrNotFound) {
+	if err := d.Hold(ctx, "sb1", until); !errors.Is(err, sandbox.ErrNotFound) {
 		t.Errorf("hold of a stopped sandbox: %v, want sandbox.ErrNotFound", err)
 	}
-	check("probe", nil, s.Probe(ctx), nil, []any{"Probe"})
+	check("probe", nil, d.Probe(ctx), nil, []any{"Probe"})
 
 	info, err := s.Facts(ctx)
 	check("facts", info, err, testInfo)
@@ -195,17 +196,24 @@ func TestCalls(t *testing.T) {
 	_, err = s.EnsureImage(ctx, "missing:latest", nil)
 	checkErr("missing image", err, "pull missing:latest: not found")
 	b, err := s.EnsureRunner(ctx, "2.330.0", "arm64")
-	check("runner", b, err, runner.Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/2.330.0-arm64"})
+	// The folder of the bundle is a path on the agent.
+	check("runner", b, err, runner.Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true})
 	m, err := s.MirrorStats(ctx)
 	check("mirror stats", m, err, testMirror)
 	keep := []string{"sha256:5f1c", "sha256:9e2f"}
 	check("image GC", nil, s.GCImages(ctx, keep), nil, []any{"GCImages", keep})
 	check("runner prune", nil, s.PruneRunners(ctx, []string{"2.329.0"}), nil, []any{"PruneRunners", []string{"2.329.0"}})
-	settings := sandbox.Settings{
-		DNS: []string{"1.1.1.1"}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 100,
-		RegistryMirror: true, ActionsCache: true,
+	settings := Settings{
+		Settings: sandbox.Settings{
+			DNS: []string{"1.1.1.1"}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 100,
+			RegistryMirror: true, ActionsCache: true,
+		},
+		MinFreeDiskPercent: 12.5,
 	}
 	check("settings", nil, s.Configure(ctx, settings), nil, []any{"Configure", settings})
+	// The driver settings alone keep the min_free_disk_percent of the agent.
+	driverOnly := sandbox.Settings{DNS: []string{"9.9.9.9"}}
+	check("driver settings", nil, d.Configure(ctx, driverOnly), nil, []any{"Configure", Settings{Settings: driverOnly, MinFreeDiskPercent: 12.5}})
 
 	err = s.Update(ctx, "v0.5.0")
 	check("update", nil, err, nil, []any{"Update", "v0.5.0"})
@@ -344,7 +352,7 @@ func TestCacheProxy(t *testing.T) {
 	}))
 	node := newFakeNode()
 	node.put(sandbox.Sandbox{ID: "sb-here", State: sandbox.StateBusy, IP: "127.0.0.1"})
-	proxy := NewCacheProxy(node, p.logs.logger("cache"))
+	proxy := NewCacheProxy(node.Driver(), p.logs.logger("cache"))
 	p.startAgent(p.agentJSON(goodToken), node, proxy)
 	// The agent attaches the proxy before it answers the first call.
 	if _, err := recv(t, p.sessions).Driver().List(t.Context()); err != nil {

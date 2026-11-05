@@ -1,7 +1,6 @@
 package sshinstall
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,27 +8,39 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/runplane/runplane/internal/sshinstall/sshtest"
+	"github.com/runplane/runplane/internal/sshkey"
 )
 
 func testKey(t *testing.T) ssh.Signer {
 	t.Helper()
-	signer, _, err := LoadOrCreateKey(filepath.Join(t.TempDir(), "id_ed25519"))
+	signer, _, err := sshkey.LoadOrCreate(filepath.Join(t.TempDir(), "id_ed25519"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return signer
 }
 
+func newKnownHosts(t *testing.T) *KnownHosts {
+	return &KnownHosts{Path: filepath.Join(t.TempDir(), "known_hosts")}
+}
+
 func TestInstall(t *testing.T) {
 	key := testKey(t)
+	known := newKnownHosts(t)
+	// The command starts the agent, which can connect before Install
+	// returns. Then runplane must already trust the server.
+	var trustedAtRun atomic.Bool
 	srv := sshtest.NewServer(t, key.PublicKey(), func(_ string, stdin []byte, stdout, stderr io.Writer) uint32 {
+		b, _ := os.ReadFile(known.Path)
+		trustedAtRun.Store(len(b) > 0)
 		stdout.Write(stdin)
 		io.WriteString(stdout, "Installing Docker\nInstalling Sysbox\r\n")
 		io.WriteString(stderr, "warning: swap is on\n")
@@ -37,11 +48,14 @@ func TestInstall(t *testing.T) {
 		return 0
 	})
 	var lines []string
-	_, err := Install(t.Context(), Target{srv.Addr, "deploy"}, key, nil, "sudo -n sh -s -- --token rp_srv_x", strings.NewReader("#!/bin/sh\necho install\n"), func(l string) {
+	err := Install(t.Context(), Target{srv.Addr, "deploy"}, key, known, "sudo -n sh -s -- --token rp_srv_x", strings.NewReader("#!/bin/sh\necho install\n"), func(l string) {
 		lines = append(lines, l)
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !trustedAtRun.Load() {
+		t.Error("the host key was not in known_hosts when the command ran")
 	}
 	if got := srv.Commands(); !slices.Equal(got, []string{"sudo -n sh -s -- --token rp_srv_x"}) {
 		t.Errorf("server ran %q", got)
@@ -62,7 +76,7 @@ func TestInstallExitStatus(t *testing.T) {
 		return 3
 	})
 	var lines []string
-	_, err := Install(t.Context(), Target{srv.Addr, "deploy"}, key, nil, "sh -s", strings.NewReader(""), func(l string) { lines = append(lines, l) })
+	err := Install(t.Context(), Target{srv.Addr, "deploy"}, key, newKnownHosts(t), "sh -s", strings.NewReader(""), func(l string) { lines = append(lines, l) })
 	if exit, ok := errors.AsType[*ssh.ExitError](err); !ok || exit.ExitStatus() != 3 {
 		t.Errorf("err = %v, want exit status 3", err)
 	}
@@ -77,8 +91,8 @@ func TestInstallKeys(t *testing.T) {
 	tests := []struct {
 		name    string
 		signer  ssh.Signer
-		known   ssh.PublicKey
-		wantKey ssh.PublicKey
+		known   ssh.PublicKey // the key in known_hosts before
+		wantKey ssh.PublicKey // the key in known_hosts after
 		wantRun bool
 	}{
 		{"first use", key, nil, srv.HostKey, true},
@@ -88,13 +102,23 @@ func TestInstallKeys(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			known := newKnownHosts(t)
+			if tt.known != nil {
+				if err := os.WriteFile(known.Path, []byte(knownhosts.Line([]string{srv.Addr}, tt.known)+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			ran := len(srv.Commands())
-			hostKey, err := Install(t.Context(), Target{srv.Addr, "deploy"}, tt.signer, tt.known, "true", nil, func(string) {})
+			err := Install(t.Context(), Target{srv.Addr, "deploy"}, tt.signer, known, "true", nil, func(string) {})
 			if (err == nil) != tt.wantRun {
 				t.Errorf("err = %v, want the command to run: %v", err, tt.wantRun)
 			}
-			if fingerprint(hostKey) != fingerprint(tt.wantKey) {
-				t.Errorf("host key %s, want %s", fingerprint(hostKey), fingerprint(tt.wantKey))
+			if tt.wantKey == nil {
+				if _, ok := errors.AsType[*HostKeyError](err); !ok || !strings.Contains(err.Error(), known.Path) {
+					t.Errorf("err = %v, want a HostKeyError that names %s", err, known.Path)
+				}
+			} else if got, err := known.key(srv.Addr); err != nil || fingerprint(got) != fingerprint(tt.wantKey) {
+				t.Errorf("known host key %s (%v), want %s", fingerprint(got), err, fingerprint(tt.wantKey))
 			}
 			if got := len(srv.Commands()) > ran; got != tt.wantRun {
 				t.Errorf("command ran: %v, want %v", got, tt.wantRun)
@@ -120,41 +144,7 @@ func TestInstallCancel(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	if _, err := Install(ctx, Target{srv.Addr, "deploy"}, key, nil, "sleep 600", nil, func(string) {}); !errors.Is(err, context.DeadlineExceeded) {
+	if err := Install(ctx, Target{srv.Addr, "deploy"}, key, newKnownHosts(t), "sleep 600", nil, func(string) {}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want context.DeadlineExceeded", err)
-	}
-}
-
-// The servers have the authorized_keys line of the first key, so all
-// callers must get that key.
-func TestLoadOrCreateKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ssh", "id_ed25519")
-	lines := make([]string, 8)
-	var wg sync.WaitGroup
-	for i := range lines {
-		wg.Go(func() {
-			_, line, err := LoadOrCreateKey(path)
-			if err != nil {
-				t.Error(err)
-			}
-			lines[i] = line
-		})
-	}
-	wg.Wait()
-	signer, line, err := LoadOrCreateKey(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, l := range lines {
-		if l != line {
-			t.Fatalf("callers got different keys: %q", lines)
-		}
-	}
-	pub, comment, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
-	if err != nil || pub.Type() != ssh.KeyAlgoED25519 || comment != "runplane" || !bytes.Equal(pub.Marshal(), signer.PublicKey().Marshal()) {
-		t.Errorf("authorized_keys line %q is not the ed25519 key with the comment runplane: %v", line, err)
-	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Errorf("key file: %v, %v; want mode 600", info, err)
 	}
 }

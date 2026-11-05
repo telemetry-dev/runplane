@@ -36,10 +36,7 @@ import (
 type local struct {
 	node   *agent.LocalNode
 	driver sandbox.Driver
-	// allow takes the rule that tells if an address is a sandbox, and gives
-	// the rule of the service port in the mode.
-	allow func(isSandbox func(netip.Addr) bool) func(netip.Addr) bool
-	close func()
+	close  func()
 }
 
 type localConfig struct {
@@ -56,10 +53,10 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	if err != nil {
 		return nil, err
 	}
-	l := &local{
-		allow: func(isSandbox func(netip.Addr) bool) func(netip.Addr) bool { return isSandbox },
-		close: func() {},
-	}
+	l := &local{close: func() {}}
+	// allow takes the rule that tells if an address is a sandbox, and gives
+	// the rule of the service port in the mode.
+	allow := func(isSandbox func(netip.Addr) bool) func(netip.Addr) bool { return isSandbox }
 	defer func() {
 		if err != nil {
 			l.close()
@@ -104,7 +101,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		if err != nil {
 			return nil, fmt.Errorf("start the dev driver: %w", err)
 		}
-		l.driver, l.allow = drv, devdocker.Allow
+		l.driver, allow = drv, devdocker.Allow
 	case sandbox.ModeVM:
 		rules := netrules.New(log.With("component", "netrules"), netrules.DefaultTapSubnet)
 		l.onClose(func() { rules.Close() })
@@ -127,8 +124,14 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	// The driver closes before the netrules manager and Docker.
 	l.onClose(func() { l.driver.Close() })
 
+	isSandbox := func(ip netip.Addr) bool {
+		list, err := l.driver.List(context.Background())
+		_, ok := sandbox.FindByIP(list, ip)
+		return err == nil && ok
+	}
 	l.node, err = agent.NewLocal(agent.LocalConfig{
 		Driver: l.driver, Images: images, Bundles: bundles, Updater: update.New(cfg.KernelPath()),
+		Mirror: mirror.Config{Dir: cfg.MirrorDir(), Allow: allow(isSandbox), Logger: log.With("component", "mirror")},
 		Doctor: host.Options{
 			DataDir: cfg.DataDir, GuestKernel: cfg.KernelPath(), Listen: lc.listen, Serving: true, Unit: lc.unit,
 			BaseImage: baseImage,
@@ -138,6 +141,8 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	if err != nil {
 		return nil, err
 	}
+	// The registry mirror stops after the service port and before the driver.
+	l.onClose(func() { l.node.Close() })
 	return l, nil
 }
 
@@ -175,21 +180,13 @@ func baseImage(ctx context.Context) (string, error) {
 	return ref, image.CanPull(ctx, ref)
 }
 
-// serveServicePort starts the registry mirror and serves the service port
-// of the sandboxes on all addresses: /v2/ goes to the mirror, all other
-// paths to the Actions cache. allow tells if an address is a sandbox, and
-// space gives the room of the mirror on the data disk. The returned
-// function stops the listener and the mirror.
-func serveServicePort(cfg config.Config, allow func(netip.Addr) bool, cache http.Handler,
-	space func() datadisk.Space, log *slog.Logger) (*mirror.Mirror, func(), error) {
-	mir, err := mirror.New(mirror.Config{Dir: cfg.MirrorDir(), Space: space, Allow: allow, Logger: log.With("component", "mirror")})
-	if err != nil {
-		return nil, nil, fmt.Errorf("start the registry mirror: %w", err)
-	}
+// serveServicePort serves the service port of the sandboxes on all
+// addresses: /v2/ goes to the registry mirror, all other paths to the
+// Actions cache. The returned function stops the listener.
+func serveServicePort(cfg config.Config, mir, cache http.Handler, log *slog.Logger) (func(), error) {
 	ln, err := net.Listen("tcp", servicePortAddr(cfg))
 	if err != nil {
-		mir.Close()
-		return nil, nil, fmt.Errorf("listen on the service port: %w", err)
+		return nil, fmt.Errorf("listen on the service port: %w", err)
 	}
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -211,14 +208,13 @@ func serveServicePort(cfg config.Config, allow func(netip.Addr) bool, cache http
 			log.Error("service port", "err", err)
 		}
 	}()
-	return mir, func() {
+	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			srv.Close()
 		}
 		<-done
-		mir.Close()
 	}, nil
 }
 

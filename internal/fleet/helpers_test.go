@@ -22,12 +22,12 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/tlsutil"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // harness is a primary with a fleet, a real agent listener, a fake local
@@ -38,14 +38,16 @@ type harness struct {
 	bus      *events.Bus
 	f        *Fleet
 	clock    *clock
-	notes    notes
 	capacity atomic.Int32 // CapacityChanged calls
 	fp       string
 	cfg      config.Config
+	version  string // of runplane on the primary and on the agents that start
 	log      *slog.Logger
 }
 
-func newHarness(t *testing.T, local *fakeNode) *harness {
+// newHarness makes the harness. The primary runs the version "dev", and
+// opts can change the fleet config.
+func newHarness(t *testing.T, local *fakeNode, opts ...func(*Config)) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "runplane.db"))
@@ -62,16 +64,21 @@ func newHarness(t *testing.T, local *fakeNode) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{
-		t: t, st: st, bus: &events.Bus{}, notes: make(notes, 16), fp: fp, log: testLogger(t),
+		t: t, st: st, bus: &events.Bus{}, fp: fp, log: testLogger(t),
 		cfg: config.Config{AgentListen: ln.Addr().String(), DataDir: dir, ConfigDir: dir}, clock: &clock{},
 	}
 	h.clock.ns.Store(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixNano())
-	h.f = New(Config{
-		Store: st, Bus: h.bus, Log: h.log.With("side", "fleet"), Config: h.cfg, Local: local,
-		Mirror: func() mirror.Stats { return local.mirror }, AgentFingerprint: fp,
-		OnEvent: func(string, sandbox.Event) {}, CapacityChanged: func() { h.capacity.Add(1) }, Notifier: h.notes, Now: h.clock.now,
+	c := Config{
+		Store: st, Bus: h.bus, Log: h.log.With("side", "fleet"), Config: h.cfg, Local: local, AgentFingerprint: fp,
+		Version: "dev", Repo: version.Repo,
+		OnEvent: func(string, sandbox.Event) {}, CapacityChanged: func() { h.capacity.Add(1) }, Now: h.clock.now,
 		Runners: versions.New(versions.Config{Store: st, Bus: h.bus}),
-	})
+	}
+	for _, o := range opts {
+		o(&c)
+	}
+	h.version = c.Version
+	h.f = New(c)
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &agent.Listener{Cert: cert, Authenticate: h.f.Authenticate, OnSession: h.f.AddSession, Logger: h.log.With("side", "listener")}
 	served := make(chan struct{})
@@ -135,10 +142,11 @@ func (h *harness) connectAgent(name string, node *fakeNode) (*testAgent, string)
 }
 
 type testAgent struct {
-	h    *harness
-	path string
-	node *fakeNode
-	stop func()
+	h       *harness
+	path    string
+	node    *fakeNode
+	version string // that the agent sends in its hello
+	stop    func()
 }
 
 func (h *harness) startAgent(file map[string]string, node *fakeNode) *testAgent {
@@ -147,7 +155,7 @@ func (h *harness) startAgent(file map[string]string, node *fakeNode) *testAgent 
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		h.t.Fatal(err)
 	}
-	a := &testAgent{h: h, path: path, node: node}
+	a := &testAgent{h: h, path: path, node: node, version: h.version}
 	a.start()
 	return a
 }
@@ -157,7 +165,7 @@ func (a *testAgent) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		agent.Run(ctx, agent.Config{Path: a.path, Node: a.node, Logger: a.h.log.With("side", "agent"), Mirror: func() mirror.Stats { return a.node.mirror }})
+		agent.Run(ctx, agent.Config{Path: a.path, Node: a.node, Version: a.version, Logger: a.h.log.With("side", "agent")})
 		close(done)
 	}()
 	var once sync.Once
@@ -220,28 +228,14 @@ type clock struct{ ns atomic.Int64 }
 func (c *clock) now() time.Time      { return time.Unix(0, c.ns.Load()).UTC() }
 func (c *clock) add(d time.Duration) { c.ns.Add(int64(d)) }
 
-// notes gets the notifications.
-type notes chan notify.Event
-
-func (n notes) Notify(_ context.Context, e notify.Event) error {
-	select {
-	case n <- e:
-	default:
-	}
-	return nil
-}
-
-// noDriver leaves out the driver methods that the fleet does not call.
-type noDriver = sandbox.Driver
-
-// fakeNode is a server and its driver. The test chooses the images and
-// runner versions that work, and the node records its calls.
+// fakeNode is a server, and fakeDriver its driver. The test chooses the
+// images and runner versions that work, and the node records its calls.
 type fakeNode struct {
-	noDriver
 	info   host.Info
 	events chan sandbox.Event
 	stats  chan host.Stats
-	mirror mirror.Stats // what an agent with this node reports
+	mirror mirror.Stats
+	limits sandbox.Limits
 
 	mu        sync.Mutex
 	sandboxes map[string]sandbox.Sandbox
@@ -303,9 +297,13 @@ func (n *fakeNode) args(method string) []any {
 	return list
 }
 
-func (n *fakeNode) Driver() sandbox.Driver                   { return n }
+func (n *fakeNode) Local() bool                              { return true }
+func (n *fakeNode) Driver() sandbox.Driver                   { return fakeDriver{n: n} }
 func (n *fakeNode) Facts(context.Context) (host.Info, error) { return n.info, nil }
 func (n *fakeNode) Stats() <-chan host.Stats                 { return n.stats }
+func (n *fakeNode) Close() error                             { return nil }
+
+func (n *fakeNode) MirrorStats(context.Context) (mirror.Stats, error) { return n.mirror, nil }
 
 func (n *fakeNode) Doctor(_ context.Context, minFree float64) ([]host.Check, error) {
 	n.record("Doctor", minFree)
@@ -354,7 +352,7 @@ func (n *fakeNode) PruneRunners(_ context.Context, keep []string) error {
 	return nil
 }
 
-func (n *fakeNode) Configure(_ context.Context, s sandbox.Settings) error {
+func (n *fakeNode) Configure(_ context.Context, s agent.Settings) error {
 	n.record("Configure", s)
 	return nil
 }
@@ -366,20 +364,30 @@ func (n *fakeNode) Update(_ context.Context, version string) error {
 	return n.updateErr
 }
 
-func (n *fakeNode) Mode() sandbox.Mode           { return sandbox.ModeContainer }
-func (n *fakeNode) Events() <-chan sandbox.Event { return n.events }
-
-func (n *fakeNode) List(context.Context) ([]sandbox.Sandbox, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return slices.SortedFunc(maps.Values(n.sandboxes), func(a, b sandbox.Sandbox) int { return strings.Compare(a.ID, b.ID) }), nil
+// fakeDriver leaves out the driver methods that the fleet does not call.
+type fakeDriver struct {
+	sandbox.Driver
+	n *fakeNode
 }
 
-func (n *fakeNode) Stop(_ context.Context, id string) error {
-	n.record("Stop", id)
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	delete(n.sandboxes, id)
+func (d fakeDriver) Mode() sandbox.Mode           { return sandbox.ModeContainer }
+func (d fakeDriver) Events() <-chan sandbox.Event { return d.n.events }
+
+func (d fakeDriver) Capacity(context.Context) (sandbox.Capacity, error) {
+	return sandbox.Capacity{Mode: sandbox.ModeContainer, Arch: d.n.info.Arch, Limits: d.n.limits}, nil
+}
+
+func (d fakeDriver) List(context.Context) ([]sandbox.Sandbox, error) {
+	d.n.mu.Lock()
+	defer d.n.mu.Unlock()
+	return slices.SortedFunc(maps.Values(d.n.sandboxes), func(a, b sandbox.Sandbox) int { return strings.Compare(a.ID, b.ID) }), nil
+}
+
+func (d fakeDriver) Stop(_ context.Context, id string) error {
+	d.n.record("Stop", id)
+	d.n.mu.Lock()
+	defer d.n.mu.Unlock()
+	delete(d.n.sandboxes, id)
 	return nil
 }
 

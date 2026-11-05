@@ -31,6 +31,7 @@ type webhookBody struct {
 	Path  string
 	Event string         `json:"event"`
 	Text  string         `json:"text"`
+	URL   string         `json:"url"`
 	Data  map[string]any `json:"data"`
 }
 
@@ -40,7 +41,7 @@ func (h *hook) events() []webhookBody {
 	return slices.Clone(h.got)
 }
 
-func newDispatcher(t *testing.T) (*Dispatcher, *hook) {
+func newDispatcher(t *testing.T) (*Dispatcher, *hook, *events.Bus) {
 	t.Helper()
 	h := &hook{done: make(chan struct{}, 10)}
 	h.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +70,8 @@ func newDispatcher(t *testing.T) (*Dispatcher, *hook) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Dispatcher{Store: st, Box: box}, h
+	bus := &events.Bus{}
+	return New(Config{Store: st, Box: box, Bus: bus}), h, bus
 }
 
 // subscribe adds the webhook channel id, with the URL path /id on h, for types.
@@ -79,8 +81,8 @@ func subscribe(t *testing.T, d *Dispatcher, h *hook, id string, enabled bool, ty
 	for _, typ := range types {
 		names = append(names, string(typ))
 	}
-	err := d.Store.CreateNotificationChannel(context.Background(), store.NotificationChannel{
-		ID: id, Name: id, Kind: Webhook, URLEnc: d.Box.Seal([]byte(h.URL + "/" + id)),
+	err := d.st.CreateNotificationChannel(context.Background(), store.NotificationChannel{
+		ID: id, Name: id, Kind: Webhook, URLEnc: d.box.Seal([]byte(h.URL + "/" + id)),
 		Events: names, Enabled: enabled, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	})
 	if err != nil {
@@ -89,7 +91,7 @@ func subscribe(t *testing.T, d *Dispatcher, h *hook, id string, enabled bool, ty
 }
 
 func TestDispatcherSendsToSubscribersAndRecordsDeliveries(t *testing.T) {
-	d, h := newDispatcher(t)
+	d, h, _ := newDispatcher(t)
 	subscribe(t, d, h, "ok", true, JobFailed)
 	subscribe(t, d, h, "bad", true, DiskLow, JobFailed)
 	subscribe(t, d, h, "off", false, JobFailed)
@@ -109,7 +111,7 @@ func TestDispatcherSendsToSubscribersAndRecordsDeliveries(t *testing.T) {
 		t.Fatalf("requests to %q, want one to /bad and one to /ok", paths)
 	}
 
-	got, err := d.Store.NotificationDeliveries(ctx)
+	got, err := d.st.NotificationDeliveries(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,23 +129,23 @@ func TestDispatcherSendsToSubscribersAndRecordsDeliveries(t *testing.T) {
 }
 
 func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
-	d, h := newDispatcher(t)
+	d, h, bus := newDispatcher(t)
 	subscribe(t, d, h, "hook", true, JobFailed)
-	bus := runDispatcher(t, d)
+	runDispatcher(t, d)
 	ctx := context.Background()
 
 	jobs := map[string]store.Job{}
 	for i, result := range []string{store.ResultFailed, store.ResultCancelled, store.ResultSucceeded} {
-		j, _, err := d.Store.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobCompleted,
+		j, _, err := d.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobCompleted,
 			Result: result, Repository: "acme/api", JobName: "test"}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if result != store.ResultFailed {
-			if err := d.Store.SetJobEnrichment(ctx, j.ID, store.JobEnrichment{HeadBranch: "main"}, time.Now()); err != nil {
+			if err := d.st.SetJobEnrichment(ctx, j.ID, store.JobEnrichment{HeadBranch: "main"}, time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			if j, err = d.Store.GetJob(ctx, j.ID); err != nil {
+			if j, err = d.st.GetJob(ctx, j.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -160,10 +162,10 @@ func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
 	if got := h.events(); len(got) != 0 {
 		t.Fatalf("alerts before the run data: %+v", got)
 	}
-	if err := d.Store.SetJobEnrichment(ctx, failed.ID, store.JobEnrichment{HeadBranch: "main", Actor: "octo"}, time.Now()); err != nil {
+	if err := d.st.SetJobEnrichment(ctx, failed.ID, store.JobEnrichment{HeadBranch: "main", Actor: "octo"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	enriched, err := d.Store.GetJob(ctx, failed.ID)
+	enriched, err := d.st.GetJob(ctx, failed.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,11 +187,11 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 	prev := enrichWait
 	enrichWait = 50 * time.Millisecond
 	t.Cleanup(func() { enrichWait = prev })
-	d, h := newDispatcher(t)
+	d, h, bus := newDispatcher(t)
 	subscribe(t, d, h, "hook", true, JobFailed)
-	bus := runDispatcher(t, d)
+	runDispatcher(t, d)
 
-	j, _, err := d.Store.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
+	j, _, err := d.st.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
 		Result: store.ResultFailed, Repository: "acme/api", JobName: "test"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -201,12 +203,19 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 }
 
 func TestDispatcherDiskLow(t *testing.T) {
-	d, h := newDispatcher(t)
+	d, h, _ := newDispatcher(t)
 	subscribe(t, d, h, "hook", true, DiskLow)
 	ctx := context.Background()
 	at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
-	if err := d.Store.CreateServer(ctx, store.Server{ID: "s1", Name: "builder-1", Kind: store.ServerAgent,
+	if err := d.st.CreateServer(ctx, store.Server{ID: "s1", Name: "builder-1", Kind: store.ServerAgent,
 		Status: store.ServerOnline, CreatedAt: at, UpdatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	// With a domain and no public URL, the links go to the domain.
+	if _, err := d.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.Domain = "ci.example.com"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	now := at
@@ -220,16 +229,13 @@ func TestDispatcherDiskLow(t *testing.T) {
 
 	sample(0, 90) // 10% free: alert
 	sample(time.Minute, 92)
-	// The fleet reports the same drop.
-	if err := d.Notify(ctx, DiskLowEvent("", "s1", "builder-1", 8, 15)); err != nil {
-		t.Fatal(err)
-	}
 	sample(2*time.Minute, 82) // 18% free is not far enough above 15%
 	sample(3*time.Minute, 90)
 	sample(time.Hour, 70) // 30% free
 	sample(2*time.Hour, 90)
-	if got := h.events(); len(got) != 1 || got[0].Event != "disk.low" || got[0].Data["server_name"] != "builder-1" {
-		t.Fatalf("alerts in the first 6 hours: %+v, want one disk.low of builder-1", got)
+	if got := h.events(); len(got) != 1 || got[0].Event != "disk.low" || got[0].Data["server_name"] != "builder-1" ||
+		got[0].URL != "https://ci.example.com/servers/s1" {
+		t.Fatalf("alerts in the first 6 hours: %+v, want one disk.low of builder-1 with a link to the domain", got)
 	}
 	sample(7*time.Hour, 82)
 	sample(7*time.Hour+time.Minute, 95)
@@ -244,14 +250,12 @@ func TestDispatcherDiskLow(t *testing.T) {
 }
 
 func TestDispatcherServerUnreachableOncePerOutage(t *testing.T) {
-	d, h := newDispatcher(t)
+	d, h, _ := newDispatcher(t)
 	subscribe(t, d, h, "hook", true, ServerUnreachable)
 	ctx := context.Background()
 	down := events.ServerState{ID: "s1", Name: "builder-1", Status: store.ServerUnreachable}
-	// The fleet and the server.state event report the same outage.
-	if err := d.Notify(ctx, ServerUnreachableEvent("", "s1", "builder-1", time.Now())); err != nil {
-		t.Fatal(err)
-	}
+	// Each change of the row during the outage sends a server.state event.
+	d.serverState(ctx, down)
 	d.serverState(ctx, down)
 	d.wg.Wait()
 	if n := len(h.events()); n != 1 {
@@ -265,14 +269,12 @@ func TestDispatcherServerUnreachableOncePerOutage(t *testing.T) {
 	}
 }
 
-func runDispatcher(t *testing.T, d *Dispatcher) *events.Bus {
+func runDispatcher(t *testing.T, d *Dispatcher) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	bus := &events.Bus{}
 	done := make(chan struct{})
-	go func() { d.Run(ctx, bus); close(done) }()
+	go func() { d.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return bus
 }
 
 // publishUntilAlert publishes the events again and again until the hook

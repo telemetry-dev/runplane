@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sshinstall"
+	"github.com/runplane/runplane/internal/sshkey"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -125,7 +125,7 @@ func startGateway(t *testing.T) *gateway {
 			t.Errorf("Serve: %v", err)
 		}
 	})
-	hostKey, _, err := sshinstall.LoadOrCreateKey(hostKeyPath)
+	hostKey, _, err := sshkey.LoadOrCreate(hostKeyPath)
 	if err != nil {
 		t.Fatal(err)
 	}

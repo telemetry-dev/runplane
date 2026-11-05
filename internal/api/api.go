@@ -20,6 +20,8 @@ import (
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/fleet"
+	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
@@ -139,37 +141,37 @@ type GitHub interface {
 	Disconnect(ctx context.Context) error
 }
 
+// Servers is the fleet of servers: *fleet.Fleet.
 type Servers interface {
 	// NewToken makes a one-time install token for a new agent and the
-	// command that installs the agent with it. An empty name means the host
-	// name of the agent.
-	NewToken(ctx context.Context, base, name, createdBy string) (ServerToken, error)
+	// command that installs the agent with it.
+	NewToken(ctx context.Context, base, name, createdBy string) (fleet.Token, error)
 	// InstallSSH starts an install over SSH and returns the ID of the new
 	// server. The install continues in the background; the server status
 	// and status detail show its progress.
-	InstallSSH(ctx context.Context, base string, req SSHInstall) (serverID string, err error)
-	// SSHPublicKey returns the runplane SSH key in authorized_keys format.
+	InstallSSH(ctx context.Context, base string, req fleet.SSHInstall) (serverID string, err error)
 	SSHPublicKey(ctx context.Context) (string, error)
-	Doctor(ctx context.Context, serverID string) ([]Check, error)
-	// Capacity reads the capacity of a connected server from its driver.
-	Capacity(ctx context.Context, serverID string) (sandbox.Capacity, error)
-	// Remove stops the sandboxes of an agent and disconnects it. The API
-	// then deletes the server row.
-	Remove(ctx context.Context, serverID string) error
-	// UpdateState tells whether the server runs the release of the
-	// primary: one of the Update* values.
-	UpdateState(v store.Server) string
+	// Doctor returns fleet.ErrNotConnected for a server without a
+	// connection.
+	Doctor(ctx context.Context, serverID string) ([]host.Check, error)
+	// Limits returns the limits of the driver of a connected server.
+	Limits(serverID string) (sandbox.Limits, bool)
+	// RemoveServer stops the sandboxes of an agent and disconnects it. The
+	// API then deletes the server row. It returns fleet.ErrLocalServer for
+	// the primary.
+	RemoveServer(ctx context.Context, serverID string) error
+	UpdateState(v store.Server) fleet.UpdateState
 	// UpdateAgent makes a connected agent install the release of the
 	// primary. The update runs in the background, and UpdateState shows it.
 	UpdateAgent(ctx context.Context, serverID string) error
 }
 
 type Images interface {
-	// Refresh pulls the image again on all servers.
-	Refresh(ctx context.Context, imageID string) error
-	// Remove deletes the files of the image on all servers. The API then
-	// deletes the image row.
-	Remove(ctx context.Context, imageID string) error
+	// RefreshImage pulls the image again on all servers.
+	RefreshImage(ctx context.Context, imageID string) error
+	// RemoveImage deletes the files of the image on all servers. The API
+	// then deletes the image row.
+	RemoveImage(ctx context.Context, imageID string) error
 }
 
 type Caches interface {
@@ -227,13 +229,13 @@ type Shell interface {
 
 type HostChecker interface {
 	// Check reads this server and runs the doctor checks for the setup page.
-	Check(ctx context.Context) (HostCheck, error)
+	Check(ctx context.Context) (fleet.HostCheck, error)
 }
 
 type InstallScript interface {
-	// Script returns install.sh with the primary URL and the agent
-	// certificate fingerprint filled in for the request.
-	Script(r *http.Request) []byte
+	// Script returns install.sh with the values of the primary, for the
+	// host[:port] that the request named.
+	Script(host string) []byte
 }
 
 type SettingsHook interface {

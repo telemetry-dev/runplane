@@ -78,20 +78,13 @@ type Backend[T any] interface {
 	Usage(ctx context.Context, b *Box[T]) (Usage, error)
 }
 
-// Limits are the limits of a driver on its sandboxes.
-type Limits struct {
-	OverheadMB   int // host memory of each sandbox on top of its own
-	MaxVCPU      int // 0 = no limit
-	MaxSandboxes int // 0 = no limit
-}
-
 type Options[T any] struct {
 	Mode    sandbox.Mode
 	DataDir string // selects the data disk for Capacity
 	// Dir is the sandboxes folder. It has a folder with the record for each
 	// sandbox.
 	Dir      string
-	Limits   Limits
+	Limits   sandbox.Limits
 	Backend  Backend[T]
 	Settings sandbox.Settings
 	Logger   *slog.Logger
@@ -103,7 +96,7 @@ type Core[T any] struct {
 	mode    sandbox.Mode
 	dataDir string
 	dir     string
-	limits  Limits
+	limits  sandbox.Limits
 	backend Backend[T]
 	log     *slog.Logger
 	events  *queue
@@ -281,8 +274,7 @@ func (c *Core[T]) Capacity(context.Context) (sandbox.Capacity, error) {
 	}
 	cp := sandbox.Capacity{
 		Mode: c.mode, Arch: host.Arch(), VCPU: res.VCPU, MemoryMB: res.MemoryMB,
-		DiskBytes: res.DiskBytes, FreeDiskBytes: res.FreeDiskBytes,
-		OverheadMB: c.limits.OverheadMB, MaxVCPU: c.limits.MaxVCPU, MaxSandboxes: c.limits.MaxSandboxes,
+		DiskBytes: res.DiskBytes, FreeDiskBytes: res.FreeDiskBytes, Limits: c.limits,
 	}
 	for _, b := range c.Boxes() {
 		cp.AllocVCPU += b.spec.VCPU

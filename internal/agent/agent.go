@@ -24,10 +24,8 @@ import (
 
 	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
-	"github.com/runplane/runplane/internal/version"
 )
 
 // ErrUpdated is the result of Run after the primary updated the binary of
@@ -40,9 +38,8 @@ type Config struct {
 	// CacheProxy, if not nil, sends its requests through the connection
 	// that Run keeps.
 	CacheProxy *CacheProxy
-	// Mirror returns the stats of the registry mirror of the agent.
-	Mirror func() mirror.Stats
-	Logger *slog.Logger
+	Version    string // of runplane on this server
+	Logger     *slog.Logger
 }
 
 const (
@@ -51,6 +48,10 @@ const (
 	// maxQueued is the number of events that the agent keeps while it has
 	// no connection.
 	maxQueued = 4096
+	// updateWait is how long the agent waits after an update for the
+	// primary to close the connection, which it does when it has the
+	// answer.
+	updateWait = 10 * time.Second
 )
 
 // Run connects the agent to the primary and serves the agent routes from
@@ -69,7 +70,11 @@ func Run(ctx context.Context, cfg Config) error {
 		out:     &outbox{ready: make(chan struct{}, 1)},
 		updated: make(chan struct{}),
 	}
-	a.routes = a.newRoutes()
+	mux := http.NewServeMux()
+	for _, h := range handlers {
+		mux.HandleFunc(h.pattern, h.serve(a))
+	}
+	a.routes = mux
 	go Forward(ctx, cfg.Node, a.out.addEvent, a.out.setStats)
 
 	delay := minBackoff
@@ -133,7 +138,7 @@ func (a *agent) connect(ctx context.Context) (*yamux.Session, error) {
 
 func (a *agent) handshake(conn net.Conn, info host.Info) (*yamux.Session, error) {
 	conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	hello := Hello{Version: version.Version, Mode: a.Node.Driver().Mode(), Host: info}
+	hello := helloLine{Version: a.Version, Mode: a.Node.Driver().Mode(), Host: wireInfo(info)}
 	if a.file.registered() {
 		hello.ServerID, hello.Secret = a.file.ServerID, a.file.Secret
 	} else {
@@ -192,7 +197,9 @@ func (a *agent) remember(r reply) error {
 	return nil
 }
 
-// serve operates one connection until it ends.
+// serve operates one connection until it ends. After an update, the
+// agent does not close the connection: the answer of the update could be
+// lost. It waits for the primary to close it.
 func (a *agent) serve(ctx context.Context, sess *yamux.Session) error {
 	defer sess.Close()
 	a.Logger.Info("connected to the primary", "primary", a.file.Primary, "server_id", a.file.ServerID)
@@ -208,8 +215,13 @@ func (a *agent) serve(ctx context.Context, sess *yamux.Session) error {
 	case <-sess.CloseChan():
 		return nil
 	case <-a.updated:
-		return ErrUpdated
 	}
+	select {
+	case <-ctx.Done():
+	case <-sess.CloseChan():
+	case <-time.After(updateWait):
+	}
+	return ErrUpdated
 }
 
 // sendEvents streams the outbox to POST /v1/events. When the stream
@@ -222,7 +234,7 @@ func (a *agent) sendEvents(sess *yamux.Session) {
 	}
 	pr, pw := io.Pipe()
 	go func() {
-		req, _ := http.NewRequest(http.MethodPost, "http://primary/v1/events", pr)
+		req, _ := http.NewRequest(http.MethodPost, "http://primary"+eventsPath, pr)
 		req.Header.Set("Content-Type", "application/x-ndjson")
 		resp, err := streamClient(sess).Do(req)
 		if err == nil {
@@ -252,7 +264,7 @@ func (a *agent) sendEvents(sess *yamux.Session) {
 type outbox struct {
 	mu      sync.Mutex
 	events  []sandbox.Event
-	stats   *host.Stats
+	stats   *hostStats
 	dropped int
 	ready   chan struct{} // has a value after each change
 }
@@ -269,8 +281,9 @@ func (o *outbox) addEvent(ev sandbox.Event) {
 }
 
 func (o *outbox) setStats(st host.Stats) {
+	ws := wireStats(st)
 	o.mu.Lock()
-	o.stats = &st
+	o.stats = &ws
 	o.mu.Unlock()
 	o.signal()
 }

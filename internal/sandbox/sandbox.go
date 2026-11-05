@@ -104,6 +104,12 @@ type Capacity struct {
 	AllocVCPU     int    `json:"alloc_vcpu"`
 	AllocMemoryMB int    `json:"alloc_memory_mb"` // with OverheadMB for each sandbox
 	Sandboxes     int    `json:"sandboxes"`
+	Limits
+}
+
+// Limits are the limits of a driver on its sandboxes. They do not change
+// while the driver operates.
+type Limits struct {
 	// OverheadMB is the host memory that each sandbox uses on top of its
 	// own memory, for example the Firecracker process of a VM.
 	OverheadMB   int `json:"overhead_mb"`

@@ -10,7 +10,6 @@ import (
 
 	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/image"
@@ -309,15 +308,10 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 	return errors.Join(errs...)
 }
 
-func (f *Fleet) Images() api.Images { return imageService{f} }
-
-type imageService struct{ f *Fleet }
-
-// Refresh pulls the image again on each connected server. The servers keep
-// the image that they have until the new pull is ready, unless its ref
+// RefreshImage pulls the image again on each connected server. The servers
+// keep the image that they have until the new pull is ready, unless its ref
 // changed.
-func (s imageService) Refresh(ctx context.Context, imageID string) error {
-	f := s.f
+func (f *Fleet) RefreshImage(ctx context.Context, imageID string) error {
 	img, err := f.st.GetImage(ctx, imageID)
 	if err != nil {
 		return err
@@ -341,10 +335,9 @@ func (s imageService) Refresh(ctx context.Context, imageID string) error {
 	return nil
 }
 
-// Remove stops the use of an image and removes its files from the
+// RemoveImage stops the use of an image and removes its files from the
 // connected servers. The API then deletes the image row.
-func (s imageService) Remove(ctx context.Context, imageID string) error {
-	f := s.f
+func (f *Fleet) RemoveImage(ctx context.Context, imageID string) error {
 	f.mu.Lock()
 	f.dropped[imageID] = true
 	delete(f.images, imageID)

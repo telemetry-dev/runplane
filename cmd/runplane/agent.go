@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"net/netip"
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/datadisk"
-	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/version"
 )
 
@@ -39,20 +36,14 @@ func runAgent(ctx context.Context, args []string) error {
 	defer func() { stopNode(); <-nodeDone }()
 
 	proxy := agent.NewCacheProxy(l.driver, log.With("component", "cache"))
-	hasSandbox := func(ip netip.Addr) bool {
-		list, err := l.driver.List(context.Background())
-		_, ok := sandbox.FindByIP(list, ip)
-		return err == nil && ok
-	}
-	space := func() datadisk.Space { return diskSpace(cfg.MirrorDir(), datadisk.Settings{}) }
-	mir, stopPort, err := serveServicePort(cfg, l.allow(hasSandbox), proxy, space, log)
+	stopPort, err := serveServicePort(cfg, l.node.Mirror(), proxy, log)
 	if err != nil {
 		return err
 	}
 	defer stopPort()
 
 	log.Info("runplane agent started", "version", version.String(), "mode", cfg.Mode, "config", cfg.AgentConfigPath())
-	err = agent.Run(ctx, agent.Config{Path: cfg.AgentConfigPath(), Node: l.node, CacheProxy: proxy, Mirror: mir.Stats, Logger: log})
+	err = agent.Run(ctx, agent.Config{Path: cfg.AgentConfigPath(), Node: l.node, CacheProxy: proxy, Version: version.Version, Logger: log})
 	if errors.Is(err, agent.ErrUpdated) {
 		// systemd starts the new binary. The sandboxes keep operating, and
 		// the driver takes them over after the restart.

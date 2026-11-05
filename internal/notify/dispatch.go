@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -27,38 +28,68 @@ const (
 )
 
 // Dispatcher sends events to the notification channels that subscribe to
-// them. Other packages give it events through Notify, and Run makes events
-// from the bus: failed jobs, unreachable servers, and low disk space.
-//
-// Two sources can report the same thing, for example the fleet and the
-// server.state event. The dispatcher sends one server.unreachable alert for
-// each outage, one job.failed alert for each job, and at most one disk.low
-// alert for each server in 6 hours.
+// them. Other packages give it events through Notify. Run makes the alerts
+// of the bus: one job.failed alert for each failed job, one
+// server.unreachable alert for each outage of a server, and at most one
+// disk.low alert for each server in 6 hours.
 type Dispatcher struct {
-	Store *store.Store
-	Box   *secret.Box // opens the channel URLs
-	Log   *slog.Logger
+	st  *store.Store
+	box *secret.Box // opens the channel URLs
+	log *slog.Logger
+	now func() time.Time
 
-	now func() time.Time // nil: time.Now
-	due chan string      // failed jobs whose wait for run data ended
+	settings <-chan events.SettingsChanged
+	jobs     <-chan events.JobState
+	servers  <-chan events.ServerState
+	stats    <-chan events.HostStats
+	stop     context.CancelFunc // ends the subscriptions
+
+	due chan string // failed jobs whose wait for run data ended
 	wg  sync.WaitGroup
 
 	mu       sync.Mutex
 	minFree  float64              // min_free_disk_percent
-	jobs     map[string]time.Time // failed jobs with a sent alert
+	sent     map[string]time.Time // failed jobs with a sent alert, by job ID
 	waiting  map[string]*time.Timer
 	down     map[string]bool      // servers with a sent unreachable alert
 	diskLow  map[string]bool      // servers below the free disk limit
 	diskSent map[string]time.Time // last disk.low alert of each server
 }
 
-// Notify sends e to each enabled channel that subscribes to its type, and
-// records each delivery. It drops an alert that an earlier event sent.
-func (d *Dispatcher) Notify(ctx context.Context, e Event) error {
-	if !d.admit(e) {
-		return nil
+type Config struct {
+	Store *store.Store
+	Box   *secret.Box
+	Bus   *events.Bus
+	Log   *slog.Logger
+}
+
+// New makes a dispatcher. It takes its events from the bus at once, also the
+// events before Run starts.
+func New(c Config) *Dispatcher {
+	ctx, stop := context.WithCancel(context.Background())
+	return &Dispatcher{
+		st:       c.Store,
+		box:      c.Box,
+		log:      cmp.Or(c.Log, slog.New(slog.DiscardHandler)),
+		now:      time.Now,
+		settings: events.Subscribe[events.SettingsChanged](ctx, c.Bus),
+		jobs:     events.Subscribe[events.JobState](ctx, c.Bus),
+		servers:  events.Subscribe[events.ServerState](ctx, c.Bus),
+		stats:    events.Subscribe[events.HostStats](ctx, c.Bus),
+		stop:     stop,
+		due:      make(chan string),
+		sent:     map[string]time.Time{},
+		waiting:  map[string]*time.Timer{},
+		down:     map[string]bool{},
+		diskLow:  map[string]bool{},
+		diskSent: map[string]time.Time{},
 	}
-	list, err := d.Store.ListNotificationChannels(ctx)
+}
+
+// Notify sends e to each enabled channel that subscribes to its type, and
+// records each delivery.
+func (d *Dispatcher) Notify(ctx context.Context, e Event) error {
+	list, err := d.st.ListNotificationChannels(ctx)
 	if err != nil {
 		return err
 	}
@@ -74,8 +105,8 @@ func (d *Dispatcher) Notify(ctx context.Context, e Event) error {
 				msg = err.Error()
 				errs[i] = fmt.Errorf("channel %s: %w", c.Name, err)
 			}
-			if err := d.Store.RecordNotificationDelivery(context.WithoutCancel(ctx), c.ID, d.clock(), msg); err != nil {
-				d.log().Warn("record notification delivery", "channel", c.Name, "err", err)
+			if err := d.st.RecordNotificationDelivery(context.WithoutCancel(ctx), c.ID, d.now(), msg); err != nil {
+				d.log.Warn("record notification delivery", "channel", c.Name, "err", err)
 			}
 		})
 	}
@@ -89,63 +120,25 @@ func (d *Dispatcher) Test(ctx context.Context, base, kind, url string) error {
 }
 
 func (d *Dispatcher) send(ctx context.Context, c store.NotificationChannel, e Event) error {
-	url, err := d.Box.Open(c.URLEnc)
+	url, err := d.box.Open(c.URLEnc)
 	if err != nil {
 		return fmt.Errorf("open the channel URL: %w", err)
 	}
 	return Send(ctx, c.Kind, string(url), e)
 }
 
-// admit reports if an alert goes out, and records it.
-func (d *Dispatcher) admit(e Event) bool {
-	id, _ := e.Data["server_id"].(string)
-	now := d.clock()
-	d.lock()
-	defer d.mu.Unlock()
-	switch e.Type {
-	case ServerUnreachable:
-		if d.down[id] {
-			return false
-		}
-		d.down[id] = true
-	case DiskLow:
-		if last, ok := d.diskSent[id]; ok && now.Sub(last) < diskEvery {
-			return false
-		}
-		d.diskSent[id] = now
-	case JobFailed:
-		job, _ := e.Data["job_id"].(string)
-		if _, ok := d.jobs[job]; ok {
-			return false
-		}
-		for id, at := range d.jobs {
-			if now.Sub(at) > 24*time.Hour {
-				delete(d.jobs, id)
-			}
-		}
-		d.jobs[job] = now
-	}
-	return true
-}
-
 // Run makes alerts from the bus until ctx ends.
-func (d *Dispatcher) Run(ctx context.Context, bus *events.Bus) {
-	settings := events.Subscribe[events.SettingsChanged](ctx, bus)
-	jobs := events.Subscribe[events.JobState](ctx, bus)
-	servers := events.Subscribe[events.ServerState](ctx, bus)
-	stats := events.Subscribe[events.HostStats](ctx, bus)
-	st, err := d.Store.GetSettings(ctx)
+func (d *Dispatcher) Run(ctx context.Context) {
+	defer d.stop()
+	st, err := d.st.GetSettings(ctx)
 	if err != nil {
-		d.log().Warn("read settings for notifications", "err", err)
+		d.log.Warn("read settings for notifications", "err", err)
 	}
-	d.lock()
-	d.minFree = st.MinFreeDiskPercent
-	d.due = make(chan string)
-	d.mu.Unlock()
+	d.settingsChanged(events.SettingsChanged(st))
 	for {
 		select {
 		case <-ctx.Done():
-			d.lock()
+			d.mu.Lock()
 			for _, t := range d.waiting {
 				t.Stop()
 			}
@@ -153,40 +146,46 @@ func (d *Dispatcher) Run(ctx context.Context, bus *events.Bus) {
 			d.wg.Wait()
 			return
 		case id := <-d.due:
-			d.lock()
+			d.mu.Lock()
 			delete(d.waiting, id)
-			d.mu.Unlock()
 			d.jobFailed(ctx, id)
-		case st := <-settings:
+			d.mu.Unlock()
+		case st := <-d.settings:
 			d.settingsChanged(st)
-		case job := <-jobs:
+		case job := <-d.jobs:
 			d.jobDone(ctx, job)
-		case v := <-servers:
+		case v := <-d.servers:
 			d.serverState(ctx, v)
-		case s := <-stats:
+		case s := <-d.stats:
 			d.hostStats(ctx, s)
 		}
 	}
 }
 
 func (d *Dispatcher) settingsChanged(st events.SettingsChanged) {
-	d.lock()
+	d.mu.Lock()
 	d.minFree = st.MinFreeDiskPercent
 	d.mu.Unlock()
 }
 
+// serverState sends an alert when a server becomes unreachable, and the
+// next one after the server was online again.
 func (d *Dispatcher) serverState(ctx context.Context, v events.ServerState) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	switch v.Status {
 	case store.ServerUnreachable:
-		lastSeen := d.clock()
+		if d.down[v.ID] {
+			return
+		}
+		d.down[v.ID] = true
+		lastSeen := d.now()
 		if v.LastSeenAt != nil {
 			lastSeen = *v.LastSeenAt
 		}
 		d.goNotify(ctx, func(dash string) Event { return ServerUnreachableEvent(dash, v.ID, v.Name, lastSeen) })
 	case store.ServerOnline:
-		d.lock()
 		delete(d.down, v.ID)
-		d.mu.Unlock()
 	}
 }
 
@@ -196,9 +195,9 @@ func (d *Dispatcher) jobDone(ctx context.Context, job events.JobState) {
 	if job.State != store.JobCompleted || job.Result != store.ResultFailed {
 		return
 	}
-	d.lock()
+	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, sent := d.jobs[job.ID]; sent {
+	if _, sent := d.sent[job.ID]; sent {
 		return
 	}
 	t, waits := d.waiting[job.ID]
@@ -210,22 +209,32 @@ func (d *Dispatcher) jobDone(ctx context.Context, job events.JobState) {
 		}
 		d.jobFailed(ctx, job.ID)
 	case !waits:
-		due := d.due
 		d.waiting[job.ID] = time.AfterFunc(enrichWait, func() {
 			select {
-			case due <- job.ID:
+			case d.due <- job.ID:
 			case <-ctx.Done():
 			}
 		})
 	}
 }
 
-// jobFailed sends the alert of a failed job with the job data of the store.
+// jobFailed sends the alert of a failed job with the job data of the
+// store, one time for each job. d.mu must be held.
 func (d *Dispatcher) jobFailed(ctx context.Context, id string) {
+	now := d.now()
+	if _, ok := d.sent[id]; ok {
+		return
+	}
+	for job, at := range d.sent {
+		if now.Sub(at) > 24*time.Hour {
+			delete(d.sent, job)
+		}
+	}
+	d.sent[id] = now
 	d.goNotify(ctx, func(dash string) Event {
-		job, err := d.Store.GetJob(ctx, id)
+		job, err := d.st.GetJob(ctx, id)
 		if err != nil {
-			d.log().Warn("read the failed job", "job", id, "err", err)
+			d.log.Warn("read the failed job", "job", id, "err", err)
 			job = store.Job{ID: id}
 		}
 		return JobFailedEvent(dash, job)
@@ -234,65 +243,45 @@ func (d *Dispatcher) jobFailed(ctx context.Context, id string) {
 
 // hostStats sends a disk.low alert when the free disk space of a server
 // falls below min_free_disk_percent. The next alert waits until the space
-// rises diskMargin points above the limit and falls again.
+// rises diskMargin points above the limit and falls again, and at least
+// diskEvery after the last alert of the server.
 func (d *Dispatcher) hostStats(ctx context.Context, s events.HostStats) {
 	free := 100 - s.DiskPercent
-	d.lock()
+	now := d.now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	minFree := d.minFree
-	alert := free < minFree && !d.diskLow[s.ServerID]
+	fell := free < minFree && !d.diskLow[s.ServerID]
 	switch {
 	case free < minFree:
 		d.diskLow[s.ServerID] = true
 	case free >= minFree+diskMargin:
 		delete(d.diskLow, s.ServerID)
 	}
-	d.mu.Unlock()
-	if !alert {
+	if last, ok := d.diskSent[s.ServerID]; !fell || ok && now.Sub(last) < diskEvery {
 		return
 	}
+	d.diskSent[s.ServerID] = now
+	d.log.Warn("disk almost full", "server_id", s.ServerID, "free_percent", free)
 	d.goNotify(ctx, func(dash string) Event {
 		name := s.ServerID
-		if v, err := d.Store.GetServer(ctx, s.ServerID); err == nil {
+		if v, err := d.st.GetServer(ctx, s.ServerID); err == nil {
 			name = v.Name
 		}
-		return DiskLowEvent(dash, s.ServerID, name, free, int(minFree))
+		return DiskLowEvent(dash, s.ServerID, name, free, minFree)
 	})
 }
 
 // goNotify builds an event with the dashboard URL and sends it in the background.
 func (d *Dispatcher) goNotify(ctx context.Context, build func(dashboard string) Event) {
 	d.wg.Go(func() {
-		st, err := d.Store.GetSettings(ctx)
+		st, err := d.st.GetSettings(ctx)
 		if err != nil {
-			d.log().Warn("read settings for a notification", "err", err)
+			d.log.Warn("read settings for a notification", "err", err)
 		}
 		e := build(st.DashboardURL())
 		if err := d.Notify(ctx, e); err != nil {
-			d.log().Warn("send notification", "type", e.Type, "err", err)
+			d.log.Warn("send notification", "type", e.Type, "err", err)
 		}
 	})
-}
-
-// lock locks the alert state and makes its maps on first use.
-func (d *Dispatcher) lock() {
-	d.mu.Lock()
-	if d.jobs == nil {
-		d.jobs, d.diskSent = map[string]time.Time{}, map[string]time.Time{}
-		d.waiting = map[string]*time.Timer{}
-		d.down, d.diskLow = map[string]bool{}, map[string]bool{}
-	}
-}
-
-func (d *Dispatcher) clock() time.Time {
-	if d.now != nil {
-		return d.now()
-	}
-	return time.Now()
-}
-
-func (d *Dispatcher) log() *slog.Logger {
-	if d.Log != nil {
-		return d.Log
-	}
-	return slog.New(slog.DiscardHandler)
 }

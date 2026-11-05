@@ -41,9 +41,9 @@ func TestRoom(t *testing.T) {
 		{"the overcommit gives vCPUs", server, Reserve{VCPU: 2, MemoryMB: 4096, Overcommit: 2}, 4, 1024, 7},
 		{"no overcommit setting", server, Reserve{}, 4, 1024, 4},
 		{"the sandboxes that operate", Capacity{VCPU: 16, MemoryMB: 32768, AllocVCPU: 8, AllocMemoryMB: 16384}, Reserve{}, 4, 4096, 2},
-		{"the overhead of each sandbox", Capacity{VCPU: 16, MemoryMB: 32768, OverheadMB: 64}, Reserve{}, 1, 8192, 3},
-		{"more vCPUs than the driver gives", Capacity{VCPU: 64, MemoryMB: 65536, MaxVCPU: 32}, Reserve{}, 33, 1024, 0},
-		{"the sandbox limit", Capacity{VCPU: 16, MemoryMB: 32768, Sandboxes: 9, MaxSandboxes: 10}, Reserve{}, 1, 1024, 1},
+		{"the overhead of each sandbox", Capacity{VCPU: 16, MemoryMB: 32768, Limits: Limits{OverheadMB: 64}}, Reserve{}, 1, 8192, 3},
+		{"more vCPUs than the driver gives", Capacity{VCPU: 64, MemoryMB: 65536, Limits: Limits{MaxVCPU: 32}}, Reserve{}, 33, 1024, 0},
+		{"the sandbox limit", Capacity{VCPU: 16, MemoryMB: 32768, Sandboxes: 9, Limits: Limits{MaxSandboxes: 10}}, Reserve{}, 1, 1024, 1},
 		{"a full server", Capacity{VCPU: 16, MemoryMB: 32768, AllocVCPU: 20}, Reserve{}, 1, 1024, 0},
 	}
 	for _, tt := range tests {

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/fleet"
+	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -20,34 +21,40 @@ import (
 type fakeServers struct {
 	Servers
 	names   []string
-	checks  []Check
-	states  map[string]string           // update state by server ID
-	updated []string                    // server IDs of the UpdateAgent calls
-	caps    map[string]sandbox.Capacity // the connected servers
+	checks  []host.Check
+	states  map[string]fleet.UpdateState // update state by server ID
+	updated []string                     // server IDs of the UpdateAgent calls
+	limits  map[string]sandbox.Limits    // the connected servers
 }
 
-func (f *fakeServers) Capacity(_ context.Context, id string) (sandbox.Capacity, error) {
-	c, ok := f.caps[id]
-	if !ok {
-		return sandbox.Capacity{}, errors.New("the server is not connected")
-	}
-	return c, nil
+func (f *fakeServers) Limits(id string) (sandbox.Limits, bool) {
+	l, ok := f.limits[id]
+	return l, ok
 }
 
-func (f *fakeServers) UpdateState(v store.Server) string { return f.states[v.ID] }
+func (f *fakeServers) UpdateState(v store.Server) fleet.UpdateState { return f.states[v.ID] }
 
+// UpdateAgent refuses an update as the fleet does for each state.
 func (f *fakeServers) UpdateAgent(_ context.Context, id string) error {
+	switch f.states[id] {
+	case fleet.UpdateCurrent:
+		return fleet.ErrUpToDate
+	case fleet.UpdateUpdating:
+		return fleet.ErrUpdateInProgress
+	case fleet.UpdateNone:
+		return fleet.ErrCannotUpdate
+	}
 	f.updated = append(f.updated, id)
-	f.states[id] = UpdateUpdating
+	f.states[id] = fleet.UpdateUpdating
 	return nil
 }
 
-func (f *fakeServers) NewToken(_ context.Context, _, name, _ string) (ServerToken, error) {
+func (f *fakeServers) NewToken(_ context.Context, _, name, _ string) (fleet.Token, error) {
 	f.names = append(f.names, name)
-	return ServerToken{ID: "tok1", Token: "rp_srv_x", Command: "curl", ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return fleet.Token{ID: "tok1", Token: "rp_srv_x", Command: "curl", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (f *fakeServers) Doctor(context.Context, string) ([]Check, error) { return f.checks, nil }
+func (f *fakeServers) Doctor(context.Context, string) ([]host.Check, error) { return f.checks, nil }
 
 func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	servers := &fakeServers{}
@@ -83,8 +90,8 @@ func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 }
 
 func TestDoctorResultIsKept(t *testing.T) {
-	servers := &fakeServers{checks: []Check{
-		{ID: "clock", Name: "Time synchronization", Status: "warn", Detail: "Not synchronized",
+	servers := &fakeServers{checks: []host.Check{
+		{ID: "clock", Name: "Time synchronization", Status: host.StatusWarn, Detail: "Not synchronized",
 			Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"},
 	}}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })
@@ -105,8 +112,10 @@ func TestDoctorResultIsKept(t *testing.T) {
 	if after.CheckedAt == nil || !after.CheckedAt.Equal(*ran.CheckedAt) {
 		t.Fatalf("checked_at %v, want the time of the run %v", after.CheckedAt, ran.CheckedAt)
 	}
-	if !slices.Equal(after.Checks, servers.checks) {
-		t.Fatalf("kept checks = %+v, want %+v", after.Checks, servers.checks)
+	want := []Check{{ID: "clock", Name: "Time synchronization", Status: "warn", Detail: "Not synchronized",
+		Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"}}
+	if !slices.Equal(after.Checks, want) {
+		t.Fatalf("kept checks = %+v, want %+v", after.Checks, want)
 	}
 	member.do("GET", "/api/servers/nope/doctor", nil, nil).want(t, 404)
 }
@@ -165,7 +174,7 @@ func TestPoolPlacement(t *testing.T) {
 // The placement knows the limits of the driver of each connected server:
 // a VM has at most 32 vCPUs, and each VM takes memory for its process.
 func TestPoolPlacementKnowsTheDriverLimits(t *testing.T) {
-	servers := &fakeServers{caps: map[string]sandbox.Capacity{"vm": {OverheadMB: 64, MaxVCPU: 32}}}
+	servers := &fakeServers{limits: map[string]sandbox.Limits{"vm": {OverheadMB: 64, MaxVCPU: 32}}}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })
 	b := e.login("ada@example.com", auth.RoleAdmin)
 	e.addServer("vm", "x64", store.ServerOnline, 64, 34816)
@@ -205,7 +214,7 @@ func TestPublicReposNeedVMOnEachServer(t *testing.T) {
 		t.Fatalf("problem %s does not name hel1-agent", res.body)
 	}
 
-	must(t, e.st.DeleteServer(ctx, "agent"))
+	must(t, e.st.DeleteServer(ctx, "agent", time.Now()))
 	var out Settings
 	b.do("PATCH", "/api/settings", on, &out).want(t, 200)
 	if !out.AllowPublicRepos {
@@ -216,8 +225,8 @@ func TestPublicReposNeedVMOnEachServer(t *testing.T) {
 }
 
 func TestUpdateAgentOnlyWhenAnUpdateApplies(t *testing.T) {
-	servers := &fakeServers{states: map[string]string{
-		"same": UpdateCurrent, "old": UpdateAvailable, "broken": UpdateFailed, "busy": UpdateUpdating, "dev": UpdateNone,
+	servers := &fakeServers{states: map[string]fleet.UpdateState{
+		"same": fleet.UpdateCurrent, "old": fleet.UpdateAvailable, "broken": fleet.UpdateFailed, "busy": fleet.UpdateUpdating, "dev": fleet.UpdateNone,
 	}}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })
 	for id := range servers.states {
@@ -233,7 +242,7 @@ func TestUpdateAgentOnlyWhenAnUpdateApplies(t *testing.T) {
 	for _, id := range []string{"old", "broken"} {
 		var out Server
 		admin.do("POST", "/api/servers/"+id+"/update", nil, &out).want(t, 200)
-		if out.UpdateState != UpdateUpdating {
+		if out.UpdateState != string(fleet.UpdateUpdating) {
 			t.Errorf("server %s: update state %q after the call, want updating", id, out.UpdateState)
 		}
 	}
@@ -262,7 +271,7 @@ func TestPoolWithAGoneServerStillChanges(t *testing.T) {
 // Server API object, because the frontend puts the event data in place of
 // GET /api/servers/{id}.
 func TestServerStateEventIsTheServerObject(t *testing.T) {
-	servers := &fakeServers{states: map[string]string{"s1": UpdateAvailable}}
+	servers := &fakeServers{states: map[string]fleet.UpdateState{"s1": fleet.UpdateAvailable}}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })
 	ch := e.login("bob@example.com", auth.RoleMember).events(t)
 	ctx := context.Background()
@@ -282,7 +291,7 @@ func TestServerStateEventIsTheServerObject(t *testing.T) {
 	ev := recv(t, ch)
 	var got Server
 	must(t, json.Unmarshal([]byte(ev.data), &got))
-	if ev.name != "server.state" || got.ID != "s1" || got.UpdateState != UpdateAvailable || got.Sandboxes != 2 ||
+	if ev.name != "server.state" || got.ID != "s1" || got.UpdateState != string(fleet.UpdateAvailable) || got.Sandboxes != 2 ||
 		got.RunningJobs != 1 || got.VCPUInUse != 6 || got.MemoryInUseMB != 12288 || got.CPUPercent == nil || *got.CPUPercent != 42 {
 		t.Errorf("%s data %s: want s1 with update_state available, 2 sandboxes, 1 running job, 6 vCPUs and 12288 MB in use, and 42%% CPU", ev.name, ev.data)
 	}

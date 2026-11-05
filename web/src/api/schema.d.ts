@@ -2084,8 +2084,10 @@ export interface components {
             /** @description For example the install progress or the last error. */
             status_detail: string;
             sysbox_version: string;
+            /** @description Why the last update of the agent failed. Empty when it did not fail. */
+            update_error: string;
             /**
-             * @description current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and status_detail tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version.
+             * @description current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and update_error tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version.
              * @enum {string}
              */
             update_state: "current" | "available" | "updating" | "failed" | "none";

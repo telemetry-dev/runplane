@@ -33,6 +33,7 @@ const agent: Server = {
   firecracker_version: '1.13.1',
   version: 'v0.4.2',
   update_state: 'current',
+  update_error: '',
   stats_at: '2026-11-04T04:49:39.447Z',
   created_at: '2026-10-03T06:49:45.447Z',
   updated_at: '2026-11-04T04:49:39.447Z',

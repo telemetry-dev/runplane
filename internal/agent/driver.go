@@ -7,51 +7,56 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
+// remoteDriver is the sandbox driver of an agent, through its session.
+type remoteDriver struct{ s *Session }
+
 // Mode is the mode that the agent sent in its hello.
-func (s *Session) Mode() sandbox.Mode { return s.hello.Mode }
+func (d remoteDriver) Mode() sandbox.Mode { return d.s.hello.Mode }
 
 // Start is the only call that sends the JIT config of a sandbox to the
 // agent, and the agent keeps it in memory.
-func (s *Session) Start(ctx context.Context, spec sandbox.Spec) error {
-	return s.call(ctx, http.MethodPost, "/v1/sandboxes", spec, nil)
+func (d remoteDriver) Start(ctx context.Context, spec sandbox.Spec) error {
+	_, err := call(ctx, d.s, opStart, spec)
+	return err
 }
 
-func (s *Session) Stop(ctx context.Context, id string) error {
-	return s.call(ctx, http.MethodDelete, sandboxPath(id, ""), nil, nil)
+func (d remoteDriver) Stop(ctx context.Context, id string) error {
+	_, err := call(ctx, d.s, opStop, sandboxID(id))
+	return err
 }
 
-func (s *Session) List(ctx context.Context) ([]sandbox.Sandbox, error) {
-	var list []sandbox.Sandbox
-	err := s.call(ctx, http.MethodGet, "/v1/sandboxes", nil, &list)
-	return list, err
+func (d remoteDriver) List(ctx context.Context) ([]sandbox.Sandbox, error) {
+	return call(ctx, d.s, opList, none{})
 }
 
-func (s *Session) Capacity(ctx context.Context) (sandbox.Capacity, error) {
-	var c sandbox.Capacity
-	err := s.call(ctx, http.MethodGet, "/v1/capacity", nil, &c)
-	return c, err
+func (d remoteDriver) Capacity(ctx context.Context) (sandbox.Capacity, error) {
+	return call(ctx, d.s, opCapacity, none{})
+}
+
+// Configure sends the driver settings. The agent keeps the
+// min_free_disk_percent of the last Session.Configure.
+func (d remoteDriver) Configure(ctx context.Context, settings sandbox.Settings) error {
+	d.s.settingsMu.Lock()
+	s := d.s.settings
+	d.s.settingsMu.Unlock()
+	s.Settings = settings
+	return d.s.Configure(ctx, s)
 }
 
 // Events delivers the driver events of the agent. It closes when the
 // session ends.
-func (s *Session) Events() <-chan sandbox.Event { return s.events }
+func (d remoteDriver) Events() <-chan sandbox.Event { return d.s.events }
 
 // Logs streams the log of a sandbox. With follow, the stream stays open
 // until ctx ends, the reader closes, or the session ends.
-func (s *Session) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
-	path := sandboxPath(id, "/logs")
-	if follow {
-		path += "?follow=1"
-	}
-	resp, err := s.send(ctx, http.MethodGet, path, nil)
+func (d remoteDriver) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+	resp, err := open(ctx, d.s, opLogs.route, logsRequest{ID: id, Follow: follow})
 	if err != nil {
 		return nil, err
 	}
@@ -60,44 +65,37 @@ func (s *Session) Logs(ctx context.Context, id string, follow bool) (io.ReadClos
 
 // Shell opens a debug shell. ctx limits only the open; the terminal stays
 // open until Close, the end of the shell, or the end of the session.
-func (s *Session) Shell(ctx context.Context, id string, size sandbox.TermSize) (sandbox.Terminal, error) {
-	q := url.Values{
-		"rows": {strconv.Itoa(int(size.Rows))},
-		"cols": {strconv.Itoa(int(size.Cols))},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://agent"+sandboxPath(id, "/shell")+"?"+q.Encode(), nil)
+func (d remoteDriver) Shell(ctx context.Context, id string, size sandbox.TermSize) (sandbox.Terminal, error) {
+	req, err := opShell.request(ctx, shellRequest{ID: id, Size: size})
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", shellProtocol)
-	resp, err := s.do(req)
+	resp, err := d.s.do(req)
 	if err != nil {
 		return nil, err
 	}
 	rwc, ok := resp.Body.(io.ReadWriteCloser)
 	if resp.StatusCode != http.StatusSwitchingProtocols || !ok {
 		resp.Body.Close()
-		return nil, fmt.Errorf("open shell on server %s: status %s", s.ServerID(), resp.Status)
+		return nil, fmt.Errorf("open shell on server %s: status %s", d.s.ServerID(), resp.Status)
 	}
 	return &remoteTerminal{rwc: rwc}, nil
 }
 
-func (s *Session) Hold(ctx context.Context, id string, until time.Time) error {
-	return s.call(ctx, http.MethodPost, sandboxPath(id, "/hold"), holdRequest{Until: until.UTC()}, nil)
+func (d remoteDriver) Hold(ctx context.Context, id string, until time.Time) error {
+	_, err := call(ctx, d.s, opHold, holdRequest{ID: id, Until: until.UTC()})
+	return err
 }
 
-func (s *Session) Configure(ctx context.Context, settings sandbox.Settings) error {
-	return s.call(ctx, http.MethodPost, "/v1/settings", settings, nil)
+func (d remoteDriver) Probe(ctx context.Context) error {
+	_, err := call(ctx, d.s, opProbe, none{})
+	return err
 }
 
-func (s *Session) Probe(ctx context.Context) error {
-	return s.call(ctx, http.MethodPost, "/v1/probe", nil, nil)
-}
-
-func sandboxPath(id, suffix string) string {
-	return "/v1/sandboxes/" + url.PathEscape(id) + suffix
-}
+// Close ends the session of the agent.
+func (d remoteDriver) Close() error { return d.s.Close() }
 
 // The shell stream after the upgrade: the agent sends the raw terminal
 // output. The primary sends frames, so that a resize can go on the same

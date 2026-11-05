@@ -9,6 +9,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/fleet"
+	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
@@ -49,20 +51,12 @@ type Server struct {
 	SysboxVersion      string     `json:"sysbox_version"`
 	FirecrackerVersion string     `json:"firecracker_version"`
 	Version            string     `json:"version" doc:"runplane version on the server."`
-	UpdateState        string     `json:"update_state" enum:"current,available,updating,failed,none" doc:"current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and status_detail tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version."`
+	UpdateState        string     `json:"update_state" enum:"current,available,updating,failed,none" doc:"current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and update_error tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version."`
+	UpdateError        string     `json:"update_error" doc:"Why the last update of the agent failed. Empty when it did not fail."`
 	StatsAt            *time.Time `json:"stats_at" doc:"Time of the latest host sample."`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
-
-// Values of Server.UpdateState.
-const (
-	UpdateCurrent   = "current"
-	UpdateAvailable = "available"
-	UpdateUpdating  = "updating"
-	UpdateFailed    = "failed"
-	UpdateNone      = "none"
-)
 
 // servers converts store servers and adds the latest host sample, the
 // sandbox use, and the update state.
@@ -90,10 +84,11 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 			},
 			Address: f.Address, Provider: f.Provider, Region: regions[v.ID], OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
 			DockerVersion: f.DockerVersion, SysboxVersion: f.SysboxVersion, FirecrackerVersion: f.FirecrackerVersion,
-			Version: f.Version, UpdateState: UpdateNone, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
+			Version: f.Version, UpdateState: string(fleet.UpdateNone), UpdateError: v.UpdateError,
+			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
 		}
 		if h.d.Servers != nil {
-			out[i].UpdateState = h.d.Servers.UpdateState(v)
+			out[i].UpdateState = string(h.d.Servers.UpdateState(v))
 		}
 		if st, ok := stats[v.ID]; ok {
 			out[i].CPUPercent, out[i].MemoryPercent, out[i].DiskPercent = &st.CPUPercent, &st.MemoryPercent, &st.DiskPercent
@@ -160,7 +155,7 @@ func (h *Handler) createServerToken(ctx context.Context, in *body[*ServerTokenRe
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "server.token", t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
-	return &body[ServerToken]{t}, nil
+	return &body[ServerToken]{ServerToken{ID: t.ID, Token: t.Token, Command: t.Command, ExpiresAt: t.ExpiresAt}}, nil
 }
 
 type ServerTokenStatus struct {
@@ -208,7 +203,7 @@ func (h *Handler) installServerSSH(ctx context.Context, in *body[SSHInstall]) (*
 	if err != nil {
 		return nil, err
 	}
-	id, err := h.d.Servers.InstallSSH(ctx, base, req)
+	id, err := h.d.Servers.InstallSSH(ctx, base, fleet.SSHInstall{Name: req.Name, Host: req.Host, Port: req.Port, User: req.User})
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
@@ -265,12 +260,12 @@ func (h *Handler) updateServer(ctx context.Context, in *struct {
 		}
 	}
 	if name != "" {
-		if err := h.d.Store.SetServerName(ctx, v.ID, name); err != nil {
+		if err := h.d.Store.SetServerName(ctx, v.ID, name, time.Now()); err != nil {
 			return nil, notFound(err, "No server has this ID.")
 		}
 	}
 	if changeStatus {
-		if err := h.d.Store.SetServerStatus(ctx, v.ID, *b.Status, ""); err != nil {
+		if err := h.d.Store.SetServerStatus(ctx, v.ID, *b.Status, "", time.Now()); err != nil {
 			return nil, notFound(err, "No server has this ID.")
 		}
 	}
@@ -297,16 +292,17 @@ func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) 
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	if v.Kind == store.ServerLocal {
-		return nil, huma.Error409Conflict("The primary server cannot be removed.")
-	}
 	if h.d.Servers == nil {
 		return nil, unavailable("Removing servers")
 	}
-	if err := h.d.Servers.Remove(ctx, v.ID); err != nil {
+	err = h.d.Servers.RemoveServer(ctx, v.ID)
+	if errors.Is(err, fleet.ErrLocalServer) {
+		return nil, huma.Error409Conflict("The primary server cannot be removed.")
+	}
+	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	if err := h.d.Store.DeleteServer(ctx, v.ID); err != nil {
+	if err := h.d.Store.DeleteServer(ctx, v.ID, time.Now()); err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
 	// The delete can change the servers of pools, or disable them.
@@ -323,15 +319,16 @@ func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], e
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	switch h.d.Servers.UpdateState(v) {
-	case UpdateCurrent:
+	switch err := h.d.Servers.UpdateAgent(ctx, v.ID); {
+	case errors.Is(err, fleet.ErrUpToDate):
 		return nil, huma.Error409Conflict("The server runs runplane " + v.Version + ", the version of the primary.")
-	case UpdateUpdating:
+	case errors.Is(err, fleet.ErrUpdateInProgress):
 		return nil, huma.Error409Conflict("An update of the server runs.")
-	case UpdateNone:
+	case errors.Is(err, fleet.ErrCannotUpdate):
 		return nil, huma.Error409Conflict("runplane cannot update the server: the primary is not a release build, or the server has not reported its version.")
-	}
-	if err := h.d.Servers.UpdateAgent(ctx, v.ID); err != nil {
+	case errors.Is(err, fleet.ErrNotConnected):
+		return nil, huma.Error409Conflict("The server is not connected, so it cannot update.")
+	case err != nil:
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "server.update_agent", v.ID, map[string]any{"name": v.Name, "from": v.Version, "to": version.Version})
@@ -372,11 +369,22 @@ func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	checks, err := h.d.Servers.Doctor(ctx, v.ID)
+	list, err := h.d.Servers.Doctor(ctx, v.ID)
+	if errors.Is(err, fleet.ErrNotConnected) {
+		return nil, huma.Error409Conflict("The server is not connected, so its checks cannot run.")
+	}
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	return reply(h.saveDoctor(ctx, v.ID, checks))
+	return reply(h.saveDoctor(ctx, v.ID, checks(list)))
+}
+
+func checks(list []host.Check) []Check {
+	out := make([]Check, len(list))
+	for i, c := range list {
+		out[i] = Check{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
+	}
+	return out
 }
 
 func (h *Handler) saveDoctor(ctx context.Context, serverID string, checks []Check) (DoctorResult, error) {

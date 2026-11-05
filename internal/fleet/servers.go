@@ -9,14 +9,22 @@ import (
 	"sync"
 
 	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/ids"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/version"
 )
+
+// ErrLocalServer means that RemoveServer got the server of the primary.
+var ErrLocalServer = errors.New("the primary server cannot be removed")
+
+// HostCheck is the server of the primary with its doctor checks, for the
+// setup page.
+type HostCheck struct {
+	Info   host.Info
+	Mode   sandbox.Mode
+	Checks []host.Check
+}
 
 // startLocal records the server of the primary and connects its node.
 func (f *Fleet) startLocal(ctx context.Context) error {
@@ -24,38 +32,25 @@ func (f *Fleet) startLocal(ctx context.Context) error {
 	if err != nil {
 		f.log.Warn("read host facts", "err", err)
 	}
-	facts := serverFacts(info, f.local.Driver().Mode(), version.Version, info.IPv4)
 	v, err := f.st.GetLocalServer(ctx)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
+	if errors.Is(err, store.ErrNotFound) {
 		now := f.now()
 		v = store.Server{
 			ID: ids.New(), Name: cmp.Or(info.Hostname, "primary"), Kind: store.ServerLocal, Status: store.ServerOnline,
-			ServerFacts: facts, CreatedAt: now, UpdatedAt: now,
+			CreatedAt: now, UpdatedAt: now,
 		}
-		if err := f.st.CreateServer(ctx, v); err != nil {
-			return fmt.Errorf("record the local server: %w", err)
-		}
-	case err != nil:
-		return fmt.Errorf("read the local server: %w", err)
-	default:
-		if err := f.st.UpdateServerFacts(ctx, v.ID, facts); err != nil {
-			return fmt.Errorf("record the local server: %w", err)
-		}
-		if !adminStatus(v.Status) && v.Status != store.ServerOnline {
-			v.Status = store.ServerOnline
-			if err := f.st.SetServerStatus(ctx, v.ID, v.Status, ""); err != nil {
-				return fmt.Errorf("record the local server: %w", err)
-			}
-		}
+		err = f.st.CreateServer(ctx, v)
 	}
-	f.setRegion(ctx, v.ID, info.Region)
+	if err != nil {
+		return fmt.Errorf("record the local server: %w", err)
+	}
 	f.mu.Lock()
-	f.localID, f.localAddr = v.ID, info.IPv4
+	f.localID = v.ID
 	f.mu.Unlock()
-	f.add(&node{Node: f.local, id: v.ID, version: version.Version, name: v.Name, arch: facts.Arch, status: v.Status})
-	f.publishServer(ctx, v.ID)
-	f.log.Info("local server ready", "server_id", v.ID, "name", v.Name, "arch", facts.Arch, "mode", facts.Mode)
+	hello := agent.Hello{Version: f.version, Mode: f.local.Driver().Mode(), Host: info, Addr: info.IPv4}
+	if err := f.connect(ctx, v.ID, f.local, hello); err != nil {
+		return fmt.Errorf("record the local server: %w", err)
+	}
 	return nil
 }
 
@@ -85,8 +80,7 @@ func (f *Fleet) startAgents(ctx context.Context) error {
 
 // AddSession takes a new agent session: the OnSession hook of agent.Listener.
 func (f *Fleet) AddSession(s *agent.Session) {
-	ctx := f.bg
-	id, h := s.ServerID(), s.Hello()
+	id := s.ServerID()
 	f.mu.Lock()
 	removed := f.removed[id]
 	f.mu.Unlock()
@@ -94,56 +88,70 @@ func (f *Fleet) AddSession(s *agent.Session) {
 		s.Close()
 		return
 	}
-	v, err := f.connect(ctx, id, h)
-	if err != nil {
+	if err := f.connect(f.bg, id, s, s.Hello()); err != nil {
 		f.log.Warn("record the agent connection", "server_id", id, "err", err)
 		s.Close()
-		return
 	}
-	n := &node{Node: s, id: id, sess: s, addr: h.Addr, version: h.Version, name: v.Name, arch: h.Host.Arch, status: v.Status}
-	// The driver gets its settings before the scheduler can start a
-	// sandbox on it.
-	if st, err := f.st.GetSettings(ctx); err != nil {
-		f.log.Warn("read settings for an agent", "err", err)
-	} else {
-		f.configure(ctx, n, DriverSettings(st))
-	}
-	f.add(n)
-	f.endUpdate(ctx, id, h.Version)
-	f.publishServer(ctx, id)
-	f.log.Info("server connected", "server_id", id, "name", v.Name, "addr", h.Addr, "version", h.Version, "arch", n.arch)
-	f.goBg(func(ctx context.Context) {
-		// The scheduler compares the sandboxes of the server with its rows.
-		f.capacityChanged()
-		f.kick()
-		if f.beginUpdate(id, h.Version, false) {
-			f.runUpdate(ctx, n)
-		}
-	})
 }
 
-// connect records the facts of a connected agent and sets it online, unless
-// an admin drains or disables it.
-func (f *Fleet) connect(ctx context.Context, id string, h agent.Hello) (store.Server, error) {
+// connect records a server that connects: its facts, and the status online
+// unless an admin drains or disables it. Then it gives the server its
+// settings and adds its node, and an agent of another version gets the
+// release of the primary.
+func (f *Fleet) connect(ctx context.Context, id string, n agent.Node, h agent.Hello) error {
 	v, err := f.st.GetServer(ctx, id)
 	if err != nil {
-		return v, err
+		return err
 	}
-	if err := f.st.UpdateServerFacts(ctx, id, serverFacts(h.Host, h.Mode, h.Version, h.Addr)); err != nil {
-		return v, err
+	now := f.now()
+	if err := f.st.UpdateServerFacts(ctx, id, serverFacts(h.Host, h.Mode, h.Version, h.Addr), now); err != nil {
+		return err
 	}
 	f.setRegion(ctx, id, h.Host.Region)
-	if err := f.st.TouchServer(ctx, id, f.now()); err != nil {
-		return v, err
+	// last_seen_at is the last contact of an agent.
+	if !n.Local() {
+		if err := f.st.TouchServer(ctx, id, now); err != nil {
+			return err
+		}
 	}
 	if !adminStatus(v.Status) {
 		v.Status = store.ServerOnline
 	}
 	detail := ""
-	if h.Version != version.Version {
-		detail = fmt.Sprintf("This server has runplane %s and the primary has %s.", h.Version, version.Version)
+	if h.Version != f.version {
+		detail = fmt.Sprintf("This server has runplane %s and the primary has %s.", h.Version, f.version)
 	}
-	return v, f.st.SetServerStatus(ctx, id, v.Status, detail)
+	if err := f.st.SetServerStatus(ctx, id, v.Status, detail, now); err != nil {
+		return err
+	}
+
+	nd := &node{Node: n, id: id, addr: h.Addr, version: h.Version, name: v.Name, arch: h.Host.Arch, status: v.Status}
+	// The server gets its settings before the scheduler can start a
+	// sandbox on it.
+	if st, err := f.st.GetSettings(ctx); err != nil {
+		f.log.Warn("read settings for a server", "err", err)
+	} else {
+		f.configure(ctx, nd, NodeSettings(st))
+	}
+	nd.limits = f.readLimits(ctx, nd)
+	if n.Local() {
+		f.mu.Lock()
+		f.localAddr = h.Addr
+		f.mu.Unlock()
+	}
+	f.add(nd)
+	f.endUpdate(ctx, id, h.Version)
+	f.publishServer(ctx, id)
+	f.log.Info("server connected", "server_id", id, "name", v.Name, "addr", h.Addr, "version", h.Version, "arch", nd.arch, "mode", h.Mode)
+	f.goBg(func(ctx context.Context) {
+		// The scheduler compares the sandboxes of the server with its rows.
+		f.capacityChanged()
+		f.kick()
+		if f.beginUpdate(ctx, id, h.Version, false) == nil {
+			f.runUpdate(ctx, nd)
+		}
+	})
+	return nil
 }
 
 // adminStatus reports a status that only an admin sets and clears.
@@ -151,12 +159,24 @@ func adminStatus(status string) bool {
 	return status == store.ServerDraining || status == store.ServerDisabled
 }
 
-func (f *Fleet) configure(ctx context.Context, n *node, s sandbox.Settings) {
+func (f *Fleet) configure(ctx context.Context, n *node, s agent.Settings) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	if err := n.Driver().Configure(ctx, s); err != nil {
+	if err := n.Configure(ctx, s); err != nil {
 		f.log.Warn("send settings to a server", "server_id", n.id, "err", err)
 	}
+}
+
+// readLimits reads the limits of the driver of a server. A server whose
+// capacity cannot be read gets no limits.
+func (f *Fleet) readLimits(ctx context.Context, n *node) sandbox.Limits {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	c, err := n.Driver().Capacity(ctx)
+	if err != nil {
+		f.log.Warn("read the capacity of a server", "server_id", n.id, "err", err)
+	}
+	return c.Limits
 }
 
 // syncServers takes the status changes of the rows, and makes each online
@@ -196,20 +216,13 @@ func (f *Fleet) syncServers(ctx context.Context) {
 		}
 		f.failUpdate(ctx, v.ID, "The agent did not connect again after the update.")
 		f.log.Warn("server unreachable", "server_id", v.ID, "name", v.Name, "since", since)
-		lastSeen := since
-		if v.LastSeenAt != nil {
-			lastSeen = *v.LastSeenAt
-		}
-		f.notify(func(dashboard string) notify.Event {
-			return notify.ServerUnreachableEvent(dashboard, v.ID, v.Name, lastSeen)
-		})
 	}
 }
 
 // setStatusIf changes the status of a server from one value to another and
 // publishes the row. It reports whether the status changed.
 func (f *Fleet) setStatusIf(ctx context.Context, id, from, to, detail string) bool {
-	ok, err := f.st.SetServerStatusIf(ctx, id, from, to, detail)
+	ok, err := f.st.SetServerStatusIf(ctx, id, from, to, detail, f.now())
 	if err != nil {
 		f.log.Warn("set server status", "server_id", id, "status", to, "err", err)
 		return false
@@ -232,7 +245,7 @@ func (f *Fleet) refreshFacts(ctx context.Context) {
 				return
 			}
 			facts := serverFacts(info, n.Driver().Mode(), n.version, n.addr)
-			if n.sess == nil {
+			if n.Local() {
 				f.mu.Lock()
 				f.localAddr = info.IPv4
 				f.mu.Unlock()
@@ -242,7 +255,7 @@ func (f *Fleet) refreshFacts(ctx context.Context) {
 			if err != nil || v.ServerFacts == facts && !regionChanged {
 				return
 			}
-			if err := f.st.UpdateServerFacts(ctx, n.id, facts); err != nil {
+			if err := f.st.UpdateServerFacts(ctx, n.id, facts, f.now()); err != nil {
 				f.log.Warn("record host facts", "server_id", n.id, "err", err)
 				return
 			}
@@ -261,15 +274,15 @@ func (f *Fleet) setRegion(ctx context.Context, id, region string) bool {
 	return changed
 }
 
-// Remove drains an agent, stops its sandboxes, and closes its connection.
-// The API then deletes the row.
-func (f *Fleet) Remove(ctx context.Context, serverID string) error {
+// RemoveServer drains an agent, stops its sandboxes, and closes its
+// connection. The API then deletes the row.
+func (f *Fleet) RemoveServer(ctx context.Context, serverID string) error {
 	v, err := f.st.GetServer(ctx, serverID)
 	if err != nil {
 		return err
 	}
 	if v.Kind == store.ServerLocal {
-		return errors.New("the primary server cannot be removed")
+		return ErrLocalServer
 	}
 	f.mu.Lock()
 	f.removed[v.ID] = true
@@ -286,7 +299,7 @@ func (f *Fleet) Remove(ctx context.Context, serverID string) error {
 	if err := f.st.DeleteServerTokens(ctx, v.ID); err != nil {
 		return err
 	}
-	if err := f.st.SetServerStatus(ctx, v.ID, store.ServerDraining, "Removing the server."); err != nil {
+	if err := f.st.SetServerStatus(ctx, v.ID, store.ServerDraining, "Removing the server.", f.now()); err != nil {
 		return err
 	}
 	f.publishServer(ctx, v.ID)
@@ -304,48 +317,50 @@ func (f *Fleet) Remove(ctx context.Context, serverID string) error {
 			f.log.Warn("stop sandbox of a removed server", "server_id", v.ID, "sandbox", sb.ID, "err", err)
 		}
 	}
-	n.sess.Close()
+	n.Close()
 	f.log.Info("server removed", "server_id", v.ID, "name", v.Name, "sandboxes", len(list))
 	return nil
 }
 
-func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]api.Check, error) {
+// Doctor runs the doctor checks on a connected server.
+func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]host.Check, error) {
 	n := f.node(serverID)
 	if n == nil {
-		return nil, errors.New("the server is not connected, so its checks cannot run")
+		return nil, ErrNotConnected
 	}
-	checks, err := n.Doctor(ctx, f.minFreeDiskPercent())
-	if err != nil {
-		return nil, fmt.Errorf("run the doctor: %w", err)
-	}
-	return apiChecks(checks), nil
+	return f.doctor(ctx, n)
 }
 
 // Check reads the server of the primary and runs its doctor checks for the
 // setup page.
-func (f *Fleet) Check(ctx context.Context) (api.HostCheck, error) {
+func (f *Fleet) Check(ctx context.Context) (HostCheck, error) {
 	info, err := f.local.Facts(ctx)
 	if err != nil {
-		return api.HostCheck{}, fmt.Errorf("read host facts: %w", err)
+		return HostCheck{}, fmt.Errorf("read host facts: %w", err)
 	}
-	checks, err := f.local.Doctor(ctx, f.minFreeDiskPercent())
+	checks, err := f.doctor(ctx, f.local)
 	if err != nil {
-		return api.HostCheck{}, fmt.Errorf("run the doctor: %w", err)
+		return HostCheck{}, err
 	}
-	return api.HostCheck{
-		Hostname: info.Hostname, Mode: string(f.local.Driver().Mode()), KVM: info.KVM, Arch: info.Arch, VCPU: info.VCPU,
-		MemoryMB: info.MemoryMB, DiskBytes: info.DiskBytes, FreeDiskBytes: info.FreeDiskBytes, DiskKind: info.DiskKind,
-		OS: info.OS, Checks: apiChecks(checks),
-	}, nil
+	return HostCheck{Info: info, Mode: f.local.Driver().Mode(), Checks: checks}, nil
 }
 
-// SettingsChanged sends the new driver settings to each connected server.
+func (f *Fleet) doctor(ctx context.Context, n agent.Node) ([]host.Check, error) {
+	st, err := f.st.GetSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	checks, err := n.Doctor(ctx, st.MinFreeDiskPercent)
+	if err != nil {
+		return nil, fmt.Errorf("run the doctor: %w", err)
+	}
+	return checks, nil
+}
+
+// SettingsChanged sends the new settings to each connected server.
 func (f *Fleet) SettingsChanged(_ context.Context, prev, next store.Settings) {
-	f.mu.Lock()
-	f.minFree = next.MinFreeDiskPercent
-	f.mu.Unlock()
-	s := DriverSettings(next)
-	if reflect.DeepEqual(DriverSettings(prev), s) {
+	s := NodeSettings(next)
+	if reflect.DeepEqual(NodeSettings(prev), s) {
 		return
 	}
 	for _, n := range f.connected() {
@@ -353,21 +368,18 @@ func (f *Fleet) SettingsChanged(_ context.Context, prev, next store.Settings) {
 	}
 }
 
-// DriverSettings are the settings that the sandbox drivers obey.
-func DriverSettings(st store.Settings) sandbox.Settings {
-	return sandbox.Settings{
-		DNS:             st.DNSServers,
-		EgressAllowlist: st.EgressAllowlist,
-		BandwidthMbps:   st.BandwidthMbps,
-		RegistryMirror:  st.RegistryMirror,
-		ActionsCache:    st.ActionsCache,
+// NodeSettings are the settings that each server gets from the primary.
+func NodeSettings(st store.Settings) agent.Settings {
+	return agent.Settings{
+		Settings: sandbox.Settings{
+			DNS:             st.DNSServers,
+			EgressAllowlist: st.EgressAllowlist,
+			BandwidthMbps:   st.BandwidthMbps,
+			RegistryMirror:  st.RegistryMirror,
+			ActionsCache:    st.ActionsCache,
+		},
+		MinFreeDiskPercent: st.MinFreeDiskPercent,
 	}
-}
-
-func (f *Fleet) minFreeDiskPercent() float64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.minFree
 }
 
 func serverFacts(info host.Info, mode sandbox.Mode, ver, addr string) store.ServerFacts {
@@ -388,12 +400,4 @@ func serverFacts(info host.Info, mode sandbox.Mode, ver, addr string) store.Serv
 		FirecrackerVersion: info.FirecrackerVersion,
 		Version:            ver,
 	}
-}
-
-func apiChecks(checks []host.Check) []api.Check {
-	out := make([]api.Check, len(checks))
-	for i, c := range checks {
-		out[i] = api.Check{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
-	}
-	return out
 }

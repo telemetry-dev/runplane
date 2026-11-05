@@ -99,7 +99,7 @@ func (f *fakeBackend) Usage(_ context.Context, b *Box[note]) (Usage, error) {
 	return u, nil
 }
 
-func newCore(t *testing.T, dir string, f *fakeBackend, limits Limits) *Core[note] {
+func newCore(t *testing.T, dir string, f *fakeBackend, limits sandbox.Limits) *Core[note] {
 	t.Helper()
 	c := New(Options[note]{
 		Mode: sandbox.ModeVM, DataDir: dir, Dir: filepath.Join(dir, "sandboxes"), Limits: limits, Backend: f,
@@ -168,7 +168,7 @@ func TestEventsOfASandbox(t *testing.T) {
 		b.OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerListening})
 		return nil
 	}}
-	c := newCore(t, t.TempDir(), f, Limits{})
+	c := newCore(t, t.TempDir(), f, sandbox.Limits{})
 	if err := c.Start(context.Background(), testSpec("sb1")); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestFailedStartSendsNoEvents(t *testing.T) {
 		b.Console("Kernel panic")
 		return errors.New("boot failed")
 	}}
-	c := newCore(t, dir, f, Limits{})
+	c := newCore(t, dir, f, sandbox.Limits{})
 	err := c.Start(context.Background(), testSpec("sb1"))
 	if err == nil || err.Error() != "start sandbox sb1: boot failed: Kernel panic" {
 		t.Fatalf("Start: %v, want the error with the end of the console", err)
@@ -219,7 +219,7 @@ func TestFailedStartSendsNoEvents(t *testing.T) {
 
 func TestStartChecksTheSpec(t *testing.T) {
 	f := &fakeBackend{}
-	c := newCore(t, t.TempDir(), f, Limits{MaxVCPU: 4})
+	c := newCore(t, t.TempDir(), f, sandbox.Limits{MaxVCPU: 4})
 	for name, change := range map[string]func(*sandbox.Spec){
 		"an ID that is not a folder name": func(s *sandbox.Spec) { s.ID = "../x" },
 		"another arch":                    func(s *sandbox.Spec) { s.Arch = "riscv64" },
@@ -249,7 +249,7 @@ func TestStartChecksTheSpec(t *testing.T) {
 // Stop whose ctx ends returns, and the stop goes on.
 func TestStop(t *testing.T) {
 	f := &fakeBackend{}
-	c := newCore(t, t.TempDir(), f, Limits{})
+	c := newCore(t, t.TempDir(), f, sandbox.Limits{})
 	if err := c.Start(context.Background(), testSpec("sb1")); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestStop(t *testing.T) {
 
 func TestStopKillsASandboxWithoutGuest(t *testing.T) {
 	f := &fakeBackend{noGuest: true, exitOnEnd: true}
-	c := newCore(t, t.TempDir(), f, Limits{})
+	c := newCore(t, t.TempDir(), f, sandbox.Limits{})
 	if err := c.Start(context.Background(), testSpec("sb1")); err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestTimeLimitFailsTheSandbox(t *testing.T) {
 		Mode: sandbox.ModeVM, Spec: testSpec("sb1"), CreatedAt: time.Now().Add(-3 * time.Hour), State: sandbox.StateIdle,
 	})
 	f := &fakeBackend{alive: map[string]bool{"sb1": true}, exitOnEnd: true}
-	c := newCore(t, dir, f, Limits{})
+	c := newCore(t, dir, f, sandbox.Limits{})
 	if _, err := c.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestRecover(t *testing.T) {
 		writeRecord(t, dir, rec)
 	}
 	f := &fakeBackend{alive: map[string]bool{"job": true, "held": true, "stop": true}, exitOnEnd: true}
-	c := newCore(t, dir, f, Limits{})
+	c := newCore(t, dir, f, sandbox.Limits{})
 	taken, err := c.Recover(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -416,7 +416,7 @@ func TestRecover(t *testing.T) {
 func TestMetricsOfBusySandboxes(t *testing.T) {
 	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	f := &fakeBackend{usage: map[string]Usage{}}
-	c := newCore(t, t.TempDir(), f, Limits{})
+	c := newCore(t, t.TempDir(), f, sandbox.Limits{})
 	for _, id := range []string{"busy", "idle"} {
 		if err := c.Start(context.Background(), testSpec(id)); err != nil {
 			t.Fatal(err)
@@ -451,7 +451,7 @@ func TestMetricsOfBusySandboxes(t *testing.T) {
 }
 
 func TestCapacityCountsTheOverhead(t *testing.T) {
-	c := newCore(t, t.TempDir(), &fakeBackend{}, Limits{OverheadMB: 64, MaxVCPU: 32, MaxSandboxes: 100})
+	c := newCore(t, t.TempDir(), &fakeBackend{}, sandbox.Limits{OverheadMB: 64, MaxVCPU: 32, MaxSandboxes: 100})
 	for _, id := range []string{"sb1", "sb2"} {
 		if err := c.Start(context.Background(), testSpec(id)); err != nil {
 			t.Fatal(err)

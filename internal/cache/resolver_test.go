@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/netip"
 	"testing"
 	"time"
 
@@ -111,9 +110,6 @@ func TestResolver(t *testing.T) {
 
 	if b, err := st.GetSandbox(ctx, "new"); err != nil || b.IP != "10.213.0.9" {
 		t.Errorf("the table did not get the address from the driver: %+v, %v", b, err)
-	}
-	if !r.Allow(netip.MustParseAddr("10.213.0.6")) || r.Allow(netip.MustParseAddr("10.213.0.8")) {
-		t.Error("the mirror must allow the sandboxes of the primary and nothing else")
 	}
 }
 

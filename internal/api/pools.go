@@ -300,9 +300,8 @@ func (h *Handler) getPlacement(ctx context.Context, in *placementInput) (*body[P
 type placer struct {
 	servers []store.Server
 	reserve sandbox.Reserve
-	// limits are the capacities of the connected servers, for the limits
-	// of their drivers.
-	limits map[string]sandbox.Capacity
+	// limits are the limits of the drivers of the connected servers.
+	limits map[string]sandbox.Limits
 }
 
 func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
@@ -314,7 +313,7 @@ func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
 	if err != nil {
 		return placer{}, err
 	}
-	p := placer{reserve: settings.Reserve(), limits: map[string]sandbox.Capacity{}}
+	p := placer{reserve: settings.Reserve(), limits: map[string]sandbox.Limits{}}
 	for _, v := range list {
 		if v.Status != store.ServerOnline {
 			continue
@@ -323,11 +322,9 @@ func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
 		if h.d.Servers == nil {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		if c, err := h.d.Servers.Capacity(ctx, v.ID); err == nil {
-			p.limits[v.ID] = c
+		if l, ok := h.d.Servers.Limits(v.ID); ok {
+			p.limits[v.ID] = l
 		}
-		cancel()
 	}
 	return p, nil
 }
@@ -339,8 +336,7 @@ func (p placer) place(arch string, vcpu, memoryMB int, serverIDs []string) PoolP
 			continue
 		}
 		out.OnlineServers++
-		l := p.limits[v.ID]
-		empty := sandbox.Capacity{VCPU: v.VCPU, MemoryMB: v.MemoryMB, OverheadMB: l.OverheadMB, MaxVCPU: l.MaxVCPU, MaxSandboxes: l.MaxSandboxes}
+		empty := sandbox.Capacity{VCPU: v.VCPU, MemoryMB: v.MemoryMB, Limits: p.limits[v.ID]}
 		if empty.Room(vcpu, memoryMB, p.reserve) > 0 {
 			out.PlaceableServerIDs = append(out.PlaceableServerIDs, v.ID)
 		}

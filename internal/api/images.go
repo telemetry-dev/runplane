@@ -170,7 +170,7 @@ func (h *Handler) deleteImage(ctx context.Context, in *PathID) (*empty, error) {
 	if h.d.Images == nil {
 		return nil, unavailable("Removing images")
 	}
-	if err := h.d.Images.Remove(ctx, img.ID); err != nil {
+	if err := h.d.Images.RemoveImage(ctx, img.ID); err != nil {
 		return nil, h.serviceErr(err)
 	}
 	// Pools with this image change to the default image.
@@ -190,7 +190,7 @@ func (h *Handler) refreshImage(ctx context.Context, in *PathID) (*empty, error) 
 	if err != nil {
 		return nil, notFound(err, "No image has this ID.")
 	}
-	if err := h.d.Images.Refresh(ctx, img.ID); err != nil {
+	if err := h.d.Images.RefreshImage(ctx, img.ID); err != nil {
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "image.refresh", img.ID, map[string]any{"ref": img.Ref})
@@ -203,7 +203,7 @@ func (h *Handler) refresh(ctx context.Context, id string) {
 	if h.d.Images == nil {
 		return
 	}
-	if err := h.d.Images.Refresh(context.WithoutCancel(ctx), id); err != nil {
+	if err := h.d.Images.RefreshImage(context.WithoutCancel(ctx), id); err != nil {
 		h.d.Log.Warn("pull image", "image", id, "err", err)
 	}
 }

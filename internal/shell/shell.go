@@ -20,7 +20,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sshinstall"
+	"github.com/runplane/runplane/internal/sshkey"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -38,6 +38,34 @@ type Target struct {
 	Actor      string     // GitHub login of the job actor, empty if not known
 	Repository string     // owner/name
 	Job        string     // job name
+}
+
+// Access tells if a sandbox has a debug shell now, or why not.
+type Access int
+
+const (
+	Allowed Access = iota
+	NotDebug
+	Stopped
+	HoldEnded
+	NoJobYet
+)
+
+// Access is the rule of the debug shells, in the SSH gateway and in the
+// browser: only a debug sandbox has a shell, while its job runs and during
+// its hold after the job.
+func (t Target) Access(now time.Time) Access {
+	switch {
+	case !t.Debug:
+		return NotDebug
+	case t.State.Done():
+		return Stopped
+	case t.State == sandbox.StateBusy || t.HoldUntil != nil && now.Before(*t.HoldUntil):
+		return Allowed
+	case t.HoldUntil != nil:
+		return HoldEnded
+	}
+	return NoJobYet
 }
 
 var (
@@ -99,7 +127,7 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.New(slog.DiscardHandler)
 	}
-	hostKey, _, err := sshinstall.LoadOrCreateKey(cfg.HostKeyPath)
+	hostKey, _, err := sshkey.LoadOrCreate(cfg.HostKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load ssh host key: %w", err)
 	}
@@ -272,17 +300,15 @@ func (s *Server) target(ctx context.Context, name string) (Target, string) {
 
 // refusal returns why the sandbox refuses a connection now, or "".
 func refusal(t Target, now time.Time) string {
-	held := t.HoldUntil != nil && now.Before(*t.HoldUntil)
-	switch {
-	case !t.Debug:
+	switch t.Access(now) {
+	case NotDebug:
 		return fmt.Sprintf("Sandbox %s is not a debug sandbox. Use \"Re-run with SSH\" on the job page.", t.SandboxID)
-	case t.State.Done():
+	case Stopped:
 		return fmt.Sprintf("Sandbox %s has stopped.", t.SandboxID)
-	case t.State == sandbox.StateBusy || held:
-		return ""
-	case t.HoldUntil != nil:
+	case HoldEnded:
 		return fmt.Sprintf("The debug hold of sandbox %s ended at %s UTC.", t.SandboxID, t.HoldUntil.UTC().Format("15:04"))
-	default:
+	case NoJobYet:
 		return fmt.Sprintf("Sandbox %s has no job yet. Connect when its job runs.", t.SandboxID)
 	}
+	return ""
 }

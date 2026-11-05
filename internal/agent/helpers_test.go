@@ -106,9 +106,7 @@ func (p *testPrimary) startAgent(agentJSON string, node *fakeNode, proxy *CacheP
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &testAgent{path: path, cancel: cancel, done: make(chan struct{})}
 	go func() {
-		a.err = Run(ctx, Config{
-			Path: path, Node: node, CacheProxy: proxy, Mirror: func() mirror.Stats { return testMirror }, Logger: p.logs.logger("agent"),
-		})
+		a.err = Run(ctx, Config{Path: path, Node: node, CacheProxy: proxy, Logger: p.logs.logger("agent")})
 		close(a.done)
 	}()
 	p.t.Cleanup(func() {
@@ -248,9 +246,9 @@ var (
 	}
 )
 
-// fakeNode is the node of a test agent and its driver. It keeps sandboxes
-// in memory and records the calls that change something. The test writes
-// the logs and drives the shells.
+// fakeNode is the node of a test agent, and fakeDriver its driver. It keeps
+// sandboxes in memory and records the calls that change something. The test
+// writes the logs and drives the shells.
 type fakeNode struct {
 	events chan sandbox.Event
 	stats  chan host.Stats
@@ -302,7 +300,8 @@ func (n *fakeNode) put(sb sandbox.Sandbox) {
 	n.sandboxes[sb.ID] = sb
 }
 
-func (n *fakeNode) Driver() sandbox.Driver                   { return n }
+func (n *fakeNode) Local() bool                              { return true }
+func (n *fakeNode) Driver() sandbox.Driver                   { return fakeDriver{n} }
 func (n *fakeNode) Facts(context.Context) (host.Info, error) { return testInfo, nil }
 func (n *fakeNode) Doctor(_ context.Context, minFree float64) ([]host.Check, error) {
 	return testChecks, n.record("Doctor", minFree)
@@ -329,11 +328,18 @@ func (n *fakeNode) GCImages(_ context.Context, keep []string) error {
 func (n *fakeNode) PruneRunners(_ context.Context, keep []string) error {
 	return n.record("PruneRunners", keep)
 }
-func (n *fakeNode) Configure(_ context.Context, s sandbox.Settings) error {
+func (n *fakeNode) Configure(_ context.Context, s Settings) error {
 	return n.record("Configure", s)
 }
+func (n *fakeNode) MirrorStats(context.Context) (mirror.Stats, error) { return testMirror, nil }
 func (n *fakeNode) Update(_ context.Context, version string) error {
 	return n.record("Update", version)
+}
+
+type fakeDriver struct{ *fakeNode }
+
+func (d fakeDriver) Configure(_ context.Context, s sandbox.Settings) error {
+	return d.record("Driver.Configure", s)
 }
 
 func (n *fakeNode) Mode() sandbox.Mode { return sandbox.ModeContainer }

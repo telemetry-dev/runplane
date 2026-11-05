@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -86,15 +85,6 @@ func identity(b store.SandboxJob) Identity {
 		}
 	}
 	return id
-}
-
-// Allow reports if a sandbox of the primary has the address: the Allow
-// hook of the registry mirror.
-func (r *SandboxResolver) Allow(ip netip.Addr) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := r.byIP(ctx, ip.String())
-	return err == nil
 }
 
 func (r *SandboxResolver) byIP(ctx context.Context, remoteIP string) (store.SandboxJob, error) {

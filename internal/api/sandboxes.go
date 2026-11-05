@@ -17,6 +17,7 @@ import (
 
 	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/shell"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -234,20 +235,19 @@ func (h *Handler) openShell(ctx context.Context, in *shellInput) (*huma.StreamRe
 	}}, nil
 }
 
-// shellAllowed applies the rule of the SSH gateway: only a debug sandbox
-// has a shell, while its job runs or during its hold after the job.
+// shellAllowed applies the rule of the debug shells to a sandbox.
 func shellAllowed(b store.Sandbox, now time.Time) error {
-	switch {
-	case !b.Debug:
+	switch (shell.Target{State: b.State, Debug: b.Debug, HoldUntil: b.HoldUntil}).Access(now) {
+	case shell.NotDebug:
 		return huma.Error403Forbidden("Only a debug sandbox has a shell. Re-run the job with debug to get one.")
-	case b.State.Done():
+	case shell.Stopped:
 		return huma.Error409Conflict("The sandbox has stopped.")
-	case b.State == sandbox.StateBusy || b.HoldUntil != nil && now.Before(*b.HoldUntil):
-		return nil
-	case b.HoldUntil != nil:
+	case shell.HoldEnded:
 		return huma.Error409Conflict("The debug hold of the sandbox has ended.")
+	case shell.NoJobYet:
+		return huma.Error409Conflict("The sandbox has no job yet. Open the shell when its job runs.")
 	}
-	return huma.Error409Conflict("The sandbox has no job yet. Open the shell when its job runs.")
+	return nil
 }
 
 // sshPort is the port of the SSH gateway from RUNPLANE_SSH_LISTEN.

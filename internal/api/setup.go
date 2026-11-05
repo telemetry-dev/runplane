@@ -112,11 +112,15 @@ func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*body[H
 	if h.d.HostChecker == nil {
 		return nil, unavailable("The host check")
 	}
-	hc, err := h.d.HostChecker.Check(ctx)
+	c, err := h.d.HostChecker.Check(ctx)
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	hc.Checks = orEmpty(hc.Checks)
+	i := c.Info
+	hc := HostCheck{
+		Hostname: i.Hostname, Mode: string(c.Mode), KVM: i.KVM, Arch: i.Arch, VCPU: i.VCPU, MemoryMB: i.MemoryMB,
+		DiskBytes: i.DiskBytes, FreeDiskBytes: i.FreeDiskBytes, DiskKind: i.DiskKind, OS: i.OS, Checks: checks(c.Checks),
+	}
 	// Server detail shows these checks as the last doctor result of the primary.
 	if local, err := h.d.Store.GetLocalServer(ctx); err == nil {
 		if _, err := h.saveDoctor(ctx, local.ID, hc.Checks); err != nil {
