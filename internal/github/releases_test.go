@@ -56,8 +56,7 @@ func TestCheckReleases(t *testing.T) {
 					writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
 				}
 			})
-			published, unsubscribe := e.bus.Subscribe(16)
-			defer unsubscribe()
+			published := events.Subscribe[events.RunnerVersion](t.Context(), e.bus)
 
 			if err := e.svc.checkReleases(ctx); err != nil {
 				t.Fatal(err)
@@ -79,7 +78,7 @@ func TestCheckReleases(t *testing.T) {
 					t.Errorf("2.330.0 %s end date = %v, want the runtime end %v", arch, old.EndDate, runtimeEnd)
 				}
 			}
-			if n := countEvents(published, events.RunnerVersion); n != 4 {
+			if n := countEvents(published); n != 4 {
 				t.Errorf("published %d runner.version events, want 4", n)
 			}
 			sent := e.notifier.sent
@@ -91,7 +90,7 @@ func TestCheckReleases(t *testing.T) {
 			if err := e.svc.checkReleases(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if len(e.notifier.sent) != tt.wantWarns || countEvents(published, events.RunnerVersion) != 0 {
+			if len(e.notifier.sent) != tt.wantWarns || countEvents(published) != 0 {
 				t.Errorf("the second check sent %d warnings and published events, want %d and none", len(e.notifier.sent), tt.wantWarns)
 			}
 		})

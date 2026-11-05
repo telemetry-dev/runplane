@@ -150,7 +150,7 @@ func (s *Scheduler) launch(ctx context.Context, p placement, b store.Sandbox, sp
 		s.log.Warn("insert sandbox", "err", err)
 		return err
 	}
-	s.publish(events.SandboxState, b)
+	s.bus.Publish(events.SandboxState(b))
 	s.publishPoolStats(ctx, b.PoolID)
 
 	err := p.host.Driver.Start(ctx, spec)

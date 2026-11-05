@@ -26,7 +26,7 @@ func (f *Fleet) addStats(n *node, s host.Stats) {
 	st := store.ServerStat{
 		ServerID: n.id, At: s.At.UTC(), CPUPercent: s.CPUPercent, MemoryPercent: s.MemoryPercent, DiskPercent: s.DiskPercent,
 	}
-	f.bus.Publish(events.Event{Type: events.HostStats, Data: st})
+	f.bus.Publish(events.HostStats(st))
 
 	free := 100 - s.DiskPercent
 	f.mu.Lock()

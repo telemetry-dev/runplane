@@ -249,7 +249,7 @@ func TestCleanupClosesUnclaimedJobs(t *testing.T) {
 	if len(client.acquired) != 0 {
 		t.Fatalf("acquired %v with no room", client.acquired)
 	}
-	states, stop := e.bus.Subscribe(16)
+	states := events.Subscribe[events.JobState](t.Context(), e.bus)
 
 	e.clock.add(59 * time.Minute)
 	e.s.cleanup(e.ctx)
@@ -262,10 +262,9 @@ func TestCleanupClosesUnclaimedJobs(t *testing.T) {
 	if j.State != store.JobCompleted || j.Result != store.ResultCancelled || j.RejectReason != store.NotRunReason {
 		t.Errorf("job %s %s %q after 61 minutes, want completed cancelled with %q", j.State, j.Result, j.RejectReason, store.NotRunReason)
 	}
-	stop()
 	published := false
-	for ev := range states {
-		if x, ok := ev.Data.(store.Job); ok && ev.Type == events.JobState && x.ID == j.ID && x.State == store.JobCompleted {
+	for len(states) > 0 {
+		if x := <-states; x.ID == j.ID && x.State == store.JobCompleted {
 			published = true
 		}
 	}

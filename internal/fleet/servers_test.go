@@ -25,8 +25,7 @@ func TestAgentUnreachableAfterOneMinute(t *testing.T) {
 	h := newHarness(t, newFakeNode("arm64"))
 	h.run()
 	a, id := h.connectAgent("build-1", newFakeNode("x64"))
-	bus, cancel := h.bus.Subscribe(4096)
-	defer cancel()
+	servers := events.Subscribe[events.ServerState](ctx, h.bus)
 
 	a.stop()
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(id) == nil })
@@ -41,9 +40,8 @@ func TestAgentUnreachableAfterOneMinute(t *testing.T) {
 	if got := h.server(id).Status; got != store.ServerUnreachable {
 		t.Fatalf("status %q 61 seconds after the disconnect, want unreachable", got)
 	}
-	waitEvent(t, bus, func(e events.Event) bool {
-		v, ok := e.Data.(store.Server)
-		return e.Type == events.ServerState && ok && v.ID == id && v.Status == store.ServerUnreachable
+	waitEvent(t, servers, func(v events.ServerState) bool {
+		return v.ID == id && v.Status == store.ServerUnreachable
 	})
 	if e := recv(t, h.notes); e.Type != notify.ServerUnreachable || e.Data["server_id"] != id || len(h.notes) != 0 {
 		t.Errorf("notification %+v and %d more, want one server.unreachable for %s", e, len(h.notes), id)
@@ -84,7 +82,7 @@ func TestOnlineServers(t *testing.T) {
 		if err := h.st.SetServerStatus(ctx, agentID, status, ""); err != nil {
 			t.Fatal(err)
 		}
-		h.bus.Publish(events.Event{Type: events.ServerState, Data: h.server(agentID)})
+		h.bus.Publish(events.ServerState(h.server(agentID)))
 	}
 	before := h.capacity.Load()
 	setStatus(store.ServerDraining)
@@ -113,7 +111,7 @@ func TestConnectedAgentStaysOnline(t *testing.T) {
 	if err := h.st.SetServerStatus(ctx, id, store.ServerUnreachable, "No connection to the agent."); err != nil {
 		t.Fatal(err)
 	}
-	h.bus.Publish(events.Event{Type: events.ServerState, Data: h.server(id)})
+	h.bus.Publish(events.ServerState(h.server(id)))
 	h.f.syncServers(ctx)
 	if got := h.server(id).Status; got != store.ServerOnline {
 		t.Errorf("status %q of a connected agent, want online", got)
@@ -255,8 +253,7 @@ func TestHostStats(t *testing.T) {
 	local := newFakeNode("arm64")
 	h := newHarness(t, local)
 	h.run()
-	bus, cancel := h.bus.Subscribe(4096)
-	defer cancel()
+	stats := events.Subscribe[events.HostStats](ctx, h.bus)
 	id := h.localID()
 	at := h.clock.now().Add(-time.Second)
 	// With a domain and no public URL, the links go to the domain.
@@ -269,9 +266,8 @@ func TestHostStats(t *testing.T) {
 	sample := func(diskPercent float64) {
 		local.stats <- host.Stats{At: at, CPUPercent: 52, MemoryPercent: 38, DiskPercent: diskPercent, Resources: host.Resources{DiskBytes: 500e9}}
 		at = at.Add(10 * time.Second)
-		waitEvent(t, bus, func(e events.Event) bool {
-			st, ok := e.Data.(store.ServerStat)
-			return e.Type == events.HostStats && ok && st.ServerID == id && st.DiskPercent == diskPercent
+		waitEvent(t, stats, func(st events.HostStats) bool {
+			return st.ServerID == id && st.DiskPercent == diskPercent
 		})
 	}
 

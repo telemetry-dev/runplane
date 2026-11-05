@@ -278,7 +278,7 @@ func (h *Handler) updateServer(ctx context.Context, in *struct {
 	if v, err = h.d.Store.GetServer(ctx, v.ID); err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	h.d.Bus.Publish(events.Event{Type: events.ServerState, Data: v})
+	h.d.Bus.Publish(events.ServerState(v))
 	changes := map[string][2]any{}
 	if v.Name != old.Name {
 		changes["name"] = [2]any{old.Name, v.Name}

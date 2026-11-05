@@ -59,7 +59,7 @@ func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*body[Backup],
 		return nil, notFound(err, "The new backup is gone.")
 	}
 	h.audit(ctx, "backup.create", b.ID, nil)
-	h.d.Bus.Publish(events.Event{Type: events.BackupState, Data: b})
+	h.d.Bus.Publish(events.BackupState(b))
 	return &body[Backup]{h.backupOut(b)}, nil
 }
 

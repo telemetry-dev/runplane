@@ -288,7 +288,7 @@ func (s *Scheduler) setStateAt(ctx context.Context, id string, state sandbox.Sta
 	if !changed {
 		return b, false
 	}
-	s.publish(events.SandboxState, b)
+	s.bus.Publish(events.SandboxState(b))
 	s.publishPoolStats(ctx, b.PoolID)
 	if state.Done() {
 		s.wake(doMaxRunners)
@@ -307,27 +307,13 @@ func (s *Scheduler) goBg(fn func(ctx context.Context)) {
 	s.wg.Go(func() { fn(s.bg) })
 }
 
-func (s *Scheduler) publish(typ string, data any) {
-	s.bus.Publish(events.Event{Type: typ, Data: data})
-}
-
-// poolStats has the JSON fields of the pool.stats event.
-type poolStats struct {
-	PoolID   string `json:"pool_id"`
-	Idle     int    `json:"idle"`
-	Busy     int    `json:"busy"`
-	Starting int    `json:"starting"`
-	Queued   int    `json:"queued"`
-	Assigned int    `json:"assigned"`
-}
-
 func (s *Scheduler) publishPoolStats(ctx context.Context, poolID string) {
 	counts, err := s.st.CountLiveSandboxes(ctx)
 	if err != nil {
 		s.log.Warn("count sandboxes", "err", err)
 		return
 	}
-	p := poolStats{PoolID: poolID}
+	p := events.PoolStats{PoolID: poolID}
 	p.Queued, p.Assigned, err = s.st.CountPoolJobs(ctx, poolID, s.now().Add(-24*time.Hour))
 	if err != nil {
 		s.log.Warn("count jobs", "err", err)
@@ -346,7 +332,7 @@ func (s *Scheduler) publishPoolStats(ctx context.Context, poolID string) {
 			p.Starting += c.Count
 		}
 	}
-	s.publish(events.PoolStats, p)
+	s.bus.Publish(p)
 }
 
 // timeLimit is the time limit of a job of the pool. A warm sandbox of the

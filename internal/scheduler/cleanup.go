@@ -253,7 +253,7 @@ func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 			s.log.Warn("cleanup: complete job", "job", j.ID, "err", err)
 			continue
 		}
-		s.publish(events.JobState, done)
+		s.bus.Publish(events.JobState(done))
 		s.finish(j.ID)
 	}
 }
@@ -285,7 +285,7 @@ func (s *Scheduler) closeUnclaimedJobs(ctx context.Context) {
 	pools := map[string]bool{}
 	for _, j := range jobs {
 		s.log.Info("cleanup: close a job that runplane did not run", "job", j.ID, "queued_at", j.QueuedAt)
-		s.publish(events.JobState, j)
+		s.bus.Publish(events.JobState(j))
 		pools[j.PoolID] = true
 	}
 	for id := range pools {

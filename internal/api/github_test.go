@@ -47,8 +47,8 @@ func TestGitHubAndBackupEvents(t *testing.T) {
 	e := newEnv(t)
 	member := e.login("bob@example.com", auth.RoleMember).events(t)
 	admin := e.login("ada@example.com", auth.RoleAdmin).events(t)
-	backup := store.Backup{ID: "bk1", CreatedAt: time.Now(), Status: "running"}
-	e.publish(events.Event{Type: events.BackupState, Data: backup}, events.Event{Type: events.GitHubState})
+	backup := events.BackupState{ID: "bk1", CreatedAt: time.Now(), Status: "running"}
+	e.publish(backup, events.GitHubState{})
 
 	for seen := 0; seen < 2; {
 		ev := recv(t, member)

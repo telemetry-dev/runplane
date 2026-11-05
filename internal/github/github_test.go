@@ -43,7 +43,7 @@ func TestRunFollowsSettingsAndPools(t *testing.T) {
 	eventually(t, "one scale set for the private repository", listening(1))
 
 	e.st.UpdateSettings(ctx, func(s *store.Settings) error { s.AllowPublicRepos = true; return nil })
-	e.bus.Publish(events.Event{Type: events.SettingsChanged})
+	e.bus.Publish(events.SettingsChanged{})
 	eventually(t, "a scale set for the public repository too", listening(2))
 
 	e.pool("p2", "runplane-big", true)
@@ -75,8 +75,7 @@ func TestRunFollowsSettingsAndPools(t *testing.T) {
 func TestGitHubStateEvents(t *testing.T) {
 	e := newEnv(t)
 	e.connect()
-	published, unsubscribe := e.bus.Subscribe(16)
-	defer unsubscribe()
+	published := events.Subscribe[events.GitHubState](t.Context(), e.bus)
 	// Polls publish at most once in 30 seconds.
 	t0 := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	for _, step := range []struct {
@@ -90,14 +89,14 @@ func TestGitHubStateEvents(t *testing.T) {
 		{40 * time.Second, 0},
 	} {
 		e.svc.polledChanged(t0.Add(step.at))
-		if got := countEvents(published, events.GitHubState); got != step.want {
+		if got := countEvents(published); got != step.want {
 			t.Errorf("poll at +%s: %d github.state events, want %d", step.at, got, step.want)
 		}
 	}
 	if err := e.svc.Disconnect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if countEvents(published, events.GitHubState) == 0 {
+	if countEvents(published) == 0 {
 		t.Error("no github.state event after the app was removed")
 	}
 }

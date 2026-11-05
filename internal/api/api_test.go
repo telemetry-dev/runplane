@@ -596,7 +596,7 @@ func TestEventsStreamConvertsStoreModels(t *testing.T) {
 	pool := store.Pool{ID: ids.New(), Name: "Default", Label: "runplane", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 20, MaxRunners: 1, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	must(t, e.st.CreatePool(context.Background(), pool))
 	sb := store.Sandbox{ID: "sb1", PoolID: pool.ID, ServerID: "srv", State: sandbox.StateBusy, VCPU: 2, MemoryMB: 4096, CreatedAt: now}
-	e.publish(events.Event{Type: events.SettingsChanged, Data: store.Settings{}}, events.Event{Type: events.SandboxState, Data: &sb})
+	e.publish(events.SettingsChanged{}, events.SandboxState(sb))
 
 	ev := recv(t, ch)
 	if ev.name != "sandbox.state" {

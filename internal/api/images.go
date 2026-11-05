@@ -105,7 +105,7 @@ func (h *Handler) createImage(ctx context.Context, in *body[CreateImageRequest])
 		return nil, imageErr(err)
 	}
 	h.audit(ctx, "image.create", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
-	h.d.Bus.Publish(events.Event{Type: events.ImageState, Data: img})
+	h.d.Bus.Publish(events.ImageState(img))
 	h.refresh(ctx, img.ID)
 	return h.imageOutput(ctx, img.ID)
 }
@@ -151,7 +151,7 @@ func (h *Handler) updateImage(ctx context.Context, in *struct {
 		h.poolsChanged(ctx)
 	}
 	h.audit(ctx, "image.update", img.ID, map[string]any{"name": img.Name, "ref": img.Ref, "is_default": b.IsDefault})
-	h.d.Bus.Publish(events.Event{Type: events.ImageState, Data: img})
+	h.d.Bus.Publish(events.ImageState(img))
 	if refChanged {
 		h.refresh(ctx, img.ID)
 	}

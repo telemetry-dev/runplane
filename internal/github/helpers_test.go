@@ -158,15 +158,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// countEvents counts the events of type typ on ch so far.
-func countEvents(ch <-chan events.Event, typ string) int {
+// countEvents counts the events on ch so far.
+func countEvents[E any](ch <-chan E) int {
 	n := 0
 	for {
 		select {
-		case e := <-ch:
-			if e.Type == typ {
-				n++
-			}
+		case <-ch:
+			n++
 		default:
 			return n
 		}

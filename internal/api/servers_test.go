@@ -248,7 +248,7 @@ func TestServerStateEventIsTheServerObject(t *testing.T) {
 	v, err := e.st.GetServer(ctx, "s1")
 	must(t, err)
 
-	e.publish(events.Event{Type: events.ServerState, Data: v})
+	e.publish(events.ServerState(v))
 	ev := recv(t, ch)
 	var got Server
 	must(t, json.Unmarshal([]byte(ev.data), &got))

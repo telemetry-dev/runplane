@@ -190,7 +190,7 @@ func (h *scaleSet) handle(ctx context.Context, msg *scaleset.RunnerScaleSetMessa
 		if err != nil {
 			return err
 		}
-		h.s.publish(events.JobState, job)
+		h.s.bus.Publish(events.JobState(job))
 	}
 	for _, m := range msg.JobStartedMessages {
 		if err := h.handleStarted(ctx, m); err != nil {
@@ -239,7 +239,7 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []*scaleset.JobAvai
 		if errors.Is(err, errCheckLater) {
 			// Another job of the message must not wait for this one.
 			s.log.Warn("skip a job until GitHub offers it again", "job", job.ID, "err", err)
-			s.publish(events.JobState, job)
+			s.bus.Publish(events.JobState(job))
 			continue
 		}
 		if err != nil {
@@ -260,7 +260,7 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []*scaleset.JobAvai
 			}
 			job.RejectReason = reason
 		}
-		s.publish(events.JobState, job)
+		s.bus.Publish(events.JobState(job))
 		// A job past queued was acquired before this message came again.
 		if reason == "" && job.State == store.JobQueued {
 			wanted = append(wanted, m)
@@ -302,7 +302,7 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []*scaleset.JobAvai
 		if err != nil {
 			return err
 		}
-		s.publish(events.JobState, job)
+		s.bus.Publish(events.JobState(job))
 	}
 	return nil
 }
@@ -412,7 +412,7 @@ func (h *scaleSet) handleStarted(ctx context.Context, m *scaleset.JobStarted) er
 			s.holdForDebug(ctx, b)
 		}
 	}
-	s.publish(events.JobState, job)
+	s.bus.Publish(events.JobState(job))
 	s.enrich(job)
 	s.watchSteps(job.ID)
 	return nil
@@ -444,7 +444,7 @@ func (h *scaleSet) handleCompleted(ctx context.Context, m *scaleset.JobCompleted
 	if job.SandboxID != "" {
 		s.setState(ctx, job.SandboxID, sandbox.StateStopping, "job completed")
 	}
-	s.publish(events.JobState, job)
+	s.bus.Publish(events.JobState(job))
 	// A message that comes again after the log is stored needs no second finish step.
 	if prev.State != store.JobCompleted || prev.LogState != store.LogStored {
 		s.finish(job.ID)

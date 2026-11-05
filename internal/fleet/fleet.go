@@ -194,8 +194,9 @@ func (f *Fleet) Run(ctx context.Context) error {
 	if err := f.startAgents(ctx); err != nil {
 		return err
 	}
-	bus, cancel := f.bus.Subscribe(64)
-	defer cancel()
+	// The API publishes the server and image rows that it changes.
+	servers := events.Subscribe[events.ServerState](ctx, f.bus)
+	images := events.Subscribe[events.ImageState](ctx, f.bus)
 	f.provision(ctx)
 
 	check := time.NewTicker(syncEvery)
@@ -211,8 +212,10 @@ func (f *Fleet) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			f.flushStats(context.WithoutCancel(ctx))
 			return nil
-		case e := <-bus:
-			f.handleBus(e)
+		case v := <-servers:
+			f.serverChanged(store.Server(v))
+		case <-images:
+			f.kick()
 		case <-check.C:
 			f.syncServers(ctx)
 		case <-flush.C:
@@ -363,22 +366,7 @@ func (f *Fleet) publishServer(ctx context.Context, id string) {
 		f.log.Debug("read server for its event", "server_id", id, "err", err)
 		return
 	}
-	f.bus.Publish(events.Event{Type: events.ServerState, Data: v})
-}
-
-// handleBus follows the changes that the API makes.
-func (f *Fleet) handleBus(e events.Event) {
-	switch e.Type {
-	case events.ServerState:
-		if v, ok := events.As[store.Server](e.Data); ok {
-			f.serverChanged(v)
-		}
-	case events.ImageState:
-		// The API sends the image row after a new image or a new default.
-		if _, ok := events.As[store.Image](e.Data); ok {
-			f.kick()
-		}
-	}
+	f.bus.Publish(events.ServerState(v))
 }
 
 // serverChanged takes the name and the status of a server row for its

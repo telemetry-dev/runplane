@@ -130,8 +130,10 @@ func (d *Dispatcher) admit(e Event) bool {
 
 // Run makes alerts from the bus until ctx ends.
 func (d *Dispatcher) Run(ctx context.Context, bus *events.Bus) {
-	ch, cancel := bus.Subscribe(256)
-	defer cancel()
+	settings := events.Subscribe[events.SettingsChanged](ctx, bus)
+	jobs := events.Subscribe[events.JobState](ctx, bus)
+	servers := events.Subscribe[events.ServerState](ctx, bus)
+	stats := events.Subscribe[events.HostStats](ctx, bus)
 	st, err := d.Store.GetSettings(ctx)
 	if err != nil {
 		d.log().Warn("read settings for notifications", "err", err)
@@ -155,51 +157,45 @@ func (d *Dispatcher) Run(ctx context.Context, bus *events.Bus) {
 			delete(d.waiting, id)
 			d.mu.Unlock()
 			d.jobFailed(ctx, id)
-		case e := <-ch:
-			d.handle(ctx, e)
-		}
-	}
-}
-
-func (d *Dispatcher) handle(ctx context.Context, e events.Event) {
-	switch e.Type {
-	case events.SettingsChanged:
-		if st, ok := events.As[store.Settings](e.Data); ok {
-			d.lock()
-			d.minFree = st.MinFreeDiskPercent
-			d.mu.Unlock()
-		}
-	case events.JobState:
-		if job, ok := events.As[store.Job](e.Data); ok && job.State == store.JobCompleted && job.Result == store.ResultFailed {
+		case st := <-settings:
+			d.settingsChanged(st)
+		case job := <-jobs:
 			d.jobDone(ctx, job)
-		}
-	case events.ServerState:
-		v, ok := events.As[store.Server](e.Data)
-		if !ok {
-			return
-		}
-		switch v.Status {
-		case store.ServerUnreachable:
-			lastSeen := d.clock()
-			if v.LastSeenAt != nil {
-				lastSeen = *v.LastSeenAt
-			}
-			d.goNotify(ctx, func(dash string) Event { return ServerUnreachableEvent(dash, v.ID, v.Name, lastSeen) })
-		case store.ServerOnline:
-			d.lock()
-			delete(d.down, v.ID)
-			d.mu.Unlock()
-		}
-	case events.HostStats:
-		if s, ok := events.As[store.ServerStat](e.Data); ok {
+		case v := <-servers:
+			d.serverState(ctx, v)
+		case s := <-stats:
 			d.hostStats(ctx, s)
 		}
 	}
 }
 
-// jobDone sends the alert of a failed job when its run data is there, or
-// when the wait for the data ends.
-func (d *Dispatcher) jobDone(ctx context.Context, job store.Job) {
+func (d *Dispatcher) settingsChanged(st events.SettingsChanged) {
+	d.lock()
+	d.minFree = st.MinFreeDiskPercent
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) serverState(ctx context.Context, v events.ServerState) {
+	switch v.Status {
+	case store.ServerUnreachable:
+		lastSeen := d.clock()
+		if v.LastSeenAt != nil {
+			lastSeen = *v.LastSeenAt
+		}
+		d.goNotify(ctx, func(dash string) Event { return ServerUnreachableEvent(dash, v.ID, v.Name, lastSeen) })
+	case store.ServerOnline:
+		d.lock()
+		delete(d.down, v.ID)
+		d.mu.Unlock()
+	}
+}
+
+// jobDone sends the alert of a job that failed when its run data is there,
+// or when the wait for the data ends.
+func (d *Dispatcher) jobDone(ctx context.Context, job events.JobState) {
+	if job.State != store.JobCompleted || job.Result != store.ResultFailed {
+		return
+	}
 	d.lock()
 	defer d.mu.Unlock()
 	if _, sent := d.jobs[job.ID]; sent {
@@ -239,7 +235,7 @@ func (d *Dispatcher) jobFailed(ctx context.Context, id string) {
 // hostStats sends a disk.low alert when the free disk space of a server
 // falls below min_free_disk_percent. The next alert waits until the space
 // rises diskMargin points above the limit and falls again.
-func (d *Dispatcher) hostStats(ctx context.Context, s store.ServerStat) {
+func (d *Dispatcher) hostStats(ctx context.Context, s events.HostStats) {
 	free := 100 - s.DiskPercent
 	d.lock()
 	minFree := d.minFree

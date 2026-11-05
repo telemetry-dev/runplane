@@ -163,7 +163,7 @@ func (b *backups) save(ctx context.Context, row store.Backup) {
 }
 
 func (b *backups) publish(row store.Backup) {
-	b.bus.Publish(events.Event{Type: events.BackupState, Data: row})
+	b.bus.Publish(events.BackupState(row))
 }
 
 // dropRows deletes the rows of the backup files that the retention removed.

@@ -120,8 +120,7 @@ func New(cfg Config) *Service {
 // 5 minutes and checks the runner releases each hour. It returns after ctx
 // ends and all listeners have stopped.
 func (s *Service) Run(ctx context.Context) {
-	settings, unsubscribe := s.bus.Subscribe(64)
-	defer unsubscribe()
+	settings := events.Subscribe[events.SettingsChanged](ctx, s.bus)
 
 	var wg sync.WaitGroup
 	wg.Go(func() { s.releaseLoop(ctx) })
@@ -140,10 +139,8 @@ func (s *Service) Run(ctx context.Context) {
 			s.syncAll(ctx)
 		case <-s.poke:
 			s.reconcileNow(ctx)
-		case e := <-settings:
-			if e.Type == events.SettingsChanged {
-				s.reconcileNow(ctx)
-			}
+		case <-settings:
+			s.reconcileNow(ctx)
 		}
 	}
 }
@@ -197,7 +194,7 @@ func (s *Service) anyInstallation(ctx context.Context) (store.Installation, bool
 
 // changed tells the browsers that the GitHub status changed.
 func (s *Service) changed() {
-	s.bus.Publish(events.Event{Type: events.GitHubState})
+	s.bus.Publish(events.GitHubState{})
 }
 
 // polledChanged tells the browsers about a new poll time, at most once in

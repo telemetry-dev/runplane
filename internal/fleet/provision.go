@@ -277,7 +277,7 @@ func (f *Fleet) saveBuild(ctx context.Context, b *store.ImageBuild, status, msg 
 		f.log.Warn("record image build", "image", b.ImageID, "server_id", b.ServerID, "err", err)
 		return
 	}
-	f.bus.Publish(events.Event{Type: events.ImageState, Data: *b})
+	f.bus.Publish(events.ImageBuildState(*b))
 }
 
 // ensureRunner makes the first version in versions that works ready on the
@@ -334,7 +334,7 @@ func (f *Fleet) saveBundle(ctx context.Context, b store.RunnerBundle) {
 	if err != nil || after.Status == before.Status && after.Error == before.Error {
 		return
 	}
-	f.bus.Publish(events.Event{Type: events.RunnerVersion, Data: after})
+	f.bus.Publish(events.RunnerVersion(after))
 }
 
 // EnsureLatest makes the runner bundle of version ready on each online

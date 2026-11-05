@@ -156,7 +156,7 @@ func (h *Handler) updateSettings(ctx context.Context, in *body[SettingsPatch]) (
 	}
 	if changes := fieldChanges(old, next); len(changes) > 0 {
 		h.audit(ctx, "settings.update", "", settingsDetail(old, next, changes))
-		h.d.Bus.Publish(events.Event{Type: events.SettingsChanged, Data: next})
+		h.d.Bus.Publish(events.SettingsChanged(next))
 		if h.d.SettingsHook != nil {
 			h.d.SettingsHook.SettingsChanged(context.WithoutCancel(ctx), old, next)
 		}

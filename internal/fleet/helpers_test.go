@@ -201,7 +201,7 @@ func recv[T any](t *testing.T, ch <-chan T) T {
 }
 
 // waitEvent reads ch until an event matches.
-func waitEvent(t *testing.T, ch <-chan events.Event, match func(events.Event) bool) {
+func waitEvent[E any](t *testing.T, ch <-chan E, match func(E) bool) {
 	t.Helper()
 	for {
 		if match(recv(t, ch)) {

@@ -360,15 +360,14 @@ func TestPoolStatsEvent(t *testing.T) {
 	e.gh.checks["acme/site"] = JobCheck{Private: false}
 	pool := e.addPool("runplane")
 	_, sc, _ := e.attach(pool)
-	ch, cancel := e.bus.Subscribe(256)
-	defer cancel()
-	last := func() poolStats {
+	ch := events.Subscribe[events.PoolStats](t.Context(), e.bus)
+	last := func() events.PoolStats {
 		t.Helper()
-		var got *poolStats
+		var got *events.PoolStats
 		for {
 			select {
-			case ev := <-ch:
-				if p, ok := ev.Data.(poolStats); ok && ev.Type == events.PoolStats && p.PoolID == pool.ID {
+			case p := <-ch:
+				if p.PoolID == pool.ID {
 					got = &p
 				}
 			default:
@@ -387,12 +386,12 @@ func TestPoolStatsEvent(t *testing.T) {
 	)
 	m.JobAvailableMessages[2].QueueTime = start.Add(time.Second)
 	e.scale(sc, m)
-	if got, want := last(), (poolStats{PoolID: pool.ID, Queued: 1, Assigned: 1}); got != want {
+	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Queued: 1, Assigned: 1}); got != want {
 		t.Errorf("after the offer: %+v, want %+v", got, want)
 	}
 
 	e.scale(sc, msg(1))
-	if got, want := last(), (poolStats{PoolID: pool.ID, Starting: 1, Queued: 1, Assigned: 1}); got != want {
+	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Starting: 1, Queued: 1, Assigned: 1}); got != want {
 		t.Errorf("after the start: %+v, want %+v", got, want)
 	}
 }

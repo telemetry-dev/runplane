@@ -77,7 +77,7 @@ func (s *Scheduler) finishJob(ctx context.Context, jobID string) {
 		s.log.Warn("summarize job metrics", "job", job.ID, "err", err)
 	}
 	if job, err = s.st.GetJob(wctx, job.ID); err == nil {
-		s.publish(events.JobState, job)
+		s.bus.Publish(events.JobState(job))
 	}
 }
 
@@ -114,7 +114,7 @@ func (s *Scheduler) enrich(job store.Job) {
 			return
 		}
 		if job, err := s.st.GetJob(ctx, job.ID); err == nil {
-			s.publish(events.JobState, job)
+			s.bus.Publish(events.JobState(job))
 		}
 	})
 }
@@ -165,7 +165,7 @@ func (s *Scheduler) watchSteps(jobID string) {
 				continue
 			}
 			job.Steps = steps
-			s.publish(events.JobState, job)
+			s.bus.Publish(events.JobState(job))
 		}
 	})
 }
@@ -217,7 +217,7 @@ func (s *Scheduler) hold(ctx context.Context, b store.Sandbox) {
 		return
 	}
 	b.HoldUntil = &until
-	s.publish(events.SandboxState, b)
+	s.bus.Publish(events.SandboxState(b))
 }
 
 // holdForDebug keeps a sandbox that got a debug job after it started without

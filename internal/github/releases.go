@@ -160,7 +160,7 @@ func (s *Service) setBundleDates(ctx context.Context, version, arch string, rele
 	if berr == nil && sameTime(before.ReleasedAt, after.ReleasedAt) && sameTime(before.EndDate, after.EndDate) {
 		return
 	}
-	s.bus.Publish(events.Event{Type: events.RunnerVersion, Data: after})
+	s.bus.Publish(events.RunnerVersion(after))
 }
 
 // warnEnds sends one notification for each runner version that new

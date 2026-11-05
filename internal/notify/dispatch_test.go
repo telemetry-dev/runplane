@@ -153,7 +153,7 @@ func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
 	// The completion comes before the run data: no alert yet.
 	for range 15 {
 		for _, j := range jobs {
-			bus.Publish(events.Event{Type: events.JobState, Data: j})
+			bus.Publish(events.JobState(j))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -167,9 +167,9 @@ func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishUntilAlert(t, bus, h, events.Event{Type: events.JobState, Data: &enriched})
+	publishUntilAlert(t, bus, h, events.JobState(enriched))
 	for range 3 {
-		bus.Publish(events.Event{Type: events.JobState, Data: enriched})
+		bus.Publish(events.JobState(enriched))
 	}
 	time.Sleep(100 * time.Millisecond)
 	got := h.events()
@@ -194,7 +194,7 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishUntilAlert(t, bus, h, events.Event{Type: events.JobState, Data: j})
+	publishUntilAlert(t, bus, h, events.JobState(j))
 	if got := h.events(); len(got) != 1 || got[0].Data["job_id"] != j.ID {
 		t.Errorf("alerts %+v, want one for %s", got, j.ID)
 	}
@@ -211,10 +211,10 @@ func TestDispatcherDiskLow(t *testing.T) {
 	}
 	now := at
 	d.now = func() time.Time { return now }
-	d.handle(ctx, events.Event{Type: events.SettingsChanged, Data: store.Settings{MinFreeDiskPercent: 15}})
+	d.settingsChanged(events.SettingsChanged{MinFreeDiskPercent: 15})
 	sample := func(after time.Duration, usedPercent float64) {
 		now = at.Add(after)
-		d.handle(ctx, events.Event{Type: events.HostStats, Data: store.ServerStat{ServerID: "s1", At: now, DiskPercent: usedPercent}})
+		d.hostStats(ctx, events.HostStats{ServerID: "s1", At: now, DiskPercent: usedPercent})
 		d.wg.Wait()
 	}
 
@@ -247,18 +247,18 @@ func TestDispatcherServerUnreachableOncePerOutage(t *testing.T) {
 	d, h := newDispatcher(t)
 	subscribe(t, d, h, "hook", true, ServerUnreachable)
 	ctx := context.Background()
-	down := store.Server{ID: "s1", Name: "builder-1", Status: store.ServerUnreachable}
+	down := events.ServerState{ID: "s1", Name: "builder-1", Status: store.ServerUnreachable}
 	// The fleet and the server.state event report the same outage.
 	if err := d.Notify(ctx, ServerUnreachableEvent("", "s1", "builder-1", time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	d.handle(ctx, events.Event{Type: events.ServerState, Data: down})
+	d.serverState(ctx, down)
 	d.wg.Wait()
 	if n := len(h.events()); n != 1 {
 		t.Fatalf("got %d alerts for one outage, want 1", n)
 	}
-	d.handle(ctx, events.Event{Type: events.ServerState, Data: store.Server{ID: "s1", Name: "builder-1", Status: store.ServerOnline}})
-	d.handle(ctx, events.Event{Type: events.ServerState, Data: &down})
+	d.serverState(ctx, events.ServerState{ID: "s1", Name: "builder-1", Status: store.ServerOnline})
+	d.serverState(ctx, down)
 	d.wg.Wait()
 	if got := h.events(); len(got) != 2 || got[1].Data["server_id"] != "s1" {
 		t.Fatalf("alerts %+v, want a second one for the second outage", got)

@@ -100,16 +100,13 @@ func TestBackupStateEvents(t *testing.T) {
 				}
 			}
 			bus := &events.Bus{}
-			states, stop := bus.Subscribe(16)
+			states := events.Subscribe[events.BackupState](t.Context(), bus)
 			notified := 0
 			b := &backups{st: st, box: box, bus: bus, dir: tt.dir(t), notify: func(notify.Event) { notified++ }, log: slog.New(slog.DiscardHandler)}
 			b.Run(ctx)
-			stop()
 			var seen []string
-			for e := range states {
-				if row, ok := e.Data.(store.Backup); ok && e.Type == events.BackupState {
-					seen = append(seen, row.Status)
-				}
+			for len(states) > 0 {
+				seen = append(seen, (<-states).Status)
 			}
 			if !slices.Equal(seen, tt.want) {
 				t.Errorf("backup.state events %v, want %v", seen, tt.want)
