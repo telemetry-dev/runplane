@@ -270,8 +270,6 @@ func (m *Manager) loop(stop, done chan struct{}) {
 	}
 }
 
-// refresh resolves the names of the allowlist again and repairs the
-// iptables rules.
 func (m *Manager) refresh() {
 	m.mu.Lock()
 	cfg := m.cfg

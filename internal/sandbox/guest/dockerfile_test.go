@@ -34,7 +34,6 @@ func TestBuiltinImagesHaveTheGuestLayout(t *testing.T) {
 	}
 	for name, text := range files {
 		t.Run(name, func(t *testing.T) {
-			// Join the continued lines, and split the RUN steps into commands.
 			text = strings.ReplaceAll(text, "\\\n", " ")
 			var cmds [][]string
 			for _, c := range regexp.MustCompile(`[;\n]|&&`).Split(text, -1) {

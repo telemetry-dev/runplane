@@ -22,8 +22,6 @@ const (
 	lookupTimeout = 10 * time.Second
 )
 
-// remember stores the lookup results for the names of cfg and drops names
-// that cfg no longer has and addresses older than resolvedTTL.
 func (m *Manager) remember(cfg Config, found map[string][]netip.Addr, errs map[string]error, now time.Time) {
 	_, names, _ := splitAllowlist(cfg.Allowlist)
 	maps.DeleteFunc(m.resolved, func(name string, _ map[netip.Addr]time.Time) bool {

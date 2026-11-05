@@ -37,8 +37,6 @@ func (d *Disks) Create(path string, sizeGB int) error {
 	return nil
 }
 
-// template returns the empty ext4 file of sizeGB and makes it first if it
-// does not exist.
 func (d *Disks) template(sizeGB int) (string, error) {
 	path := filepath.Join(d.dir, fmt.Sprintf("ext4-%dg.img", sizeGB))
 	d.mu.Lock()

@@ -29,7 +29,7 @@ func createTap(name string, uid, gid int, hostCIDR netip.Prefix) error {
 	return nil
 }
 
-// deleteTap removes a TAP device. A missing device is not an error.
+// deleteTap returns nil for a missing device.
 func deleteTap(name string) error {
 	if !isTap(name) || !validIfname(name) {
 		return fmt.Errorf("netrules: %q is not a TAP name", name)

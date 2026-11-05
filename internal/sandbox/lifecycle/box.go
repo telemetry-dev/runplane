@@ -117,7 +117,6 @@ func (b *Box[T]) SetIP(ip string) error {
 	return b.saveLocked()
 }
 
-// Save writes the record of the sandbox.
 func (b *Box[T]) Save() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -131,7 +130,6 @@ func (b *Box[T]) MarkExited() { b.exitOnce.Do(func() { close(b.exited) }) }
 // Exited is closed when the process of the sandbox has ended.
 func (b *Box[T]) Exited() <-chan struct{} { return b.exited }
 
-// Ready reports if the sandbox has started and is not gone.
 func (b *Box[T]) Ready() bool { return isClosed(b.started) && !isClosed(b.removed) }
 
 // Console takes one line of the console of the sandbox: the output that does
