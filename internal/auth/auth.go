@@ -11,11 +11,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -49,6 +52,8 @@ const (
 
 var (
 	ErrSetupDone     = store.ErrSetupDone
+	ErrLastAdmin     = store.ErrLastAdmin
+	ErrOwnAccount    = errors.New("you cannot delete your own account")
 	ErrBadSetupCode  = errors.New("the setup code is wrong, used, or expired")
 	ErrBadLogin      = errors.New("the email or password is wrong")
 	ErrBadPassword   = errors.New("the current password is wrong")
@@ -64,6 +69,7 @@ var (
 
 type Service struct {
 	store     *store.Store
+	audit     audit.Log
 	limiter   *limiter
 	deviceKey []byte // signs device tokens
 	now       func() time.Time
@@ -71,8 +77,12 @@ type Service struct {
 
 // NewService returns the accounts of st. deviceKey signs the device tokens
 // of browsers that logged in; a service without one makes no valid tokens.
-func NewService(st *store.Store, deviceKey []byte) *Service {
-	return &Service{store: st, limiter: &limiter{fails: map[string][]time.Time{}}, deviceKey: deviceKey, now: time.Now}
+// log gets the failed writes of the audit log, and can be nil.
+func NewService(st *store.Store, deviceKey []byte, log *slog.Logger) *Service {
+	return &Service{
+		store: st, audit: audit.Log{Store: st, Logger: log}, limiter: &limiter{fails: map[string][]time.Time{}},
+		deviceKey: deviceKey, now: time.Now,
+	}
 }
 
 // CanDo reports if a user with role can do the action. An unknown role can do nothing.
@@ -136,6 +146,7 @@ func (s *Service) Setup(ctx context.Context, code, name, email, password, ip, us
 	case err != nil:
 		return store.User{}, "", err
 	}
+	s.audit.Record(ctx, audit.Actor{UserID: u.ID, IP: ip}, "setup.done", u.ID, map[string]any{"email": u.Email})
 	return u, token, nil
 }
 
@@ -275,36 +286,150 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, next, ip,
 	if err := s.store.CreateSession(ctx, sess); err != nil {
 		return "", err
 	}
+	s.audit.Record(ctx, audit.Actor{UserID: u.ID, IP: ip}, "user.password", u.ID, nil)
 	return token, nil
 }
 
-// CreateInvite returns the token for the invite URL. The invite is valid
-// for 7 days, and earlier open invites for the email stop working.
-func (s *Service) CreateInvite(ctx context.Context, by, email, role string) (string, error) {
+// UpdateMe changes the name or the password of a user, for the user, and
+// returns the user. A nil name or next keeps it. A new password works as in
+// ChangePassword, and the token is "" without one. A refused name changes
+// nothing.
+func (s *Service) UpdateMe(ctx context.Context, userID string, name, current, next *string, ip, userAgent string) (store.User, string, error) {
+	var newName string
+	if name != nil {
+		var err error
+		if newName, err = userName(*name); err != nil {
+			return store.User{}, "", err
+		}
+	}
+	var token string
+	if next != nil {
+		var err error
+		if token, err = s.ChangePassword(ctx, userID, *current, *next, ip, userAgent); err != nil {
+			return store.User{}, "", err
+		}
+	}
+	if name == nil {
+		u, err := s.store.GetUser(ctx, userID)
+		return u, token, err
+	}
+	u, err := s.store.SetUserName(ctx, userID, newName)
+	return u, token, err
+}
+
+// SetRole gives a user a role, and returns the user. It returns ErrLastAdmin
+// for the only admin, because runplane needs one.
+func (s *Service) SetRole(ctx context.Context, by audit.Actor, userID, role string) (store.User, error) {
+	if role != RoleAdmin && role != RoleMember {
+		return store.User{}, ErrBadRole
+	}
+	u, err := s.store.SetUserRole(ctx, userID, role)
+	if err != nil {
+		return store.User{}, err
+	}
+	if u.Role != role {
+		u.Role = role
+		s.audit.Record(ctx, by, "user.update", u.ID, map[string]any{"email": u.Email, "role": u.Role})
+	}
+	return u, nil
+}
+
+// DeleteUser deletes a user with its sessions. A user cannot delete its own
+// account, and runplane keeps its last admin (ErrLastAdmin).
+func (s *Service) DeleteUser(ctx context.Context, by audit.Actor, userID string) error {
+	if userID == by.UserID {
+		return ErrOwnAccount
+	}
+	u, err := s.store.DeleteUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	s.audit.Record(ctx, by, "user.delete", u.ID, map[string]any{"email": u.Email})
+	return nil
+}
+
+// LastAdmin returns the ID of the only admin of users, or "" when two or more
+// users are admins. That user cannot lose the role or be deleted.
+func LastAdmin(users []store.User) string {
+	var admins []string
+	for _, u := range users {
+		if u.Role == RoleAdmin {
+			admins = append(admins, u.ID)
+		}
+	}
+	if len(admins) != 1 {
+		return ""
+	}
+	return admins[0]
+}
+
+// CreateInvite makes an invite, and returns it with the token for the invite
+// URL. The invite is valid for 7 days, and earlier open invites for the email
+// stop working.
+func (s *Service) CreateInvite(ctx context.Context, by audit.Actor, email, role string) (store.Invite, string, error) {
+	inv, token, err := s.invite(ctx, by, email, role)
+	if err != nil {
+		return store.Invite{}, "", err
+	}
+	s.audit.Record(ctx, by, "invite.create", inv.ID, map[string]any{"email": inv.Email, "role": inv.Role})
+	return inv, token, nil
+}
+
+// NewInviteLink replaces the open invite id with a new one for the same
+// email and role, because only the hash of the old token is stored. It
+// returns store.ErrNotFound when no open invite has the ID.
+func (s *Service) NewInviteLink(ctx context.Context, by audit.Actor, id string) (store.Invite, string, error) {
+	invites, err := s.store.ListOpenInvites(ctx, s.now())
+	if err != nil {
+		return store.Invite{}, "", err
+	}
+	i := slices.IndexFunc(invites, func(inv store.Invite) bool { return inv.ID == id })
+	if i < 0 {
+		return store.Invite{}, "", fmt.Errorf("new invite link: %w", store.ErrNotFound)
+	}
+	inv, token, err := s.invite(ctx, by, invites[i].Email, invites[i].Role)
+	if err != nil {
+		return store.Invite{}, "", err
+	}
+	s.audit.Record(ctx, by, "invite.link", inv.ID, map[string]any{"email": inv.Email, "old_id": id})
+	return inv, token, nil
+}
+
+// DeleteInvite withdraws an invite.
+func (s *Service) DeleteInvite(ctx context.Context, by audit.Actor, id string) error {
+	inv, err := s.store.DeleteInvite(ctx, id)
+	if err != nil {
+		return err
+	}
+	s.audit.Record(ctx, by, "invite.delete", inv.ID, map[string]any{"email": inv.Email, "role": inv.Role})
+	return nil
+}
+
+func (s *Service) invite(ctx context.Context, by audit.Actor, email, role string) (store.Invite, string, error) {
 	email = cleanEmail(email)
 	if !validEmail(email) {
-		return "", ErrBadEmail
+		return store.Invite{}, "", ErrBadEmail
 	}
 	if role != RoleAdmin && role != RoleMember {
-		return "", ErrBadRole
+		return store.Invite{}, "", ErrBadRole
 	}
 	_, err := s.store.GetUserByEmail(ctx, email)
 	if err == nil {
-		return "", ErrEmailTaken
+		return store.Invite{}, "", ErrEmailTaken
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		return "", err
+		return store.Invite{}, "", err
 	}
 	token, hash := newToken()
 	now := s.now()
-	err = s.store.CreateInvite(ctx, store.Invite{
-		ID: ids.New(), Email: email, Role: role, TokenHash: hash, CreatedBy: by,
+	inv := store.Invite{
+		ID: ids.New(), Email: email, Role: role, TokenHash: hash, CreatedBy: by.UserID,
 		CreatedAt: now, ExpiresAt: now.Add(InviteTTL),
-	})
-	if err != nil {
-		return "", err
 	}
-	return token, nil
+	if err := s.store.CreateInvite(ctx, inv); err != nil {
+		return store.Invite{}, "", err
+	}
+	return inv, token, nil
 }
 
 // GetInvite returns an open invite, or ErrBadInvite.
@@ -353,9 +478,9 @@ func (s *Service) deviceMAC(userID, id string) string {
 
 // newUser checks the name and the password, and returns a user with no email and role.
 func newUser(name, password string, now time.Time) (store.User, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return store.User{}, ErrBadName
+	name, err := userName(name)
+	if err != nil {
+		return store.User{}, err
 	}
 	if utf8.RuneCountInString(password) < MinPasswordLen {
 		return store.User{}, ErrShortPassword
@@ -363,6 +488,14 @@ func newUser(name, password string, now time.Time) (store.User, error) {
 	return store.User{
 		ID: ids.New(), Name: name, PasswordHash: HashPassword(password), CreatedAt: now, LastLoginAt: &now,
 	}, nil
+}
+
+func userName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", ErrBadName
+	}
+	return name, nil
 }
 
 func newSession(userID, ip, userAgent string, now time.Time) (string, store.Session) {

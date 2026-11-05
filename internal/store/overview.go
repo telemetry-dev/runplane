@@ -7,12 +7,13 @@ import (
 	"time"
 )
 
-// Overview has the numbers of the jobs queued in [since, until).
+// Overview has the numbers of the jobs queued in [since, until). A number
+// without data is nil, not 0.
 type Overview struct {
 	Jobs          int              `json:"jobs"`
-	MedianQueueMS int64            `json:"median_queue_ms"` // queued to assigned (or to started)
-	FailureRate   float64          `json:"failure_rate"`    // failed / (succeeded + failed)
-	CacheHitRate  float64          `json:"cache_hit_rate"`  // hits / (hits + misses)
+	MedianQueueMS *int64           `json:"median_queue_ms"` // queued to assigned (or to started)
+	FailureRate   *float64         `json:"failure_rate"`    // failed / (succeeded + failed)
+	CacheHitRate  *float64         `json:"cache_hit_rate"`  // hits / (hits + misses)
 	DurationMS    int64            `json:"duration_ms"`     // sum of the run times of completed jobs
 	Buckets       []OverviewBucket `json:"buckets"`
 	Running       []Job            `json:"running"` // all running jobs, newest first
@@ -53,7 +54,8 @@ func (s *Store) Overview(ctx context.Context, since, until time.Time, bucket tim
 		return Overview{}, fmt.Errorf("overview: %w", err)
 	}
 	if decided > 0 {
-		o.FailureRate = float64(failed) / float64(decided)
+		rate := float64(failed) / float64(decided)
+		o.FailureRate = &rate
 	}
 
 	waits, err := queryAll(ctx, s.r, op, scanValue[int64], `SELECT max(coalesce(assigned_at, started_at) - queued_at, 0)
@@ -61,7 +63,10 @@ func (s *Store) Overview(ctx context.Context, since, until time.Time, bucket tim
 	if err != nil {
 		return Overview{}, err
 	}
-	o.MedianQueueMS = median(waits)
+	if len(waits) > 0 {
+		m := median(waits)
+		o.MedianQueueMS = &m
+	}
 
 	var hits, misses int64
 	first, end := cacheHours(since, until)
@@ -71,7 +76,8 @@ func (s *Store) Overview(ctx context.Context, since, until time.Time, bucket tim
 		return Overview{}, fmt.Errorf("overview: %w", err)
 	}
 	if hits+misses > 0 {
-		o.CacheHitRate = float64(hits) / float64(hits+misses)
+		rate := float64(hits) / float64(hits+misses)
+		o.CacheHitRate = &rate
 	}
 
 	if o.Buckets, err = s.overviewBuckets(ctx, since, until, bucket); err != nil {
@@ -122,25 +128,6 @@ func (s *Store) overviewBuckets(ctx context.Context, since, until time.Time, buc
 		}
 	}
 	return list, nil
-}
-
-// OverviewSamples counts what the median queue time and the cache hit rate
-// of Overview come from for [since, until): the jobs with a queue time and
-// the cache lookups. With no samples these numbers mean "no data", not 0.
-func (s *Store) OverviewSamples(ctx context.Context, since, until time.Time) (queueTimes int, cacheLookups int64, err error) {
-	err = s.r.QueryRowContext(ctx, `SELECT count(*) FROM jobs
-		WHERE queued_at >= ? AND queued_at < ? AND coalesce(assigned_at, started_at) IS NOT NULL`,
-		ms(since), ms(until)).Scan(&queueTimes)
-	if err != nil {
-		return 0, 0, fmt.Errorf("count overview samples: %w", err)
-	}
-	first, end := cacheHours(since, until)
-	err = s.r.QueryRowContext(ctx, `SELECT coalesce(sum(hits + misses), 0) FROM cache_stats WHERE hour >= ? AND hour < ?`,
-		first, end).Scan(&cacheLookups)
-	if err != nil {
-		return 0, 0, fmt.Errorf("count overview samples: %w", err)
-	}
-	return queueTimes, cacheLookups, nil
 }
 
 // cacheHours returns the range [first, end) of the cache_stats hours that

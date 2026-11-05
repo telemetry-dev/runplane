@@ -13,8 +13,12 @@ const (
 	RoleMember = "member"
 )
 
-// ErrSetupDone means that a user exists, so the first-admin setup is closed.
-var ErrSetupDone = errors.New("setup is done")
+var (
+	// ErrSetupDone means that a user exists, so the first-admin setup is closed.
+	ErrSetupDone = errors.New("setup is done")
+	// ErrLastAdmin refuses a change that leaves no admin.
+	ErrLastAdmin = errors.New("runplane needs at least one admin")
+)
 
 type User struct {
 	ID           string     `json:"id"`
@@ -82,11 +86,53 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	return queryOne(ctx, s.r, "count users", scanValue[int], "SELECT count(*) FROM users")
 }
 
-// UpdateUser writes the name, email, and role. It returns ErrConflict if
-// the email is in use.
-func (s *Store) UpdateUser(ctx context.Context, u User) error {
-	return exec1(ctx, s.w, "update user", "UPDATE users SET name = ?, email = ?, role = ? WHERE id = ?",
-		u.Name, u.Email, u.Role, u.ID)
+// SetUserName returns the user with the new name.
+func (s *Store) SetUserName(ctx context.Context, id, name string) (User, error) {
+	return queryOne(ctx, s.w, "set user name", scanRow[User],
+		"UPDATE users SET name = ? WHERE id = ? RETURNING "+userCols, name, id)
+}
+
+// SetUserRole gives the user a role, and returns the user before the
+// change. It returns ErrLastAdmin when the user is the only admin and the
+// role is not admin.
+func (s *Store) SetUserRole(ctx context.Context, id, role string) (User, error) {
+	var old User
+	err := s.tx(ctx, "set user role", func(tx *sql.Tx) error {
+		var err error
+		if old, err = keepAdmin(ctx, tx, id, role); err != nil || old.Role == role {
+			return err
+		}
+		return exec1(ctx, tx, "update role", "UPDATE users SET role = ? WHERE id = ?", role, id)
+	})
+	return old, err
+}
+
+// DeleteUser also deletes the sessions of the user, and returns the deleted
+// user. It returns ErrLastAdmin for the only admin.
+func (s *Store) DeleteUser(ctx context.Context, id string) (User, error) {
+	var u User
+	err := s.tx(ctx, "delete user", func(tx *sql.Tx) error {
+		var err error
+		if u, err = keepAdmin(ctx, tx, id, ""); err != nil {
+			return err
+		}
+		return exec1(ctx, tx, "delete row", "DELETE FROM users WHERE id = ?", id)
+	})
+	return u, err
+}
+
+// keepAdmin returns the user id, or ErrLastAdmin when the user is the only
+// admin and its new role is not admin.
+func keepAdmin(ctx context.Context, tx *sql.Tx, id, role string) (User, error) {
+	u, err := queryOne(ctx, tx, "get user", scanRow[User], "SELECT "+userCols+" FROM users WHERE id = ?", id)
+	if err != nil || u.Role != RoleAdmin || role == RoleAdmin {
+		return u, err
+	}
+	admins, err := queryOne(ctx, tx, "count admins", scanValue[int], "SELECT count(*) FROM users WHERE role = ?", RoleAdmin)
+	if err == nil && admins <= 1 {
+		err = ErrLastAdmin
+	}
+	return u, err
 }
 
 func (s *Store) SetUserPassword(ctx context.Context, id, hash string) error {
@@ -95,11 +141,6 @@ func (s *Store) SetUserPassword(ctx context.Context, id, hash string) error {
 
 func (s *Store) SetUserLastLogin(ctx context.Context, id string, at time.Time) error {
 	return exec1(ctx, s.w, "set user last login", "UPDATE users SET last_login_at = ? WHERE id = ?", ms(at), id)
-}
-
-// DeleteUser also deletes the sessions of the user.
-func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	return exec1(ctx, s.w, "delete user", "DELETE FROM users WHERE id = ?", id)
 }
 
 // CreateFirstUser uses the setup code, makes the first user, and makes its

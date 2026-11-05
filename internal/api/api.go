@@ -17,14 +17,18 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/mirror"
+	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
+	"github.com/runplane/runplane/internal/settings"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/tlsutil"
 	"github.com/runplane/runplane/internal/update"
@@ -35,6 +39,7 @@ import (
 // Handler serves the HTTP requests of the primary.
 type Handler struct {
 	d       Deps
+	audit   audit.Log
 	api     huma.API
 	handler http.Handler
 
@@ -45,19 +50,22 @@ type Handler struct {
 	started time.Time // the start of this process, near enough
 }
 
-// Deps are the parts that the API uses. Store, Auth, Bus, Box, and Config are
-// required. Each service is optional: without it, its routes answer 503.
+// Deps are the parts that the API uses. Store, Auth, Settings, Pools, Bus,
+// Box, and Config are required. Each other service is optional: without it,
+// its routes answer 503.
 //
 // A service error is shown to the user as the detail of a 500 problem, so
-// services should return errors that make sense to an admin. A service can
-// also return a huma.StatusError to choose the status.
+// services should return errors that make sense to an admin. The problems of
+// a change (field.Problems) are a 422 with one error at each field.
 type Deps struct {
-	Store  *store.Store
-	Auth   *auth.Service
-	Bus    *events.Bus
-	Box    *secret.Box
-	Log    *slog.Logger
-	Config config.Config
+	Store    *store.Store
+	Auth     *auth.Service
+	Settings *settings.Service
+	Pools    *pools.Service
+	Bus      *events.Bus
+	Box      *secret.Box
+	Log      *slog.Logger
+	Config   config.Config
 
 	Scheduler     Scheduler
 	GitHub        GitHub
@@ -72,7 +80,6 @@ type Deps struct {
 	Shell         Shell
 	HostChecker   HostChecker
 	InstallScript InstallScript
-	SettingsHook  SettingsHook
 	HTTPS         HTTPS
 }
 
@@ -82,7 +89,7 @@ func New(d Deps) *Handler {
 	if d.Log == nil {
 		d.Log = slog.New(slog.DiscardHandler)
 	}
-	h := &Handler{d: d, done: make(chan struct{}), started: time.Now().UTC()}
+	h := &Handler{d: d, audit: audit.Log{Store: d.Store, Logger: d.Log}, done: make(chan struct{}), started: time.Now().UTC()}
 	mux := http.NewServeMux()
 	h.api = humago.New(mux, humaConfig())
 	h.api.UseMiddleware(h.authorize)
@@ -113,8 +120,6 @@ func OpenAPI() ([]byte, error) {
 }
 
 type Scheduler interface {
-	// PoolsChanged tells the scheduler that a pool was made, changed, or deleted.
-	PoolsChanged()
 	StopSandbox(ctx context.Context, id string) error
 	// RerunJob asks GitHub to run the job again. With debug, the new attempt
 	// keeps its sandbox after the job for a debug shell.
@@ -156,22 +161,28 @@ type Servers interface {
 	Doctor(ctx context.Context, serverID string) ([]host.Check, error)
 	// Limits returns the limits of the driver of a connected server.
 	Limits(serverID string) (sandbox.Limits, bool)
-	// RemoveServer stops the sandboxes of an agent and disconnects it. The
-	// API then deletes the server row. It returns fleet.ErrLocalServer for
-	// the primary.
-	RemoveServer(ctx context.Context, serverID string) error
+	// UpdateServer renames a server or changes its status. It returns
+	// fleet.ErrInstalling or fleet.ErrNotPaused for a status that the
+	// server cannot get now.
+	UpdateServer(ctx context.Context, by audit.Actor, serverID string, c fleet.ServerChange) (store.Server, error)
+	// RemoveServer stops the sandboxes of an agent, disconnects it, and
+	// deletes its row. It returns fleet.ErrLocalServer for the primary.
+	RemoveServer(ctx context.Context, by audit.Actor, serverID string) error
 	UpdateState(v store.Server) fleet.UpdateState
+	Actions(v store.Server) fleet.Actions
 	// UpdateAgent makes a connected agent install the release of the
 	// primary. The update runs in the background, and UpdateState shows it.
 	UpdateAgent(ctx context.Context, serverID string) error
 }
 
 type Images interface {
+	CreateImage(ctx context.Context, by audit.Actor, name, ref string) (store.Image, error)
+	UpdateImage(ctx context.Context, by audit.Actor, imageID string, c fleet.ImageChange) (store.Image, error)
+	// RemoveImage deletes the files of the image on all servers and its
+	// row. It returns fleet.ErrDefaultImage for the default image.
+	RemoveImage(ctx context.Context, by audit.Actor, imageID string) error
 	// RefreshImage pulls the image again on all servers.
-	RefreshImage(ctx context.Context, imageID string) error
-	// RemoveImage deletes the files of the image on all servers. The API
-	// then deletes the image row.
-	RemoveImage(ctx context.Context, imageID string) error
+	RefreshImage(ctx context.Context, by audit.Actor, imageID string) error
 }
 
 type Caches interface {
@@ -236,11 +247,6 @@ type InstallScript interface {
 	// Script returns install.sh with the values of the primary, for the
 	// host[:port] that the request named.
 	Script(host string) []byte
-}
-
-type SettingsHook interface {
-	// SettingsChanged runs after an admin changes the settings.
-	SettingsChanged(ctx context.Context, old, new store.Settings)
 }
 
 // HTTPS reports the ACME certificate of the domain setting. Without it, the
@@ -540,6 +546,28 @@ func (h *Handler) serviceErr(err error) error {
 	return huma.Error500InternalServerError(err.Error())
 }
 
+// changeErr maps the problems of a change by a service to a 422 with one
+// error at each field of the body. Other errors stay.
+func changeErr(err error) error {
+	var p field.Problems
+	if errors.As(err, &p) {
+		return unprocessable(p)
+	}
+	return err
+}
+
+func unprocessable(p field.Problems) error {
+	details := make([]error, len(p))
+	for i, x := range p {
+		details[i] = &huma.ErrorDetail{Location: "body." + x.Key, Message: x.Message, Value: x.Value}
+	}
+	msg := "Some values are not valid."
+	if len(p) == 1 {
+		msg = p[0].Message
+	}
+	return huma.Error422UnprocessableEntity(msg, details...)
+}
+
 func unavailable(what string) error {
 	return huma.Error503ServiceUnavailable(what + " is not available in this runplane process.")
 }
@@ -552,21 +580,4 @@ func invalid(loc, msg string, value any) error {
 // conflict returns a 409 problem with one field error.
 func conflict(loc, msg string) error {
 	return huma.Error409Conflict(msg, &huma.ErrorDetail{Location: loc, Message: msg})
-}
-
-// problems collects field errors for one 422 problem.
-type problems []error
-
-func (p *problems) add(loc, msg string, value any) {
-	*p = append(*p, &huma.ErrorDetail{Location: loc, Message: msg, Value: value})
-}
-
-func (p problems) err() error {
-	if len(p) == 0 {
-		return nil
-	}
-	if len(p) == 1 {
-		return huma.Error422UnprocessableEntity(p[0].(*huma.ErrorDetail).Message, p...)
-	}
-	return huma.Error422UnprocessableEntity("Some values are not valid.", p...)
 }

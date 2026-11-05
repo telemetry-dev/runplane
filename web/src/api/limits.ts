@@ -286,9 +286,78 @@ export const limits = {
       "maxLength": 64
     }
   },
+  "Session": {
+    "role": {
+      "enum": ["admin", "member"]
+    }
+  },
   "Settings": {
+    "acme_email": {
+      "maxLength": 254
+    },
+    "backup_keep": {
+      "minimum": 1,
+      "maximum": 365
+    },
+    "bandwidth_mbps": {
+      "minimum": 0,
+      "maximum": 100000
+    },
+    "cache_max_gb": {
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "cpu_overcommit": {
+      "minimum": 0.5,
+      "maximum": 8
+    },
+    "debug_hold_minutes": {
+      "minimum": 1,
+      "maximum": 1440
+    },
+    "default_time_limit_minutes": {
+      "minimum": 1,
+      "maximum": 7200
+    },
+    "dns_servers": {
+      "minItems": 1,
+      "maxItems": 4
+    },
+    "domain": {
+      "maxLength": 253
+    },
+    "egress_allowlist": {
+      "maxItems": 256
+    },
+    "instance_name": {
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "job_retention_days": {
+      "minimum": 1,
+      "maximum": 3650
+    },
+    "log_retention_days": {
+      "minimum": 1,
+      "maximum": 3650
+    },
+    "min_free_disk_percent": {
+      "minimum": 0,
+      "maximum": 90
+    },
     "mode": {
-      "enum": ["container", "vm", "dev", ""]
+      "enum": ["container", "vm", "dev"]
+    },
+    "public_url": {
+      "maxLength": 2048
+    },
+    "reserve_memory_mb": {
+      "minimum": 0,
+      "maximum": 1048576
+    },
+    "reserve_vcpu": {
+      "minimum": 0,
+      "maximum": 256
     }
   },
   "SettingsPatch": {

@@ -1,58 +1,24 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"slices"
 	"time"
 
-	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/store"
 )
 
-// audit records a change by the current user. action is "<object>.<verb>",
-// for example "pool.create". A failure is logged and does not fail the
-// request, because the change is already done.
-func (h *Handler) audit(ctx context.Context, action, target string, detail map[string]any) {
-	var raw json.RawMessage
-	if detail != nil {
-		b, err := json.Marshal(detail)
-		if err != nil {
-			h.d.Log.Error("encode audit detail", "action", action, "err", err)
-		}
-		raw = b
-	}
-	err := h.d.Store.InsertAudit(context.WithoutCancel(ctx), store.AuditEntry{
-		ID: ids.New(), At: time.Now(), UserID: currentUser(ctx).ID, Action: action, Target: target,
-		Detail: raw, IP: clientOf(ctx).ip,
-	})
-	if err != nil {
-		h.d.Log.Error("write audit entry", "action", action, "target", target, "err", err)
-	}
+// actor is the user of the request, who makes its changes.
+func actor(ctx context.Context) audit.Actor {
+	return audit.Actor{UserID: currentUser(ctx).ID, IP: clientOf(ctx).ip}
 }
 
-// fieldChanges gives the old and new JSON value of each field that differs
-// between a and b, two values of one struct type, except the fields in skip.
-func fieldChanges(a, b any, skip ...string) map[string][2]any {
-	fa, fb := jsonFields(a), jsonFields(b)
-	changes := map[string][2]any{}
-	for _, fields := range []map[string]json.RawMessage{fa, fb} {
-		for k := range fields {
-			if !slices.Contains(skip, k) && !bytes.Equal(fa[k], fb[k]) {
-				changes[k] = [2]any{fa[k], fb[k]}
-			}
-		}
-	}
-	return changes
-}
-
-func jsonFields(v any) map[string]json.RawMessage {
-	var fields map[string]json.RawMessage
-	b, _ := json.Marshal(v) // the store models always encode
-	json.Unmarshal(b, &fields)
-	return fields
+// record writes an audit entry for a change that the handler makes itself.
+// The services record their own changes.
+func (h *Handler) record(ctx context.Context, action, target string, detail map[string]any) {
+	h.audit.Record(ctx, actor(ctx), action, target, detail)
 }
 
 // jobDetail adds the names of a job to the detail of an audit entry.

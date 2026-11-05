@@ -43,6 +43,7 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
     putPoolStats(client, stats)
     return []
   },
+  'pools.changed': () => [poolsQuery.queryKey],
   'server.state': (client, server) => (putServer(client, server) ? serverCounts() : [serversQuery.queryKey, ...serverCounts()]),
   'host.stats': (client, stats) => {
     putHostStats(client, stats)
@@ -51,6 +52,7 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
   },
   'runner.version': () => [runnerVersionsQuery.queryKey],
   'image.state': () => [imagesQuery.queryKey],
+  'image.removed': () => [imagesQuery.queryKey],
   'github.state': (client, status) => {
     putGitHub(client, status)
     return []

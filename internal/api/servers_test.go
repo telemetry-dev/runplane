@@ -34,6 +34,10 @@ func (f *fakeServers) Limits(id string) (sandbox.Limits, bool) {
 
 func (f *fakeServers) UpdateState(v store.Server) fleet.UpdateState { return f.states[v.ID] }
 
+func (f *fakeServers) Actions(v store.Server) fleet.Actions {
+	return fleet.Actions{Update: f.states[v.ID] == fleet.UpdateAvailable}
+}
+
 // UpdateAgent refuses an update as the fleet does for each state.
 func (f *fakeServers) UpdateAgent(_ context.Context, id string) error {
 	switch f.states[id] {
@@ -291,8 +295,10 @@ func TestServerStateEventIsTheServerObject(t *testing.T) {
 	ev := recv(t, ch)
 	var got Server
 	must(t, json.Unmarshal([]byte(ev.data), &got))
-	if ev.name != "server.state" || got.ID != "s1" || got.UpdateState != string(fleet.UpdateAvailable) || got.Sandboxes != 2 ||
-		got.RunningJobs != 1 || got.VCPUInUse != 6 || got.MemoryInUseMB != 12288 || got.CPUPercent == nil || *got.CPUPercent != 42 {
-		t.Errorf("%s data %s: want s1 with update_state available, 2 sandboxes, 1 running job, 6 vCPUs and 12288 MB in use, and 42%% CPU", ev.name, ev.data)
+	if ev.name != "server.state" || got.ID != "s1" || got.UpdateState != string(fleet.UpdateAvailable) || !got.Actions.CanUpdate ||
+		got.Sandboxes != 2 || got.RunningJobs != 1 || got.VCPUInUse != 6 || got.MemoryInUseMB != 12288 ||
+		got.CPUPercent == nil || *got.CPUPercent != 42 || got.StatsAt == nil || !got.StatsAt.Equal(now.Truncate(time.Millisecond)) {
+		t.Errorf("%s data %s: want s1 with update_state available and the update action, 2 sandboxes, 1 running job, "+
+			"6 vCPUs and 12288 MB in use, and 42%% CPU at the sample time", ev.name, ev.data)
 	}
 }

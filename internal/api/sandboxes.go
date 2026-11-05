@@ -117,7 +117,7 @@ func (h *Handler) stopSandbox(ctx context.Context, in *PathID) (*empty, error) {
 	if err := h.d.Scheduler.StopSandbox(ctx, b.ID); err != nil {
 		return nil, h.serviceErr(err)
 	}
-	h.audit(ctx, "sandbox.stop", b.ID, h.sandboxDetail(ctx, b))
+	h.record(ctx, "sandbox.stop", b.ID, h.sandboxDetail(ctx, b))
 	return nil, nil
 }
 
@@ -230,7 +230,7 @@ func (h *Handler) openShell(ctx context.Context, in *shellInput) (*huma.StreamRe
 			conn.Close(websocket.StatusInternalError, closeReason(err.Error()))
 			return
 		}
-		h.audit(ctx, "sandbox.shell", b.ID, h.sandboxDetail(ctx, b))
+		h.record(ctx, "sandbox.shell", b.ID, h.sandboxDetail(ctx, b))
 		bridge(ctx, conn, term)
 	}}, nil
 }

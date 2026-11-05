@@ -308,52 +308,6 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 	return errors.Join(errs...)
 }
 
-// RefreshImage pulls the image again on each connected server. The servers
-// keep the image that they have until the new pull is ready, unless its ref
-// changed.
-func (f *Fleet) RefreshImage(ctx context.Context, imageID string) error {
-	img, err := f.st.GetImage(ctx, imageID)
-	if err != nil {
-		return err
-	}
-	var list []*node
-	f.mu.Lock()
-	f.images[img.ID] = img
-	if img.IsDefault {
-		f.defaultID = img.ID
-	}
-	for _, n := range f.nodes {
-		if n.pulls[img.ID] != img.Ref {
-			n.pulls[img.ID] = img.Ref
-			list = append(list, n)
-		}
-	}
-	f.mu.Unlock()
-	for _, n := range list {
-		f.goBg(func(ctx context.Context) { f.pull(ctx, n, img) })
-	}
-	return nil
-}
-
-// RemoveImage stops the use of an image and removes its files from the
-// connected servers. The API then deletes the image row.
-func (f *Fleet) RemoveImage(ctx context.Context, imageID string) error {
-	f.mu.Lock()
-	f.dropped[imageID] = true
-	delete(f.images, imageID)
-	var nodes []*node
-	for _, n := range f.nodes {
-		delete(n.images, imageID)
-		delete(n.failed, imageID)
-		nodes = append(nodes, n)
-	}
-	f.mu.Unlock()
-	for _, n := range nodes {
-		f.gcImages(ctx, n, imageID)
-	}
-	return nil
-}
-
 // gcImages removes the images on the server of n that no image row and no
 // live sandbox uses. skip is an image whose build does not count.
 func (f *Fleet) gcImages(ctx context.Context, n *node, skip string) {

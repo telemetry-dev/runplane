@@ -17,7 +17,7 @@ import (
 func TestLogSetupCodeKeepsAValidCode(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
-	a := auth.NewService(st, nil)
+	a := auth.NewService(st, nil, nil)
 	var out bytes.Buffer
 
 	// install.sh prints a code, then runplane restarts.
@@ -39,7 +39,7 @@ func TestLogSetupCodeKeepsAValidCode(t *testing.T) {
 func TestLogSetupCodeReplacesAnExpiredCode(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
-	a := auth.NewService(st, nil)
+	a := auth.NewService(st, nil, nil)
 	old := time.Now().Add(-48 * time.Hour)
 	if err := st.CreateSetupCode(ctx, store.SetupCode{CodeHash: "expired", CreatedAt: old, ExpiresAt: old.Add(auth.SetupCodeTTL)}); err != nil {
 		t.Fatal(err)

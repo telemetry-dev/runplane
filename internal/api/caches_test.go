@@ -32,7 +32,11 @@ func TestCachesReportTheMirrorsOfAllServers(t *testing.T) {
 	if m := out.Mirror; m == nil || m.StartedAt.IsZero() {
 		t.Fatalf("mirror %+v, want the counts since the start", m)
 	}
-	if want.StartedAt = out.Mirror.StartedAt; *out.Mirror != want {
+	if r := out.Mirror.HitRate; r == nil || *r != 6.0/11 {
+		t.Errorf("mirror hit rate %v, want 6/11", r)
+	}
+	want.StartedAt, want.HitRate = out.Mirror.StartedAt, out.Mirror.HitRate
+	if *out.Mirror != want {
 		t.Errorf("mirror %+v, want %+v", *out.Mirror, want)
 	}
 }

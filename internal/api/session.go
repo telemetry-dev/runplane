@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
-	"unicode"
 
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -61,16 +60,44 @@ func userOut(u store.User) User {
 	return User{ID: u.ID, Email: u.Email, Name: u.Name, Role: u.Role, CreatedAt: u.CreatedAt, LastLoginAt: u.LastLoginAt}
 }
 
+// Session is the user of the session, with what the user can do.
+type Session struct {
+	User
+	Capabilities Capabilities `json:"capabilities"`
+}
+
+// Capabilities are the actions that a role allows. All roles can read the
+// dashboard data.
+type Capabilities struct {
+	RerunJobs     bool `json:"rerun_jobs" doc:"Run a job again, also with a debug sandbox."`
+	StopSandboxes bool `json:"stop_sandboxes"`
+	OpenShells    bool `json:"open_shells" doc:"Open the debug shell of a sandbox."`
+	Admin         bool `json:"admin" doc:"All other changes, and the members, the notification channels, the audit log, and the backups."`
+}
+
+func capabilities(role string) Capabilities {
+	return Capabilities{
+		RerunJobs:     auth.CanDo(role, auth.ActionRerunJob),
+		StopSandboxes: auth.CanDo(role, auth.ActionStopSandbox),
+		OpenShells:    auth.CanDo(role, auth.ActionOpenShell),
+		Admin:         auth.CanDo(role, auth.ActionAdmin),
+	}
+}
+
+func sessionOut(u store.User) Session {
+	return Session{User: userOut(u), Capabilities: capabilities(u.Role)}
+}
+
 type sessionOutput struct {
 	SetCookie []string `header:"Set-Cookie"`
-	Body      User
+	Body      Session
 }
 
 func (h *Handler) getSession(ctx context.Context, _ *struct{}) (*sessionOutput, error) {
 	// Send the cookie again, so it lives as long as the sliding session.
 	return &sessionOutput{
 		SetCookie: []string{sessionCookieValue(ctx, clientOf(ctx).token)},
-		Body:      userOut(currentUser(ctx)),
+		Body:      sessionOut(currentUser(ctx)),
 	}, nil
 }
 
@@ -81,7 +108,7 @@ func (h *Handler) newSession(ctx context.Context, u store.User, token string) *s
 	device := h.d.Auth.Device(u.ID, clientOf(ctx).device)
 	return &sessionOutput{
 		SetCookie: []string{sessionCookieValue(ctx, token), deviceCookieValue(ctx, device)},
-		Body:      userOut(u),
+		Body:      sessionOut(u),
 	}
 }
 
@@ -125,43 +152,27 @@ type UpdateMeRequest struct {
 }
 
 func (h *Handler) updateMe(ctx context.Context, in *body[UpdateMeRequest]) (*sessionOutput, error) {
-	u := currentUser(ctx)
 	b := in.Body
-	out := &sessionOutput{}
-	name := u.Name
-	if b.Name != nil {
-		if name = strings.TrimSpace(*b.Name); name == "" {
-			return nil, invalid("body.name", sentence(auth.ErrBadName), *b.Name)
-		}
+	if b.NewPassword != nil && (b.CurrentPassword == nil || *b.CurrentPassword == "") {
+		return nil, invalid("body.current_password", "Enter your current password.", nil)
 	}
-	if b.NewPassword != nil {
-		if b.CurrentPassword == nil || *b.CurrentPassword == "" {
-			return nil, invalid("body.current_password", "Enter your current password.", nil)
-		}
-		// The change ends the sessions on other devices. This device gets
-		// a new session.
-		c := clientOf(ctx)
-		token, err := h.d.Auth.ChangePassword(ctx, u.ID, *b.CurrentPassword, *b.NewPassword, c.ip, c.userAgent)
-		if err != nil {
-			return nil, authErr(err, "body.new_password")
-		}
-		out = h.newSession(ctx, u, token)
-		h.audit(ctx, "user.password", u.ID, nil)
+	c := clientOf(ctx)
+	u, token, err := h.d.Auth.UpdateMe(ctx, currentUser(ctx).ID, b.Name, b.CurrentPassword, b.NewPassword, c.ip, c.userAgent)
+	if err != nil {
+		return nil, authErr(err, "body.new_password")
 	}
-	if name != u.Name {
-		u.Name = name
-		if err := h.d.Store.UpdateUser(ctx, u); err != nil {
-			return nil, err
-		}
+	// A new password ends the sessions on other devices. This device gets
+	// a new session.
+	if token != "" {
+		return h.newSession(ctx, u, token), nil
 	}
-	out.Body = userOut(u)
-	return out, nil
+	return &sessionOutput{Body: sessionOut(u)}, nil
 }
 
 // authErr maps the errors of auth to problems. passwordLoc is the field
 // that ErrShortPassword belongs to.
 func authErr(err error, passwordLoc string) error {
-	msg := sentence(err)
+	msg := field.Sentence(err)
 	switch {
 	case errors.Is(err, auth.ErrRateLimited):
 		return huma.Error429TooManyRequests(msg)
@@ -169,6 +180,10 @@ func authErr(err error, passwordLoc string) error {
 		return huma.Error401Unauthorized(msg)
 	case errors.Is(err, auth.ErrSetupDone):
 		return huma.Error409Conflict("The setup is done. Log in instead.")
+	case errors.Is(err, auth.ErrLastAdmin):
+		return huma.Error409Conflict("runplane needs at least one admin.")
+	case errors.Is(err, auth.ErrOwnAccount):
+		return huma.Error409Conflict(msg)
 	case errors.Is(err, auth.ErrBadInvite):
 		return huma.Error404NotFound(msg)
 	case errors.Is(err, auth.ErrEmailTaken):
@@ -187,20 +202,6 @@ func authErr(err error, passwordLoc string) error {
 		return invalid("body.current_password", msg, nil)
 	}
 	return err
-}
-
-// sentence makes an error message into a sentence for the UI.
-func sentence(err error) string {
-	msg := err.Error()
-	if msg == "" {
-		return msg
-	}
-	r := []rune(msg)
-	r[0] = unicode.ToUpper(r[0])
-	if !strings.HasSuffix(msg, ".") {
-		r = append(r, '.')
-	}
-	return string(r)
 }
 
 // deviceCookieValue returns the Set-Cookie value for a device token. The

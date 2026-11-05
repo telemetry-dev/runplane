@@ -185,9 +185,9 @@ func TestOverviewHasNoRatesWithoutData(t *testing.T) {
 
 	res := b.do("GET", "/api/overview", nil, nil)
 	res.want(t, 200)
-	for _, want := range []string{`"median_queue_ms":null`, `"cache_hit_rate":null`} {
+	for _, want := range []string{`"median_queue_ms":null`, `"failure_rate":null`, `"cache_hit_rate":null`} {
 		if !strings.Contains(string(res.body), want) {
-			t.Errorf("overview without assigned jobs and cache lookups has no %s: %s", want, res.body)
+			t.Errorf("overview without assigned, finished, and cached jobs has no %s: %s", want, res.body)
 		}
 	}
 

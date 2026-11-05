@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -27,7 +28,7 @@ func newEnv(t *testing.T) *testEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	e := &testEnv{st: st, now: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
-	e.svc = NewService(st, []byte("device key"))
+	e.svc = NewService(st, []byte("device key"), nil)
 	e.svc.now = func() time.Time { return e.now }
 	return e
 }
@@ -150,7 +151,7 @@ func TestLoginFromAKnownDevice(t *testing.T) {
 		"no device":                     "",
 		"device of another user":        e.svc.Device("someone else", ""),
 		"device with a changed ID":      "x" + id + "." + mac,
-		"device of a key that is wrong": NewService(e.st, []byte("other key")).Device(admin.ID, ""),
+		"device of a key that is wrong": NewService(e.st, []byte("other key"), nil).Device(admin.ID, ""),
 	} {
 		if err := e.login("admin@example.com", "first password", token, "10.9.9.9"); !errors.Is(err, ErrRateLimited) {
 			t.Errorf("%s with the email locked: err = %v, want ErrRateLimited", name, err)
@@ -239,7 +240,7 @@ func TestSetupCode(t *testing.T) {
 	}
 
 	// The code is used: it fails even when no user exists again.
-	if err := e.st.DeleteUser(ctx, u.ID); err != nil {
+	if _, err := e.st.DB().ExecContext(ctx, "DELETE FROM users WHERE id = ?", u.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := setup(code); !errors.Is(err, ErrBadSetupCode) {
@@ -284,13 +285,14 @@ func TestInviteSingleUse(t *testing.T) {
 	ctx := context.Background()
 	admin, _ := e.setup(t)
 
-	if _, err := e.svc.CreateInvite(ctx, admin.ID, "admin@example.com", RoleMember); !errors.Is(err, ErrEmailTaken) {
+	by := audit.Actor{UserID: admin.ID}
+	if _, _, err := e.svc.CreateInvite(ctx, by, "admin@example.com", RoleMember); !errors.Is(err, ErrEmailTaken) {
 		t.Fatalf("invite for a user: err = %v", err)
 	}
-	if _, err := e.svc.CreateInvite(ctx, admin.ID, "bob@example.com", "owner"); !errors.Is(err, ErrBadRole) {
+	if _, _, err := e.svc.CreateInvite(ctx, by, "bob@example.com", "owner"); !errors.Is(err, ErrBadRole) {
 		t.Fatalf("bad role: err = %v", err)
 	}
-	token, err := e.svc.CreateInvite(ctx, admin.ID, " Bob@Example.com", RoleMember)
+	_, token, err := e.svc.CreateInvite(ctx, by, " Bob@Example.com", RoleMember)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +318,7 @@ func TestInviteSingleUse(t *testing.T) {
 		t.Fatalf("second accept: err = %v, want ErrBadInvite", err)
 	}
 
-	late, err := e.svc.CreateInvite(ctx, admin.ID, "carol@example.com", RoleAdmin)
+	_, late, err := e.svc.CreateInvite(ctx, by, "carol@example.com", RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,6 +354,64 @@ func TestChangePassword(t *testing.T) {
 	}
 	if err := e.login("admin@example.com", "second password", "", ""); err != nil {
 		t.Fatalf("new password: %v", err)
+	}
+}
+
+// A refused name must not leave a changed password behind.
+func TestUpdateMeChangesNothingForABadName(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin, _ := e.setup(t)
+	blank, current, next := "  ", "first password", "second password"
+	if _, _, err := e.svc.UpdateMe(ctx, admin.ID, &blank, &current, &next, "", ""); !errors.Is(err, ErrBadName) {
+		t.Fatalf("blank name: err = %v, want ErrBadName", err)
+	}
+	if err := e.login("admin@example.com", "first password", "", ""); err != nil {
+		t.Fatalf("old password after the refused change: %v", err)
+	}
+	name := " Ada L "
+	u, token, err := e.svc.UpdateMe(ctx, admin.ID, &name, nil, nil, "", "")
+	if err != nil || u.Name != "Ada L" || token != "" {
+		t.Fatalf("rename: %+v, token %q, %v; want Ada L and no new session", u, token, err)
+	}
+}
+
+// runplane keeps an admin: the last admin cannot lose the role or be
+// deleted, and nobody deletes the own account.
+func TestLastAdminStays(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	ada, _ := e.setup(t)
+	bob := store.User{ID: "bob", Email: "bob@example.com", Name: "Bob", Role: RoleAdmin, CreatedAt: e.now}
+	if err := e.st.CreateUser(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	by := audit.Actor{UserID: ada.ID}
+
+	if err := e.svc.DeleteUser(ctx, by, ada.ID); !errors.Is(err, ErrOwnAccount) {
+		t.Errorf("delete of the own account: err = %v, want ErrOwnAccount", err)
+	}
+	if u, err := e.svc.SetRole(ctx, by, ada.ID, RoleMember); err != nil || u.Role != RoleMember {
+		t.Fatalf("one of two admins becomes a member: %+v, %v", u, err)
+	}
+	users, err := e.st.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := LastAdmin(users); got != "bob" {
+		t.Errorf("last admin %q, want bob", got)
+	}
+	if _, err := e.svc.SetRole(ctx, by, "bob", RoleMember); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("the last admin becomes a member: err = %v, want ErrLastAdmin", err)
+	}
+	if err := e.svc.DeleteUser(ctx, by, "bob"); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("delete of the last admin: err = %v, want ErrLastAdmin", err)
+	}
+	if u, err := e.st.GetUser(ctx, "bob"); err != nil || u.Role != RoleAdmin {
+		t.Errorf("bob after the refused changes: %+v, %v; want an admin", u, err)
+	}
+	if err := e.svc.DeleteUser(ctx, audit.Actor{UserID: "bob"}, ada.ID); err != nil {
+		t.Errorf("delete of a member: %v", err)
 	}
 }
 

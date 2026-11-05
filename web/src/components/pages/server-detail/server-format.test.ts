@@ -34,6 +34,7 @@ const agent: Server = {
   version: 'v0.4.2',
   update_state: 'current',
   update_error: '',
+  actions: { can_drain: true, can_resume: false, can_remove: true, can_update: false, can_run_doctor: true },
   stats_at: '2026-11-04T04:49:39.447Z',
   created_at: '2026-10-03T06:49:45.447Z',
   updated_at: '2026-11-04T04:49:39.447Z',

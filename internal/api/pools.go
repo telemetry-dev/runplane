@@ -4,13 +4,9 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
-	"runtime"
 	"slices"
-	"strings"
 	"time"
 
-	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -37,6 +33,7 @@ type Pool struct {
 	Busy     int `json:"busy" doc:"Live count of sandboxes that run a job."`
 	Starting int `json:"starting" doc:"Live count of sandboxes that start."`
 	Queued   int `json:"queued" doc:"Jobs of the last 24 hours that wait for a runner."`
+	Assigned int `json:"assigned" doc:"Of queued, the jobs that GitHub assigned to the scale set of the pool."`
 
 	PoolPlacement
 }
@@ -80,7 +77,7 @@ func (h *Handler) pools(ctx context.Context, list []store.Pool) ([]Pool, error) 
 			ImageID: p.ImageID, ImageName: cmp.Or(imageNames[p.ImageID], defaultImage), MinIdle: p.MinIdle,
 			MaxRunners: p.MaxRunners, TimeLimitMinutes: p.TimeLimitMinutes, ServerIDs: orEmpty(p.ServerIDs),
 			Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
-			Idle: c.Idle, Busy: c.Busy, Starting: c.Starting, Queued: c.Queued,
+			Idle: c.Idle, Busy: c.Busy, Starting: c.Starting, Queued: c.Queued, Assigned: c.Assigned,
 			PoolPlacement: placer.place(p.Arch, p.VCPU, p.MemoryMB, p.ServerIDs),
 		}
 	}
@@ -120,28 +117,14 @@ type CreatePoolRequest struct {
 
 func (h *Handler) createPool(ctx context.Context, in *body[CreatePoolRequest]) (*body[Pool], error) {
 	b := in.Body
-	now := time.Now()
-	p := store.Pool{
-		ID: ids.New(), Name: cmp.Or(strings.TrimSpace(b.Name), b.Label), Label: b.Label, Arch: b.Arch,
-		VCPU: b.VCPU, MemoryMB: b.MemoryMB, DiskGB: b.DiskGB, ImageID: b.ImageID, MinIdle: b.MinIdle,
-		MaxRunners: b.MaxRunners, TimeLimitMinutes: b.TimeLimitMinutes, ServerIDs: orEmpty(b.ServerIDs),
-		Enabled: b.Enabled == nil || *b.Enabled, CreatedAt: now, UpdatedAt: now,
-	}
-	if p.Arch == "" {
-		arch, err := h.defaultArch(ctx)
-		if err != nil {
-			return nil, err
-		}
-		p.Arch = arch
-	}
-	if err := h.checkPool(ctx, p, nil); err != nil {
-		return nil, err
-	}
-	if err := h.d.Store.CreatePool(ctx, p); err != nil {
+	p, err := h.d.Pools.Create(ctx, actor(ctx), store.Pool{
+		Name: b.Name, Label: b.Label, Arch: b.Arch, VCPU: b.VCPU, MemoryMB: b.MemoryMB, DiskGB: b.DiskGB,
+		ImageID: b.ImageID, MinIdle: b.MinIdle, MaxRunners: b.MaxRunners, TimeLimitMinutes: b.TimeLimitMinutes,
+		ServerIDs: b.ServerIDs, Enabled: b.Enabled == nil || *b.Enabled,
+	})
+	if err != nil {
 		return nil, poolErr(err)
 	}
-	h.poolsChanged()
-	h.audit(ctx, "pool.create", p.ID, map[string]any{"label": p.Label})
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
@@ -164,120 +147,32 @@ func (h *Handler) updatePool(ctx context.Context, in *struct {
 	PathID
 	Body UpdatePoolRequest
 }) (*body[Pool], error) {
-	p, err := h.d.Store.GetPool(ctx, in.ID)
-	if err != nil {
-		return nil, notFound(err, "No pool has this ID.")
-	}
-	old := p
 	b := in.Body
-	set(&p.Name, b.Name)
-	set(&p.Label, b.Label)
-	set(&p.Arch, b.Arch)
-	set(&p.VCPU, b.VCPU)
-	set(&p.MemoryMB, b.MemoryMB)
-	set(&p.DiskGB, b.DiskGB)
-	set(&p.ImageID, b.ImageID)
-	set(&p.MinIdle, b.MinIdle)
-	set(&p.MaxRunners, b.MaxRunners)
-	set(&p.TimeLimitMinutes, b.TimeLimitMinutes)
-	set(&p.ServerIDs, b.ServerIDs)
-	set(&p.Enabled, b.Enabled)
-	p.Name = strings.TrimSpace(p.Name)
-	if err := h.checkPool(ctx, p, old.ServerIDs); err != nil {
-		return nil, err
-	}
-	p.UpdatedAt = time.Now()
-	if err := h.d.Store.UpdatePool(ctx, p); err != nil {
+	p, err := h.d.Pools.Update(ctx, actor(ctx), in.ID, func(p *store.Pool) {
+		set(&p.Name, b.Name)
+		set(&p.Label, b.Label)
+		set(&p.Arch, b.Arch)
+		set(&p.VCPU, b.VCPU)
+		set(&p.MemoryMB, b.MemoryMB)
+		set(&p.DiskGB, b.DiskGB)
+		set(&p.ImageID, b.ImageID)
+		set(&p.MinIdle, b.MinIdle)
+		set(&p.MaxRunners, b.MaxRunners)
+		set(&p.TimeLimitMinutes, b.TimeLimitMinutes)
+		set(&p.ServerIDs, b.ServerIDs)
+		set(&p.Enabled, b.Enabled)
+	})
+	if err != nil {
 		return nil, poolErr(err)
-	}
-	h.poolsChanged()
-	if changes := h.poolChanges(ctx, old, p); len(changes) > 0 {
-		h.audit(ctx, "pool.update", p.ID, map[string]any{"label": p.Label, "changes": changes})
 	}
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
-// poolChanges gives the old and new value of each changed field of a pool,
-// with the names of the image and the servers in place of their IDs. An
-// image or server that runplane cannot name keeps its ID. An empty image is
-// the default image.
-func (h *Handler) poolChanges(ctx context.Context, old, p store.Pool) map[string][2]any {
-	old.ServerIDs, p.ServerIDs = orEmpty(old.ServerIDs), orEmpty(p.ServerIDs)
-	changes := fieldChanges(old, p, "updated_at")
-	if _, ok := changes["image_id"]; ok {
-		names := map[string]string{}
-		images, err := h.d.Store.ListImages(ctx)
-		if err != nil {
-			h.d.Log.Warn("read the image names for the audit log", "err", err)
-		}
-		for _, img := range images {
-			names[img.ID] = img.Name
-		}
-		delete(changes, "image_id")
-		changes["image"] = [2]any{cmp.Or(names[old.ImageID], old.ImageID), cmp.Or(names[p.ImageID], p.ImageID)}
-	}
-	if _, ok := changes["server_ids"]; ok {
-		r, err := h.loadRefs(ctx)
-		if err != nil {
-			h.d.Log.Warn("read the server names for the audit log", "err", err)
-		}
-		names := func(ids []string) []string {
-			out := make([]string, len(ids))
-			for i, id := range ids {
-				out[i] = cmp.Or(r.servers[id].Name, id)
-			}
-			return out
-		}
-		delete(changes, "server_ids")
-		changes["servers"] = [2]any{names(old.ServerIDs), names(p.ServerIDs)}
-	}
-	return changes
-}
-
 func (h *Handler) deletePool(ctx context.Context, in *PathID) (*empty, error) {
-	p, err := h.d.Store.GetPool(ctx, in.ID)
-	if err != nil {
+	if err := h.d.Pools.Delete(ctx, actor(ctx), in.ID); err != nil {
 		return nil, notFound(err, "No pool has this ID.")
 	}
-	// The scheduler stops the sandboxes of the pool and the GitHub code
-	// deletes its scale sets when they see that the pool is gone.
-	if err := h.d.Store.DeletePool(ctx, p.ID); err != nil {
-		return nil, notFound(err, "No pool has this ID.")
-	}
-	h.poolsChanged()
-	h.audit(ctx, "pool.delete", p.ID, map[string]any{"label": p.Label})
 	return nil, nil
-}
-
-// checkPool checks the rules that need more than one field or the database.
-// saved holds the server IDs of the stored pool: an unknown ID among them is
-// from a server that no longer exists, and it does not block the change.
-func (h *Handler) checkPool(ctx context.Context, p store.Pool, saved []string) error {
-	var errs problems
-	if p.Name == "" {
-		errs.add("body.name", "Enter a name.", p.Name)
-	}
-	if p.MinIdle > p.MaxRunners {
-		errs.add("body.min_idle", "Warm runners cannot be more than max runners.", p.MinIdle)
-	}
-	if p.ImageID != "" {
-		if _, err := h.d.Store.GetImage(ctx, p.ImageID); errors.Is(err, store.ErrNotFound) {
-			errs.add("body.image_id", "No image has this ID.", p.ImageID)
-		} else if err != nil {
-			return err
-		}
-	}
-	for i, id := range p.ServerIDs {
-		if slices.Contains(saved, id) {
-			continue
-		}
-		if _, err := h.d.Store.GetServer(ctx, id); errors.Is(err, store.ErrNotFound) {
-			errs.add(fmt.Sprintf("body.server_ids[%d]", i), "No server has this ID.", id)
-		} else if err != nil {
-			return err
-		}
-	}
-	return errs.err()
 }
 
 type placementInput struct {
@@ -349,27 +244,5 @@ func poolErr(err error) error {
 	if errors.Is(err, store.ErrConflict) {
 		return conflict("body.label", "A pool with this label exists.")
 	}
-	return notFound(err, "No pool has this ID.")
-}
-
-func (h *Handler) poolsChanged() {
-	if h.d.Scheduler != nil {
-		h.d.Scheduler.PoolsChanged()
-	}
-}
-
-// defaultArch is the arch of the primary server, or of this binary before
-// the primary has reported its facts.
-func (h *Handler) defaultArch(ctx context.Context) (string, error) {
-	local, err := h.d.Store.GetLocalServer(ctx)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return "", err
-	}
-	if local.Arch != "" {
-		return local.Arch, nil
-	}
-	if runtime.GOARCH == "arm64" {
-		return "arm64", nil
-	}
-	return "x64", nil
+	return notFound(changeErr(err), "No pool has this ID.")
 }

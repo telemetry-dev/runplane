@@ -1,5 +1,6 @@
 // Package policy decides which jobs runplane runs and where, from the
-// settings and the sandbox modes of the runners.
+// settings and the sandbox modes of the runners. It also has the rules of the
+// sandbox mode: which mode the primary uses, and which modes it can use.
 //
 // A job of a public repository runs only in VM mode, because anyone can
 // change its code. GitHub can give each job of a scale set to each of its

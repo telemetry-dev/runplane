@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/mirror"
@@ -72,12 +73,11 @@ func TestOnlineServers(t *testing.T) {
 		t.Fatalf("online servers and arches %v, want %v", arches, want)
 	}
 
-	// An admin drains the agent, as PATCH /api/servers/{id} does.
+	// An admin drains the agent.
 	setStatus := func(status string) {
-		if err := h.st.SetServerStatus(ctx, agentID, status, "", h.clock.now()); err != nil {
+		if _, err := h.f.UpdateServer(ctx, audit.Actor{}, agentID, ServerChange{Status: &status}); err != nil {
 			t.Fatal(err)
 		}
-		h.bus.Publish(events.ServerState(h.server(agentID)))
 	}
 	before := h.capacity.Load()
 	setStatus(store.ServerDraining)
@@ -194,18 +194,18 @@ func TestRemoveServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.f.RemoveServer(ctx, h.localID()); !errors.Is(err, ErrLocalServer) {
+	if err := h.f.RemoveServer(ctx, audit.Actor{}, h.localID()); !errors.Is(err, ErrLocalServer) {
 		t.Errorf("RemoveServer of the local server: %v, want ErrLocalServer", err)
 	}
-	if err := h.f.RemoveServer(ctx, id); err != nil {
+	if err := h.f.RemoveServer(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
 	if got := node.args("Stop"); !reflect.DeepEqual(got, []any{"sb1", "sb2"}) {
 		t.Errorf("stopped sandboxes %v, want sb1 and sb2", got)
 	}
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(id) == nil })
-	if err := h.st.DeleteServer(ctx, id, h.clock.now()); err != nil { // as the API does
-		t.Fatal(err)
+	if _, err := h.st.GetServer(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the row of the removed server: %v, want ErrNotFound", err)
 	}
 
 	file := a.file()
@@ -214,6 +214,88 @@ func TestRemoveServer(t *testing.T) {
 	}
 	if _, _, err := h.f.Authenticate(ctx, agent.Hello{Token: leftover, Addr: "127.0.0.1"}); err == nil {
 		t.Error("the unused token of the removed server registers a server")
+	}
+}
+
+// The Activity sentences need the old and new name and status of a server.
+// An installing server keeps its status, and only a drained or disabled
+// server goes online.
+func TestUpdateServer(t *testing.T) {
+	ctx := t.Context()
+	h := newHarness(t, newFakeNode("arm64"))
+	h.run()
+	_, id := h.connectAgent("fsn1-a", newFakeNode("x64"))
+	now := h.clock.now()
+	if err := h.st.CreateServer(ctx, store.Server{
+		ID: "new", Name: "new", Kind: store.ServerAgent, Status: store.ServerInstalling, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status := func(s string) ServerChange { return ServerChange{Status: &s} }
+	by := audit.Actor{UserID: "u1", IP: "192.0.2.7"}
+
+	if _, err := h.f.UpdateServer(ctx, by, "new", status(store.ServerDraining)); !errors.Is(err, ErrInstalling) {
+		t.Errorf("drain of an installing server: %v, want ErrInstalling", err)
+	}
+
+	change := status(store.ServerDraining)
+	name := "fsn1-c"
+	change.Name = &name
+	v, err := h.f.UpdateServer(ctx, by, id, change)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Name != "fsn1-c" || v.Status != store.ServerDraining {
+		t.Errorf("server after the change: %s %s, want fsn1-c draining", v.Name, v.Status)
+	}
+	entries, _, err := h.st.ListAudit(ctx, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"changes":{"name":["fsn1-a","fsn1-c"],"status":["online","draining"]},"name":"fsn1-c","status":"draining"}`
+	if len(entries) != 1 || entries[0].Action != "server.update" || string(entries[0].Detail) != want ||
+		entries[0].UserID != "u1" || entries[0].IP != "192.0.2.7" {
+		t.Errorf("audit entries %+v, want one server.update by u1 with detail %s", entries, want)
+	}
+
+	if _, err := h.f.UpdateServer(ctx, by, "new", status(store.ServerOnline)); !errors.Is(err, ErrInstalling) {
+		t.Errorf("online for an installing server: %v, want ErrInstalling", err)
+	}
+	if _, err := h.f.UpdateServer(ctx, by, h.localID(), status(store.ServerOnline)); err != nil {
+		t.Errorf("online to online: %v, want no change", err)
+	}
+	if _, err := h.f.UpdateServer(ctx, by, id, status(store.ServerOnline)); err != nil {
+		t.Errorf("resume of a draining server: %v", err)
+	}
+	gone := "gone"
+	if err := h.st.CreateServer(ctx, store.Server{
+		ID: gone, Name: gone, Kind: store.ServerAgent, Status: store.ServerUnreachable, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.f.UpdateServer(ctx, by, gone, status(store.ServerOnline)); !errors.Is(err, ErrNotPaused) {
+		t.Errorf("online for an unreachable server: %v, want ErrNotPaused", err)
+	}
+}
+
+func TestServerActions(t *testing.T) {
+	h := newHarness(t, newFakeNode("arm64"))
+	h.run()
+	_, id := h.connectAgent("fsn1-a", newFakeNode("x64"))
+	for _, tc := range []struct {
+		v    store.Server
+		want Actions
+	}{
+		{h.server(h.localID()), Actions{Drain: true, RunDoctor: true}},
+		{h.server(id), Actions{Drain: true, Remove: true, RunDoctor: true}},
+		{store.Server{ID: "gone", Kind: store.ServerAgent, Status: store.ServerUnreachable}, Actions{Drain: true, Remove: true}},
+		{store.Server{ID: "new", Kind: store.ServerAgent, Status: store.ServerInstalling}, Actions{Remove: true}},
+		{store.Server{ID: "rest", Kind: store.ServerAgent, Status: store.ServerDraining}, Actions{Resume: true, Remove: true}},
+		{store.Server{ID: "off", Kind: store.ServerAgent, Status: store.ServerDisabled}, Actions{Drain: true, Resume: true, Remove: true}},
+	} {
+		if got := h.f.Actions(tc.v); got != tc.want {
+			t.Errorf("actions of %s %s: %+v, want %+v", tc.v.ID, tc.v.Status, got, tc.want)
+		}
 	}
 }
 
@@ -242,14 +324,14 @@ func TestSettingsReachServers(t *testing.T) {
 	next.MinFreeDiskPercent = 12.5
 	next.DNSServers, next.EgressAllowlist = []string{"9.9.9.9"}, []string{"10.0.0.0/8"}
 	next.BandwidthMbps, next.RegistryMirror, next.ActionsCache = 100, false, false
-	// As the API does: it saves the settings, then calls the hook.
+	// As the settings service does: it saves the settings, then publishes the change.
 	if _, err := h.st.UpdateSettings(ctx, func(s *store.Settings) error {
 		*s = next
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h.f.SettingsChanged(ctx, prev, next)
+	h.bus.Publish(events.SettingsChanged{Old: prev, New: next})
 	want := agent.Settings{
 		Settings:           sandbox.Settings{DNS: []string{"9.9.9.9"}, EgressAllowlist: []string{"10.0.0.0/8"}, BandwidthMbps: 100},
 		MinFreeDiskPercent: 12.5,

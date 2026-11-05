@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -81,12 +82,12 @@ type CreateNotificationRequest struct {
 func (h *Handler) createNotification(ctx context.Context, in *body[CreateNotificationRequest]) (*body[NotificationChannel], error) {
 	b := in.Body
 	name, rawURL := strings.TrimSpace(b.Name), strings.TrimSpace(b.URL)
-	var errs problems
+	var errs field.Problems
 	if name == "" {
-		errs.add("body.name", "Enter a name.", b.Name)
+		errs.Add("name", "Enter a name.", b.Name)
 	}
 	checkChannelURL(&errs, b.Kind, rawURL)
-	if err := errs.err(); err != nil {
+	if err := changeErr(errs.Err()); err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -97,7 +98,7 @@ func (h *Handler) createNotification(ctx context.Context, in *body[CreateNotific
 	if err := h.d.Store.CreateNotificationChannel(ctx, c); err != nil {
 		return nil, err
 	}
-	h.audit(ctx, "notification.create", c.ID, map[string]any{"name": c.Name, "kind": c.Kind})
+	h.record(ctx, "notification.create", c.ID, map[string]any{"name": c.Name, "kind": c.Kind})
 	return reply(first(h.channels(ctx, []store.NotificationChannel{c})))
 }
 
@@ -118,10 +119,10 @@ func (h *Handler) updateNotification(ctx context.Context, in *struct {
 		return nil, notFound(err, "No notification channel has this ID.")
 	}
 	b := in.Body
-	var errs problems
+	var errs field.Problems
 	if b.Name != nil {
 		if c.Name = strings.TrimSpace(*b.Name); c.Name == "" {
-			errs.add("body.name", "Enter a name.", *b.Name)
+			errs.Add("name", "Enter a name.", *b.Name)
 		}
 	}
 	set(&c.Kind, b.Kind)
@@ -138,7 +139,7 @@ func (h *Handler) updateNotification(ctx context.Context, in *struct {
 		rawURL = string(plain)
 	}
 	checkChannelURL(&errs, c.Kind, rawURL)
-	if err := errs.err(); err != nil {
+	if err := changeErr(errs.Err()); err != nil {
 		return nil, err
 	}
 	if b.URL != nil {
@@ -148,7 +149,7 @@ func (h *Handler) updateNotification(ctx context.Context, in *struct {
 	if err := h.d.Store.UpdateNotificationChannel(ctx, c); err != nil {
 		return nil, notFound(err, "No notification channel has this ID.")
 	}
-	h.audit(ctx, "notification.update", c.ID, map[string]any{"name": c.Name, "kind": c.Kind, "url_changed": b.URL != nil})
+	h.record(ctx, "notification.update", c.ID, map[string]any{"name": c.Name, "kind": c.Kind, "url_changed": b.URL != nil})
 	return reply(first(h.channels(ctx, []store.NotificationChannel{c})))
 }
 
@@ -156,7 +157,7 @@ func (h *Handler) deleteNotification(ctx context.Context, in *PathID) (*empty, e
 	if err := h.d.Store.DeleteNotificationChannel(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No notification channel has this ID.")
 	}
-	h.audit(ctx, "notification.delete", in.ID, nil)
+	h.record(ctx, "notification.delete", in.ID, nil)
 	return nil, nil
 }
 
@@ -197,9 +198,9 @@ type TestChannelRequest struct {
 
 func (h *Handler) testChannel(ctx context.Context, in *body[TestChannelRequest]) (*empty, error) {
 	rawURL := strings.TrimSpace(in.Body.URL)
-	var errs problems
+	var errs field.Problems
 	checkChannelURL(&errs, in.Body.Kind, rawURL)
-	if err := errs.err(); err != nil {
+	if err := changeErr(errs.Err()); err != nil {
 		return nil, err
 	}
 	if h.d.Notifier == nil {
@@ -215,13 +216,13 @@ func (h *Handler) testChannel(ctx context.Context, in *body[TestChannelRequest])
 	return nil, nil
 }
 
-func checkChannelURL(errs *problems, kind, raw string) {
+func checkChannelURL(errs *field.Problems, kind, raw string) {
 	u, err := url.Parse(raw)
 	switch {
 	case err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https"):
-		errs.add("body.url", "Enter an http or https URL.", nil)
+		errs.Add("url", "Enter an http or https URL.", nil)
 	case kind != "webhook" && u.Scheme != "https":
-		errs.add("body.url", "A "+kind+" webhook URL starts with https://.", nil)
+		errs.Add("url", "A "+kind+" webhook URL starts with https://.", nil)
 	}
 }
 
