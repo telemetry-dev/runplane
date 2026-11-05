@@ -73,8 +73,7 @@ func main() {
 	powerOff(vm, code)
 }
 
-// run gets the config, prepares the sandbox, runs the runner, and waits for
-// a hold. It returns the exit code of init in container mode.
+// run returns the exit code of init in container mode.
 func (g *guestInit) run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -138,8 +137,7 @@ func (g *guestInit) prepare() (account, error) {
 	return acct, nil
 }
 
-// finish sends the last events and log lines. The host can be away, so it
-// waits at most 10 seconds.
+// The host can be away, so finish waits at most 10 seconds.
 func (g *guestInit) finish() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -148,8 +146,7 @@ func (g *guestInit) finish() {
 	g.link.flushLogs(ctx)
 }
 
-// handleSignals turns SIGTERM and SIGINT into a shutdown. Docker stop sends
-// SIGTERM; in a VM, Ctrl-Alt-Del sends SIGINT.
+// Docker stop sends SIGTERM; in a VM, Ctrl-Alt-Del sends SIGINT.
 func (g *guestInit) handleSignals() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, unix.SIGTERM, unix.SIGINT)

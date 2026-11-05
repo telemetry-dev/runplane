@@ -36,11 +36,10 @@ func newReaper() *reaper {
 	return r
 }
 
-// start starts cmd. It returns the process ID and a channel that gets the
-// exit code: the exit status, or 128 plus the signal number. Use only
-// *os.File values for the standard streams of cmd, since nothing calls
-// cmd.Wait. Do not read cmd.Process.Pid later: the reaper releases the
-// process when it exits.
+// start returns the process ID and a channel that gets the exit code: the
+// exit status, or 128 plus the signal number. Use only *os.File values for
+// the standard streams of cmd, since nothing calls cmd.Wait. Do not read
+// cmd.Process.Pid later: the reaper releases the process when it exits.
 func (r *reaper) start(cmd *exec.Cmd) (int, <-chan int, error) {
 	// Hold the lock across the start, so that reap finds the waiter even
 	// when the child exits at once.

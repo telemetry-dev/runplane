@@ -70,7 +70,6 @@ func (h *hostRequests) waitHold(debug bool, grace time.Duration) {
 	}
 }
 
-// guestMux serves the requests that the host sends to the guest.
 func guestMux(req *hostRequests, shells *shellServer) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+guest.PathHold, func(w http.ResponseWriter, r *http.Request) {
