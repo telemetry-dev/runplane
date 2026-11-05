@@ -101,7 +101,6 @@ func newFixture(t *testing.T, maxBytes int64, opts ...func(*Config)) *fixture {
 	return f
 }
 
-// counts returns the cache statistics of a repository.
 func (f *fixture) counts(t *testing.T, repository string) store.CacheCounts {
 	f.srv.stats.flush(t.Context())
 	counts, err := f.st.CacheStatsByRepository(t.Context(), time.Time{})

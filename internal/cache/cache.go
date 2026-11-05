@@ -72,9 +72,8 @@ type Config struct {
 	Results *url.URL
 }
 
-// Server is the cache server. As an http.Handler it serves requests that
-// come from sandboxes directly; Proxied serves requests that a trusted proxy
-// forwards.
+// As an http.Handler, Server serves requests that come from sandboxes
+// directly; Proxied serves requests that a trusted proxy forwards.
 type Server struct {
 	cfg     Config
 	disk    disk
@@ -314,8 +313,7 @@ func (s *Server) removeOrphans(ctx context.Context, sub string) {
 	}
 }
 
-// Delete removes one entry and its blob. It returns store.ErrNotFound if no
-// entry has the ID.
+// Delete returns store.ErrNotFound if no entry has the ID.
 func (s *Server) Delete(ctx context.Context, id string) error {
 	e, err := s.cfg.Store.GetCacheEntry(ctx, id)
 	if err != nil {
@@ -324,8 +322,8 @@ func (s *Server) Delete(ctx context.Context, id string) error {
 	return s.remove(ctx, e)
 }
 
-// DeleteRepository removes all entries of a repository and returns the
-// count. An empty repository means all repositories.
+// DeleteRepository returns the count of removed entries. An empty
+// repository means all repositories.
 func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, error) {
 	list, err := s.cfg.Store.ListCacheEntries(ctx, repository)
 	if err != nil {

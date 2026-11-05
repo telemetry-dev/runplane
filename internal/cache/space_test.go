@@ -13,7 +13,6 @@ import (
 	"github.com/runplane/runplane/internal/datadisk"
 )
 
-// dirBytes is the size of all files under dir.
 func dirBytes(t *testing.T, dir string) int64 {
 	t.Helper()
 	var n int64
