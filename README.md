@@ -129,6 +129,8 @@ sudo sh install.sh --binary ./runplane-linux-<arch> --token rp_srv_... --primary
 
 8. Push the change.
 
+runplane can also make the change for you. On the **First job** page, select a repository, then select **Open pull request**. The pull request sets `runs-on` to the label for each job on `ubuntu-latest` or `ubuntu-24.04`. If the GitHub App is from an earlier release, add read and write access to Contents, Pull requests, and Workflows in the app settings on GitHub first.
+
 The job shows on the **Jobs** page of the dashboard. If you lose the setup code, run `sudo runplane setup-code` on the server.
 
 ## The two modes

@@ -166,6 +166,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/github/pull-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a pull request that moves jobs to a runplane label
+         * @description The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one.
+         */
+        post: operations["create-github-pull-request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/github/setup": {
         parameters: {
             query?: never;
@@ -1190,6 +1210,12 @@ export interface components {
             /** Format: int64 */
             vcpu: number;
         };
+        CreatePullRequestRequest: {
+            /** @description The label of an enabled pool. */
+            label: string;
+            /** @description owner/name of a repository that the GitHub App can access. */
+            repository: string;
+        };
         CreatedInvite: {
             invite: components["schemas"]["Invite"];
             /** @description Link for the new user. It works one time, for 7 days. */
@@ -1868,6 +1894,12 @@ export interface components {
             queued: number;
             /** Format: int64 */
             starting: number;
+        };
+        PullRequest: {
+            /** @description Page of the pull request on GitHub. */
+            html_url: string;
+            /** Format: int64 */
+            number: number;
         };
         Repository: {
             archived: boolean;
@@ -2896,6 +2928,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ManifestForm"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-github-pull-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePullRequestRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequest"];
                 };
             };
             /** @description Error */

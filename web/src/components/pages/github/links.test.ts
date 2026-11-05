@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { Schemas } from '~/api/client'
-import { repositoryAccess } from './links'
+import { jobRepositories, repositoryAccess } from './links'
 
 const organization: Schemas['Installation'] = {
   id: 58213907,
@@ -21,4 +21,18 @@ test.each([
   ['selected', 1, '1 selected repository'],
 ] as const)('repositoryAccess with %s and %i repositories is %j', (selection, count, want) => {
   expect(repositoryAccess({ ...organization, repository_selection: selection, repository_count: count })).toBe(want)
+})
+
+// A pull request in a repository that runplane refuses gives jobs that never start.
+test.each([
+  [false, ['kestrel-hq/api']],
+  [true, ['kestrel-hq/api', 'kestrel-hq/site']],
+])('jobRepositories with public repositories %s is %j', (publicRepos, want) => {
+  const repositories: Schemas['Repository'][] = [
+    { id: 1, full_name: 'kestrel-hq/api', private: true, archived: false },
+    { id: 2, full_name: 'kestrel-hq/site', private: false, archived: false },
+    { id: 3, full_name: 'kestrel-hq/old', private: true, archived: true },
+  ]
+  const suspended = { ...organization, id: 2, account_login: 'wren', suspended: true, repositories: [{ id: 4, full_name: 'wren/app', private: true, archived: false }] }
+  expect(jobRepositories([{ ...organization, repositories }, suspended], publicRepos)).toEqual(want)
 })

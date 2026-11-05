@@ -13,18 +13,17 @@ import { borderedList, borderedRow } from './parts'
 type AccountType = Schemas['ManifestRequest']['account_type']
 
 // The permissions of the manifest. Runners of a personal account are
-// repository runners, which need Administration.
-const permissions: Record<AccountType, ReadonlyArray<[name: string, access: string]>> = {
-  organization: [
-    ['Self-hosted runners', 'Read and write'],
-    ['Actions', 'Read and write'],
-    ['Metadata', 'Read'],
-  ],
-  user: [
-    ['Administration', 'Read and write'],
-    ['Actions', 'Read and write'],
-    ['Metadata', 'Read'],
-  ],
+// repository runners, which need Administration. Contents, Pull requests, and
+// Workflows let runplane open the pull request of the first job page.
+const pullRequests = [
+  ['Contents', 'Read and write'],
+  ['Pull requests', 'Read and write'],
+  ['Workflows', 'Read and write'],
+] as const
+
+const permissions: Record<AccountType, ReadonlyArray<readonly [name: string, access: string]>> = {
+  organization: [['Self-hosted runners', 'Read and write'], ['Actions', 'Read and write'], ...pullRequests, ['Metadata', 'Read']],
+  user: [['Administration', 'Read and write'], ['Actions', 'Read and write'], ...pullRequests, ['Metadata', 'Read']],
 }
 
 /**

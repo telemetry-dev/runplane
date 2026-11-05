@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -70,6 +71,7 @@ func newREST(base string) *rest {
 type call struct {
 	method     string
 	path       string
+	body       any           // sent as JSON when not nil
 	auth       auth          // nil = anonymous
 	timeout    time.Duration // 0 = callTimeout
 	noRedirect bool
@@ -132,11 +134,22 @@ func (c *rest) send(ctx context.Context, cl call, authorization string) (*http.R
 	if strings.HasPrefix(u, "/") {
 		u = c.base + u
 	}
+	var body io.Reader
+	if cl.body != nil {
+		b, err := json.Marshal(cl.body)
+		if err != nil {
+			return nil, fmt.Errorf("encode request %s %s: %w", cl.method, cl.path, err)
+		}
+		body = bytes.NewReader(b)
+	}
 	actx, cancel := context.WithTimeout(ctx, cmp.Or(cl.timeout, callTimeout))
-	req, err := http.NewRequestWithContext(actx, cl.method, u, nil)
+	req, err := http.NewRequestWithContext(actx, cl.method, u, body)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("make request %s %s: %w", cl.method, cl.path, err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
