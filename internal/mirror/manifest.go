@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/blob"
 )
 
 // manifestAccept asks upstream for each manifest type, whatever the client
@@ -102,7 +104,7 @@ func (m *Mirror) headManifest(ctx context.Context, name, tag string) (string, er
 		return "", &upstreamError{resp.StatusCode}
 	}
 	digest := resp.Header.Get("Docker-Content-Digest")
-	if !digestRe.MatchString(digest) {
+	if !blob.ValidDigest(digest) {
 		return "", fmt.Errorf("upstream sent no sha256 digest for %s:%s", name, tag)
 	}
 	if err := m.tags.put(name, tag, digest); err != nil {
@@ -159,7 +161,7 @@ func (m *Mirror) fetchManifest(ctx context.Context, name, digest string) (manife
 		return manifest{}, fmt.Errorf("manifest %s is larger than 4 MiB", digest)
 	}
 	sum := sha256.Sum256(body)
-	if got := "sha256:" + hex.EncodeToString(sum[:]); got != digest {
+	if got := blob.Digest(sum[:]); got != digest {
 		return manifest{}, fmt.Errorf("upstream sent manifest %s for %s", got, digest)
 	}
 	mf := manifest{resp.Header.Get("Content-Type"), body}
@@ -240,16 +242,8 @@ func (t *tagIndex) put(name, tag, digest string) error {
 	// A hash for the file name, because a name can contain "/" and a file
 	// for a name could collide with the folder for a longer name.
 	sum := sha256.Sum256([]byte(key))
-	f, err := os.CreateTemp(t.dir, "*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(filepath.Join(t.dir, hex.EncodeToString(sum[:])+".json"), bytes.NewReader(data), 0o600); err != nil {
 		return fmt.Errorf("save tag: %w", err)
-	}
-	_, err = f.Write(data)
-	if err := errors.Join(err, f.Close()); err != nil {
-		return errors.Join(fmt.Errorf("save tag: %w", err), os.Remove(f.Name()))
-	}
-	if err := os.Rename(f.Name(), filepath.Join(t.dir, hex.EncodeToString(sum[:])+".json")); err != nil {
-		return errors.Join(fmt.Errorf("save tag: %w", err), os.Remove(f.Name()))
 	}
 	return nil
 }

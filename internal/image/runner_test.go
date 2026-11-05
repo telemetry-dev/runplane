@@ -171,7 +171,7 @@ func fakeGitHub(t *testing.T, b *Bundles, files map[string][]byte, seen func(*ht
 		w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
-	b.api, b.web = srv.URL, srv.URL
+	b.api.URL, b.web = srv.URL, srv.URL
 }
 
 // serveRunner serves a runner release whose notes give sum for the archive,

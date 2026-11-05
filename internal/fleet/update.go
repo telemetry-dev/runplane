@@ -34,7 +34,7 @@ func (f *Fleet) UpdateState(v store.Server) string {
 		return api.UpdateUpdating
 	case v.Kind == store.ServerLocal || v.Version == to:
 		return api.UpdateCurrent
-	case !releaseVersion.MatchString(to) || v.Version == "":
+	case !version.IsRelease(to) || v.Version == "":
 		return api.UpdateNone
 	case u.to == to && u.err != "":
 		return api.UpdateFailed
@@ -63,7 +63,7 @@ func (f *Fleet) UpdateAgent(_ context.Context, serverID string) error {
 // does not try again.
 func (f *Fleet) beginUpdate(id, from string, again bool) bool {
 	to := version.Version
-	if !releaseVersion.MatchString(to) || from == to {
+	if !version.IsRelease(to) || from == to {
 		return false
 	}
 	f.mu.Lock()

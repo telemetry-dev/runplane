@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 // Result describes one backup.
@@ -73,8 +75,7 @@ func freeName(dir string, t time.Time) (string, string) {
 	}
 }
 
-// gzipFile compresses src to dst through a temporary file and returns the
-// size of dst.
+// gzipFile compresses src to dst and returns the size of dst.
 func gzipFile(src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
@@ -82,13 +83,11 @@ func gzipFile(src, dst string) (int64, error) {
 	}
 	defer in.Close()
 
-	tmp := dst + ".part"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	out, err := atomicfile.Create(dst, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("create backup: %w", err)
 	}
-	defer os.Remove(tmp)
-
+	defer out.Close()
 	zw := gzip.NewWriter(out)
 	zw.Name = strings.TrimSuffix(filepath.Base(dst), ".gz")
 	_, err = io.Copy(zw, in)
@@ -96,18 +95,12 @@ func gzipFile(src, dst string) (int64, error) {
 		err = zw.Close()
 	}
 	if err == nil {
-		err = out.Sync()
-	}
-	if cerr := out.Close(); err == nil {
-		err = cerr
+		err = out.Commit()
 	}
 	if err != nil {
 		return 0, fmt.Errorf("write backup: %w", err)
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		return 0, fmt.Errorf("write backup: %w", err)
-	}
-	info, err := os.Stat(dst)
+	info, err := out.Stat()
 	if err != nil {
 		return 0, fmt.Errorf("stat backup: %w", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/runplane/runplane/internal/update"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // RunnerBundle statuses.
@@ -98,7 +98,7 @@ func (s *Store) LatestReadyBundle(ctx context.Context, arch string) (RunnerBundl
 // sortBundles sorts by version, highest first, then by arch.
 func sortBundles(list []RunnerBundle) {
 	slices.SortFunc(list, func(a, b RunnerBundle) int {
-		if c := update.Compare(b.Version, a.Version); c != 0 {
+		if c := version.Compare(b.Version, a.Version); c != 0 {
 			return c
 		}
 		return strings.Compare(a.Arch, b.Arch)

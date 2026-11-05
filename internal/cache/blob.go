@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/blob"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -194,10 +195,8 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, e store.CacheE
 	h.Set("ETag", `"`+e.ID+`"`)
 	h.Set("x-ms-blob-type", "BlockBlob")
 	setAzureHeaders(h)
-	cw := &countingWriter{ResponseWriter: w}
-	http.ServeContent(cw, r, "", e.CreatedAt, f)
-	if cw.n > 0 {
-		s.cfg.Stats.Add(e.Repository, store.CacheCounts{BytesRead: cw.n})
+	if n := blob.Serve(w, r, e.CreatedAt, f); n > 0 {
+		s.cfg.Stats.Add(e.Repository, store.CacheCounts{BytesRead: n})
 	}
 }
 
@@ -236,23 +235,4 @@ func blobError(w http.ResponseWriter, status int, code, msg string) {
 	var esc strings.Builder
 	xml.EscapeText(&esc, []byte(msg))
 	fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?><Error><Code>%s</Code><Message>%s</Message></Error>`, code, esc.String())
-}
-
-// countingWriter counts the body bytes of a response. ReadFrom keeps the
-// sendfile path of http.ServeContent.
-type countingWriter struct {
-	http.ResponseWriter
-	n int64
-}
-
-func (c *countingWriter) Write(p []byte) (int, error) {
-	n, err := c.ResponseWriter.Write(p)
-	c.n += int64(n)
-	return n, err
-}
-
-func (c *countingWriter) ReadFrom(r io.Reader) (int64, error) {
-	n, err := io.Copy(c.ResponseWriter, r)
-	c.n += n
-	return n, err
 }

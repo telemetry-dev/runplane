@@ -12,6 +12,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -91,7 +92,7 @@ func signJWT(key *rsa.PrivateKey, issuer string, now time.Time) (string, error) 
 
 type appAuth struct{ s *Service }
 
-func (a appAuth) header(ctx context.Context) (string, error) {
+func (a appAuth) Header(ctx context.Context) (string, error) {
 	c, err := a.s.creds(ctx)
 	if err != nil {
 		return "", err
@@ -103,14 +104,12 @@ func (a appAuth) header(ctx context.Context) (string, error) {
 	return "Bearer " + signed, nil
 }
 
-func (appAuth) invalidate() {}
-
 type installAuth struct {
 	s  *Service
 	id int64
 }
 
-func (a installAuth) header(ctx context.Context) (string, error) {
+func (a installAuth) Header(ctx context.Context) (string, error) {
 	t, err := a.s.installationToken(ctx, a.id)
 	if err != nil {
 		return "", err
@@ -118,7 +117,7 @@ func (a installAuth) header(ctx context.Context) (string, error) {
 	return "Bearer " + t, nil
 }
 
-func (a installAuth) invalidate() {
+func (a installAuth) Invalidate() {
 	a.s.tokMu.Lock()
 	delete(a.s.tokens, a.id)
 	a.s.tokMu.Unlock()
@@ -142,10 +141,10 @@ func (s *Service) installationToken(ctx context.Context, installationID int64) (
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	err := s.api.json(ctx, call{
-		method: http.MethodPost,
-		path:   fmt.Sprintf("/app/installations/%d/access_tokens", installationID),
-		auth:   appAuth{s},
+	err := s.api.JSON(ctx, ghrest.Call{
+		Method: http.MethodPost,
+		Path:   fmt.Sprintf("/app/installations/%d/access_tokens", installationID),
+		Auth:   appAuth{s},
 	}, &out)
 	if err != nil {
 		return "", fmt.Errorf("make installation token: %w", err)

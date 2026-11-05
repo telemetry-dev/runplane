@@ -14,6 +14,7 @@ import (
 
 	"github.com/actions/scaleset"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
@@ -343,7 +344,7 @@ type runnerLabel struct {
 // scale set label and a name that starts with "<label>-", the form that the
 // scheduler gives runner names.
 func (s *Service) listRunners(ctx context.Context, t target, label string) ([]scheduler.Runner, error) {
-	all, err := list[runner](ctx, s.api, installAuth{s, t.inst.ID}, t.runnersPath()+"?per_page=100", "runners")
+	all, err := ghrest.List[runner](ctx, s.api, installAuth{s, t.inst.ID}, t.runnersPath()+"?per_page=100", "runners")
 	if err != nil {
 		return nil, err
 	}

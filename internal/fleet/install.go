@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,9 +34,6 @@ import (
 // connect after the install script ends.
 const connectWait = time.Minute
 
-// releaseVersion matches the versions that have a release to install.
-var releaseVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
-
 // Script returns install.sh with the values of this primary: the release
 // repository, the agent address for the host of the request, the
 // certificate fingerprint, the version of this binary if it is a release,
@@ -54,7 +50,7 @@ func (f *Fleet) script(primary string) []byte {
 	}
 	// An agent gets the release of its primary, so that the two speak the
 	// same protocol.
-	if releaseVersion.MatchString(version.Version) {
+	if version.IsRelease(version.Version) {
 		vars = append(vars, [2]string{"RUNPLANE_VERSION", version.Version})
 	}
 	// The key comes from this binary, not from the release: someone who can
@@ -90,7 +86,7 @@ func (f *Fleet) installCommand(base, token string) string {
 	}
 	script := "https://github.com/" + version.Repo + "/releases/latest/download/install.sh"
 	release := "--repo " + shellQuote(version.Repo)
-	if releaseVersion.MatchString(version.Version) {
+	if version.IsRelease(version.Version) {
 		script = "https://github.com/" + version.Repo + "/releases/download/" + version.Version + "/install.sh"
 		release += " --version " + shellQuote(version.Version)
 	}

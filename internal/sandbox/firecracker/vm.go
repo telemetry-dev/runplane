@@ -1,6 +1,7 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
 	"github.com/runplane/runplane/internal/sandbox/guest"
@@ -327,11 +329,7 @@ func writeRecord(dir string, rec record) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, recordFile+".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(dir, recordFile))
+	return atomicfile.Write(filepath.Join(dir, recordFile), bytes.NewReader(b), 0o600)
 }
 
 func readRecord(dir string) (record, error) {

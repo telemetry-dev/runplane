@@ -1,4 +1,4 @@
-package update
+package version
 
 import (
 	"cmp"
@@ -6,35 +6,20 @@ import (
 	"strings"
 )
 
-type semver struct {
-	core [3]int
-	pre  []string
-}
-
-// parse reads "v1.2.3", "1.2.3-rc.1", or "1.2.3+build".
-func parse(v string) (semver, bool) {
-	v = strings.TrimPrefix(v, "v")
-	v, _, _ = strings.Cut(v, "+")
-	v, pre, hasPre := strings.Cut(v, "-")
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return semver{}, false
+// IsRelease reports if v is the version of a release build: a release tag
+// such as v1.2.0 or v1.3.0-rc.1. Other builds have "dev" or the output of
+// git describe, such as v1.2.0-3-g3f2a9c1 or v1.2.0-dirty.
+func IsRelease(v string) bool {
+	s, ok := parse(v)
+	if !ok || !strings.HasPrefix(v, "v") {
+		return false
 	}
-	var s semver
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil {
-			return semver{}, false
+	for _, id := range s.pre {
+		if id == "dirty" || strings.Contains(id, "-") {
+			return false
 		}
-		s.core[i] = n
 	}
-	if hasPre {
-		if pre == "" {
-			return semver{}, false
-		}
-		s.pre = strings.Split(pre, ".")
-	}
-	return s, true
+	return true
 }
 
 // Compare compares two semantic versions and returns -1, 0, or +1.
@@ -70,6 +55,37 @@ func Compare(a, b string) int {
 		}
 	}
 	return cmp.Compare(len(va.pre), len(vb.pre))
+}
+
+type semver struct {
+	core [3]int
+	pre  []string
+}
+
+// parse reads "v1.2.3", "1.2.3-rc.1", or "1.2.3+build".
+func parse(v string) (semver, bool) {
+	v = strings.TrimPrefix(v, "v")
+	v, _, _ = strings.Cut(v, "+")
+	v, pre, hasPre := strings.Cut(v, "-")
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return semver{}, false
+	}
+	var s semver
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return semver{}, false
+		}
+		s.core[i] = n
+	}
+	if hasPre {
+		if pre == "" {
+			return semver{}, false
+		}
+		s.pre = strings.Split(pre, ".")
+	}
+	return s, true
 }
 
 // comparePre compares pre-release identifiers: numbers by value, numbers

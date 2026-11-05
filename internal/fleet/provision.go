@@ -18,7 +18,7 @@ import (
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/update"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // liveStates are the states of a sandbox that still operates.
@@ -121,7 +121,7 @@ func (f *Fleet) provision(ctx context.Context) {
 			f.defaultID = img.ID
 		}
 	}
-	if len(bundles) > 0 && update.Compare(bundles[0].Version, f.latest) > 0 {
+	if len(bundles) > 0 && version.Compare(bundles[0].Version, f.latest) > 0 {
 		f.latest = bundles[0].Version
 	}
 	now := f.now()
@@ -191,7 +191,7 @@ func runnerVersions(latest, arch string, bundles []store.RunnerBundle) []string 
 		if len(list) == 3 {
 			break
 		}
-		if b.Arch == arch && b.Status == store.BundleReady && update.Compare(b.Version, latest) < 0 {
+		if b.Arch == arch && b.Status == store.BundleReady && version.Compare(b.Version, latest) < 0 {
 			list = append(list, b.Version)
 		}
 	}
@@ -299,7 +299,7 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 		})
 		f.mu.Lock()
 		first := n.runner == ""
-		if first || update.Compare(v, n.runner) > 0 {
+		if first || version.Compare(v, n.runner) > 0 {
 			n.runner = v
 		}
 		if i == 0 {
@@ -337,13 +337,13 @@ func (f *Fleet) saveBundle(ctx context.Context, b store.RunnerBundle) {
 	f.bus.Publish(events.RunnerVersion(after))
 }
 
-// EnsureLatest makes the runner bundle of version ready on each online
-// server. The github package calls it for a new runner release. Servers use
-// the version for new sandboxes as soon as it is ready there.
-func (f *Fleet) EnsureLatest(ctx context.Context, version string) error {
+// EnsureLatest makes the runner bundle of v ready on each online server.
+// The github package calls it for a new runner release. Servers use the
+// version for new sandboxes as soon as it is ready there.
+func (f *Fleet) EnsureLatest(ctx context.Context, v string) error {
 	f.mu.Lock()
-	if update.Compare(version, f.latest) > 0 {
-		f.latest = version
+	if version.Compare(v, f.latest) > 0 {
+		f.latest = v
 	}
 	var list []*node
 	for _, n := range f.nodes {
@@ -355,7 +355,7 @@ func (f *Fleet) EnsureLatest(ctx context.Context, version string) error {
 	errs := make([]error, len(list))
 	var wg sync.WaitGroup
 	for i, n := range list {
-		wg.Go(func() { errs[i] = f.ensureRunner(ctx, n, []string{version}) })
+		wg.Go(func() { errs[i] = f.ensureRunner(ctx, n, []string{v}) })
 	}
 	wg.Wait()
 	return errors.Join(errs...)

@@ -3,7 +3,6 @@ package mirror
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"math"
@@ -13,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/blob"
 )
 
 // stallTimeout stops a blob download when upstream sends nothing for this
@@ -43,9 +45,7 @@ func (m *Mirror) serveCached(w http.ResponseWriter, r *http.Request, digest stri
 	defer f.Close()
 	m.hits.Add(1)
 	setBlobHeaders(w, digest)
-	cw := &countingWriter{ResponseWriter: w}
-	http.ServeContent(cw, r, "", time.Time{}, f)
-	m.hitBytes.Add(cw.n)
+	m.hitBytes.Add(blob.Serve(w, r, time.Time{}, f))
 }
 
 // headBlob answers a HEAD request with the size from upstream. It does not
@@ -86,7 +86,8 @@ func (m *Mirror) openBlob(name, digest string) (*os.File, *download) {
 	return nil, d
 }
 
-// release ends one use of d. The last use closes the temp file.
+// release ends one use of d. The last use closes the temp file, and
+// removes it if the store did not take it.
 func (m *Mirror) release(d *download) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,9 +153,9 @@ func (m *Mirror) download(d *download, name string) {
 		d.finish(err)
 		return
 	}
-	// Until the commit, new requests read the finished temp file.
+	// Until the store has it, new requests read the finished temp file.
 	d.finish(nil)
-	if err := m.commit(d); err != nil {
+	if err := m.store.add(blobKey(d.digest), d.file, d.written); err != nil {
 		m.log.Error("registry mirror cannot cache a blob", "err", err)
 	}
 	m.endDownload(d)
@@ -167,8 +168,8 @@ func (m *Mirror) endDownload(d *download) {
 }
 
 // fetchBlob copies the blob from upstream into a temp file and checks its
-// digest. On an error, it removes the temp file.
-func (m *Mirror) fetchBlob(d *download, name string) (err error) {
+// digest.
+func (m *Mirror) fetchBlob(d *download, name string) error {
 	ctx, cancel := context.WithCancel(m.ctx)
 	defer cancel()
 	resp, err := m.up.do(ctx, http.MethodGet, name, "blobs/"+d.digest, "")
@@ -179,15 +180,10 @@ func (m *Mirror) fetchBlob(d *download, name string) (err error) {
 	if resp.StatusCode != http.StatusOK {
 		return &upstreamError{resp.StatusCode}
 	}
-	f, err := m.store.temp()
+	f, err := m.store.temp(blobKey(d.digest))
 	if err != nil {
 		return fmt.Errorf("fetch blob: %w", err)
 	}
-	defer func() {
-		if err != nil {
-			os.Remove(f.Name())
-		}
-	}()
 	d.begin(f, resp.ContentLength)
 
 	stall := time.AfterFunc(stallTimeout, cancel)
@@ -198,19 +194,10 @@ func (m *Mirror) fetchBlob(d *download, name string) (err error) {
 	if err != nil {
 		return fmt.Errorf("fetch blob: %w", err)
 	}
-	if got := "sha256:" + hex.EncodeToString(hash.Sum(nil)); got != d.digest {
+	if got := blob.Digest(hash.Sum(nil)); got != d.digest {
 		return fmt.Errorf("upstream sent blob %s for %s", got, d.digest)
 	}
 	return nil
-}
-
-// commit moves the checked temp file of d into the cache.
-func (m *Mirror) commit(d *download) error {
-	if err := d.file.Sync(); err != nil {
-		os.Remove(d.file.Name())
-		return fmt.Errorf("sync blob: %w", err)
-	}
-	return m.store.add(blobKey(d.digest), d.file.Name(), d.written)
 }
 
 // download is one upstream fetch of a blob into a temp file. Each client that
@@ -220,7 +207,7 @@ type download struct {
 	refs   int // guarded by Mirror.mu
 
 	mu      sync.Mutex
-	file    *os.File
+	file    *atomicfile.File
 	size    int64 // from upstream; -1 if unknown
 	written int64
 	done    bool
@@ -228,7 +215,7 @@ type download struct {
 	changed chan struct{} // closed and replaced at each change
 }
 
-func (d *download) begin(f *os.File, size int64) {
+func (d *download) begin(f *atomicfile.File, size int64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.file, d.size = f, size
@@ -295,25 +282,6 @@ type stallReader struct {
 func (s *stallReader) Read(p []byte) (int, error) {
 	n, err := s.r.Read(p)
 	s.timer.Reset(stallTimeout)
-	return n, err
-}
-
-// countingWriter counts the body bytes that go to the client.
-type countingWriter struct {
-	http.ResponseWriter
-	n int64
-}
-
-func (c *countingWriter) Write(p []byte) (int, error) {
-	n, err := c.ResponseWriter.Write(p)
-	c.n += int64(n)
-	return n, err
-}
-
-// ReadFrom keeps the sendfile path of the ResponseWriter.
-func (c *countingWriter) ReadFrom(r io.Reader) (int64, error) {
-	n, err := io.Copy(c.ResponseWriter, r)
-	c.n += n
 	return n, err
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/notify"
 )
 
@@ -29,7 +30,7 @@ func (s *Service) releaseLoop(ctx context.Context) {
 // arches, asks for its bundles, reads the end dates of all known versions,
 // and warns about a version in use that ends soon.
 func (s *Service) checkReleases(ctx context.Context) error {
-	var a auth // a token has a higher rate limit than anonymous reads
+	var a ghrest.Auth // a token has a higher rate limit than anonymous reads
 	if inst, ok := s.anyInstallation(ctx); ok {
 		a = installAuth{s, inst.ID}
 	}
@@ -37,7 +38,7 @@ func (s *Service) checkReleases(ctx context.Context) error {
 		TagName     string     `json:"tag_name"`
 		PublishedAt *time.Time `json:"published_at"`
 	}
-	if err := s.api.json(ctx, call{method: http.MethodGet, path: "/repos/actions/runner/releases/latest", auth: a}, &rel); err != nil {
+	if err := s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: "/repos/actions/runner/releases/latest", Auth: a}, &rel); err != nil {
 		return fmt.Errorf("read the latest runner release: %w", err)
 	}
 	latest := strings.TrimPrefix(rel.TagName, "v")
@@ -84,11 +85,11 @@ func (s *Service) readEndDates(ctx context.Context) error {
 			RegistrationDeprecatesAt *time.Time `json:"registration_deprecates_at"`
 			RuntimeDeprecatesAt      *time.Time `json:"runtime_deprecates_at"`
 		}
-		err := s.api.json(ctx, call{
-			method: http.MethodGet, path: scope + "/actions/runners/deprecations/" + url.PathEscape(b.Version), auth: a,
+		err := s.api.JSON(ctx, ghrest.Call{
+			Method: http.MethodGet, Path: scope + "/actions/runners/deprecations/" + url.PathEscape(b.Version), Auth: a,
 		}, &d)
-		var apiErr *apiError
-		if errors.As(err, &apiErr) && apiErr.status == http.StatusNotFound {
+		var apiErr *ghrest.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
 			continue
 		}
 		if err != nil {
@@ -124,13 +125,13 @@ func earliest(a, b *time.Time) *time.Time {
 // deprecationScope returns the REST path of an organization or repository
 // that the app can read, with its installation. An organization comes
 // first, because its answer does not depend on one repository.
-func (s *Service) deprecationScope(ctx context.Context) (string, auth, bool) {
+func (s *Service) deprecationScope(ctx context.Context) (string, ghrest.Auth, bool) {
 	insts, err := s.st.ListInstallations(ctx)
 	if err != nil {
 		return "", nil, false
 	}
 	var repoScope string
-	var repoAuth auth
+	var repoAuth ghrest.Auth
 	for _, inst := range insts {
 		switch {
 		case inst.SuspendedAt != nil:

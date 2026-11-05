@@ -9,20 +9,21 @@ import (
 	"path/filepath"
 
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 // maxDiskSize is the largest ext4 file that runplane makes. The writer
 // reserves 256 bytes of metadata for each GiB.
 const maxDiskSize = 256 << 30
 
-// writeExt4 writes the tar stream from fill as an ext4 file at dst, through
-// a temp file and a rename. It returns the file size.
+// writeExt4 writes the tar stream from fill as an ext4 file at dst. It
+// returns the file size.
 func writeExt4(dst string, fill func(w io.Writer) error) (int64, error) {
-	f, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-")
+	f, err := atomicfile.Create(dst, 0o644)
 	if err != nil {
 		return 0, err
 	}
-	defer os.Remove(f.Name())
 	defer f.Close()
 
 	pr, pw := io.Pipe()
@@ -42,9 +43,6 @@ func writeExt4(dst string, fill func(w io.Writer) error) (int64, error) {
 	if fillErr := <-filled; err == nil {
 		err = fillErr
 	}
-	if err == nil {
-		err = f.Sync()
-	}
 	if err != nil {
 		return 0, fmt.Errorf("write %s: %w", dst, err)
 	}
@@ -52,13 +50,7 @@ func writeExt4(dst string, fill func(w io.Writer) error) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := f.Chmod(0o644); err != nil {
-		return 0, err
-	}
-	if err := f.Close(); err != nil {
-		return 0, err
-	}
-	if err := os.Rename(f.Name(), dst); err != nil {
+	if err := f.Commit(); err != nil {
 		return 0, err
 	}
 	return st.Size(), nil

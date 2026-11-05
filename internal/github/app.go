@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -105,7 +106,7 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 		HTMLURL       string  `json:"html_url"`
 		Owner         account `json:"owner"`
 	}
-	err = s.api.json(ctx, call{method: http.MethodPost, path: "/app-manifests/" + url.PathEscape(code) + "/conversions"}, &conv)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodPost, Path: "/app-manifests/" + url.PathEscape(code) + "/conversions"}, &conv)
 	if err != nil {
 		return "", fmt.Errorf("make the GitHub App: %w", err)
 	}

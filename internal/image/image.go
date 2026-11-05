@@ -24,6 +24,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/images"
+	"github.com/runplane/runplane/internal/blob"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -235,10 +236,10 @@ func (s source) localTag() string {
 }
 
 func (m *Manager) rootDiskPath(digest string) (string, error) {
-	hexDigest, ok := strings.CutPrefix(digest, "sha256:")
-	if !ok || !isHex(hexDigest, 64) {
+	if !blob.ValidDigest(digest) {
 		return "", fmt.Errorf("bad image digest %q", digest)
 	}
+	hexDigest := strings.TrimPrefix(digest, "sha256:")
 	init, err := m.init()
 	if err != nil {
 		return "", err

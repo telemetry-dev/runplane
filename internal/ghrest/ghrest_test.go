@@ -1,7 +1,8 @@
-package github
+package ghrest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,7 @@ import (
 	"time"
 )
 
-func TestRESTRetries(t *testing.T) {
+func TestRetries(t *testing.T) {
 	reset := time.Now().Add(time.Hour).Truncate(time.Second)
 	tests := []struct {
 		name      string
@@ -76,11 +77,10 @@ func TestRESTRetries(t *testing.T) {
 				writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			}))
 			defer srv.Close()
-			c := newREST(srv.URL)
-			c.retryWait = time.Millisecond
+			c := Client{URL: srv.URL, RetryWait: time.Millisecond}
 			start := time.Now()
 			var out struct{ OK bool }
-			err := c.json(context.Background(), call{method: tt.method, path: "/x"}, &out)
+			err := c.JSON(context.Background(), Call{Method: tt.method, Path: "/x"}, &out)
 			if calls != tt.wantCalls {
 				t.Errorf("calls = %d, want %d", calls, tt.wantCalls)
 			}
@@ -91,10 +91,10 @@ func TestRESTRetries(t *testing.T) {
 			if waited := time.Since(start); waited < tt.wantWait {
 				t.Errorf("waited %s, want at least %s", waited, tt.wantWait)
 			}
-			var apiErr *apiError
+			var apiErr *APIError
 			var retryAt time.Time
 			if errors.As(err, &apiErr) {
-				retryAt = apiErr.retryAt
+				retryAt = apiErr.RetryAt
 			}
 			if d := retryAt.Sub(tt.wantRetry); d < 0 || d > 5*time.Second {
 				t.Errorf("RetryAt = %s, want about %s", retryAt, tt.wantRetry)
@@ -102,6 +102,47 @@ func TestRESTRetries(t *testing.T) {
 		})
 	}
 }
+
+// GitHub limits the anonymous calls of an IP address, so after one
+// anonymous call gets a long limit, the others wait for its end too.
+func TestAnonymousCallsShareTheRateLimit(t *testing.T) {
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	calls := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls[r.URL.Path]++
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+			writeJSON(w, http.StatusForbidden, map[string]any{"message": "API rate limit exceeded"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{})
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	if err := (Client{URL: srv.URL}).JSON(ctx, Call{Method: http.MethodGet, Path: "/first"}, nil); err == nil {
+		t.Fatal("the first anonymous call has no error")
+	}
+
+	err := (Client{URL: srv.URL}).JSON(ctx, Call{Method: http.MethodGet, Path: "/second"}, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Path != "/second" {
+		t.Fatalf("second anonymous call: %v, want a rate limit error", err)
+	}
+	if d := apiErr.RetryAt.Sub(reset); d < 0 || d > 5*time.Second {
+		t.Errorf("RetryAt = %s, want about %s", apiErr.RetryAt, reset)
+	}
+	if calls["/second"] != 0 {
+		t.Errorf("the second anonymous call went to GitHub")
+	}
+	if err := (Client{URL: srv.URL}).JSON(ctx, Call{Method: http.MethodGet, Path: "/token", Auth: token("ghs_x")}, nil); err != nil {
+		t.Errorf("call with a token: %v", err)
+	}
+}
+
+type token string
+
+func (t token) Header(context.Context) (string, error) { return "Bearer " + string(t), nil }
 
 func TestNextLink(t *testing.T) {
 	h := `<https://api.github.com/app/installations?page=1>; rel="prev", <https://api.github.com/app/installations?page=3>; rel="next", <https://api.github.com/app/installations?page=5>; rel="last"`
@@ -111,4 +152,10 @@ func TestNextLink(t *testing.T) {
 	if got := nextLink(`<https://api.github.com/x?page=1>; rel="first"`); got != "" {
 		t.Errorf("nextLink on the last page = %q, want empty", got)
 	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }

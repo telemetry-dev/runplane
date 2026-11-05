@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -271,7 +270,7 @@ func (u *updater) setState(state string) {
 // notification for each new version, and with auto_update it installs the
 // release and restarts runplane.
 func (u *updater) checkDaily(ctx context.Context, st *store.Store, send func(notify.Event)) {
-	if !isRelease(version.Version) || update.PublicKey == "" {
+	if !version.IsRelease(version.Version) || update.PublicKey == "" {
 		u.log.Debug("no update checks: this binary is not a signed release", "version", version.Version)
 		return
 	}
@@ -314,9 +313,4 @@ func (u *updater) checkDaily(ctx context.Context, st *store.Store, send func(not
 			send(notify.UpdateAvailableEvent(settings.DashboardURL(), s.Current, s.Latest, s.URL))
 		}
 	}
-}
-
-// isRelease reports if v is the version of a release build, like v1.2.0.
-func isRelease(v string) bool {
-	return strings.HasPrefix(v, "v") && update.Compare(v, "v0.0.0") >= 0
 }

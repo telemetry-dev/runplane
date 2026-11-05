@@ -94,7 +94,7 @@ func newEnv(t *testing.T) *env {
 	})
 	e.svc = New(Config{Store: st, Box: box, Bus: e.bus, Log: slog.New(slog.DiscardHandler), Scheduler: e.sched,
 		Bundles: e.bundles, Notifier: e.notifier})
-	e.svc.web, e.svc.api.base = e.srv.URL, e.srv.URL+"/api/v3"
+	e.svc.web, e.svc.api.URL = e.srv.URL, e.srv.URL+"/api/v3"
 	t.Cleanup(func() {
 		e.svc.stop()
 		e.svc.stopListeners()
