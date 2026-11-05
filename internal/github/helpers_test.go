@@ -16,7 +16,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +28,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
@@ -51,17 +51,20 @@ func testPEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(testKey())})
 }
 
-// env is a Service with a real store and an httptest GitHub.
+// env is a Service with a real store and an httptest GitHub. The REST API
+// is under /api/v3 as on GitHub Enterprise Server, because the scaleset
+// library uses that path for each host other than github.com.
 type env struct {
-	t     *testing.T
-	st    *store.Store
-	box   *secret.Box
-	bus   *events.Bus
-	mux   *http.ServeMux
-	srv   *httptest.Server
-	svc   *Service
-	sched *fakeScheduler
-
+	t        *testing.T
+	st       *store.Store
+	box      *secret.Box
+	bus      *events.Bus
+	mux      *http.ServeMux
+	srv      *httptest.Server
+	svc      *Service
+	sched    *fakeScheduler
+	bundles  *fakeBundles
+	notifier *fakeNotifier
 	tokens   atomic.Int32 // installation tokens that the fake made
 	tokenTTL time.Duration
 }
@@ -77,23 +80,21 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, st: st, box: box, bus: &events.Bus{}, mux: http.NewServeMux(), tokenTTL: time.Hour}
-	e.sched = &fakeScheduler{clients: map[string]scheduler.ScaleSetClient{}, got: make(chan *scaleset.RunnerScaleSetMessage, 16)}
+	e := &env{t: t, st: st, box: box, bus: &events.Bus{}, mux: http.NewServeMux(), tokenTTL: time.Hour,
+		sched:   &fakeScheduler{got: make(chan *scaleset.RunnerScaleSetMessage, 16)},
+		bundles: &fakeBundles{}, notifier: &fakeNotifier{}}
 	e.srv = httptest.NewServer(e.mux)
 	t.Cleanup(e.srv.Close)
 	e.mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
 		e.checkJWT(r)
-		n := e.tokens.Add(1)
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"token":      fmt.Sprintf("ghs_%s_%d", r.PathValue("id"), n),
-			"expires_at": time.Now().Add(e.tokenTTL).UTC().Format(time.RFC3339),
+			"token":      fmt.Sprintf("ghs_%s_%d", r.PathValue("id"), e.tokens.Add(1)),
+			"expires_at": time.Now().Add(e.tokenTTL),
 		})
 	})
-	e.svc = New(Config{
-		Store: st, Box: box, Bus: e.bus, Scheduler: e.sched, HTTP: e.srv.Client(),
-		APIURL: e.srv.URL + "/api/v3", WebURL: e.srv.URL, Owner: "test-host",
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	e.svc = New(Config{Store: st, Box: box, Bus: e.bus, Log: slog.New(slog.DiscardHandler), Scheduler: e.sched,
+		Bundles: e.bundles, Notifier: e.notifier})
+	e.svc.web, e.svc.api.base = e.srv.URL, e.srv.URL+"/api/v3"
 	t.Cleanup(func() {
 		e.svc.stop()
 		e.svc.stopListeners()
@@ -105,7 +106,7 @@ func newEnv(t *testing.T) *env {
 func (e *env) connect() {
 	e.t.Helper()
 	err := e.st.SaveGitHubApp(context.Background(), store.GitHubApp{
-		ID: "app1", AppID: testAppID, Slug: "runplane-test", Name: "runplane-test", ClientID: testClientID,
+		ID: "app1", AppID: testAppID, Slug: "runplane-test", ClientID: testClientID,
 		OwnerLogin: "acme", OwnerType: "Organization", PrivateKeyEnc: e.box.Seal(testPEM()), CreatedAt: time.Now(),
 	})
 	if err != nil {
@@ -113,39 +114,40 @@ func (e *env) connect() {
 	}
 }
 
-func (e *env) installOrg(id int64, login string) {
-	e.t.Helper()
-	e.install(store.Installation{ID: id, AppID: testAppID, AccountLogin: login, AccountType: "Organization", RepositorySelection: "all"})
+// acmeEnv is connected and installed on the organization acme (ID 10).
+func acmeEnv(t *testing.T) *env {
+	e := newEnv(t)
+	e.connect()
+	e.install(10, "acme", "Organization")
+	return e
 }
 
-func (e *env) install(inst store.Installation) {
+func (e *env) install(id int64, login, accountType string) {
 	e.t.Helper()
-	inst.CreatedAt, inst.UpdatedAt = time.Now(), time.Now()
-	if err := e.st.UpsertInstallation(context.Background(), inst); err != nil {
+	err := e.st.UpsertInstallation(context.Background(), store.Installation{
+		ID: id, AppID: testAppID, AccountLogin: login, AccountType: accountType, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil {
 		e.t.Fatal(err)
 	}
 }
 
-func (e *env) pool(id, label string, enabled bool) store.Pool {
+func (e *env) pool(id, label string, enabled bool) {
 	e.t.Helper()
-	p := store.Pool{ID: id, Name: label, Label: label, Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 20,
-		MaxRunners: 5, Enabled: enabled, CreatedAt: time.Now(), UpdatedAt: time.Now()}
-	if err := e.st.CreatePool(context.Background(), p); err != nil {
+	err := e.st.CreatePool(context.Background(), store.Pool{
+		ID: id, Name: label, Label: label, Enabled: enabled, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil {
 		e.t.Fatal(err)
 	}
-	return p
 }
 
 // checkJWT verifies an app JWT with the public key of the test app.
 func (e *env) checkJWT(r *http.Request) {
-	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok {
-		e.t.Errorf("%s %s: no bearer token", r.Method, r.URL.Path)
-		return
-	}
-	tok, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },
+	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	_, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },
 		jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(testClientID))
-	if err != nil || !tok.Valid {
+	if err != nil {
 		e.t.Errorf("%s %s: bad app JWT: %v", r.Method, r.URL.Path, err)
 	}
 }
@@ -183,53 +185,49 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+type fakeBundles struct{ versions []string }
+
+func (f *fakeBundles) EnsureLatest(_ context.Context, version string) error {
+	f.versions = append(f.versions, version)
+	return nil
+}
+
+type fakeNotifier struct{ sent []notify.Event }
+
+func (f *fakeNotifier) Notify(_ context.Context, e notify.Event) error {
+	f.sent = append(f.sent, e)
+	return nil
+}
+
 // fakeScheduler acquires every available job, like the real scheduler does
 // for jobs that it accepts. It sends the messages from GitHub to got.
 type fakeScheduler struct {
-	mu       sync.Mutex
-	clients  map[string]scheduler.ScaleSetClient
+	last     scheduler.ScaleSetClient // of the last attached scale set
 	detached []string
 	max      int
 	got      chan *scaleset.RunnerScaleSetMessage
 }
 
-func (f *fakeScheduler) Attach(set store.ScaleSet, c scheduler.ScaleSetClient) listener.Scaler {
-	f.mu.Lock()
-	f.clients[set.ID] = c
-	max := f.max
-	f.mu.Unlock()
-	c.SetMaxRunners(max)
+func (f *fakeScheduler) Attach(_ store.ScaleSet, c scheduler.ScaleSetClient) listener.Scaler {
+	f.last = c
+	c.SetMaxRunners(f.max)
 	return scalerFunc(func(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) error {
-		if msg != nil && len(msg.JobAvailableMessages) > 0 {
-			var ids []int64
-			for _, j := range msg.JobAvailableMessages {
-				ids = append(ids, j.RunnerRequestID)
-			}
-			if _, err := c.AcquireJobs(ctx, ids); err != nil {
-				return err
-			}
+		if msg == nil || msg.MessageID == listener.InitialMessageID {
+			return nil
 		}
-		if msg != nil && msg.MessageID != listener.InitialMessageID {
-			select {
-			case f.got <- msg:
-			default:
-			}
+		var ids []int64
+		for _, j := range msg.JobAvailableMessages {
+			ids = append(ids, j.RunnerRequestID)
 		}
+		if _, err := c.AcquireJobs(ctx, ids); err != nil {
+			return err
+		}
+		f.got <- msg
 		return nil
 	})
 }
 
-func (f *fakeScheduler) Detach(id string) {
-	f.mu.Lock()
-	f.detached = append(f.detached, id)
-	f.mu.Unlock()
-}
-
-func (f *fakeScheduler) client(id string) scheduler.ScaleSetClient {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.clients[id]
-}
+func (f *fakeScheduler) Detach(id string) { f.detached = append(f.detached, id) }
 
 type scalerFunc func(context.Context, *scaleset.RunnerScaleSetMessage) error
 
@@ -241,32 +239,40 @@ func (f scalerFunc) Scale(ctx context.Context, m *scaleset.RunnerScaleSetMessage
 // calls: the registration token, the Actions service, and the message queue.
 type fakeActions struct {
 	mu sync.Mutex
+	actionsState
+	nextID     int
+	conflict   bool             // the session endpoint answers 409
+	agents     map[int64]string // runner ID -> "busy", "gone", or "broken"; others are removable
+	revokeNext bool             // the next admin token is revoked at once
+	revoked    string
+	queue      chan string
+}
 
-	sets        map[int]*scaleset.RunnerScaleSet
-	scopes      map[int]string // scale set ID -> "acme" or "octo--app"
-	nextID      int
-	conflict    bool           // the session endpoint answers 409
-	sessions    map[int]string // open session per scale set
-	closed      int            // deleted sessions
-	deletedSets []int
-	acquired    []int64
-	polls       []int // the max capacity of each poll
-	queue       chan string
-	agents      map[int64]string // runner ID -> "busy" or "gone"; others are removable
-	removed     []int64
-	revokeNext  bool            // the next admin token is revoked at once
-	revoked     map[string]bool // admin tokens that get 401
-	admins      int             // admin tokens issued
+// actionsState is the part of fakeActions that tests check.
+type actionsState struct {
+	sets     map[int]scaleset.RunnerScaleSet
+	scopes   map[int]string // scale set ID -> "acme" or "octo--app"
+	sessions int            // open sessions
+	closed   int            // deleted sessions
+	deleted  []int          // deleted scale sets
+	acquired []int64
+	polls    []int // the max capacity of each poll
+	removed  []int64
+}
+
+func (f *fakeActions) state() actionsState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.actionsState
+	s.sets, s.scopes = maps.Clone(s.sets), maps.Clone(s.scopes)
+	return s
 }
 
 func (e *env) actions() *fakeActions {
-	f := &fakeActions{sets: map[int]*scaleset.RunnerScaleSet{}, scopes: map[int]string{}, nextID: 7, sessions: map[int]string{},
-		queue: make(chan string, 8), agents: map[int64]string{}, revoked: map[string]bool{}}
+	f := &fakeActions{actionsState: actionsState{sets: map[int]scaleset.RunnerScaleSet{}, scopes: map[int]string{}},
+		nextID: 7, agents: map[int64]string{}, queue: make(chan string, 8)}
 	m := e.mux
 	regToken := func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ghs_") {
-			e.t.Errorf("registration token without installation token")
-		}
 		writeJSON(w, http.StatusCreated, map[string]any{"token": "reg", "expires_at": time.Now().Add(time.Hour)})
 	}
 	m.HandleFunc("POST /api/v3/orgs/{org}/actions/runners/registration-token", regToken)
@@ -277,14 +283,13 @@ func (e *env) actions() *fakeActions {
 		var body struct{ URL string }
 		json.NewDecoder(r.Body).Decode(&body)
 		u, _ := url.Parse(body.URL)
-		f.mu.Lock()
-		f.admins++
+		// The scaleset library reads the expiry of the admin token.
 		admin, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			ID:        strconv.Itoa(f.admins),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)), ID: rand.Text(),
 		}).SignedString([]byte("admin"))
+		f.mu.Lock()
 		if f.revokeNext {
-			f.revoked[admin], f.revokeNext = true, false
+			f.revoked, f.revokeNext = admin, false
 		}
 		f.mu.Unlock()
 		scope := strings.ReplaceAll(strings.Trim(u.Path, "/"), "/", "--")
@@ -294,18 +299,15 @@ func (e *env) actions() *fakeActions {
 	m.HandleFunc("GET "+sets, func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if f.revoked[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")] {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"typeName": "GitHub.DistributedTask.WebApi.VssUnauthorizedException",
-				"message":  "The admin token is missing, wrong, or expired.",
-			})
+		if r.Header.Get("Authorization") == "Bearer "+f.revoked {
+			actionsError(w, http.StatusUnauthorized, "VssUnauthorizedException")
 			return
 		}
 		var found []scaleset.RunnerScaleSet
 		for id, s := range f.sets {
 			if f.scopes[id] == r.PathValue("scope") && s.Name == r.URL.Query().Get("name") &&
 				strconv.Itoa(s.RunnerGroupID) == r.URL.Query().Get("runnerGroupId") {
-				found = append(found, *s)
+				found = append(found, s)
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"count": len(found), "value": found})
@@ -316,26 +318,24 @@ func (e *env) actions() *fakeActions {
 		f.mu.Lock()
 		s.ID = f.nextID
 		f.nextID++
-		f.sets[s.ID] = &s
-		f.scopes[s.ID] = r.PathValue("scope")
+		f.sets[s.ID], f.scopes[s.ID] = s, r.PathValue("scope")
 		f.mu.Unlock()
 		writeJSON(w, http.StatusOK, s)
 	})
 	m.HandleFunc("PATCH "+sets+"/{id}", func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.Atoi(r.PathValue("id"))
 		var s scaleset.RunnerScaleSet
 		json.NewDecoder(r.Body).Decode(&s)
+		s.ID, _ = strconv.Atoi(r.PathValue("id"))
 		f.mu.Lock()
-		defer f.mu.Unlock()
-		s.ID = id
-		f.sets[id] = &s
+		f.sets[s.ID] = s
+		f.mu.Unlock()
 		writeJSON(w, http.StatusOK, s)
 	})
 	m.HandleFunc("DELETE "+sets+"/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.Atoi(r.PathValue("id"))
 		f.mu.Lock()
 		delete(f.sets, id)
-		f.deletedSets = append(f.deletedSets, id)
+		f.deleted = append(f.deleted, id)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -343,29 +343,24 @@ func (e *env) actions() *fakeActions {
 		id, _ := strconv.Atoi(r.PathValue("id"))
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if f.conflict {
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"typeName": "GitHub.DistributedTask.WebApi.TaskAgentSessionConflictException",
-				"message":  "The scale set already has an active session for owner other-host.",
+		set, ok := f.sets[id]
+		switch {
+		case f.conflict:
+			actionsError(w, http.StatusConflict, "TaskAgentSessionConflictException")
+		case !ok:
+			actionsError(w, http.StatusNotFound, "RunnerScaleSetNotFoundException")
+		default:
+			f.sessions++
+			writeJSON(w, http.StatusOK, map[string]any{
+				"sessionId": fmt.Sprintf("8b1f2c4e-0000-4000-8000-%012d", id), "ownerName": "test-host", "runnerScaleSet": set,
+				"messageQueueUrl": e.srv.URL + "/queue/" + r.PathValue("id"), "messageQueueAccessToken": "mq",
+				"statistics": map[string]int{"totalRegisteredRunners": 1},
 			})
-			return
 		}
-		if _, ok := f.sets[id]; !ok {
-			writeJSON(w, http.StatusNotFound, map[string]any{"typeName": "RunnerScaleSetNotFoundException", "message": "not found"})
-			return
-		}
-		sid := fmt.Sprintf("8b1f2c4e-0000-4000-8000-%012d", id)
-		f.sessions[id] = sid
-		writeJSON(w, http.StatusOK, map[string]any{
-			"sessionId": sid, "ownerName": "test-host", "runnerScaleSet": f.sets[id],
-			"messageQueueUrl": e.srv.URL + "/queue/" + r.PathValue("id"), "messageQueueAccessToken": "mq",
-			"statistics": map[string]int{"totalAssignedJobs": 0, "totalRegisteredRunners": 1},
-		})
 	})
 	m.HandleFunc("DELETE "+sets+"/{id}/sessions/{sid}", func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.Atoi(r.PathValue("id"))
 		f.mu.Lock()
-		delete(f.sessions, id)
+		f.sessions--
 		f.closed++
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -381,11 +376,8 @@ func (e *env) actions() *fakeActions {
 	m.HandleFunc("POST "+sets+"/{id}/generatejitconfig", func(w http.ResponseWriter, r *http.Request) {
 		var s scaleset.RunnerScaleSetJitRunnerSetting
 		json.NewDecoder(r.Body).Decode(&s)
-		if s.WorkFolder != "_work" {
-			e.t.Errorf("work folder = %q", s.WorkFolder)
-		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"runner": map[string]any{"id": 9001, "name": s.Name}, "encodedJITConfig": "jit-" + s.Name,
+			"runner": map[string]any{"id": 9001, "name": s.Name}, "encodedJITConfig": "jit-" + s.Name + "-" + s.WorkFolder,
 		})
 	})
 	m.HandleFunc("DELETE /actions/{scope}/_apis/distributedtask/pools/0/agents/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -396,23 +388,19 @@ func (e *env) actions() *fakeActions {
 		f.mu.Unlock()
 		switch state {
 		case "busy":
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"typeName": "GitHub.DistributedTask.WebApi.JobStillRunningException", "message": "The runner is running a job.",
-			})
+			actionsError(w, http.StatusBadRequest, "JobStillRunningException")
 		case "gone":
-			writeJSON(w, http.StatusNotFound, map[string]any{
-				"typeName": "GitHub.DistributedTask.WebApi.AgentNotFoundException", "message": "No agent found.",
-			})
+			actionsError(w, http.StatusNotFound, "AgentNotFoundException")
 		case "broken":
-			writeJSON(w, http.StatusNotImplemented, map[string]any{"typeName": "Exception", "message": "down"})
+			actionsError(w, http.StatusNotImplemented, "Exception")
 		default:
 			w.WriteHeader(http.StatusNoContent)
 		}
 	})
 	m.HandleFunc("GET /queue/{id}", func(w http.ResponseWriter, r *http.Request) {
-		max, _ := strconv.Atoi(r.Header.Get(scaleset.HeaderScaleSetMaxCapacity))
+		capacity, _ := strconv.Atoi(r.Header.Get(scaleset.HeaderScaleSetMaxCapacity))
 		f.mu.Lock()
-		f.polls = append(f.polls, max)
+		f.polls = append(f.polls, capacity)
 		f.mu.Unlock()
 		select {
 		case body := <-f.queue:
@@ -429,6 +417,11 @@ func (e *env) actions() *fakeActions {
 	return f
 }
 
+// actionsError writes an exception of the Actions service.
+func actionsError(w http.ResponseWriter, status int, typeName string) {
+	writeJSON(w, status, map[string]any{"typeName": "GitHub.DistributedTask.WebApi." + typeName, "message": typeName})
+}
+
 // send queues a message with one JobAvailable for the next poll.
 func (f *fakeActions) send(messageID int, requestID int64) {
 	jobs, _ := json.Marshal([]map[string]any{{
@@ -440,29 +433,4 @@ func (f *fakeActions) send(messageID int, requestID int64) {
 		"statistics": map[string]int{"totalAvailableJobs": 1, "totalAssignedJobs": 1, "totalRegisteredRunners": 2, "totalIdleRunners": 2},
 	})
 	f.queue <- string(body)
-}
-
-// actionsState is a copy of the fake state for assertions.
-type actionsState struct {
-	sets        map[int]scaleset.RunnerScaleSet
-	scopes      map[int]string
-	sessions    map[int]string
-	closed      int
-	deletedSets []int
-	acquired    []int64
-	polls       []int
-	removed     []int64
-}
-
-func (f *fakeActions) state() actionsState {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	sets := map[int]scaleset.RunnerScaleSet{}
-	for k, v := range f.sets {
-		sets[k] = *v
-	}
-	return actionsState{
-		sets: sets, scopes: maps.Clone(f.scopes), sessions: maps.Clone(f.sessions), closed: f.closed, deletedSets: slices.Clone(f.deletedSets),
-		acquired: slices.Clone(f.acquired), polls: slices.Clone(f.polls), removed: slices.Clone(f.removed),
-	}
 }

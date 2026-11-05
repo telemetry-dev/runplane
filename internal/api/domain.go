@@ -30,25 +30,25 @@ const (
 	dnsError   = "error"
 )
 
-func (h *Handler) getDomainDNS(ctx context.Context, _ *struct{}) (*struct{ Body DomainDNS }, error) {
+func (h *Handler) getDomainDNS(ctx context.Context, _ *struct{}) (*body[DomainDNS], error) {
 	st, err := h.d.Store.GetSettings(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	server := serverAddrs(clientOf(ctx).host)
 	out := DomainDNS{Domain: st.Domain, State: dnsNone, Records: []string{}, ServerAddresses: addrStrings(server)}
 	if st.Domain == "" {
-		return &struct{ Body DomainDNS }{out}, nil
+		return &body[DomainDNS]{out}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	records, err := lookupDomain(ctx, st.Domain)
 	if dnsErr, ok := errors.AsType[*net.DNSError](err); err != nil && (!ok || !dnsErr.IsNotFound) {
 		out.State, out.Error = dnsError, err.Error()
-		return &struct{ Body DomainDNS }{out}, nil
+		return &body[DomainDNS]{out}, nil
 	}
 	out.Records, out.State = addrStrings(records), dnsState(records, server)
-	return &struct{ Body DomainDNS }{out}, nil
+	return &body[DomainDNS]{out}, nil
 }
 
 func dnsState(records, server []netip.Addr) string {

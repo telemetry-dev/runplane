@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
+	"net"
+	"net/http"
+	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/moby/moby/client"
@@ -17,22 +20,21 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/initbin"
+	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/devdocker"
 	"github.com/runplane/runplane/internal/sandbox/firecracker"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
+	"github.com/runplane/runplane/internal/update"
 )
 
-// local is the server that this process operates: its sandbox driver, its
-// images and runner bundles, and the node that the fleet or the agent
-// protocol uses.
+// local is the server that this process operates: its sandbox driver, and
+// the node that the fleet or the agent protocol uses.
 type local struct {
-	node    *node
-	driver  sandbox.Driver
-	images  *image.Manager
-	bundles *image.Bundles
-	close   func()
+	node   *node
+	driver sandbox.Driver
+	close  func()
 }
 
 type localConfig struct {
@@ -49,7 +51,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	if err != nil {
 		return nil, err
 	}
-	l := &local{close: func() {}}
+	l := &local{node: &node{}, close: func() {}}
 	defer func() {
 		if err != nil {
 			l.close()
@@ -58,21 +60,15 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	if docker != nil {
 		l.onClose(func() { docker.Close() })
 	}
-	l.images, err = image.New(image.Config{
-		Mode: lc.mode, ImagesDir: cfg.ImagesDir(), Docker: docker, Init: initBinary, Logger: log.With("component", "image"),
+	images, err := image.New(image.Config{
+		Mode: lc.mode, ImagesDir: cfg.ImagesDir(), Docker: docker, Init: initbin.Bytes, Logger: log.With("component", "image"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start the image manager: %w", err)
 	}
-	l.bundles = image.NewBundles(image.BundleConfig{
-		Mode: lc.mode, Dir: cfg.RunnersDir(), Token: lc.token, APIURL: cfg.GitHubAPIURL, WebURL: cfg.GitHubURL,
-		Logger: log.With("component", "runners"),
+	bundles := image.NewBundles(image.BundleConfig{
+		Mode: lc.mode, Dir: cfg.RunnersDir(), Token: lc.token, Logger: log.With("component", "runners"),
 	})
-	runners := runnerSource{bundles: l.bundles, dir: cfg.DevRunnerDir}
-	l.node = &node{runners: runners}
-	if runners.dir != "" {
-		log.Warn("every runner version comes from RUNPLANE_DEV_RUNNER_DIR, unpatched", "dir", runners.dir)
-	}
 
 	var probe func(context.Context) error
 	switch lc.mode {
@@ -81,7 +77,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		l.onClose(func() { rules.Close() })
 		drv, err := sysbox.New(sysbox.Options{
 			Docker: docker, Config: cfg, Mode: sandbox.ModeContainer, Runtime: "sysbox-runc", Scratch: sysbox.ScratchLoop,
-			Bundle: runners.Ensure, InitPath: initbin.Path, NetRules: rules, Settings: lc.settings,
+			Bundle: bundles.Ensure, InitPath: initbin.Path, NetRules: rules, Settings: lc.settings,
 			Logger: log.With("driver", "sysbox"),
 		})
 		if err != nil {
@@ -95,7 +91,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		l.node.noCache = true
 		lc.settings.ActionsCache = false
 		drv, err := devdocker.New(devdocker.Options{
-			Docker: docker, Config: cfg, Bundle: runners.Ensure, InitPath: initbin.Path, Settings: lc.settings,
+			Docker: docker, Config: cfg, Bundle: bundles.Ensure, InitPath: initbin.Path, Settings: lc.settings,
 			Logger: log.With("driver", "devdocker"),
 		})
 		if err != nil {
@@ -103,13 +99,10 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		}
 		l.driver, probe = drv, drv.Probe
 	case sandbox.ModeVM:
-		if cfg.DevRunnerDir != "" {
-			return nil, errors.New("RUNPLANE_DEV_RUNNER_DIR works only in container and dev mode: VM mode needs runner drives")
-		}
 		drv, err := firecracker.New(firecracker.Options{
-			DataDir: cfg.DataDir, Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: l.images.RootDisk,
+			DataDir: cfg.DataDir, Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: images.RootDisk,
 			RunnerDrive: func(ctx context.Context, version, arch string) (string, error) {
-				b, err := l.bundles.Ensure(ctx, version, arch)
+				b, err := bundles.Ensure(ctx, version, arch)
 				return b.Ext4Path, err
 			},
 			CacheEnv: cache.RunnerEnv, Settings: lc.settings, Logger: log.With("driver", "firecracker"),
@@ -125,7 +118,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	l.onClose(func() { l.driver.Close() })
 
 	l.node.LocalNode, err = agent.NewLocal(agent.LocalConfig{
-		Driver: l.driver, Images: l.images, Bundles: l.bundles, Updater: newUpdater(cfg),
+		Driver: l.driver, Images: images, Bundles: bundles, Updater: update.New(cfg.KernelPath()),
 		Doctor: host.Options{
 			DataDir: cfg.DataDir, GuestKernel: cfg.KernelPath(), Listen: lc.listen, Serving: true,
 			MinFreeDiskPercent: float64(lc.settings.MinFreeDiskPercent), Unit: lc.unit, Internet: probe,
@@ -173,42 +166,11 @@ func baseImage(ctx context.Context) (string, error) {
 	return ref, image.CanPull(ctx, ref)
 }
 
-// initBinary returns runplane-init for the VM root disks.
-func initBinary() ([]byte, error) {
-	if b, err := initbin.Bytes(); b != nil || err != nil {
-		return b, err
-	}
-	path, err := initbin.Path()
-	if err != nil {
-		return nil, err
-	}
-	return os.ReadFile(path)
-}
-
-// runnerSource gives the runner bundles: downloaded releases, or the one
-// folder of RUNPLANE_DEV_RUNNER_DIR for every version.
-type runnerSource struct {
-	bundles *image.Bundles
-	dir     string
-}
-
-func (r runnerSource) Ensure(ctx context.Context, version, arch string) (image.Bundle, error) {
-	if r.dir != "" {
-		return image.Bundle{Version: version, Arch: arch, Dir: r.dir}, nil
-	}
-	return r.bundles.Ensure(ctx, version, arch)
-}
-
-// node is the LocalNode with the runner source of this process. In dev
-// mode it also keeps the Actions cache off for the sandboxes.
+// node is the LocalNode of this process. In dev mode it keeps the Actions
+// cache off for the sandboxes.
 type node struct {
 	*agent.LocalNode
-	runners runnerSource
 	noCache bool
-}
-
-func (n *node) EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error) {
-	return n.runners.Ensure(ctx, version, arch)
 }
 
 func (n *node) Configure(ctx context.Context, s sandbox.Settings) error {
@@ -216,4 +178,66 @@ func (n *node) Configure(ctx context.Context, s sandbox.Settings) error {
 		s.ActionsCache = false
 	}
 	return n.LocalNode.Configure(ctx, s)
+}
+
+// serveServicePort starts the registry mirror and serves the service port
+// of the sandboxes on all addresses: /v2/ goes to the mirror, all other
+// paths to the Actions cache. allow tells if an address is a sandbox. The
+// returned function stops the listener and the mirror.
+func serveServicePort(cfg config.Config, mode sandbox.Mode, allow func(netip.Addr) bool, cache http.Handler, log *slog.Logger) (*mirror.Mirror, func(), error) {
+	if mode == sandbox.ModeDev {
+		isSandbox := allow
+		// Docker sends the requests of dev sandboxes from the loopback address.
+		allow = func(ip netip.Addr) bool { return ip.IsLoopback() || isSandbox(ip) }
+	}
+	mir, err := mirror.New(mirror.Config{Dir: cfg.MirrorDir(), MaxBytes: mirrorLimit(cfg.DataDir), Allow: allow, Logger: log.With("component", "mirror")})
+	if err != nil {
+		return nil, nil, fmt.Errorf("start the registry mirror: %w", err)
+	}
+	ln, err := net.Listen("tcp", servicePortAddr(cfg))
+	if err != nil {
+		mir.Close()
+		return nil, nil, fmt.Errorf("listen on the service port: %w", err)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v2" || strings.HasPrefix(r.URL.Path, "/v2/") {
+				mir.ServeHTTP(w, r)
+				return
+			}
+			cache.ServeHTTP(w, r)
+		}),
+		// Cache blobs can be several GB, so the requests have no read or
+		// write time limit.
+		ReadHeaderTimeout: 10 * time.Second,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelDebug),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+			log.Error("service port", "err", err)
+		}
+	}()
+	return mir, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			srv.Close()
+		}
+		<-done
+		mir.Close()
+	}, nil
+}
+
+func servicePortAddr(cfg config.Config) string { return fmt.Sprintf(":%d", cfg.ServicePort) }
+
+// mirrorLimit is the size limit of the registry mirror: a tenth of the data
+// disk, from 2 to 50 GiB.
+func mirrorLimit(dataDir string) int64 {
+	res, err := host.ReadResources(dataDir)
+	if err != nil {
+		return 10 << 30
+	}
+	return min(max(res.DiskBytes/10, 2<<30), 50<<30)
 }

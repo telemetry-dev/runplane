@@ -1,13 +1,12 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -38,7 +37,8 @@ const (
 	LogExpired = "expired"
 )
 
-var ErrBadCursor = errors.New("bad cursor")
+// NotRunReason is the reject reason of a job that ExpireQueuedJobs closed.
+const NotRunReason = "runplane did not run this job."
 
 type Job struct {
 	ID              string     `json:"id"`
@@ -147,11 +147,20 @@ type MetricsSummary struct {
 	MemPeakMB int     `json:"mem_peak_mb"`
 }
 
-// JobMetric is one CPU and memory sample of a job.
 type JobMetric struct {
 	At         time.Time `json:"at"`
 	CPUPercent float64   `json:"cpu_percent"`
 	MemoryMB   int       `json:"memory_mb"`
+}
+
+// RunUsage is the CPU and memory use of one completed run of a job, and
+// the size of its sandbox.
+type RunUsage struct {
+	CPUPeak   float64 // percent of VCPU
+	CPUAvg    float64 // percent of VCPU
+	MemPeakMB int
+	VCPU      int
+	MemoryMB  int
 }
 
 // JobFilter selects jobs for ListJobs. Zero values select all.
@@ -184,17 +193,13 @@ const jobCols = `id, runner_request_id, github_job_id, scale_set_id, pool_id, sa
 	commit_message, event, actor, pr_number, base_ref, labels_json, state, result, reject_reason, queued_at, assigned_at,
 	started_at, finished_at, html_url, steps_json, log_state, cpu_peak, cpu_avg, mem_peak_mb, debug, enriched_at`
 
-func scanJob(sc scanner) (Job, error) {
-	var j Job
-	var result sql.NullString
-	err := sc.Scan(&j.ID, &j.RunnerRequestID, &j.GitHubJobID, &j.ScaleSetID, &j.PoolID, &j.SandboxID, &j.ServerID,
+func (j *Job) cols() []any {
+	return []any{&j.ID, &j.RunnerRequestID, &j.GitHubJobID, &j.ScaleSetID, &j.PoolID, &j.SandboxID, &j.ServerID,
 		&j.Repository, &j.WorkflowRef, &j.WorkflowFile, &j.WorkflowName, &j.JobName, &j.RunID, &j.RunNumber,
 		&j.RunAttempt, &j.HeadBranch, &j.HeadSHA, &j.CommitMessage, &j.Event, &j.Actor, &j.PRNumber,
-		&j.BaseRef, jsonCol(&j.Labels), &j.State, &result, &j.RejectReason, at(&j.QueuedAt), atPtr(&j.AssignedAt),
+		&j.BaseRef, jsonCol(&j.Labels), &j.State, text(&j.Result), &j.RejectReason, at(&j.QueuedAt), atPtr(&j.AssignedAt),
 		atPtr(&j.StartedAt), atPtr(&j.FinishedAt), &j.HTMLURL, jsonCol(&j.Steps), &j.LogState, &j.CPUPeak,
-		&j.CPUAvg, &j.MemPeakMB, &j.Debug, atPtr(&j.EnrichedAt))
-	j.Result = result.String
-	return j, err
+		&j.CPUAvg, &j.MemPeakMB, &j.Debug, atPtr(&j.EnrichedAt)}
 }
 
 // UpsertJob records a job message. It is safe to call again with the same
@@ -207,22 +212,20 @@ func (s *Store) UpsertJob(ctx context.Context, m JobMessage) (Job, error) {
 		return Job{}, fmt.Errorf("upsert job: unknown state %q", m.State)
 	}
 	var j Job
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, "upsert job", func(tx *sql.Tx) error {
 		var err error
-		j, err = scanJob(tx.QueryRowContext(ctx, "SELECT "+jobCols+" FROM jobs WHERE runner_request_id = ?", m.RunnerRequestID))
+		j, err = scanRow[Job](tx.QueryRowContext(ctx, "SELECT "+jobCols+" FROM jobs WHERE runner_request_id = ?", m.RunnerRequestID))
 		if errors.Is(err, sql.ErrNoRows) {
 			j = Job{ID: ids.New(), RunnerRequestID: m.RunnerRequestID, State: JobQueued, LogState: LogNone}
 		} else if err != nil {
 			return err
 		}
 		mergeJob(&j, m)
-		args := jobArgs(j)
-		_, err = tx.ExecContext(ctx, "INSERT INTO jobs ("+jobCols+") VALUES ("+placeholders(len(args))+
-			") ON CONFLICT (id) DO UPDATE SET "+excludedSet(jobCols), args...)
+		_, err = tx.ExecContext(ctx, upsert("jobs", jobCols, "id"), j.cols()...)
 		return err
 	})
 	if err != nil {
-		return Job{}, fmt.Errorf("upsert job: %w", err)
+		return Job{}, err
 	}
 	return j, nil
 }
@@ -252,27 +255,20 @@ func mergeJob(j *Job, m JobMessage) {
 			j.FinishedAt = &t
 		}
 	}
-	fill := func(dst *string, v string) {
-		if *dst == "" {
-			*dst = v
-		}
-	}
 	fillTime := func(dst **time.Time, v time.Time) {
 		if *dst == nil && !v.IsZero() {
 			t := v.UTC()
 			*dst = &t
 		}
 	}
-	fill(&j.ScaleSetID, m.ScaleSetID)
-	fill(&j.PoolID, m.PoolID)
-	fill(&j.Repository, m.Repository)
-	fill(&j.WorkflowRef, m.WorkflowRef)
-	fill(&j.WorkflowFile, workflowFile(m.WorkflowRef))
-	fill(&j.JobName, m.JobName)
-	fill(&j.Event, m.Event)
-	if j.RunID == 0 {
-		j.RunID = m.RunID
-	}
+	j.ScaleSetID = cmp.Or(j.ScaleSetID, m.ScaleSetID)
+	j.PoolID = cmp.Or(j.PoolID, m.PoolID)
+	j.Repository = cmp.Or(j.Repository, m.Repository)
+	j.WorkflowRef = cmp.Or(j.WorkflowRef, m.WorkflowRef)
+	j.WorkflowFile = cmp.Or(j.WorkflowFile, workflowFile(m.WorkflowRef))
+	j.JobName = cmp.Or(j.JobName, m.JobName)
+	j.Event = cmp.Or(j.Event, m.Event)
+	j.RunID = cmp.Or(j.RunID, m.RunID)
 	if len(j.Labels) == 0 {
 		j.Labels = m.Labels
 	}
@@ -311,108 +307,54 @@ func workflowFile(ref string) string {
 	return parts[2]
 }
 
-func jobArgs(j Job) []any {
-	return []any{j.ID, j.RunnerRequestID, j.GitHubJobID, j.ScaleSetID, j.PoolID, j.SandboxID, j.ServerID,
-		j.Repository, j.WorkflowRef, j.WorkflowFile, j.WorkflowName, j.JobName, j.RunID, j.RunNumber,
-		j.RunAttempt, j.HeadBranch, j.HeadSHA, j.CommitMessage, j.Event, j.Actor, j.PRNumber,
-		j.BaseRef, jsonArg(j.Labels), j.State, nullStr(j.Result), j.RejectReason, ms(j.QueuedAt), msPtr(j.AssignedAt),
-		msPtr(j.StartedAt), msPtr(j.FinishedAt), j.HTMLURL, jsonArg(j.Steps), j.LogState, j.CPUPeak,
-		j.CPUAvg, j.MemPeakMB, j.Debug, msPtr(j.EnrichedAt)}
-}
-
-// excludedSet returns "b = excluded.b, c = excluded.c" for the columns "a, b, c".
-func excludedSet(cols string) string {
-	var set []string
-	for _, c := range strings.Split(cols, ",")[1:] {
-		c = strings.TrimSpace(c)
-		set = append(set, c+" = excluded."+c)
-	}
-	return strings.Join(set, ", ")
-}
-
 func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
-	j, err := scanJob(s.r.QueryRowContext(ctx, "SELECT "+jobCols+" FROM jobs WHERE id = ?", id))
-	if err != nil {
-		return Job{}, fmt.Errorf("get job: %w", dbErr(err))
-	}
-	return j, nil
+	return queryOne(ctx, s.r, "get job", scanRow[Job], "SELECT "+jobCols+" FROM jobs WHERE id = ?", id)
 }
 
 func (s *Store) GetJobByRunnerRequestID(ctx context.Context, id int64) (Job, error) {
-	j, err := scanJob(s.r.QueryRowContext(ctx, "SELECT "+jobCols+" FROM jobs WHERE runner_request_id = ?", id))
-	if err != nil {
-		return Job{}, fmt.Errorf("get job: %w", dbErr(err))
-	}
-	return j, nil
+	return queryOne(ctx, s.r, "get job", scanRow[Job], "SELECT "+jobCols+" FROM jobs WHERE runner_request_id = ?", id)
 }
 
-// SetJobSandbox records the sandbox and the server that run the job.
 func (s *Store) SetJobSandbox(ctx context.Context, id, sandboxID, serverID string) error {
-	err := exec1(ctx, s.w, "UPDATE jobs SET sandbox_id = ?, server_id = ? WHERE id = ?", sandboxID, serverID, id)
-	if err != nil {
-		return fmt.Errorf("set job sandbox: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "set job sandbox", "UPDATE jobs SET sandbox_id = ?, server_id = ? WHERE id = ?",
+		sandboxID, serverID, id)
 }
 
 // SetJobRunRef writes the run data that gives the cache refs. An empty
 // event keeps the event from the job message.
 func (s *Store) SetJobRunRef(ctx context.Context, id string, r RunRef) error {
-	err := exec1(ctx, s.w, `UPDATE jobs SET event = coalesce(nullif(?, ''), event), head_branch = ?, pr_number = ?,
-			base_ref = ?
-		WHERE id = ?`, r.Event, r.HeadBranch, r.PRNumber, r.BaseRef, id)
-	if err != nil {
-		return fmt.Errorf("set job run ref: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "set job run ref", `UPDATE jobs SET event = coalesce(nullif(?, ''), event), head_branch = ?,
+		pr_number = ?, base_ref = ? WHERE id = ?`, r.Event, r.HeadBranch, r.PRNumber, r.BaseRef, id)
 }
 
 // SetJobEnrichment writes the run data and sets enriched_at. An empty event
 // keeps the event from the job message.
 func (s *Store) SetJobEnrichment(ctx context.Context, id string, e JobEnrichment) error {
-	err := exec1(ctx, s.w, `UPDATE jobs SET github_job_id = ?, workflow_name = ?, run_number = ?, run_attempt = ?,
-			head_branch = ?, head_sha = ?, commit_message = ?, event = coalesce(nullif(?, ''), event), actor = ?,
-			pr_number = ?, base_ref = ?, html_url = ?, steps_json = ?, enriched_at = ?,
+	return exec1(ctx, s.w, "set job enrichment", `UPDATE jobs SET github_job_id = ?, workflow_name = ?, run_number = ?,
+			run_attempt = ?, head_branch = ?, head_sha = ?, commit_message = ?, event = coalesce(nullif(?, ''), event),
+			actor = ?, pr_number = ?, base_ref = ?, html_url = ?, steps_json = ?, enriched_at = ?,
 			queued_at = CASE WHEN ? > 0 AND ? < queued_at THEN ? ELSE queued_at END
 		WHERE id = ?`,
 		e.GitHubJobID, e.WorkflowName, e.RunNumber, e.RunAttempt, e.HeadBranch, e.HeadSHA, e.CommitMessage, e.Event,
-		e.Actor, e.PRNumber, e.BaseRef, e.HTMLURL, jsonArg(e.Steps), ms(time.Now()),
+		e.Actor, e.PRNumber, e.BaseRef, e.HTMLURL, jsonCol(&e.Steps), ms(time.Now()),
 		ms(e.QueuedAt), ms(e.QueuedAt), ms(e.QueuedAt), id)
-	if err != nil {
-		return fmt.Errorf("set job enrichment: %w", err)
-	}
-	return nil
 }
 
-// SetJobSteps writes the steps of a running job.
 func (s *Store) SetJobSteps(ctx context.Context, id string, steps []JobStep) error {
-	if err := exec1(ctx, s.w, "UPDATE jobs SET steps_json = ? WHERE id = ?", jsonArg(steps), id); err != nil {
-		return fmt.Errorf("set job steps: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "set job steps", "UPDATE jobs SET steps_json = ? WHERE id = ?", jsonCol(&steps), id)
 }
 
 func (s *Store) SetJobMetricsSummary(ctx context.Context, id string, m MetricsSummary) error {
-	err := exec1(ctx, s.w, "UPDATE jobs SET cpu_peak = ?, cpu_avg = ?, mem_peak_mb = ? WHERE id = ?",
+	return exec1(ctx, s.w, "set job metrics", "UPDATE jobs SET cpu_peak = ?, cpu_avg = ?, mem_peak_mb = ? WHERE id = ?",
 		m.CPUPeak, m.CPUAvg, m.MemPeakMB, id)
-	if err != nil {
-		return fmt.Errorf("set job metrics: %w", err)
-	}
-	return nil
 }
 
 func (s *Store) SetJobLogState(ctx context.Context, id, state string) error {
-	if err := exec1(ctx, s.w, "UPDATE jobs SET log_state = ? WHERE id = ?", state, id); err != nil {
-		return fmt.Errorf("set job log state: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "set job log state", "UPDATE jobs SET log_state = ? WHERE id = ?", state, id)
 }
 
 func (s *Store) SetJobRejectReason(ctx context.Context, id, reason string) error {
-	if err := exec1(ctx, s.w, "UPDATE jobs SET reject_reason = ? WHERE id = ?", reason, id); err != nil {
-		return fmt.Errorf("set job reject reason: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "set job reject reason", "UPDATE jobs SET reject_reason = ? WHERE id = ?", reason, id)
 }
 
 // ListJobs returns one page of jobs, newest first by queued_at and then by
@@ -423,8 +365,7 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, string, error
 		limit = 50
 	}
 	limit = min(limit, 200)
-
-	where, args, err := jobWhere(f)
+	conds, args, err := jobWhere(f)
 	if err != nil {
 		return nil, "", fmt.Errorf("list jobs: %w", err)
 	}
@@ -433,21 +374,13 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, string, error
 		if err != nil {
 			return nil, "", fmt.Errorf("list jobs: %w", err)
 		}
-		where = append(where, "(queued_at < ? OR (queued_at = ? AND id < ?))")
+		conds = append(conds, "(queued_at < ? OR (queued_at = ? AND id < ?))")
 		args = append(args, qms, qms, id)
 	}
-
-	query := "SELECT " + jobCols + " FROM jobs"
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	query += " ORDER BY queued_at DESC, id DESC LIMIT ?"
-	args = append(args, limit+1)
-
-	rows, err := s.r.QueryContext(ctx, query, args...)
-	list, err := scanAll(rows, err, scanJob)
+	list, err := queryAll(ctx, s.r, "list jobs", scanRow[Job], "SELECT "+jobCols+" FROM jobs"+where(conds)+
+		" ORDER BY queued_at DESC, id DESC LIMIT ?", append(args, limit+1)...)
 	if err != nil {
-		return nil, "", fmt.Errorf("list jobs: %w", err)
+		return nil, "", err
 	}
 	if len(list) <= limit {
 		return list, "", nil
@@ -460,28 +393,18 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]Job, string, error
 // CountJobs counts the jobs that ListJobs returns for f over all pages. It
 // ignores the cursor and the limit.
 func (s *Store) CountJobs(ctx context.Context, f JobFilter) (int, error) {
-	where, args, err := jobWhere(f)
+	conds, args, err := jobWhere(f)
 	if err != nil {
 		return 0, fmt.Errorf("count jobs: %w", err)
 	}
-	query := "SELECT count(*) FROM jobs"
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
-	}
-	var n int
-	if err := s.r.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count jobs: %w", err)
-	}
-	return n, nil
+	return queryOne(ctx, s.r, "count jobs", scanValue[int], "SELECT count(*) FROM jobs"+where(conds), args...)
 }
 
-// jobWhere returns the conditions of f without the cursor, for ListJobs
-// and CountJobs.
 func jobWhere(f JobFilter) ([]string, []any, error) {
-	var where []string
+	var conds []string
 	var args []any
 	add := func(cond string, a ...any) {
-		where = append(where, cond)
+		conds = append(conds, cond)
 		args = append(args, a...)
 	}
 	switch f.Status {
@@ -505,9 +428,10 @@ func jobWhere(f JobFilter) ([]string, []any, error) {
 		add("server_id = ?", f.ServerID)
 	}
 	if q := strings.TrimSpace(f.Q); q != "" {
-		like := "%" + escapeLike(q) + "%"
+		q = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+		like := "%" + q + "%"
 		add(`(job_name LIKE ? ESCAPE '\' OR workflow_name LIKE ? ESCAPE '\' OR repository LIKE ? ESCAPE '\'
-			OR head_branch LIKE ? ESCAPE '\' OR head_sha LIKE ? ESCAPE '\')`, like, like, like, like, escapeLike(q)+"%")
+			OR head_branch LIKE ? ESCAPE '\' OR head_sha LIKE ? ESCAPE '\')`, like, like, like, like, q+"%")
 	}
 	if !f.Since.IsZero() {
 		add("queued_at >= ?", ms(f.Since))
@@ -515,126 +439,117 @@ func jobWhere(f JobFilter) ([]string, []any, error) {
 	if !f.Until.IsZero() {
 		add("queued_at < ?", ms(f.Until))
 	}
-	return where, args, nil
-}
-
-func encodeCursor(queuedMS int64, id string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(queuedMS, 10) + "." + id))
-}
-
-func decodeCursor(c string) (int64, string, error) {
-	b, err := base64.RawURLEncoding.DecodeString(c)
-	if err != nil {
-		return 0, "", ErrBadCursor
-	}
-	n, id, ok := strings.Cut(string(b), ".")
-	qms, err := strconv.ParseInt(n, 10, 64)
-	if !ok || err != nil || id == "" {
-		return 0, "", ErrBadCursor
-	}
-	return qms, id, nil
-}
-
-func escapeLike(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+	return conds, args, nil
 }
 
 func (s *Store) JobFacets(ctx context.Context) (JobFacets, error) {
-	var f JobFacets
-	rows, err := s.r.QueryContext(ctx, "SELECT DISTINCT repository FROM jobs WHERE repository != '' ORDER BY repository")
-	if f.Repositories, err = scanAll(rows, err, scanString); err != nil {
-		return JobFacets{}, fmt.Errorf("list job facets: %w", err)
+	const op = "list job facets"
+	repos, err := queryAll(ctx, s.r, op, scanValue[string],
+		"SELECT DISTINCT repository FROM jobs WHERE repository != '' ORDER BY repository")
+	if err != nil {
+		return JobFacets{}, err
 	}
-	scanFacet := func(sc scanner) (Facet, error) {
-		var x Facet
-		return x, sc.Scan(&x.ID, &x.Name)
-	}
-	rows, err = s.r.QueryContext(ctx, `SELECT j.pool_id, coalesce(p.label, j.pool_id) FROM
+	pools, err := queryAll(ctx, s.r, op, scanFacet, `SELECT j.pool_id, coalesce(p.label, j.pool_id) FROM
 		(SELECT DISTINCT pool_id FROM jobs WHERE pool_id != '') j LEFT JOIN pools p ON p.id = j.pool_id ORDER BY 2`)
-	if f.Pools, err = scanAll(rows, err, scanFacet); err != nil {
-		return JobFacets{}, fmt.Errorf("list job facets: %w", err)
+	if err != nil {
+		return JobFacets{}, err
 	}
-	rows, err = s.r.QueryContext(ctx, `SELECT j.server_id, coalesce(v.name, j.server_id) FROM
+	servers, err := queryAll(ctx, s.r, op, scanFacet, `SELECT j.server_id, coalesce(v.name, j.server_id) FROM
 		(SELECT DISTINCT server_id FROM jobs WHERE server_id != '') j LEFT JOIN servers v ON v.id = j.server_id ORDER BY 2`)
-	if f.Servers, err = scanAll(rows, err, scanFacet); err != nil {
-		return JobFacets{}, fmt.Errorf("list job facets: %w", err)
+	if err != nil {
+		return JobFacets{}, err
 	}
-	return f, nil
+	return JobFacets{Repositories: repos, Pools: pools, Servers: servers}, nil
+}
+
+func scanFacet(sc scanner) (Facet, error) {
+	var x Facet
+	err := sc.Scan(&x.ID, &x.Name)
+	return x, err
 }
 
 // ExpectedDurationMS is the median run time of the last 20 succeeded runs of
 // the job, or 0 if it has none.
 func (s *Store) ExpectedDurationMS(ctx context.Context, repository, workflowFile, jobName string) (int64, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT finished_at - started_at FROM jobs
+	list, err := queryAll(ctx, s.r, "get expected duration", scanValue[int64], `SELECT finished_at - started_at FROM jobs
 		WHERE repository = ? AND workflow_file = ? AND job_name = ? AND state = 'completed' AND result = 'succeeded'
 			AND started_at IS NOT NULL AND finished_at IS NOT NULL
 		ORDER BY finished_at DESC LIMIT 20`, repository, workflowFile, jobName)
-	list, err := scanAll(rows, err, scanInt64)
-	if err != nil {
-		return 0, fmt.Errorf("get expected duration: %w", err)
-	}
-	return median(list), nil
-}
-
-// RunUsage is the CPU and memory use of one completed run of a job, and
-// the size of its sandbox.
-type RunUsage struct {
-	CPUPeak   float64 // percent of VCPU
-	CPUAvg    float64 // percent of VCPU
-	MemPeakMB int
-	VCPU      int
-	MemoryMB  int
+	return median(list), err
 }
 
 // ListRunUsage returns the use of the last limit completed runs of a job
 // that have metrics, newest first. The size comes from the sandbox of the
 // run, or from its pool when the sandbox row is gone.
 func (s *Store) ListRunUsage(ctx context.Context, repository, workflowFile, jobName string, limit int) ([]RunUsage, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT j.cpu_peak, j.cpu_avg, j.mem_peak_mb,
+	return queryAll(ctx, s.r, "list run usage", func(sc scanner) (RunUsage, error) {
+		var u RunUsage
+		err := sc.Scan(&u.CPUPeak, &u.CPUAvg, &u.MemPeakMB, &u.VCPU, &u.MemoryMB)
+		return u, err
+	}, `SELECT j.cpu_peak, j.cpu_avg, j.mem_peak_mb,
 			coalesce(nullif(b.vcpu, 0), p.vcpu, 0), coalesce(nullif(b.memory_mb, 0), p.memory_mb, 0)
 		FROM jobs j LEFT JOIN sandboxes b ON b.id = j.sandbox_id LEFT JOIN pools p ON p.id = j.pool_id
 		WHERE j.repository = ? AND j.workflow_file = ? AND j.job_name = ? AND j.state = 'completed'
 			AND j.cpu_peak IS NOT NULL AND j.cpu_avg IS NOT NULL AND j.mem_peak_mb IS NOT NULL
 		ORDER BY j.finished_at DESC LIMIT ?`, repository, workflowFile, jobName, limit)
-	list, err := scanAll(rows, err, func(sc scanner) (RunUsage, error) {
-		var u RunUsage
-		return u, sc.Scan(&u.CPUPeak, &u.CPUAvg, &u.MemPeakMB, &u.VCPU, &u.MemoryMB)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list run usage: %w", err)
-	}
-	return list, nil
 }
 
 // ListStaleRunningJobs returns the running jobs whose sandbox stopped before before.
 func (s *Store) ListStaleRunningJobs(ctx context.Context, before time.Time) ([]Job, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT `+prefixCols("j", jobCols)+` FROM jobs j
-		JOIN sandboxes b ON b.id = j.sandbox_id
-		WHERE j.state = 'running' AND b.state IN ('gone', 'failed') AND b.stopped_at < ?`, ms(before))
-	list, err := scanAll(rows, err, scanJob)
-	if err != nil {
-		return nil, fmt.Errorf("list stale jobs: %w", err)
-	}
-	return list, nil
+	return queryAll(ctx, s.r, "list stale jobs", scanRow[Job], "SELECT "+jobCols+` FROM jobs WHERE state = 'running'
+		AND sandbox_id IN (SELECT id FROM sandboxes WHERE state IN ('gone', 'failed') AND stopped_at < ?)`, ms(before))
 }
 
 // ListUnfinishedJobs returns up to limit completed jobs, newest first, that
 // finished after since and still have log_state live: their finish step did
 // not end, for example because runplane stopped during it.
 func (s *Store) ListUnfinishedJobs(ctx context.Context, since time.Time, limit int) ([]Job, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT `+jobCols+` FROM jobs
+	return queryAll(ctx, s.r, "list unfinished jobs", scanRow[Job], "SELECT "+jobCols+` FROM jobs
 		WHERE state = 'completed' AND log_state = 'live' AND finished_at > ?
 		ORDER BY finished_at DESC LIMIT ?`, ms(since), limit)
-	list, err := scanAll(rows, err, scanJob)
+}
+
+// CountPoolJobs counts the jobs of a pool queued since since that wait for a
+// runner: queued (not rejected) and assigned.
+func (s *Store) CountPoolJobs(ctx context.Context, poolID string, since time.Time) (queued, assigned int, err error) {
+	err = s.r.QueryRowContext(ctx, `SELECT
+			coalesce(sum(state = 'queued' AND reject_reason = ''), 0), coalesce(sum(state = 'assigned'), 0)
+		FROM jobs WHERE pool_id = ? AND queued_at >= ?`, poolID, ms(since)).Scan(&queued, &assigned)
 	if err != nil {
-		return nil, fmt.Errorf("list unfinished jobs: %w", err)
+		return 0, 0, fmt.Errorf("count pool jobs: %w", err)
 	}
-	return list, nil
+	return queued, assigned, nil
+}
+
+// ExpireQueuedJobs completes the jobs that are queued since before, as
+// cancelled at t: runplane did not take them. A job without a reject reason
+// gets NotRunReason. It returns the changed jobs.
+func (s *Store) ExpireQueuedJobs(ctx context.Context, before, t time.Time) ([]Job, error) {
+	return queryAll(ctx, s.w, "expire queued jobs", scanRow[Job], `UPDATE jobs SET state = 'completed', result = 'cancelled',
+			finished_at = ?, reject_reason = CASE WHEN reject_reason = '' THEN ? ELSE reject_reason END
+		WHERE state = 'queued' AND queued_at < ?
+		RETURNING `+jobCols, ms(t), NotRunReason, ms(before))
+}
+
+// DeleteJobsBefore deletes the jobs queued before before, and their
+// samples. It returns the IDs of the deleted jobs, so the caller can remove
+// their log files.
+func (s *Store) DeleteJobsBefore(ctx context.Context, before time.Time) ([]string, error) {
+	return queryAll(ctx, s.w, "delete old jobs", scanValue[string],
+		"DELETE FROM jobs WHERE queued_at < ? RETURNING id", ms(before))
+}
+
+// ExpireJobLogs sets log_state to expired for the stored logs of the jobs
+// that finished before before. It returns the IDs of these jobs, so the
+// caller can remove their log files.
+func (s *Store) ExpireJobLogs(ctx context.Context, before time.Time) ([]string, error) {
+	return queryAll(ctx, s.w, "expire job logs", scanValue[string], `UPDATE jobs SET log_state = 'expired'
+		WHERE log_state = 'stored' AND finished_at < ? RETURNING id`, ms(before))
 }
 
 // AppendJobMetrics stores samples. A sample with a known time replaces the earlier one.
 func (s *Store) AppendJobMetrics(ctx context.Context, jobID string, samples []JobMetric) error {
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	return s.tx(ctx, "append job metrics", func(tx *sql.Tx) error {
 		for _, m := range samples {
 			_, err := tx.ExecContext(ctx,
 				"INSERT OR REPLACE INTO job_metrics (job_id, t_ms, cpu_percent, memory_mb) VALUES (?, ?, ?, ?)",
@@ -645,24 +560,15 @@ func (s *Store) AppendJobMetrics(ctx context.Context, jobID string, samples []Jo
 		}
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("append job metrics: %w", err)
-	}
-	return nil
 }
 
 // ListJobMetrics returns the samples of a job, oldest first.
 func (s *Store) ListJobMetrics(ctx context.Context, jobID string) ([]JobMetric, error) {
-	rows, err := s.r.QueryContext(ctx,
-		"SELECT t_ms, cpu_percent, memory_mb FROM job_metrics WHERE job_id = ? ORDER BY t_ms", jobID)
-	list, err := scanAll(rows, err, func(sc scanner) (JobMetric, error) {
+	return queryAll(ctx, s.r, "list job metrics", func(sc scanner) (JobMetric, error) {
 		var m JobMetric
-		return m, sc.Scan(at(&m.At), &m.CPUPercent, &m.MemoryMB)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list job metrics: %w", err)
-	}
-	return list, nil
+		err := sc.Scan(at(&m.At), &m.CPUPercent, &m.MemoryMB)
+		return m, err
+	}, "SELECT t_ms, cpu_percent, memory_mb FROM job_metrics WHERE job_id = ? ORDER BY t_ms", jobID)
 }
 
 // JobMetricsSummary computes the peak and average of the samples of a job.
@@ -682,11 +588,6 @@ func (s *Store) JobMetricsSummary(ctx context.Context, jobID string) (MetricsSum
 	return MetricsSummary{CPUPeak: peak.Float64, CPUAvg: avg.Float64, MemPeakMB: int(mem.Int64)}, nil
 }
 
-func scanInt64(sc scanner) (int64, error) {
-	var n int64
-	return n, sc.Scan(&n)
-}
-
 // median sorts list in place.
 func median(list []int64) int64 {
 	if len(list) == 0 {
@@ -698,13 +599,4 @@ func median(list []int64) int64 {
 		return list[mid]
 	}
 	return (list[mid-1] + list[mid]) / 2
-}
-
-// prefixCols returns "p.a, p.b" for the columns "a, b".
-func prefixCols(p, cols string) string {
-	list := strings.Split(cols, ",")
-	for i, c := range list {
-		list[i] = p + "." + strings.TrimSpace(c)
-	}
-	return strings.Join(list, ", ")
 }

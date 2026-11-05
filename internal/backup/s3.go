@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -10,12 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -76,20 +78,12 @@ func (s S3) Upload(ctx context.Context, file string) (string, error) {
 	return key, nil
 }
 
-func (s S3) region() string {
-	if s.Region == "" {
-		return "us-east-1"
-	}
-	return s.Region
-}
+func (s S3) region() string { return cmp.Or(s.Region, "us-east-1") }
 
 // objectURL returns the URL of the object key. Path and RawPath are both
 // set, so the request sends the same escaped path that sign uses.
 func (s S3) objectURL(key string) (*url.URL, error) {
-	endpoint := s.Endpoint
-	if endpoint == "" {
-		endpoint = "https://s3." + s.region() + ".amazonaws.com"
-	}
+	endpoint := cmp.Or(s.Endpoint, "https://s3."+s.region()+".amazonaws.com")
 	if !strings.Contains(endpoint, "://") {
 		endpoint = "https://" + endpoint
 	}
@@ -143,11 +137,7 @@ func sign(req *http.Request, accessKey, secretKey, region, payloadHash string, n
 	req.Header.Set("X-Amz-Date", amzDate)
 	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 
-	host := req.Host
-	if host == "" {
-		host = req.URL.Host
-	}
-	values := map[string]string{"host": host}
+	values := map[string]string{"host": cmp.Or(req.Host, req.URL.Host)}
 	for name, vs := range req.Header {
 		name = strings.ToLower(name)
 		if name == "authorization" {
@@ -159,11 +149,7 @@ func sign(req *http.Request, accessKey, secretKey, region, payloadHash string, n
 		}
 		values[name] = strings.Join(trimmed, ",")
 	}
-	names := make([]string, 0, len(values))
-	for name := range values {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(values))
 	var headers strings.Builder
 	for _, name := range names {
 		headers.WriteString(name + ":" + values[name] + "\n")

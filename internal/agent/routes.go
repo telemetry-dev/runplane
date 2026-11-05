@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -36,12 +35,12 @@ func (a *agent) newRoutes() http.Handler {
 func (a *agent) startSandbox(w http.ResponseWriter, r *http.Request) {
 	var spec sandbox.Spec
 	if decode(w, r, &spec) {
-		writeDone(w, a.node.Driver().Start(r.Context(), spec))
+		writeDone(w, a.Node.Driver().Start(r.Context(), spec))
 	}
 }
 
 func (a *agent) listSandboxes(w http.ResponseWriter, r *http.Request) {
-	list, err := a.node.Driver().List(r.Context())
+	list, err := a.Node.Driver().List(r.Context())
 	if list == nil {
 		list = []sandbox.Sandbox{}
 	}
@@ -49,12 +48,12 @@ func (a *agent) listSandboxes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *agent) stopSandbox(w http.ResponseWriter, r *http.Request) {
-	writeDone(w, a.node.Driver().Stop(r.Context(), r.PathValue("id")))
+	writeDone(w, a.Node.Driver().Stop(r.Context(), r.PathValue("id")))
 }
 
 func (a *agent) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 	follow := r.URL.Query().Get("follow") == "1"
-	rc, err := a.node.Driver().Logs(r.Context(), r.PathValue("id"), follow)
+	rc, err := a.Node.Driver().Logs(r.Context(), r.PathValue("id"), follow)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -83,7 +82,7 @@ func (a *agent) sandboxLogs(w http.ResponseWriter, r *http.Request) {
 func (a *agent) holdSandbox(w http.ResponseWriter, r *http.Request) {
 	var req holdRequest
 	if decode(w, r, &req) {
-		writeDone(w, a.node.Driver().Hold(r.Context(), r.PathValue("id"), req.Until))
+		writeDone(w, a.Node.Driver().Hold(r.Context(), r.PathValue("id"), req.Until))
 	}
 }
 
@@ -100,7 +99,7 @@ func (a *agent) sandboxShell(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad terminal size: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	term, err := a.node.Driver().Shell(r.Context(), r.PathValue("id"), sandbox.TermSize{Rows: uint16(rows), Cols: uint16(cols)})
+	term, err := a.Node.Driver().Shell(r.Context(), r.PathValue("id"), sandbox.TermSize{Rows: uint16(rows), Cols: uint16(cols)})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -121,22 +120,22 @@ func (a *agent) sandboxShell(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 	if err := readFrames(brw.Reader, term); !errors.Is(err, io.EOF) {
-		a.log.Debug("shell stream ended", "err", err)
+		a.Logger.Debug("shell stream ended", "err", err)
 	}
 }
 
 func (a *agent) readCapacity(w http.ResponseWriter, r *http.Request) {
-	c, err := a.node.Driver().Capacity(r.Context())
+	c, err := a.Node.Driver().Capacity(r.Context())
 	writeJSON(w, c, err)
 }
 
 // readHost returns the host facts, and with doctor=1 also the doctor
 // checks.
 func (a *agent) readHost(w http.ResponseWriter, r *http.Request) {
-	info, err := a.node.Facts(r.Context())
+	info, err := a.Node.Facts(r.Context())
 	rep := hostReport{Info: info}
 	if err == nil && r.URL.Query().Get("doctor") == "1" {
-		rep.Doctor, err = a.node.Doctor(r.Context())
+		rep.Doctor, err = a.Node.Doctor(r.Context())
 	}
 	writeJSON(w, rep, err)
 }
@@ -160,7 +159,7 @@ func (a *agent) ensureImage(w http.ResponseWriter, r *http.Request) {
 		enc.Encode(m)
 		flush()
 	}
-	img, err := a.node.EnsureImage(r.Context(), ref.Ref, func(p image.Progress) { send(imageMessage{Progress: &p}) })
+	img, err := a.Node.EnsureImage(r.Context(), ref.Ref, func(p image.Progress) { send(imageMessage{Progress: &p}) })
 	if err != nil {
 		send(imageMessage{Error: err.Error()})
 		return
@@ -171,23 +170,19 @@ func (a *agent) ensureImage(w http.ResponseWriter, r *http.Request) {
 func (a *agent) gcImages(w http.ResponseWriter, r *http.Request) {
 	var req gcRequest
 	if decode(w, r, &req) {
-		writeDone(w, a.node.GCImages(r.Context(), req.Keep))
+		writeDone(w, a.Node.GCImages(r.Context(), req.Keep))
 	}
 }
 
 func (a *agent) pruneRunners(w http.ResponseWriter, r *http.Request) {
 	var req gcRequest
 	if decode(w, r, &req) {
-		writeDone(w, a.node.PruneRunners(r.Context(), req.Keep))
+		writeDone(w, a.Node.PruneRunners(r.Context(), req.Keep))
 	}
 }
 
-func (a *agent) mirrorStats(w http.ResponseWriter, r *http.Request) {
-	var s mirror.Stats
-	if a.mirror != nil {
-		s = a.mirror()
-	}
-	writeJSON(w, s, nil)
+func (a *agent) mirrorStats(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, a.Mirror(), nil)
 }
 
 func (a *agent) ensureRunner(w http.ResponseWriter, r *http.Request) {
@@ -195,14 +190,14 @@ func (a *agent) ensureRunner(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	b, err := a.node.EnsureRunner(r.Context(), req.Version, req.Arch)
+	b, err := a.Node.EnsureRunner(r.Context(), req.Version, req.Arch)
 	writeJSON(w, b, err)
 }
 
 func (a *agent) configure(w http.ResponseWriter, r *http.Request) {
 	var s sandbox.Settings
 	if decode(w, r, &s) {
-		writeDone(w, a.node.Configure(r.Context(), s))
+		writeDone(w, a.Node.Configure(r.Context(), s))
 	}
 }
 
@@ -213,13 +208,13 @@ func (a *agent) update(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := a.node.Update(r.Context(), req.Version); err != nil {
+	if err := a.Node.Update(r.Context(), req.Version); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 	http.NewResponseController(w).Flush()
-	a.log.Info("binary updated, restarting", "version", req.Version)
+	a.Logger.Info("binary updated, restarting", "version", req.Version)
 	a.updateOnce.Do(func() { close(a.updated) })
 }
 

@@ -19,7 +19,7 @@ func TestMetricsOfBusyVMs(t *testing.T) {
 	}
 	add := func(id string, vcpu int, state sandbox.State) {
 		v := newVM(d, sandbox.Spec{ID: id, VCPU: vcpu}, d.taps.Lease(0), time.Now())
-		v.state = state
+		v.State = state
 		close(v.ready)
 		d.vms[id] = v
 	}

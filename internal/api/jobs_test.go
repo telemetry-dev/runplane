@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"io"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,62 +14,64 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// addJob records a queued job of repo.
-func (e *env) addJob(requestID int64, repo string, queued time.Time) store.Job {
-	e.t.Helper()
-	j, err := e.st.UpsertJob(context.Background(), store.JobMessage{
-		RunnerRequestID: requestID, State: store.JobQueued, Repository: repo, JobName: fmt.Sprint("job ", requestID),
-		WorkflowRef: repo + "/.github/workflows/ci.yml@refs/heads/main", QueuedAt: queued,
-	})
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	return j
-}
-
-func TestJobTotalCountsAllPages(t *testing.T) {
+func TestJobPages(t *testing.T) {
 	e := newEnv(t)
 	b := e.login("ada@example.com", auth.RoleMember)
 	base := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	var want []string
 	for i, repo := range []string{"acme/api", "acme/web", "acme/api", "acme/api", "acme/web"} {
-		e.addJob(int64(i+1), repo, base.Add(time.Duration(i)*time.Minute))
+		j := e.addJob(int64(i+1), repo, base.Add(time.Duration(i)*time.Minute))
+		if repo == "acme/api" {
+			want = append([]string{j.ID}, want...) // newest first
+		}
 	}
 
-	var first, second JobPage
-	b.do("GET", "/api/jobs?repository=acme/api&limit=2", nil, &first).want(t, 200)
-	if len(first.Items) != 2 || first.Total != 3 || first.NextCursor == "" {
-		t.Fatalf("first page: %d items, total %d, cursor %q; want 2 items of 3", len(first.Items), first.Total, first.NextCursor)
+	var got []string
+	var sizes []int
+	cursor := ""
+	for range 3 {
+		var page JobPage
+		b.do("GET", "/api/jobs?repository=acme/api&limit=2&cursor="+cursor, nil, &page).want(t, 200)
+		if page.Total != 3 {
+			t.Fatalf("total %d, want the 3 jobs of acme/api on each page", page.Total)
+		}
+		sizes = append(sizes, len(page.Items))
+		for _, j := range page.Items {
+			got = append(got, j.ID)
+			if j.WorkflowFile != ".github/workflows/ci.yml" || j.State != "queued" || j.Result != nil {
+				t.Fatalf("job %+v: wrong workflow file, state, or result", j)
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
 	}
-	b.do("GET", "/api/jobs?repository=acme/api&limit=2&cursor="+first.NextCursor, nil, &second).want(t, 200)
-	if len(second.Items) != 1 || second.Total != 3 {
-		t.Fatalf("second page: %d items, total %d; want 1 item of 3", len(second.Items), second.Total)
+	if !slices.Equal(got, want) || !slices.Equal(sizes, []int{2, 1}) {
+		t.Fatalf("pages of %v gave %v, want %v on pages of 2 and 1", sizes, got, want)
 	}
-	var all JobPage
-	b.do("GET", "/api/jobs?q=web", nil, &all).want(t, 200)
-	if all.Total != 2 {
-		t.Fatalf("total for q=web = %d, want 2", all.Total)
+	var web JobPage
+	b.do("GET", "/api/jobs?q=web", nil, &web).want(t, 200)
+	if web.Total != 2 {
+		t.Fatalf("total for q=web = %d, want 2", web.Total)
 	}
+	b.do("GET", "/api/jobs?cursor=bad!", nil, nil).want(t, 422)
 }
 
 func TestJobShowsItsDebugSandbox(t *testing.T) {
 	e := newEnv(t)
 	b := e.login("ada@example.com", auth.RoleMember)
 	ctx := context.Background()
-	if _, err := e.st.UpdateSettings(ctx, func(s *store.Settings) error {
+	_, err := e.st.UpdateSettings(ctx, func(s *store.Settings) error {
 		s.PublicURL = "https://ci.example.com"
 		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	must(t, err)
 	j := e.addJob(1, "acme/api", time.Now())
 	const id = "01jbz00000000000000000debg"
 	e.addSandbox(id, sandbox.StateBusy)
-	if err := e.st.SetJobSandbox(ctx, j.ID, id, "s"); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.st.SetSandboxJob(ctx, id, j.ID); err != nil {
-		t.Fatal(err)
-	}
+	must(t, e.st.SetJobSandbox(ctx, j.ID, id, "s"))
+	must(t, e.st.SetSandboxJob(ctx, id, j.ID))
 
 	var got Job
 	b.do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)
@@ -76,12 +80,8 @@ func TestJobShowsItsDebugSandbox(t *testing.T) {
 	}
 
 	hold := time.Now().Add(30 * time.Minute).UTC().Truncate(time.Millisecond)
-	if err := e.st.SetSandboxDebug(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.st.SetSandboxHold(ctx, id, hold); err != nil {
-		t.Fatal(err)
-	}
+	must(t, e.st.SetSandboxDebug(ctx, id))
+	must(t, e.st.SetSandboxHold(ctx, id, hold))
 	b.do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)
 	if want := "ssh -p 2222 " + id + "@ci.example.com"; got.SSHCommand != want {
 		t.Fatalf("ssh command %q, want %q", got.SSHCommand, want)
@@ -96,9 +96,8 @@ func TestJobShowsItsDebugSandbox(t *testing.T) {
 		t.Fatalf("sandbox job fields = %q, %q, %q", sb.JobRepository, sb.JobWorkflowFile, sb.JobName)
 	}
 
-	if _, _, err := e.st.AdvanceSandboxState(ctx, id, sandbox.StateGone, "", time.Now()); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err = e.st.AdvanceSandboxState(ctx, id, sandbox.StateGone, "", time.Now())
+	must(t, err)
 	b.do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)
 	if got.SandboxState != "gone" || got.SSHCommand != "" {
 		t.Fatalf("gone sandbox: state %q, ssh command %q; want gone and no command", got.SandboxState, got.SSHCommand)
@@ -117,76 +116,110 @@ func TestSSHPortComesFromTheListenAddress(t *testing.T) {
 	}
 }
 
-func TestShellAllowedOnlyForLiveDebugJobs(t *testing.T) {
-	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
-	later, earlier := now.Add(time.Minute), now.Add(-time.Minute)
-	for _, tc := range []struct {
-		name string
-		b    store.Sandbox
-		want int // 0: allowed
-	}{
-		{"busy debug sandbox", store.Sandbox{Debug: true, State: sandbox.StateBusy}, 0},
-		{"held after the job", store.Sandbox{Debug: true, State: sandbox.StateStopping, HoldUntil: &later}, 0},
-		{"busy without debug", store.Sandbox{State: sandbox.StateBusy}, http.StatusForbidden},
-		{"hold ended", store.Sandbox{Debug: true, State: sandbox.StateStopping, HoldUntil: &earlier}, http.StatusConflict},
-		{"debug sandbox before its job", store.Sandbox{Debug: true, State: sandbox.StateIdle}, http.StatusConflict},
-		{"gone during its hold", store.Sandbox{Debug: true, State: sandbox.StateGone, HoldUntil: &later}, http.StatusConflict},
-	} {
-		err := shellAllowed(tc.b, now)
-		got := 0
-		if err != nil {
-			got = err.(interface{ GetStatus() int }).GetStatus()
-		}
-		if got != tc.want {
-			t.Errorf("%s: status %d (%v), want %d", tc.name, got, err, tc.want)
-		}
-	}
-}
-
 func TestJobLinksToItsRunBeforeGitHubGivesTheJob(t *testing.T) {
 	e := newEnv(t)
 	b := e.login("ada@example.com", auth.RoleMember)
 	ctx := context.Background()
-	msg := func(id, runID int64) store.JobMessage {
-		return store.JobMessage{RunnerRequestID: id, State: store.JobQueued, Repository: "acme/api", JobName: "test",
-			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", RunID: runID, QueuedAt: time.Now()}
+	job := func(id, runID int64, enrich *store.JobEnrichment) string {
+		j, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: store.JobQueued, Repository: "acme/api", JobName: "test",
+			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", RunID: runID, QueuedAt: time.Now()})
+		must(t, err)
+		if enrich != nil {
+			must(t, e.st.SetJobEnrichment(ctx, j.ID, *enrich))
+		}
+		return j.ID
 	}
-	noJob, err := e.st.UpsertJob(ctx, msg(1, 9001))
-	if err != nil {
-		t.Fatal(err)
-	}
-	noRun, err := e.st.UpsertJob(ctx, msg(2, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	enriched, err := e.st.UpsertJob(ctx, msg(3, 9002))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := e.st.SetJobEnrichment(ctx, enriched.ID, store.JobEnrichment{RunAttempt: 2, HTMLURL: "https://github.com/acme/api/actions/runs/9002/job/77"}); err != nil {
-		t.Fatal(err)
-	}
-	// The run of the second attempt, before GitHub lists its job.
-	retry, err := e.st.UpsertJob(ctx, msg(4, 9003))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := e.st.SetJobEnrichment(ctx, retry.ID, store.JobEnrichment{RunAttempt: 2}); err != nil {
-		t.Fatal(err)
-	}
-
 	for _, tc := range []struct {
 		id, want string
 	}{
-		{noJob.ID, "https://github.com/acme/api/actions/runs/9001"},
-		{noRun.ID, ""},
-		{enriched.ID, "https://github.com/acme/api/actions/runs/9002/job/77"},
-		{retry.ID, "https://github.com/acme/api/actions/runs/9003/attempts/2"},
+		{job(1, 9001, nil), "https://github.com/acme/api/actions/runs/9001"},
+		{job(2, 0, nil), ""},
+		{job(3, 9002, &store.JobEnrichment{RunAttempt: 2, HTMLURL: "https://github.com/acme/api/actions/runs/9002/job/77"}), "https://github.com/acme/api/actions/runs/9002/job/77"},
+		// The run of the second attempt, before GitHub lists its job.
+		{job(4, 9003, &store.JobEnrichment{RunAttempt: 2}), "https://github.com/acme/api/actions/runs/9003/attempts/2"},
 	} {
 		var j Job
 		b.do("GET", "/api/jobs/"+tc.id, nil, &j).want(t, 200)
 		if j.HTMLURL != tc.want {
 			t.Errorf("job %s: html_url %q, want %q", tc.id, j.HTMLURL, tc.want)
 		}
+	}
+}
+
+// The live log of a running job has no step marks. A request for one step
+// gets the whole log and a header that says so.
+func TestLiveJobLogSaysThatTheStepFilterIsOff(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		live   bool
+		query  string
+		header string
+	}{
+		{"live log, one step", true, "?step=2", "ignored"},
+		{"live log, all steps", true, "", ""},
+		{"stored log, one step", false, "?step=2", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, func(d *Deps) {
+				d.Logs = fakeLogs{log: io.NopCloser(strings.NewReader("line 1\n")), live: tc.live}
+			})
+			j := e.addJob(1, "acme/api", time.Now())
+			res := e.login("bob@example.com", auth.RoleMember).do("GET", "/api/jobs/"+j.ID+"/log"+tc.query, nil, nil)
+			res.want(t, 200)
+			if got := res.Header.Get("X-Runplane-Step-Filter"); got != tc.header {
+				t.Errorf("X-Runplane-Step-Filter = %q, want %q", got, tc.header)
+			}
+			if string(res.body) != "line 1\n" {
+				t.Errorf("body %q, want the log", res.body)
+			}
+		})
+	}
+}
+
+func TestOverviewHasNoRatesWithoutData(t *testing.T) {
+	e := newEnv(t)
+	b := e.login("ada@example.com", auth.RoleMember)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	e.addJob(1, "acme/api", now.Add(-time.Minute))
+
+	res := b.do("GET", "/api/overview", nil, nil)
+	res.want(t, 200)
+	for _, want := range []string{`"median_queue_ms":null`, `"cache_hit_rate":null`} {
+		if !strings.Contains(string(res.body), want) {
+			t.Errorf("overview without assigned jobs and cache lookups has no %s: %s", want, res.body)
+		}
+	}
+
+	_, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now})
+	must(t, err)
+	must(t, e.st.AddCacheStats(ctx, now, "acme/api", store.CacheCounts{Misses: 4}))
+	var o Overview
+	b.do("GET", "/api/overview", nil, &o).want(t, 200)
+	if o.Stats.MedianQueueMS == nil || o.Stats.CacheHitRate == nil || *o.Stats.CacheHitRate != 0 {
+		t.Fatalf("overview stats %+v, want a median and a hit rate of 0", o.Stats)
+	}
+}
+
+// An unreachable agent keeps its sandbox rows until it connects again. Its
+// sandboxes must not count against the vCPUs of the servers that are left.
+func TestOverviewVCPUsSkipUnreachableServers(t *testing.T) {
+	e := newEnv(t)
+	b := e.login("ada@example.com", auth.RoleMember)
+	e.addServer("online", "x64", store.ServerOnline, 8, 16384)
+	e.addServer("lost", "x64", store.ServerUnreachable, 16, 32768)
+	for i, x := range []struct {
+		server string
+		vcpu   int
+	}{{"online", 2}, {"lost", 4}, {"lost", 4}} {
+		must(t, e.st.InsertSandbox(context.Background(), store.Sandbox{
+			ID: fmt.Sprint("box", i), PoolID: "p", ServerID: x.server, Mode: sandbox.ModeContainer,
+			State: sandbox.StateBusy, VCPU: x.vcpu, MemoryMB: 4096, CreatedAt: time.Now(),
+		}))
+	}
+	var o Overview
+	b.do("GET", "/api/overview", nil, &o).want(t, 200)
+	if o.Stats.VCPUInUse != 2 || o.Stats.VCPUTotal != 8 {
+		t.Fatalf("vCPUs %d / %d, want 2 / 8", o.Stats.VCPUInUse, o.Stats.VCPUTotal)
 	}
 }

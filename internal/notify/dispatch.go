@@ -14,17 +14,17 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-var (
-	// enrichWait is how long a failed job waits for its run data (branch,
-	// actor, run number) before its alert goes out without it.
-	enrichWait = 2 * time.Minute
+// enrichWait is how long a failed job waits for its run data (branch,
+// actor, run number) before its alert goes out without it.
+var enrichWait = 2 * time.Minute
+
+const (
 	// diskEvery is the shortest time between two disk.low alerts of a server.
 	diskEvery = 6 * time.Hour
+	// diskMargin is how many percentage points the free disk space must rise
+	// above min_free_disk_percent before a new disk.low alert can go out.
+	diskMargin = 5
 )
-
-// diskMargin is how many percentage points the free disk space must rise
-// above min_free_disk_percent before a new disk.low alert can go out.
-const diskMargin = 5
 
 // Dispatcher sends events to the notification channels that subscribe to
 // them. Other packages give it events through Notify, and Run makes events
@@ -62,12 +62,9 @@ func (d *Dispatcher) Notify(ctx context.Context, e Event) error {
 	if err != nil {
 		return err
 	}
-	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
-	)
-	for _, c := range list {
+	var wg sync.WaitGroup
+	errs := make([]error, len(list))
+	for i, c := range list {
 		if !c.Enabled || !slices.Contains(c.Events, string(e.Type)) {
 			continue
 		}
@@ -75,9 +72,7 @@ func (d *Dispatcher) Notify(ctx context.Context, e Event) error {
 			msg := ""
 			if err := d.send(ctx, c, e); err != nil {
 				msg = err.Error()
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("channel %s: %w", c.Name, err))
-				mu.Unlock()
+				errs[i] = fmt.Errorf("channel %s: %w", c.Name, err)
 			}
 			if err := d.Store.RecordNotificationDelivery(context.WithoutCancel(ctx), c.ID, d.clock(), msg); err != nil {
 				d.log().Warn("record notification delivery", "channel", c.Name, "err", err)
@@ -90,7 +85,7 @@ func (d *Dispatcher) Notify(ctx context.Context, e Event) error {
 
 // Test sends the test event to a channel: the api Notifier service.
 func (d *Dispatcher) Test(ctx context.Context, base, kind, url string) error {
-	return Send(ctx, Channel{Kind: Kind(kind), URL: url}, TestEvent(base))
+	return Send(ctx, kind, url, TestEvent(base))
 }
 
 func (d *Dispatcher) send(ctx context.Context, c store.NotificationChannel, e Event) error {
@@ -98,7 +93,7 @@ func (d *Dispatcher) send(ctx context.Context, c store.NotificationChannel, e Ev
 	if err != nil {
 		return fmt.Errorf("open the channel URL: %w", err)
 	}
-	return Send(ctx, Channel{Kind: Kind(c.Kind), URL: string(url)}, e)
+	return Send(ctx, c.Kind, string(url), e)
 }
 
 // admit reports if an alert goes out, and records it.
@@ -235,15 +230,9 @@ func (d *Dispatcher) jobFailed(ctx context.Context, id string) {
 		job, err := d.Store.GetJob(ctx, id)
 		if err != nil {
 			d.log().Warn("read the failed job", "job", id, "err", err)
+			job = store.Job{ID: id}
 		}
-		var took time.Duration
-		if job.StartedAt != nil && job.FinishedAt != nil {
-			took = job.FinishedAt.Sub(*job.StartedAt)
-		}
-		return JobFailedEvent(dash, Job{
-			ID: id, Repository: job.Repository, Workflow: job.WorkflowName, Name: job.JobName, Branch: job.HeadBranch,
-			Actor: job.Actor, RunNumber: job.RunNumber, Duration: took, GitHubURL: job.HTMLURL,
-		})
+		return JobFailedEvent(dash, job)
 	})
 }
 

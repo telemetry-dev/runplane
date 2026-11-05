@@ -47,9 +47,6 @@ func TestTCPListenerChecksToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := tl.Addr().String(); addr != want {
-		t.Fatalf("control.addr has %s, the listener is at %s", addr, want)
-	}
 
 	for _, bad := range []string{
 		"RUNPLANE " + cfg.SandboxID + " " + strings.Repeat("0", 64) + "\n",

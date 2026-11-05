@@ -17,6 +17,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
@@ -51,9 +52,6 @@ type Listener struct {
 // Serve accepts TLS connections from agents on ln until ctx ends. Then it
 // closes all sessions and returns nil.
 func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
-	if l.Authenticate == nil {
-		return errors.New("serve agents: Authenticate is required")
-	}
 	tln := tls.NewListener(ln, &tls.Config{
 		Certificates: []tls.Certificate{l.Cert},
 		MinVersion:   tls.VersionTLS13,
@@ -68,7 +66,7 @@ func (l *Listener) Serve(ctx context.Context, ln net.Listener) error {
 				l.closeAll()
 				return nil
 			}
-			l.log().Warn("accept agent connection", "err", err)
+			l.Logger.Warn("accept agent connection", "err", err)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -80,7 +78,7 @@ func (l *Listener) accept(ctx context.Context, conn net.Conn) {
 	s, err := l.open(ctx, conn)
 	if err != nil {
 		conn.Close()
-		l.log().Debug("agent connection failed", "remote", conn.RemoteAddr().String(), "err", err)
+		l.Logger.Debug("agent connection failed", "remote", conn.RemoteAddr().String(), "err", err)
 		return
 	}
 	old, ok := l.add(s)
@@ -89,18 +87,16 @@ func (l *Listener) accept(ctx context.Context, conn net.Conn) {
 		return
 	}
 	if old != nil {
-		l.log().Info("agent connected again, closing its old connection", "server_id", s.ServerID())
+		l.Logger.Info("agent connected again, closing its old connection", "server_id", s.ServerID())
 		old.Close()
 	}
-	l.log().Info("agent connected", "server_id", s.ServerID(), "remote", s.hello.Addr, "version", s.hello.Version)
+	l.Logger.Info("agent connected", "server_id", s.ServerID(), "remote", s.hello.Addr, "version", s.hello.Version)
 	go func() {
 		<-s.Done()
 		l.remove(s)
-		l.log().Info("agent disconnected", "server_id", s.ServerID())
+		l.Logger.Info("agent disconnected", "server_id", s.ServerID())
 	}()
-	if l.OnSession != nil {
-		l.OnSession(s)
-	}
+	l.OnSession(s)
 }
 
 // open runs the agent handshake and starts yamux.
@@ -119,7 +115,7 @@ func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 	hello.Addr = remoteIP(conn.RemoteAddr())
 	id, secret, err := l.Authenticate(ctx, hello)
 	if err != nil {
-		l.log().Warn("agent refused", "remote", hello.Addr, "server_id", hello.ServerID, "err", err)
+		l.Logger.Warn("agent refused", "remote", hello.Addr, "server_id", hello.ServerID, "err", err)
 		writeJSONLine(conn, reply{Error: err.Error()})
 		return nil, err
 	}
@@ -127,12 +123,12 @@ func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 		return nil, fmt.Errorf("write reply: %w", err)
 	}
 	conn.SetDeadline(time.Time{})
-	sess, err := yamux.Client(&bufConn{conn, br}, yamuxConfig(l.log()))
+	sess, err := yamux.Client(&bufConn{conn, br}, yamuxConfig(l.Logger))
 	if err != nil {
 		return nil, fmt.Errorf("start yamux: %w", err)
 	}
 	hello.ServerID, hello.Token, hello.Secret = id, "", ""
-	return newSession(sess, hello, l.CacheHandler, l.log().With("server_id", id)), nil
+	return newSession(sess, hello, l.CacheHandler, l.Logger.With("server_id", id)), nil
 }
 
 // add keeps s as the session of its server and returns the old session.
@@ -170,17 +166,15 @@ func (l *Listener) closeAll() {
 	}
 }
 
-func (l *Listener) log() *slog.Logger { return orDiscard(l.Logger) }
-
-// Session is the connection of one agent. It implements Node: each call is
-// an HTTP request on a new yamux stream. A Session ends when the connection
-// drops; the agent then connects again and the Listener makes a new Session.
+// Session is the connection of one agent. It implements Node and the
+// sandbox driver of the agent: each call is an HTTP request on a new yamux
+// stream. A Session ends when the connection drops; the agent then connects
+// again and the Listener makes a new Session.
 type Session struct {
 	hello  Hello
 	sess   *yamux.Session
 	client *http.Client
 	log    *slog.Logger
-	driver *RemoteDriver
 
 	done   chan struct{}
 	events chan sandbox.Event
@@ -201,8 +195,6 @@ func newSession(sess *yamux.Session, hello Hello, cache http.Handler, log *slog.
 		events: make(chan sandbox.Event, 256),
 		stats:  make(chan host.Stats, 1),
 	}
-	s.driver = &RemoteDriver{s: s}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/events", s.handleEvents)
 	mux.Handle("/v1/cache/", cacheHandler(cache, hello.ServerID))
@@ -229,8 +221,7 @@ func (s *Session) Close() error {
 	return nil
 }
 
-// Driver returns the RemoteDriver of the agent.
-func (s *Session) Driver() sandbox.Driver { return s.driver }
+func (s *Session) Driver() sandbox.Driver { return s }
 
 // Stats delivers the host samples of the agent. It closes when the session
 // ends.
@@ -435,7 +426,7 @@ func cacheHandler(h http.Handler, serverID string) http.Handler {
 	}
 	h = http.StripPrefix("/v1/cache", h)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set(ServerHeader, serverID)
+		r.Header.Set(cache.ServerHeader, serverID)
 		h.ServeHTTP(w, r)
 	})
 }

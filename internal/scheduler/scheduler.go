@@ -99,7 +99,6 @@ type runnerResult struct {
 	at     time.Time
 }
 
-// Work bits for Run.
 const (
 	doMaxRunners uint32 = 1 << iota
 	doResize

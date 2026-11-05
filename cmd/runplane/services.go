@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -176,12 +177,11 @@ func (b *backups) dropRows(ctx context.Context, removed []string) {
 		return
 	}
 	for _, row := range list {
-		for _, path := range removed {
-			if row.Path == path {
-				if err := b.st.DeleteBackup(ctx, row.ID); err != nil {
-					b.log.Warn("delete backup row", "backup", row.ID, "err", err)
-				}
-			}
+		if !slices.Contains(removed, row.Path) {
+			continue
+		}
+		if err := b.st.DeleteBackup(ctx, row.ID); err != nil {
+			b.log.Warn("delete backup row", "backup", row.ID, "err", err)
 		}
 	}
 }
@@ -222,38 +222,27 @@ type updater struct {
 // limit of 60 anonymous requests an hour.
 const checkTTL = 10 * time.Minute
 
+// Check reads the latest release, at most once in checkTTL. A repository
+// without releases has no update.
 func (u *updater) Check(ctx context.Context) (api.UpdateStatus, error) {
-	s, err := u.check(ctx)
-	if err != nil {
-		return api.UpdateStatus{}, err
-	}
 	u.mu.Lock()
-	state := u.state
-	u.mu.Unlock()
-	out := api.UpdateStatus{Current: s.Current, Latest: s.Latest, Available: s.Available, URL: s.URL, Notes: s.Notes, State: state}
+	defer u.mu.Unlock()
+	if time.Since(u.checked) >= checkTTL {
+		s, err := u.u.Check(ctx)
+		if errors.Is(err, update.ErrNoRelease) {
+			s, err = update.Status{Current: u.u.Current}, nil
+		}
+		if err != nil {
+			return api.UpdateStatus{}, err
+		}
+		u.last, u.checked = s, time.Now()
+	}
+	s := u.last
+	out := api.UpdateStatus{Current: s.Current, Latest: s.Latest, Available: s.Available, URL: s.URL, Notes: s.Notes, State: u.state}
 	if !s.PublishedAt.IsZero() {
 		out.PublishedAt = &s.PublishedAt
 	}
 	return out, nil
-}
-
-// check reads the latest release, at most once in checkTTL. A repository
-// without releases has no update.
-func (u *updater) check(ctx context.Context) (update.Status, error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if !u.checked.IsZero() && time.Since(u.checked) < checkTTL {
-		return u.last, nil
-	}
-	s, err := u.u.Check(ctx)
-	if errors.Is(err, update.ErrNoRelease) {
-		s, err = update.Status{Current: u.u.Current}, nil
-	}
-	if err != nil {
-		return s, err
-	}
-	u.last, u.checked = s, time.Now()
-	return s, nil
 }
 
 func (u *updater) Apply(ctx context.Context) error {

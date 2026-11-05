@@ -80,11 +80,6 @@ type gcRequest struct {
 	Keep []string `json:"keep"`
 }
 
-// ServerHeader names the server of a cache request that an agent sends.
-// The primary sets it, so a cache Resolver can check that the sandbox of
-// the request belongs to that server.
-const ServerHeader = "X-Runplane-Server"
-
 const (
 	handshakeTimeout = 15 * time.Second
 	maxLine          = 64 << 10 // hello and reply

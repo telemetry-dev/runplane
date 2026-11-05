@@ -29,7 +29,6 @@ type bearer struct {
 	expires time.Time
 }
 
-// upstreamError is a status from upstream that is not a success.
 type upstreamError struct{ status int }
 
 func (e *upstreamError) Error() string {

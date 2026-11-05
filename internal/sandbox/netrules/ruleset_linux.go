@@ -63,18 +63,13 @@ func writeTable(p policy) error {
 	if err != nil {
 		return fmt.Errorf("open nftables: %w", err)
 	}
-	t := &nftables.Table{Family: nftables.TableFamilyINet, Name: tableName}
-	exists, err := tableExists(c, nftables.TableFamilyINet)
-	if err != nil {
+	if _, err := dropTable(c, nftables.TableFamilyINet); err != nil {
 		return err
-	}
-	if exists {
-		c.DelTable(t)
 	}
 	if err := addBridgeTable(c, p); err != nil {
 		return err
 	}
-	c.AddTable(t)
+	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: tableName})
 
 	concat := nftables.MustConcatSetType(nftables.TypeIFName, nftables.TypeIPAddr)
 	ifaces := &nftables.Set{Table: t, Name: "ifaces", KeyType: nftables.TypeIFName, Interval: true}
@@ -193,18 +188,15 @@ func deleteTable() error {
 	if err != nil {
 		return fmt.Errorf("open nftables: %w", err)
 	}
-	deleted := false
-	for _, family := range []nftables.TableFamily{nftables.TableFamilyINet, nftables.TableFamilyBridge} {
-		exists, err := tableExists(c, family)
-		if err != nil {
-			return err
-		}
-		if exists {
-			c.DelTable(&nftables.Table{Family: family, Name: tableName})
-			deleted = true
-		}
+	inet, err := dropTable(c, nftables.TableFamilyINet)
+	if err != nil {
+		return err
 	}
-	if !deleted {
+	bridge, err := dropTable(c, nftables.TableFamilyBridge)
+	if err != nil {
+		return err
+	}
+	if !inet && !bridge {
 		return nil
 	}
 	if err := c.Flush(); err != nil {
@@ -219,6 +211,16 @@ func tableExists(c *nftables.Conn, family nftables.TableFamily) (bool, error) {
 		return false, fmt.Errorf("list nftables tables: %w", err)
 	}
 	return slices.ContainsFunc(tables, func(t *nftables.Table) bool { return t.Name == tableName }), nil
+}
+
+// dropTable adds the deletion of the runplane table of family to the batch
+// if the table exists, and reports if it does.
+func dropTable(c *nftables.Conn, family nftables.TableFamily) (bool, error) {
+	exists, err := tableExists(c, family)
+	if exists {
+		c.DelTable(&nftables.Table{Family: family, Name: tableName})
+	}
+	return exists, err
 }
 
 // readLinks reads the sandbox interfaces from the table that an earlier

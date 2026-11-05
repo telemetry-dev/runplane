@@ -3,10 +3,9 @@ package fleet
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
@@ -26,17 +24,8 @@ import (
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/tlsutil"
-)
-
-var (
-	_ scheduler.Fleet   = (*Fleet)(nil)
-	_ api.Servers       = (*Fleet)(nil)
-	_ api.InstallScript = (*Fleet)(nil)
-	_ api.HostChecker   = (*Fleet)(nil)
-	_ api.SettingsHook  = (*Fleet)(nil)
 )
 
 // harness is a primary with a fleet, a real agent listener, a fake local
@@ -46,12 +35,12 @@ type harness struct {
 	st       *store.Store
 	bus      *events.Bus
 	f        *Fleet
-	local    *fakeNode
 	clock    *clock
-	notes    *notes
+	notes    notes
 	capacity atomic.Int32 // CapacityChanged calls
 	fp       string
 	cfg      config.Config
+	log      *slog.Logger
 }
 
 func newHarness(t *testing.T, local *fakeNode) *harness {
@@ -70,25 +59,17 @@ func newHarness(t *testing.T, local *fakeNode) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{
-		Listen: ":8484", AgentListen: ln.Addr().String(), ServicePort: 8486,
-		DataDir: filepath.Join(dir, "data"), ConfigDir: filepath.Join(dir, "etc"),
-	}
-	for _, d := range []string{cfg.DataDir, cfg.ConfigDir} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
 	h := &harness{
-		t: t, st: st, bus: &events.Bus{}, local: local, notes: &notes{}, fp: fp, cfg: cfg,
-		clock: &clock{at: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)},
+		t: t, st: st, bus: &events.Bus{}, notes: make(notes, 16), fp: fp, log: testLogger(t),
+		cfg: config.Config{AgentListen: ln.Addr().String(), DataDir: dir, ConfigDir: dir}, clock: &clock{},
 	}
+	h.clock.ns.Store(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixNano())
 	h.f = New(Config{
-		Store: st, Bus: h.bus, Log: testLogger(t, "fleet"), Config: cfg, Local: local, AgentFingerprint: fp,
-		CapacityChanged: func() { h.capacity.Add(1) }, Notifier: h.notes, Now: h.clock.now,
+		Store: st, Bus: h.bus, Log: h.log.With("side", "fleet"), Config: h.cfg, Local: local, AgentFingerprint: fp,
+		OnEvent: func(string, sandbox.Event) {}, CapacityChanged: func() { h.capacity.Add(1) }, Notifier: h.notes, Now: h.clock.now,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	l := &agent.Listener{Cert: cert, Authenticate: h.f.Authenticate, OnSession: h.f.AddSession, Logger: testLogger(t, "listener")}
+	l := &agent.Listener{Cert: cert, Authenticate: h.f.Authenticate, OnSession: h.f.AddSession, Logger: h.log.With("side", "listener")}
 	served := make(chan struct{})
 	go func() {
 		l.Serve(ctx, ln)
@@ -139,35 +120,30 @@ func (h *harness) connectAgent(name string, node *fakeNode) (*testAgent, string)
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	a := h.startAgent(agentFile{Primary: h.cfg.AgentListen, Fingerprint: h.fp, Token: tok.Token}, node)
-	id := a.waitRegistered()
+	a := h.startAgent(map[string]string{"primary": h.cfg.AgentListen, "fingerprint": h.fp, "token": tok.Token}, node)
+	var id string
+	waitFor(h.t, "the registration in agent.json", func() bool {
+		id = a.file()["server_id"]
+		return id != ""
+	})
 	waitFor(h.t, "the agent session", func() bool { return h.f.Driver(id) != nil })
 	return a, id
 }
 
-type agentFile struct {
-	Primary     string `json:"primary"`
-	Fingerprint string `json:"fingerprint"`
-	Token       string `json:"token,omitempty"`
-	ServerID    string `json:"server_id"`
-	Secret      string `json:"secret"`
-}
-
 type testAgent struct {
-	t    *testing.T
+	h    *harness
 	path string
 	node *fakeNode
 	stop func()
 }
 
-func (h *harness) startAgent(file agentFile, node *fakeNode) *testAgent {
-	h.t.Helper()
+func (h *harness) startAgent(file map[string]string, node *fakeNode) *testAgent {
 	b, _ := json.Marshal(file)
 	path := filepath.Join(h.t.TempDir(), "agent.json")
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		h.t.Fatal(err)
 	}
-	a := &testAgent{t: h.t, path: path, node: node}
+	a := &testAgent{h: h, path: path, node: node}
 	a.start()
 	return a
 }
@@ -177,8 +153,7 @@ func (a *testAgent) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		agent.Run(ctx, agent.Config{Path: a.path, Node: a.node, Logger: testLogger(a.t, "agent"),
-			Mirror: func() mirror.Stats { return a.node.mirror }})
+		agent.Run(ctx, agent.Config{Path: a.path, Node: a.node, Logger: a.h.log.With("side", "agent"), Mirror: func() mirror.Stats { return a.node.mirror }})
 		close(done)
 	}()
 	var once sync.Once
@@ -188,28 +163,17 @@ func (a *testAgent) start() {
 			<-done
 		})
 	}
-	a.t.Cleanup(a.stop)
+	a.h.t.Cleanup(a.stop)
 }
 
-// waitRegistered waits until agent.json has a server ID and returns it.
-func (a *testAgent) waitRegistered() string {
-	a.t.Helper()
-	var file agentFile
-	waitFor(a.t, "the registration in agent.json", func() bool {
-		b, err := os.ReadFile(a.path)
-		return err == nil && json.Unmarshal(b, &file) == nil && file.ServerID != ""
-	})
-	return file.ServerID
-}
-
-func (a *testAgent) file() agentFile {
-	var file agentFile
+func (a *testAgent) file() map[string]string {
+	var file map[string]string
 	b, err := os.ReadFile(a.path)
 	if err == nil {
 		err = json.Unmarshal(b, &file)
 	}
 	if err != nil {
-		a.t.Fatal(err)
+		a.h.t.Fatal(err)
 	}
 	return file
 }
@@ -225,115 +189,130 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// watch collects the bus events of the test.
-func watch(t *testing.T, bus *events.Bus) func() []events.Event {
-	ch, cancel := bus.Subscribe(4096)
-	t.Cleanup(cancel)
-	var mu sync.Mutex
-	var list []events.Event
-	go func() {
-		for e := range ch {
-			mu.Lock()
-			list = append(list, e)
-			mu.Unlock()
+func recv[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out")
+	}
+	panic("unreachable")
+}
+
+// waitEvent reads ch until an event matches.
+func waitEvent(t *testing.T, ch <-chan events.Event, match func(events.Event) bool) {
+	t.Helper()
+	for {
+		if match(recv(t, ch)) {
+			return
 		}
-	}()
-	return func() []events.Event {
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.Clone(list)
 	}
 }
 
-type clock struct {
-	mu sync.Mutex
-	at time.Time
-}
+// clock is the time of the fleet. The test moves it.
+type clock struct{ ns atomic.Int64 }
 
-func (c *clock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.at
-}
+func (c *clock) now() time.Time      { return time.Unix(0, c.ns.Load()).UTC() }
+func (c *clock) add(d time.Duration) { c.ns.Add(int64(d)) }
 
-func (c *clock) add(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.at = c.at.Add(d)
-}
+// notes gets the notifications.
+type notes chan notify.Event
 
-type notes struct {
-	mu   sync.Mutex
-	list []notify.Event
-}
-
-func (n *notes) Notify(_ context.Context, e notify.Event) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.list = append(n.list, e)
+func (n notes) Notify(_ context.Context, e notify.Event) error {
+	select {
+	case n <- e:
+	default:
+	}
 	return nil
 }
 
-func (n *notes) events() []notify.Event {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return slices.Clone(n.list)
-}
+// noDriver leaves out the driver methods that the fleet does not call.
+type noDriver = sandbox.Driver
 
-// fakeNode is a server whose images and runner versions the test chooses.
+// fakeNode is a server and its driver. The test chooses the images and
+// runner versions that work, and the node records its calls.
 type fakeNode struct {
-	driver *fakeDriver
+	noDriver
 	info   host.Info
+	events chan sandbox.Event
 	stats  chan host.Stats
+	mirror mirror.Stats // what an agent with this node reports
 
 	mu        sync.Mutex
+	sandboxes map[string]sandbox.Sandbox
 	digests   map[string]string        // ref: digest; other refs fail
 	runners   map[string]bool          // versions that download
 	gates     map[string]chan struct{} // pulls of these refs wait until the channel closes
-	pulled    []string                 // refs of the EnsureImage calls
-	versions  []string                 // versions of the EnsureRunner calls
-	settings  []sandbox.Settings
-	kept      [][]string   // the sorted keep list of each GCImages call
-	pruned    [][]string   // the sorted keep list of each PruneRunners call
-	updates   []string     // versions of the Update calls
-	updateErr error        // the result of Update
-	mirror    mirror.Stats // what an agent with this node reports
+	updateErr error
+	calls     []call
 }
 
-func newFakeNode(arch string) *fakeNode {
-	return &fakeNode{
-		driver: &fakeDriver{events: make(chan sandbox.Event, 16), sandboxes: map[string]sandbox.Sandbox{}},
+type call struct {
+	method string
+	arg    any
+}
+
+func newFakeNode(arch string, sandboxIDs ...string) *fakeNode {
+	n := &fakeNode{
 		info: host.Info{
 			Hostname: "node-" + arch, OS: "Ubuntu 24.04.3 LTS", Kernel: "6.8.0-45-generic", Arch: arch,
 			Resources: host.Resources{VCPU: 16, MemoryMB: 65536, DiskBytes: 500e9, FreeDiskBytes: 300e9},
 			DiskKind:  "NVMe", DockerVersion: "29.1.0", SysboxVersion: "0.7.1", IPv4: "203.0.113.7", Provider: "Hetzner",
 		},
-		stats:   make(chan host.Stats, 1),
-		digests: map[string]string{"builtin:ubuntu-24.04": "sha256:b0b0"},
-		runners: map[string]bool{},
-		gates:   map[string]chan struct{}{},
+		events:    make(chan sandbox.Event, 16),
+		stats:     make(chan host.Stats, 1),
+		sandboxes: map[string]sandbox.Sandbox{},
+		digests:   map[string]string{"builtin:ubuntu-24.04": "sha256:b0b0"},
+		runners:   map[string]bool{},
+		gates:     map[string]chan struct{}{},
 	}
+	for _, id := range sandboxIDs {
+		n.sandboxes[id] = sandbox.Sandbox{ID: id, State: sandbox.StateBusy}
+	}
+	return n
 }
 
-func (n *fakeNode) Driver() sandbox.Driver                   { return n.driver }
-func (n *fakeNode) Facts(context.Context) (host.Info, error) { return n.info, nil }
-func (n *fakeNode) Update(_ context.Context, v string) error {
+// set changes the node while the fleet uses it.
+func (n *fakeNode) set(fn func(n *fakeNode)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.updates = append(n.updates, v)
-	return n.updateErr
+	fn(n)
 }
-func (n *fakeNode) Stats() <-chan host.Stats { return n.stats }
+
+func (n *fakeNode) record(method string, arg any) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, call{method, arg})
+}
+
+// args returns the argument of each call of method.
+func (n *fakeNode) args(method string) []any {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var list []any
+	for _, c := range n.calls {
+		if c.method == method {
+			list = append(list, c.arg)
+		}
+	}
+	return list
+}
+
+func (n *fakeNode) Driver() sandbox.Driver                   { return n }
+func (n *fakeNode) Facts(context.Context) (host.Info, error) { return n.info, nil }
+func (n *fakeNode) Stats() <-chan host.Stats                 { return n.stats }
+
 func (n *fakeNode) Doctor(context.Context) ([]host.Check, error) {
 	return []host.Check{{ID: "kernel", Name: "Kernel", Status: host.StatusOK, Detail: n.info.Kernel}}, nil
 }
 
 func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
+	n.record("EnsureImage", ref)
+	progress(image.Progress{Status: image.StatusPulling, Total: 4096})
 	n.mu.Lock()
-	n.pulled = append(n.pulled, ref)
 	gate := n.gates[ref]
 	n.mu.Unlock()
-	progress(image.Progress{Status: image.StatusPulling, Total: 4096})
 	if gate != nil {
 		select {
 		case <-gate:
@@ -342,8 +321,8 @@ func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(im
 		}
 	}
 	n.mu.Lock()
+	defer n.mu.Unlock()
 	digest, ok := n.digests[ref]
-	n.mu.Unlock()
 	if !ok {
 		return sandbox.ImageRef{}, fmt.Errorf("pull %s: not found", ref)
 	}
@@ -351,9 +330,9 @@ func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(im
 }
 
 func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (image.Bundle, error) {
+	n.record("EnsureRunner", version)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.versions = append(n.versions, version)
 	if !n.runners[version] {
 		return image.Bundle{}, fmt.Errorf("download runner %s: 404 Not Found", version)
 	}
@@ -361,129 +340,51 @@ func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (image.
 }
 
 func (n *fakeNode) GCImages(_ context.Context, keep []string) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.kept = append(n.kept, slices.Sorted(slices.Values(keep)))
+	n.record("GCImages", slices.Sorted(slices.Values(keep)))
 	return nil
 }
 
 func (n *fakeNode) PruneRunners(_ context.Context, keep []string) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.pruned = append(n.pruned, slices.Sorted(slices.Values(keep)))
+	n.record("PruneRunners", slices.Sorted(slices.Values(keep)))
 	return nil
-}
-
-func (n *fakeNode) pruneCalls() [][]string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return slices.Clone(n.pruned)
-}
-
-func (n *fakeNode) gcCalls() [][]string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return slices.Clone(n.kept)
 }
 
 func (n *fakeNode) Configure(_ context.Context, s sandbox.Settings) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.settings = append(n.settings, s)
+	n.record("Configure", s)
 	return nil
 }
 
-func (n *fakeNode) set(fn func(n *fakeNode)) {
+func (n *fakeNode) Update(_ context.Context, version string) error {
+	n.record("Update", version)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	fn(n)
+	return n.updateErr
 }
 
-func (n *fakeNode) pulls() []string {
+func (n *fakeNode) Mode() sandbox.Mode           { return sandbox.ModeContainer }
+func (n *fakeNode) Events() <-chan sandbox.Event { return n.events }
+
+func (n *fakeNode) List(context.Context) ([]sandbox.Sandbox, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return slices.Clone(n.pulled)
+	return slices.SortedFunc(maps.Values(n.sandboxes), func(a, b sandbox.Sandbox) int { return strings.Compare(a.ID, b.ID) }), nil
 }
 
-func (n *fakeNode) runnerCalls() []string {
+func (n *fakeNode) Stop(_ context.Context, id string) error {
+	n.record("Stop", id)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return slices.Clone(n.versions)
-}
-
-func (n *fakeNode) configured() []sandbox.Settings {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return slices.Clone(n.settings)
-}
-
-// fakeDriver keeps sandboxes in memory.
-type fakeDriver struct {
-	events chan sandbox.Event
-
-	mu        sync.Mutex
-	sandboxes map[string]sandbox.Sandbox
-	stopped   []string
-}
-
-func (d *fakeDriver) Mode() sandbox.Mode { return sandbox.ModeContainer }
-
-func (d *fakeDriver) Start(_ context.Context, spec sandbox.Spec) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.sandboxes[spec.ID] = sandbox.Sandbox{ID: spec.ID, PoolID: spec.PoolID, State: sandbox.StateStarting, Spec: spec}
+	delete(n.sandboxes, id)
 	return nil
-}
-
-func (d *fakeDriver) Stop(_ context.Context, id string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	delete(d.sandboxes, id)
-	d.stopped = append(d.stopped, id)
-	return nil
-}
-
-func (d *fakeDriver) List(context.Context) ([]sandbox.Sandbox, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	list := []sandbox.Sandbox{}
-	for _, sb := range d.sandboxes {
-		list = append(list, sb)
-	}
-	slices.SortFunc(list, func(a, b sandbox.Sandbox) int { return strings.Compare(a.ID, b.ID) })
-	return list, nil
-}
-
-func (d *fakeDriver) Capacity(context.Context) (sandbox.Capacity, error) {
-	return sandbox.Capacity{Mode: sandbox.ModeContainer, VCPU: 16, MemoryMB: 65536}, nil
-}
-
-func (d *fakeDriver) Events() <-chan sandbox.Event { return d.events }
-
-func (d *fakeDriver) Logs(context.Context, string, bool) (io.ReadCloser, error) {
-	return nil, errors.New("no logs in tests")
-}
-
-func (d *fakeDriver) Shell(context.Context, string, sandbox.TermSize) (sandbox.Terminal, error) {
-	return nil, errors.New("no shell in tests")
-}
-
-func (d *fakeDriver) Hold(context.Context, string, time.Time) error { return nil }
-func (d *fakeDriver) Close() error                                  { return nil }
-
-func (d *fakeDriver) stoppedIDs() []string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return slices.Sorted(slices.Values(d.stopped))
 }
 
 // testLogger keeps the log of a test and prints it when the test fails.
 // Goroutines can still log after the test ends, so it does not use t.Log.
-func testLogger(t *testing.T, side string) *slog.Logger {
+func testLogger(t *testing.T) *slog.Logger {
 	buf := &logBuffer{}
 	t.Cleanup(func() {
 		if t.Failed() {
-			t.Logf("%s log:\n%s", side, buf.String())
+			t.Logf("log:\n%s", buf.String())
 		}
 	})
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))

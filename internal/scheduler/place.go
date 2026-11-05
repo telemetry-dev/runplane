@@ -57,24 +57,19 @@ func (s *Scheduler) place(ctx context.Context, pool store.Pool, st store.Setting
 	if bestFree < 0 {
 		return placement{}, false
 	}
-	s.mu.Lock()
-	r := s.reserved[best.host.ServerID]
-	r.vcpu += pool.VCPU
-	r.memoryMB += pool.MemoryMB
-	r.count++
-	s.reserved[best.host.ServerID] = r
-	s.mu.Unlock()
+	s.reserve(best.host.ServerID, pool, 1)
 	return best, true
 }
 
-// release ends the reservation of one sandbox of the pool on the server.
-func (s *Scheduler) release(serverID string, pool store.Pool) {
+// reserve adds n sandboxes of the pool size to the reservation of the
+// server. A negative n ends reservations.
+func (s *Scheduler) reserve(serverID string, pool store.Pool, n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r := s.reserved[serverID]
-	r.vcpu -= pool.VCPU
-	r.memoryMB -= pool.MemoryMB
-	r.count--
+	r.vcpu += n * pool.VCPU
+	r.memoryMB += n * pool.MemoryMB
+	r.count += n
 	if r.count <= 0 {
 		delete(s.reserved, serverID)
 		return
@@ -112,10 +107,8 @@ func (s *Scheduler) hosts(ctx context.Context) []hostCapacity {
 // tied to a job, and GitHub can give any job of a scale set to any of its
 // runners.
 func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (sandbox.ImageRef, string, bool) {
-	if !canHost(h.Host, pool) || st.AllowPublicRepos && h.Driver.Mode() != sandbox.ModeVM {
-		return sandbox.ImageRef{}, "", false
-	}
-	if h.cap.FreeDiskPercent() <= st.MinFreeDiskPercent {
+	if !canHost(h.Host, pool) || st.AllowPublicRepos && h.Driver.Mode() != sandbox.ModeVM ||
+		h.cap.FreeDiskPercent() <= st.MinFreeDiskPercent {
 		return sandbox.ImageRef{}, "", false
 	}
 	img, ok := s.fleet.Image(h.ServerID, pool.ImageID)
@@ -131,23 +124,19 @@ func canHost(h sandbox.Host, pool store.Pool) bool {
 	return h.Arch == pool.Arch && (len(pool.ServerIDs) == 0 || slices.Contains(pool.ServerIDs, h.ServerID))
 }
 
-// fits counts the new sandboxes of the pool size that the servers can take now.
+// fits counts the new sandboxes of the pool size that the servers can take
+// now: for each server, how many times Capacity.Fits holds.
 func (s *Scheduler) fits(hosts []hostCapacity, pool store.Pool, st store.Settings) int {
 	n := 0
 	for _, h := range hosts {
-		if _, _, ok := s.offer(h, pool, st); ok {
-			n += fitCount(h.cap, pool.VCPU, pool.MemoryMB)
+		if _, _, ok := s.offer(h, pool, st); !ok {
+			continue
 		}
+		fit := min(h.cap.FreeVCPU()/max(pool.VCPU, 1), h.cap.FreeMemoryMB()/max(pool.MemoryMB, 1))
+		if h.cap.MaxSandboxes > 0 {
+			fit = min(fit, h.cap.MaxSandboxes-h.cap.Sandboxes)
+		}
+		n += max(fit, 0)
 	}
 	return n
-}
-
-// fitCount is how many times Fits holds for new sandboxes of this size.
-func fitCount(c sandbox.Capacity, vcpu, memoryMB int) int {
-	n := c.FreeVCPU() / max(vcpu, 1)
-	n = min(n, c.FreeMemoryMB()/max(memoryMB, 1))
-	if c.MaxSandboxes > 0 {
-		n = min(n, c.MaxSandboxes-c.Sandboxes)
-	}
-	return max(n, 0)
 }

@@ -30,23 +30,23 @@ func (h *Handler) backupOut(b store.Backup) Backup {
 	_, err := os.Stat(b.Path)
 	return Backup{
 		ID: b.ID, CreatedAt: b.CreatedAt, SizeBytes: b.SizeBytes, S3Key: b.S3Key, Status: b.Status, Error: b.Error,
-		Available: b.Path != "" && err == nil && h.inBackupsDir(b.Path),
+		Available: err == nil && h.inBackupsDir(b.Path),
 	}
 }
 
-func (h *Handler) listBackups(ctx context.Context, _ *struct{}) (*struct{ Body []Backup }, error) {
+func (h *Handler) listBackups(ctx context.Context, _ *struct{}) (*body[[]Backup], error) {
 	list, err := h.d.Store.ListBackups(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	out := make([]Backup, len(list))
 	for i, b := range list {
 		out[i] = h.backupOut(b)
 	}
-	return &struct{ Body []Backup }{out}, nil
+	return &body[[]Backup]{out}, nil
 }
 
-func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*struct{ Body Backup }, error) {
+func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*body[Backup], error) {
 	if h.d.Backups == nil {
 		return nil, unavailable("Backups")
 	}
@@ -56,19 +56,19 @@ func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*struct{ Body 
 	}
 	b, err := h.d.Store.GetBackup(ctx, id)
 	if err != nil {
-		return nil, h.storeErr(err, "The new backup is gone.")
+		return nil, notFound(err, "The new backup is gone.")
 	}
 	h.audit(ctx, "backup.create", b.ID, nil)
 	h.d.Bus.Publish(events.Event{Type: events.BackupState, Data: b})
-	return &struct{ Body Backup }{h.backupOut(b)}, nil
+	return &body[Backup]{h.backupOut(b)}, nil
 }
 
 func (h *Handler) downloadBackup(ctx context.Context, in *PathID) (*huma.StreamResponse, error) {
 	b, err := h.d.Store.GetBackup(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No backup has this ID.")
+		return nil, notFound(err, "No backup has this ID.")
 	}
-	if b.Path == "" || !h.inBackupsDir(b.Path) {
+	if !h.inBackupsDir(b.Path) {
 		return nil, huma.Error404NotFound("The backup file is not on this server.")
 	}
 	f, err := os.Open(b.Path)
@@ -76,7 +76,7 @@ func (h *Handler) downloadBackup(ctx context.Context, in *PathID) (*huma.StreamR
 		return nil, huma.Error404NotFound("The backup file is not on this server.")
 	}
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	h.audit(ctx, "backup.download", b.ID, nil)
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
@@ -106,19 +106,13 @@ type UpdateStatus struct {
 	State       string     `json:"state" enum:"idle,applying,restarting" doc:"applying: runplane downloads and installs the update. restarting: the new version starts."`
 }
 
-const (
-	updateIdle       = "idle"
-	updateApplying   = "applying"
-	updateRestarting = "restarting"
-)
-
-func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*struct{ Body UpdateStatus }, error) {
+func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*body[UpdateStatus], error) {
 	if h.d.Updater == nil {
 		return nil, unavailable("The updater")
 	}
 	st, err := h.d.Store.GetSettings(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	u, err := h.d.Updater.Check(ctx)
 	if err != nil {
@@ -126,9 +120,9 @@ func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*struct{ Body Upd
 	}
 	u.AutoUpdate = st.AutoUpdate
 	h.updateMu.Lock()
-	u.State = cmp.Or(h.updating, u.State, updateIdle)
+	u.State = cmp.Or(h.updating, u.State, "idle")
 	h.updateMu.Unlock()
-	return &struct{ Body UpdateStatus }{u}, nil
+	return &body[UpdateStatus]{u}, nil
 }
 
 func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) {
@@ -140,12 +134,12 @@ func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) 
 		h.updateMu.Unlock()
 		return nil, huma.Error409Conflict("An update is being installed.")
 	}
-	h.updating = updateApplying
+	h.updating = "applying"
 	h.updateMu.Unlock()
 	h.audit(ctx, "update.apply", "", nil)
 	// The update goes on when the admin closes the page.
 	err := h.d.Updater.Apply(context.WithoutCancel(ctx))
-	next := updateRestarting
+	next := "restarting"
 	if err != nil {
 		next = ""
 	}

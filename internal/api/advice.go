@@ -17,8 +17,6 @@ type SizeAdvice struct {
 	Reason string `json:"reason"`
 }
 
-// Size advice rules. Each share is the 90th percentile of the last runs,
-// against the size of the pool.
 const (
 	adviceRuns    = 10   // the last completed runs that count
 	adviceMinRuns = 3    // fewer runs give no advice

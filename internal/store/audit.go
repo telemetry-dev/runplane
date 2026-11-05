@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,17 +18,11 @@ type AuditEntry struct {
 	IP     string          `json:"ip"`
 }
 
+const auditCols = "id, at, user_id, action, target, detail_json, ip"
+
 func (s *Store) InsertAudit(ctx context.Context, e AuditEntry) error {
-	detail := string(e.Detail)
-	if detail == "" {
-		detail = "{}"
-	}
-	_, err := s.w.ExecContext(ctx, `INSERT INTO audit_log (id, at, user_id, action, target, detail_json, ip)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, e.ID, ms(e.At), e.UserID, e.Action, e.Target, detail, e.IP)
-	if err != nil {
-		return fmt.Errorf("insert audit entry: %w", dbErr(err))
-	}
-	return nil
+	return exec(ctx, s.w, "insert audit entry", insert("audit_log", auditCols),
+		e.ID, ms(e.At), e.UserID, e.Action, e.Target, cmp.Or(string(e.Detail), "{}"), e.IP)
 }
 
 // ListAudit returns one page of entries, newest first, and the cursor of the
@@ -37,7 +32,7 @@ func (s *Store) ListAudit(ctx context.Context, cursor string, limit int) ([]Audi
 		limit = 50
 	}
 	limit = min(limit, 200)
-	query := "SELECT id, at, user_id, action, target, detail_json, ip FROM audit_log"
+	query := "SELECT " + auditCols + " FROM audit_log"
 	var args []any
 	if cursor != "" {
 		atMS, id, err := decodeCursor(cursor)
@@ -47,16 +42,15 @@ func (s *Store) ListAudit(ctx context.Context, cursor string, limit int) ([]Audi
 		query += " WHERE at < ? OR (at = ? AND id < ?)"
 		args = append(args, atMS, atMS, id)
 	}
-	rows, err := s.r.QueryContext(ctx, query+" ORDER BY at DESC, id DESC LIMIT ?", append(args, limit+1)...)
-	list, err := scanAll(rows, err, func(sc scanner) (AuditEntry, error) {
+	list, err := queryAll(ctx, s.r, "list audit log", func(sc scanner) (AuditEntry, error) {
 		var e AuditEntry
 		var detail string
 		err := sc.Scan(&e.ID, at(&e.At), &e.UserID, &e.Action, &e.Target, &detail, &e.IP)
 		e.Detail = json.RawMessage(detail)
 		return e, err
-	})
+	}, query+" ORDER BY at DESC, id DESC LIMIT ?", append(args, limit+1)...)
 	if err != nil {
-		return nil, "", fmt.Errorf("list audit log: %w", err)
+		return nil, "", err
 	}
 	if len(list) <= limit {
 		return list, "", nil

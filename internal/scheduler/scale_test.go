@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/listener"
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -37,20 +36,20 @@ func TestAcquisitionsStopAtCapacity(t *testing.T) {
 			pool := e.addPool("runplane", func(p *store.Pool) { p.MaxRunners = tt.maxRunners })
 			client, sc, _ := e.attach(pool)
 
-			jobs := []*scaleset.JobAvailable{
+			m := msg(tt.assigned,
 				available(11, "acme/api", 900, "test (1)"),
 				available(12, "acme/api", 900, "test (2)"),
 				available(13, "acme/api", 900, "test (3)"),
 				available(14, "acme/api", 900, "lint"),
-			}
+			)
 			for i, offset := range []int{3, 1, 2, 0} {
-				jobs[i].QueueTime = start.Add(time.Duration(offset) * time.Second)
+				m.JobAvailableMessages[i].QueueTime = start.Add(time.Duration(offset) * time.Second)
 			}
-			e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(tt.assigned), JobAvailableMessages: jobs})
+			e.scale(sc, m)
 
 			var got []int64
-			if calls := client.acquireCalls(); len(calls) > 0 {
-				got = calls[0]
+			if len(client.acquired) > 0 {
+				got = client.acquired[0]
 			}
 			if !slices.Equal(got, tt.want) {
 				t.Fatalf("acquired %v, want %v", got, tt.want)
@@ -75,26 +74,23 @@ func TestRedeliveredMessagesChangeNothing(t *testing.T) {
 	pool := e.addPool("runplane")
 	client, sc, _ := e.attach(pool)
 
-	offer := &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0),
-		JobAvailableMessages: []*scaleset.JobAvailable{available(101, "acme/api", 900, "build")}}
-	assign := &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1),
-		JobAssignedMessages: []*scaleset.JobAssigned{assigned(101, "acme/api", 900, "build")}}
-	for _, msg := range []*scaleset.RunnerScaleSetMessage{offer, assign, assign, offer} {
-		e.scale(sc, msg)
+	offer := msg(0, available(101, "acme/api", 900, "build"))
+	assign := msg(1, assigned(101, "acme/api", 900, "build"))
+	for _, m := range []*scaleset.RunnerScaleSetMessage{offer, assign, assign, offer} {
+		e.scale(sc, m)
 	}
-	if n := len(driver.startedSpecs()); n != 1 {
+	if n := len(driver.specs); n != 1 {
 		t.Fatalf("%d sandbox starts, want 1", n)
 	}
 	if n := len(e.rec.matching("jit ")); n != 1 {
 		t.Errorf("%d JIT configs, want 1", n)
 	}
-	if n := len(client.acquireCalls()); n != 1 {
+	if n := len(client.acquired); n != 1 {
 		t.Errorf("%d AcquireJobs calls, want 1", n)
 	}
 
 	b := e.sandboxes(pool.ID)[0]
-	done := &scaleset.RunnerScaleSetMessage{MessageID: 3, Statistics: stats(0), JobCompletedMessages: []*scaleset.JobCompleted{
-		completed(101, "acme/api", 900, "build", b, "succeeded")}}
+	done := msg(0, completed(101, "acme/api", 900, "build", b, "succeeded"))
 	e.scale(sc, done)
 	e.settle()
 	e.scale(sc, done)
@@ -124,8 +120,8 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 2 })
 	_, sc, set := e.attach(pool)
 
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: listener.InitialMessageID, Statistics: stats(0)})
-	specs := driver.startedSpecs()
+	e.scale(sc, msg(0))
+	specs := driver.specs
 	if len(specs) != 2 {
 		t.Fatalf("%d starts, want 2", len(specs))
 	}
@@ -135,7 +131,7 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 		t.Errorf("row = %+v", b)
 	}
 	if spec.TimeLimit != 360*time.Minute || spec.JITConfig == "" || spec.Labels[sandbox.LabelSandbox] != spec.ID ||
-		spec.Labels[LabelPool] != pool.ID || spec.Image.Digest != b.ImageDigest || spec.RunnerVersion != "2.330.0" {
+		spec.Labels["dev.runplane.pool"] != pool.ID || spec.Image.Digest != b.ImageDigest || spec.RunnerVersion != "2.330.0" {
 		t.Errorf("spec = %+v", spec)
 	}
 
@@ -149,12 +145,12 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 	// A warm sandbox that goes away gets a replacement at the next poll.
 	e.event(serverID, specs[1].ID, stateEvent(sandbox.StateGone, "exited"))
 	e.scale(sc, nil)
-	if n := len(driver.startedSpecs()); n != 3 {
+	if n := len(driver.specs); n != 3 {
 		t.Fatalf("%d starts after a warm sandbox went away, want 3", n)
 	}
 
 	// An assigned job adds one sandbox, so that two stay warm.
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 5, Statistics: stats(1)})
+	e.scale(sc, msg(1))
 	if n := len(e.sandboxes(pool.ID, runnerStates...)); n != 3 {
 		t.Errorf("%d runners with one assigned job, want 3", n)
 	}
@@ -167,13 +163,11 @@ func TestCompletedJobKeepsWarmSandbox(t *testing.T) {
 	_, sc, set := e.attach(pool)
 	busy := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
 	warm := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start.Add(time.Second))
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(1),
-		JobStartedMessages: []*scaleset.JobStarted{started(101, "acme/api", 900, "build", busy)}})
+	e.scale(sc, msg(1, started(101, "acme/api", 900, "build", busy)))
 
 	// The runner of the busy sandbox ends with its job; the driver has not
 	// reported the end yet.
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(0),
-		JobCompletedMessages: []*scaleset.JobCompleted{completed(101, "acme/api", 900, "build", busy, "succeeded")}})
+	e.scale(sc, msg(0, completed(101, "acme/api", 900, "build", busy, "succeeded")))
 	e.settle()
 	if got := e.sandbox(warm.ID).State; got != sandbox.StateIdle {
 		t.Errorf("warm sandbox state %q after the job completed, want idle", got)
@@ -184,7 +178,7 @@ func TestCompletedJobKeepsWarmSandbox(t *testing.T) {
 	if got := e.sandbox(busy.ID).State; got != sandbox.StateStopping {
 		t.Errorf("sandbox of the completed job is %q, want stopping", got)
 	}
-	if n := len(driver.startedSpecs()); n != 0 {
+	if n := len(driver.specs); n != 0 {
 		t.Errorf("%d starts, want 0: the warm sandbox is enough", n)
 	}
 }
@@ -194,7 +188,7 @@ func TestScaleDownRemovesRunnerBeforeStop(t *testing.T) {
 	serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 2 })
 	client, sc, set := e.attach(pool)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: listener.InitialMessageID, Statistics: stats(0)})
+	e.scale(sc, msg(0))
 	list := e.sandboxes(pool.ID)
 	for _, b := range list {
 		e.event(serverID, b.ID, runnerEvent(sandbox.RunnerListening))
@@ -262,13 +256,10 @@ func TestRejectsPublicAndForkJobs(t *testing.T) {
 			client, sc, _ := e.attach(pool)
 
 			// Two jobs of one run: GitHub is asked about the run one time.
-			e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0), JobAvailableMessages: []*scaleset.JobAvailable{
-				available(21, "acme/site", 4242, "test"), available(22, "acme/site", 4242, "deploy"),
-			}})
+			e.scale(sc, msg(0, available(21, "acme/site", 4242, "test"), available(22, "acme/site", 4242, "deploy")))
 
-			acquired := client.acquireCalls()
-			if tt.wantRejected != (len(acquired) == 0) {
-				t.Errorf("acquire calls %v, rejected = %v", acquired, tt.wantRejected)
+			if tt.wantRejected != (len(client.acquired) == 0) {
+				t.Errorf("acquire calls %v, rejected = %v", client.acquired, tt.wantRejected)
 			}
 			for _, id := range []int64{21, 22} {
 				j := e.job(id)
@@ -310,64 +301,56 @@ func TestMaxRunners(t *testing.T) {
 			driver.running[b.ID] = sandbox.Spec{ID: b.ID, VCPU: 2, MemoryMB: 4096}
 
 			e.s.updateMaxRunners(e.ctx)
-			if got := client.maxRunners(); got != tt.want {
-				t.Errorf("max runners %d, want %d", got, tt.want)
+			if client.max != tt.want {
+				t.Errorf("max runners %d, want %d", client.max, tt.want)
 			}
 		})
 	}
 }
 
-func TestFailedStartMarksSandboxFailedAndRemovesRunner(t *testing.T) {
-	e := newTestEnv(t)
-	_, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	driver.startErr = errors.New("sysbox-runc: create container: no space left on device")
-	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
-	client, sc, _ := e.attach(pool)
+// A sandbox that does not start loses its runner on GitHub. When runplane
+// stops during the start, the driver gives up the start, which is no
+// failure of the sandbox.
+func TestStartErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		stop      bool // runplane stops while Start runs
+		wantState sandbox.State
+	}{
+		{"start fails", errors.New("sysbox-runc: create container: no space left on device"), false, sandbox.StateFailed},
+		{"runplane stops", fmt.Errorf("start container: %w", context.Canceled), true, sandbox.StateGone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			_, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
+			driver.startErr = tt.err
+			pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
+			client, sc, _ := e.attach(pool)
+			ctx, cancel := context.WithCancel(e.ctx)
+			defer cancel()
+			if tt.stop {
+				driver.gate, driver.entered = make(chan struct{}), make(chan string, 1)
+				go func() {
+					<-driver.entered
+					cancel()
+					close(driver.gate)
+				}()
+			}
 
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: listener.InitialMessageID, Statistics: stats(0)})
-	list := e.sandboxes(pool.ID)
-	if len(list) != 1 {
-		t.Fatalf("%d rows, want 1", len(list))
-	}
-	b := list[0]
-	if b.State != sandbox.StateFailed || b.StoppedAt == nil || b.Error == "" {
-		t.Errorf("row = state %q, stopped %v, error %q", b.State, b.StoppedAt, b.Error)
-	}
-	if _, ok := client.runners[b.RunnerID]; ok {
-		t.Error("the runner of the failed sandbox is still on GitHub")
-	}
-}
-
-// runplane stops while a sandbox starts. The driver gives up the start,
-// which is no failure of the sandbox.
-func TestCanceledStartMarksSandboxGone(t *testing.T) {
-	e := newTestEnv(t)
-	_, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	driver.gate, driver.entered = make(chan struct{}), make(chan string, 1)
-	driver.startErr = fmt.Errorf("start container: %w", context.Canceled)
-	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
-	client, sc, _ := e.attach(pool)
-
-	ctx, cancel := context.WithCancel(e.ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sc.Scale(ctx, &scaleset.RunnerScaleSetMessage{MessageID: listener.InitialMessageID, Statistics: stats(0)})
-	}()
-	<-driver.entered
-	cancel()
-	close(driver.gate)
-	<-done
-
-	list := e.sandboxes(pool.ID)
-	if len(list) != 1 {
-		t.Fatalf("%d rows, want 1", len(list))
-	}
-	if b := list[0]; b.State != sandbox.StateGone || b.StoppedAt == nil {
-		t.Errorf("row = state %q, stopped %v, error %q; want gone", b.State, b.StoppedAt, b.Error)
-	}
-	if len(client.runners) != 0 {
-		t.Errorf("runners on GitHub after the canceled start: %v", client.runners)
+			sc.Scale(ctx, msg(0))
+			list := e.sandboxes(pool.ID)
+			if len(list) != 1 {
+				t.Fatalf("%d rows, want 1", len(list))
+			}
+			if b := list[0]; b.State != tt.wantState || b.StoppedAt == nil || (b.Error != "") != (tt.wantState == sandbox.StateFailed) {
+				t.Errorf("row = state %q, stopped %v, error %q; want %q", b.State, b.StoppedAt, b.Error, tt.wantState)
+			}
+			if len(client.runners) != 0 {
+				t.Errorf("runners on GitHub after the start: %v", client.runners)
+			}
+		})
 	}
 }
 
@@ -397,18 +380,18 @@ func TestPoolStatsEvent(t *testing.T) {
 		}
 	}
 
-	jobs := []*scaleset.JobAvailable{
+	m := msg(0,
 		available(31, "acme/site", 800, "build"), // public: rejected
 		available(32, "acme/api", 801, "build"),  // acquired
 		available(33, "acme/api", 801, "test"),   // waits: no room
-	}
-	jobs[2].QueueTime = start.Add(time.Second)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0), JobAvailableMessages: jobs})
+	)
+	m.JobAvailableMessages[2].QueueTime = start.Add(time.Second)
+	e.scale(sc, m)
 	if got, want := last(), (poolStats{PoolID: pool.ID, Queued: 1, Assigned: 1}); got != want {
 		t.Errorf("after the offer: %+v, want %+v", got, want)
 	}
 
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1)})
+	e.scale(sc, msg(1))
 	if got, want := last(), (poolStats{PoolID: pool.ID, Starting: 1, Queued: 1, Assigned: 1}); got != want {
 		t.Errorf("after the start: %+v, want %+v", got, want)
 	}
@@ -446,7 +429,9 @@ func TestDetachStopsClientCalls(t *testing.T) {
 }
 
 // A warm sandbox must equal a new sandbox of its pool. Else the next job
-// runs with the old size, image, or runner after a change.
+// runs with the old size, image, or runner after a change. A warm sandbox
+// that waits for a job for the whole time limit gives way to a new one
+// before its guest stops it, so that a job never gets less than the limit.
 func TestReplacesStaleWarmSandboxes(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -464,6 +449,8 @@ func TestReplacesStaleWarmSandboxes(t *testing.T) {
 		}, false, true, true},
 		{"runner version", func(e *testEnv, _ *store.Pool) { e.fleet.runner = "2.331.0" }, false, true, true},
 		{"runner busy on GitHub", func(e *testEnv, _ *store.Pool) { e.fleet.runner = "2.331.0" }, true, false, false},
+		{"waited less than the time limit", func(e *testEnv, _ *store.Pool) { e.clock.add(359 * time.Minute) }, false, false, false},
+		{"waited the whole time limit", func(e *testEnv, _ *store.Pool) { e.clock.add(360 * time.Minute) }, false, true, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -472,13 +459,8 @@ func TestReplacesStaleWarmSandboxes(t *testing.T) {
 			pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 2 })
 			client, sc, set := e.attach(pool)
 			busy := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
-			e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: listener.InitialMessageID, Statistics: stats(0)})
-			var warm store.Sandbox
-			for _, b := range e.sandboxes(pool.ID) {
-				if b.ID != busy.ID {
-					warm = b
-				}
-			}
+			e.scale(sc, msg(0))
+			warm := e.sandbox(driver.specs[0].ID)
 			e.event(serverID, warm.ID, runnerEvent(sandbox.RunnerListening))
 			client.busy[warm.RunnerID] = tt.githubBusy
 
@@ -495,8 +477,7 @@ func TestReplacesStaleWarmSandboxes(t *testing.T) {
 			if e.rec.index("stop "+busy.ID) >= 0 {
 				t.Error("stopped the busy sandbox")
 			}
-			specs := driver.startedSpecs()
-			if started := len(specs) > 1; started != tt.wantStart {
+			if started := len(driver.specs) > 1; started != tt.wantStart {
 				t.Fatalf("new sandbox started = %v, want %v", started, tt.wantStart)
 			}
 			if !tt.wantStop {
@@ -511,7 +492,7 @@ func TestReplacesStaleWarmSandboxes(t *testing.T) {
 			if !tt.wantStart {
 				return
 			}
-			s := specs[len(specs)-1]
+			s := driver.specs[len(driver.specs)-1]
 			if s.VCPU != pool.VCPU || s.DiskGB != pool.DiskGB || s.Image.Digest != e.fleet.imageRef.Digest || s.RunnerVersion != e.fleet.runner {
 				t.Errorf("new sandbox spec %+v, want the pool %+v with image %s and runner %s", s, pool, e.fleet.imageRef.Digest, e.fleet.runner)
 			}
@@ -528,8 +509,7 @@ func TestRecordsRunData(t *testing.T) {
 	e.gh.checks["acme/api"] = JobCheck{Private: true, Ref: store.RunRef{Event: "pull_request", HeadBranch: "fix", PRNumber: 7, BaseRef: "main"}}
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	_, sc, _ := e.attach(e.addPool("runplane"))
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0),
-		JobAvailableMessages: []*scaleset.JobAvailable{available(41, "acme/api", 950, "test")}})
+	e.scale(sc, msg(0, available(41, "acme/api", 950, "test")))
 
 	if j := e.job(41); j.Event != "pull_request" || j.HeadBranch != "fix" || j.PRNumber != 7 || j.BaseRef != "main" {
 		t.Errorf("job run data: event %q branch %q pr %d base %q, want pull_request fix 7 main", j.Event, j.HeadBranch, j.PRNumber, j.BaseRef)
@@ -553,20 +533,18 @@ func TestPublicJobsNeverReachContainerServers(t *testing.T) {
 	old := e.insertSandbox(pool, set, agentID, sandbox.StateIdle, start)
 	agentDriver.running[old.ID] = sandbox.Spec{ID: old.ID}
 
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0),
-		JobAvailableMessages: []*scaleset.JobAvailable{available(51, "acme/site", 4300, "test")}})
-
-	if n := len(agentDriver.startedSpecs()); n != 0 {
+	e.scale(sc, msg(0, available(51, "acme/site", 4300, "test")))
+	if n := len(agentDriver.specs); n != 0 {
 		t.Errorf("%d sandboxes started on the container server, want 0", n)
 	}
-	if n := len(vmDriver.startedSpecs()); n != 2 {
+	if n := len(vmDriver.specs); n != 2 {
 		t.Errorf("%d sandboxes started on the VM server, want the 2 that fit", n)
 	}
 	if got := e.sandbox(old.ID); got.State != sandbox.StateStopping {
 		t.Errorf("warm container sandbox: state %q, want stopping", got.State)
 	}
-	if j := e.job(51); j.RejectReason == "" || len(client.acquireCalls()) != 0 {
-		t.Errorf("public job: reject %q, acquire calls %v; want a reject while a container server is online", j.RejectReason, client.acquireCalls())
+	if j := e.job(51); j.RejectReason == "" || len(client.acquired) != 0 {
+		t.Errorf("public job: reject %q, acquire calls %v; want a reject while a container server is online", j.RejectReason, client.acquired)
 	}
 
 	// Without the container server, the VM servers take the job.
@@ -574,8 +552,7 @@ func TestPublicJobsNeverReachContainerServers(t *testing.T) {
 	e.fleet.offline[agentID] = true
 	e.fleet.mu.Unlock()
 	e.s.cleanup(e.ctx)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(0),
-		JobAvailableMessages: []*scaleset.JobAvailable{available(51, "acme/site", 4300, "test")}})
+	e.scale(sc, msg(0, available(51, "acme/site", 4300, "test")))
 	if j := e.job(51); j.RejectReason != "" || j.State != store.JobAssigned {
 		t.Errorf("public job with VM servers only: state %q, reject %q; want assigned", j.State, j.RejectReason)
 	}
@@ -593,20 +570,16 @@ func TestRequeuedJobIsAcquiredAgain(t *testing.T) {
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane")
 	client, sc, _ := e.attach(pool)
-	offer := &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0),
-		JobAvailableMessages: []*scaleset.JobAvailable{available(31, "acme/api", 960, "build")}}
+	offer := msg(0, available(31, "acme/api", 960, "build"))
 	e.scale(sc, offer)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1),
-		JobAssignedMessages: []*scaleset.JobAssigned{assigned(31, "acme/api", 960, "build")}})
-	cancel := base(31, "acme/api", 960, "build", scaleset.MessageTypeJobCompleted)
+	e.scale(sc, msg(1, assigned(31, "acme/api", 960, "build")))
+	cancel := base(31, "acme/api", 960, "build")
 	cancel.ScaleSetAssignTime = start.Add(time.Second)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 3, Statistics: stats(0),
-		JobCompletedMessages: []*scaleset.JobCompleted{{Result: "Canceled", JobMessageBase: cancel}}})
+	e.scale(sc, msg(0, &scaleset.JobCompleted{Result: "Canceled", JobMessageBase: cancel}))
 	e.settle()
 
-	offer.MessageID = 4
 	e.scale(sc, offer)
-	if calls := client.acquireCalls(); len(calls) != 2 || !slices.Equal(calls[1], []int64{31}) {
+	if calls := client.acquired; len(calls) != 2 || !slices.Equal(calls[1], []int64{31}) {
 		t.Errorf("acquire calls %v, want [[31] [31]]", calls)
 	}
 	if j := e.job(31); j.State != store.JobAssigned || j.Result != "" || j.FinishedAt != nil {
@@ -623,20 +596,16 @@ func TestCancelledJobThatRanStaysCompleted(t *testing.T) {
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
 	client, sc, _ := e.attach(pool)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: listener.InitialMessageID, Statistics: stats(0)})
+	e.scale(sc, msg(0))
 	b := e.sandboxes(pool.ID)[0]
-	offer := &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0),
-		JobAvailableMessages: []*scaleset.JobAvailable{available(32, "acme/api", 961, "build")}}
+	offer := msg(0, available(32, "acme/api", 961, "build"))
 	e.scale(sc, offer)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1),
-		JobStartedMessages: []*scaleset.JobStarted{started(32, "acme/api", 961, "build", b)}})
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 3, Statistics: stats(0),
-		JobCompletedMessages: []*scaleset.JobCompleted{completed(32, "acme/api", 961, "build", b, "Canceled")}})
+	e.scale(sc, msg(1, started(32, "acme/api", 961, "build", b)))
+	e.scale(sc, msg(0, completed(32, "acme/api", 961, "build", b, "Canceled")))
 	e.settle()
 
-	offer.MessageID = 4
 	e.scale(sc, offer)
-	if n := len(client.acquireCalls()); n != 1 {
+	if n := len(client.acquired); n != 1 {
 		t.Errorf("%d AcquireJobs calls, want 1", n)
 	}
 	if j := e.job(32); j.State != store.JobCompleted || j.Result != store.ResultCancelled {
@@ -655,18 +624,18 @@ func TestCheckErrorDoesNotBlockTheMessage(t *testing.T) {
 		"acme/not-selected": fmt.Errorf("%w: GitHub API GET /repos/acme/not-selected/actions/runs/1: 404 Not Found", ErrRunUnreadable),
 		"acme/flaky":        errors.New("GitHub API GET /repos/acme/flaky/actions/runs/2: 502 Bad Gateway"),
 	}
-	msg := &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0), JobAvailableMessages: []*scaleset.JobAvailable{
+	m := msg(0,
 		available(61, "acme/not-selected", 1, "test"),
 		available(62, "acme/flaky", 2, "test"),
 		available(63, "acme/api", 3, "test"),
-	}}
+	)
 	for range 2 {
-		if err := sc.Scale(e.ctx, msg); err != nil {
+		if err := sc.Scale(e.ctx, m); err != nil {
 			t.Fatalf("Scale: %v, want nil so that the listener acks the message", err)
 		}
 	}
 
-	if calls := client.acquireCalls(); len(calls) != 1 || !slices.Equal(calls[0], []int64{63}) {
+	if calls := client.acquired; len(calls) != 1 || !slices.Equal(calls[0], []int64{63}) {
 		t.Errorf("acquire calls %v, want [[63]]", calls)
 	}
 	if j := e.job(61); j.State != store.JobQueued || !strings.Contains(j.RejectReason, "install the GitHub App") {
@@ -691,10 +660,9 @@ func TestStepsRefreshWhileTheJobRuns(t *testing.T) {
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
 	_, sc, _ := e.attach(pool)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0)})
+	e.scale(sc, msg(0))
 	b := e.sandboxes(pool.ID)[0]
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1),
-		JobStartedMessages: []*scaleset.JobStarted{started(81, "acme/api", 980, "build", b)}})
+	e.scale(sc, msg(1, started(81, "acme/api", 980, "build", b)))
 
 	now := start.Add(time.Minute)
 	e.gh.mu.Lock()
@@ -714,8 +682,7 @@ func TestStepsRefreshWhileTheJobRuns(t *testing.T) {
 		t.Errorf("step 2 = %+v, want Run tests in progress", got)
 	}
 
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 3, Statistics: stats(0),
-		JobCompletedMessages: []*scaleset.JobCompleted{completed(81, "acme/api", 980, "build", b, "Succeeded")}})
+	e.scale(sc, msg(0, completed(81, "acme/api", 980, "build", b, "Succeeded")))
 	time.Sleep(50 * time.Millisecond)
 	reads := len(e.rec.matching("steps "))
 	time.Sleep(50 * time.Millisecond)
@@ -738,8 +705,7 @@ func TestJobsWithoutRequestIDsStayApart(t *testing.T) {
 	lint.JobID = "e8c96f8d-1f58-5afe-b930-91e0f3f291fe"
 	test := started(0, "acme/api", 900, "test", second)
 	test.JobID = "eb596b22-9a5a-56b8-bf07-7b3f1be34661"
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(2),
-		JobStartedMessages: []*scaleset.JobStarted{lint, test}})
+	e.scale(sc, msg(2, lint, test))
 
 	jobs, _, err := e.st.ListJobs(e.ctx, store.JobFilter{})
 	if err != nil {

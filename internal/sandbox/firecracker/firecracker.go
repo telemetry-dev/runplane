@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/netip"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,48 +26,38 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/scratch"
 )
 
-// ErrNotFound means that the driver has no operating sandbox with this ID.
-var ErrNotFound = errors.New("firecracker: no such sandbox")
-
 // vmOverheadMB is the host memory of one VM on top of its guest memory:
 // the Firecracker process, page tables, and device buffers.
 const vmOverheadMB = 64
 
 type Options struct {
-	DataDir     string // default /var/lib/runplane
-	Firecracker string // default /usr/local/bin/firecracker
-	Jailer      string // default /usr/local/bin/jailer
-	Kernel      string // default <DataDir>/kernel/vmlinux
-	// JailerUser has the ID ranges of the VMs in /etc/subuid and
-	// /etc/subgid. The default is runplane-vm.
-	JailerUser  string
-	ServicePort int // cache server and registry mirror on the gateway of each VM; default 8486
-
+	DataDir     string
+	Kernel      string
+	ServicePort int // cache server and registry mirror on the gateway of each VM
 	// RootDisk returns the ext4 root disk of a ready image.
 	RootDisk func(digest string) (string, error)
 	// RunnerDrive returns the ext4 drive of a ready runner bundle.
 	RunnerDrive func(ctx context.Context, version, arch string) (string, error)
 	// CacheEnv returns the runner environment for the Actions cache at
-	// serviceURL. Nil means no cache.
+	// serviceURL.
 	CacheEnv func(serviceURL string) map[string]string
-
 	Settings sandbox.Settings
 	Logger   *slog.Logger
 }
 
-// Driver operates the microVMs of this server. It implements sandbox.Driver
-// and sandbox.Configurable.
+// Driver operates the microVMs of this server.
 type Driver struct {
-	opts       Options
-	log        *slog.Logger
-	ids        idRange
-	unit       string // the systemd service of runplane, empty outside one
-	arch       string
-	sys        hostOps
-	taps       *netrules.Allocator
-	disks      *scratch.Disks
-	events     *eventQueue
-	cgroupRoot string
+	opts        Options
+	log         *slog.Logger
+	ids         idRange
+	unit        string // the systemd service of runplane, empty outside one
+	firecracker string
+	jailer      string
+	cgroupRoot  string
+	sys         hostOps
+	taps        *netrules.Allocator
+	disks       *scratch.Disks
+	events      *eventQueue
 
 	mu       sync.Mutex
 	vms      map[string]*vm
@@ -89,21 +79,14 @@ func New(opts Options) (*Driver, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("firecracker: %w: linux only", errors.ErrUnsupported)
 	}
-	opts = withDefaults(opts)
-	if opts.RootDisk == nil || opts.RunnerDrive == nil {
-		return nil, errors.New("firecracker: RootDisk and RunnerDrive are required")
+	ids, err := readIDRange("runplane-vm", "/etc/subuid", "/etc/subgid")
+	if err != nil {
+		return nil, err
 	}
+	d := newDriver(opts, ids, systemHost{net: netrules.New(opts.Logger)})
 	// The jailer names the chroot folder after the real file name.
-	if p, err := filepath.EvalSymlinks(opts.Firecracker); err == nil {
-		opts.Firecracker = p
-	}
-	ids, err := readIDRange(opts.JailerUser, "/etc/subuid", "/etc/subgid")
-	if err != nil {
-		return nil, err
-	}
-	d, err := newDriver(opts, ids, systemHost{net: netrules.New(opts.Logger)})
-	if err != nil {
-		return nil, err
+	if p, err := filepath.EvalSymlinks(d.firecracker); err == nil {
+		d.firecracker = p
 	}
 	if b, err := os.ReadFile("/proc/self/cgroup"); err == nil {
 		d.unit = serviceUnit(b)
@@ -128,25 +111,23 @@ func New(opts Options) (*Driver, error) {
 	return d, nil
 }
 
-func withDefaults(opts Options) Options {
-	set := func(s *string, v string) {
-		if *s == "" {
-			*s = v
-		}
+// newDriver makes a driver that has not touched the host yet.
+func newDriver(opts Options, ids idRange, sys hostOps) *Driver {
+	return &Driver{
+		opts:        opts,
+		log:         opts.Logger,
+		ids:         ids,
+		firecracker: "/usr/local/bin/firecracker",
+		jailer:      "/usr/local/bin/jailer",
+		cgroupRoot:  "/sys/fs/cgroup",
+		sys:         sys,
+		taps:        netrules.NewAllocator(netrules.DefaultTapSubnet),
+		disks:       scratch.New(filepath.Join(opts.DataDir, "scratch-templates")),
+		events:      newEventQueue(),
+		vms:         map[string]*vm{},
+		settings:    settingsDefaults(opts.Settings),
+		quit:        make(chan struct{}),
 	}
-	set(&opts.DataDir, "/var/lib/runplane")
-	set(&opts.Firecracker, "/usr/local/bin/firecracker")
-	set(&opts.Jailer, "/usr/local/bin/jailer")
-	set(&opts.Kernel, filepath.Join(opts.DataDir, "kernel", "vmlinux"))
-	set(&opts.JailerUser, "runplane-vm")
-	if opts.ServicePort == 0 {
-		opts.ServicePort = 8486
-	}
-	if opts.Logger == nil {
-		opts.Logger = slog.New(slog.DiscardHandler)
-	}
-	opts.Settings = settingsDefaults(opts.Settings)
-	return opts
 }
 
 func settingsDefaults(s sandbox.Settings) sandbox.Settings {
@@ -154,28 +135,6 @@ func settingsDefaults(s sandbox.Settings) sandbox.Settings {
 		s.DNS = []string{"1.1.1.1", "8.8.8.8"}
 	}
 	return s
-}
-
-// newDriver makes a driver that has not touched the host yet.
-func newDriver(opts Options, ids idRange, sys hostOps) (*Driver, error) {
-	taps, err := netrules.NewAllocator(netrules.DefaultTapSubnet)
-	if err != nil {
-		return nil, err
-	}
-	return &Driver{
-		opts:       opts,
-		log:        opts.Logger,
-		ids:        ids,
-		arch:       host.Arch(),
-		sys:        sys,
-		taps:       taps,
-		disks:      scratch.New(filepath.Join(opts.DataDir, "scratch-templates")),
-		events:     newEventQueue(),
-		cgroupRoot: "/sys/fs/cgroup",
-		vms:        map[string]*vm{},
-		settings:   opts.Settings,
-		quit:       make(chan struct{}),
-	}, nil
 }
 
 func (d *Driver) Mode() sandbox.Mode { return sandbox.ModeVM }
@@ -201,7 +160,7 @@ func (d *Driver) Capacity(context.Context) (sandbox.Capacity, error) {
 	d.mu.Unlock()
 	c := sandbox.Capacity{
 		Mode:            sandbox.ModeVM,
-		Arch:            d.arch,
+		Arch:            host.Arch(),
 		VCPU:            res.VCPU,
 		MemoryMB:        res.MemoryMB,
 		DiskBytes:       res.DiskBytes,
@@ -211,8 +170,8 @@ func (d *Driver) Capacity(context.Context) (sandbox.Capacity, error) {
 		Overcommit:      s.Overcommit,
 	}
 	for _, v := range d.all() {
-		c.AllocVCPU += v.spec.VCPU
-		c.AllocMemoryMB += v.spec.MemoryMB + vmOverheadMB
+		c.AllocVCPU += v.Spec.VCPU
+		c.AllocMemoryMB += v.Spec.MemoryMB + vmOverheadMB
 		c.Sandboxes++
 	}
 	return c, nil
@@ -282,6 +241,29 @@ func (d *Driver) Configure(s sandbox.Settings) error {
 	return err
 }
 
+// Probe does the sandbox internet check of the doctor. It does not boot a
+// VM: it puts a network namespace behind a free TAP address, with the
+// firewall rules of a VM, and fetches the GitHub API from there through the
+// DNS server of the settings, as container mode does. Thus it checks the
+// host part of the VM network: forwarding, NAT, the runplane rules, and
+// other firewalls of the host.
+func (d *Driver) Probe(ctx context.Context) error {
+	d.mu.Lock()
+	dns := d.settings.IPv4DNS()
+	d.mu.Unlock()
+	if len(dns) == 0 {
+		return errors.New("the dns setting has no IPv4 server, and VMs have IPv4 only")
+	}
+	lease, err := d.taps.Acquire()
+	if err != nil {
+		return err
+	}
+	defer d.taps.Release(lease.Index)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	return d.sys.probe(ctx, lease, dns[0], "https://api.github.com")
+}
+
 // Close disconnects from the VMs and leaves them running. A new driver
 // connects to them again. At a host shutdown, systemd stops the VM scopes
 // after runplane (jailerCommand). Close then first tells these VMs to power
@@ -328,9 +310,8 @@ func (d *Driver) stopForShutdown() {
 	wg.Wait()
 }
 
-// netConfig is the firewall policy for settings s.
 func (d *Driver) netConfig(s sandbox.Settings) netrules.Config {
-	dns := ipv4DNS(s)
+	dns := s.IPv4DNS()
 	if len(dns) < len(s.DNS) {
 		d.log.Warn("sandboxes use only the IPv4 DNS servers", "servers", s.DNS)
 	}
@@ -342,18 +323,6 @@ func (d *Driver) netConfig(s sandbox.Settings) netrules.Config {
 	}
 }
 
-// ipv4DNS returns the IPv4 DNS servers of the settings. Sandboxes have no
-// IPv6.
-func ipv4DNS(s sandbox.Settings) []netip.Addr {
-	var list []netip.Addr
-	for _, a := range s.DNS {
-		if ip, err := netip.ParseAddr(a); err == nil && ip.Is4() {
-			list = append(list, ip)
-		}
-	}
-	return list
-}
-
 // spawn runs fn in a goroutine that Close waits for. After Close, it does
 // not run fn and returns false.
 func (d *Driver) spawn(fn func()) bool {
@@ -362,11 +331,7 @@ func (d *Driver) spawn(fn func()) bool {
 	if d.closed {
 		return false
 	}
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		fn()
-	}()
+	d.wg.Go(fn)
 	return true
 }
 
@@ -378,11 +343,7 @@ func (d *Driver) emit(ev sandbox.Event) {
 func (d *Driver) all() []*vm {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	list := make([]*vm, 0, len(d.vms))
-	for _, v := range d.vms {
-		list = append(list, v)
-	}
-	return list
+	return slices.Collect(maps.Values(d.vms))
 }
 
 // ready returns a VM that has started.
@@ -391,7 +352,7 @@ func (d *Driver) ready(id string) (*vm, error) {
 	v := d.vms[id]
 	d.mu.Unlock()
 	if v == nil || !v.isReady() {
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+		return nil, fmt.Errorf("firecracker: no such sandbox: %s", id)
 	}
 	return v, nil
 }
@@ -400,14 +361,63 @@ func (d *Driver) sandboxDir(id string) string {
 	return filepath.Join(d.opts.DataDir, "sandboxes", id)
 }
 
-func (d *Driver) chrootBase() string { return filepath.Join(d.opts.DataDir, "jail") }
+// eventQueue delivers events in order without blocking the sender.
+type eventQueue struct {
+	out  chan sandbox.Event
+	wake chan struct{}
+	quit chan struct{}
+	done chan struct{}
 
-// jails holds the folder that the jailer makes for each VM.
-func (d *Driver) jails() string {
-	return filepath.Join(d.chrootBase(), filepath.Base(d.opts.Firecracker))
+	mu   sync.Mutex
+	list []sandbox.Event
 }
 
-// jailDir is the folder of one VM. Its root folder is the chroot.
-func (d *Driver) jailDir(id string) string { return filepath.Join(d.jails(), id) }
+func newEventQueue() *eventQueue {
+	q := &eventQueue{
+		out:  make(chan sandbox.Event),
+		wake: make(chan struct{}, 1),
+		quit: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	go q.run()
+	return q
+}
 
-func (d *Driver) chroot(id string) string { return filepath.Join(d.jailDir(id), "root") }
+func (q *eventQueue) push(ev sandbox.Event) {
+	q.mu.Lock()
+	q.list = append(q.list, ev)
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (q *eventQueue) run() {
+	defer close(q.done)
+	defer close(q.out)
+	for {
+		q.mu.Lock()
+		batch := q.list
+		q.list = nil
+		q.mu.Unlock()
+		for _, ev := range batch {
+			select {
+			case q.out <- ev:
+			case <-q.quit:
+				return
+			}
+		}
+		select {
+		case <-q.wake:
+		case <-q.quit:
+			return
+		}
+	}
+}
+
+// close ends the delivery and closes the channel.
+func (q *eventQueue) close() {
+	close(q.quit)
+	<-q.done
+}

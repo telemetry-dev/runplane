@@ -56,9 +56,7 @@ func TestPublishWhileCancel(t *testing.T) {
 	var b Bus
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -67,7 +65,7 @@ func TestPublishWhileCancel(t *testing.T) {
 				b.Publish(Event{Type: HostStats})
 			}
 		}
-	}()
+	})
 	for range 200 {
 		_, cancel := b.Subscribe(0)
 		cancel()

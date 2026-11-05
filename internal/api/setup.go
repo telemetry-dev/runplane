@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 
 	"github.com/danielgtaylor/huma/v2"
 
@@ -21,25 +20,25 @@ type Status struct {
 	SSHPort         int    `json:"ssh_port" doc:"Port of the SSH gateway for debug shells."`
 }
 
-func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*struct{ Body Status }, error) {
+func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], error) {
 	st := h.d.Store
 	users, err := st.CountUsers(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	settings, err := st.GetSettings(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	connected, err := h.githubConnected(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	jobs, _, err := st.ListJobs(ctx, store.JobFilter{Limit: 1})
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	return &struct{ Body Status }{Status{
+	return &body[Status]{Status{
 		NeedsSetup:      users == 0,
 		Version:         version.String(),
 		Mode:            string(h.mode(settings)),
@@ -50,16 +49,6 @@ func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*struct{ Body Sta
 	}}, nil
 }
 
-func (h *Handler) githubConnected(ctx context.Context) (bool, error) {
-	if _, err := h.d.Store.GetGitHubApp(ctx); errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	} else if err != nil {
-		return false, err
-	}
-	list, err := h.d.Store.ListInstallations(ctx)
-	return len(list) > 0, err
-}
-
 type SetupRequest struct {
 	Code     string `json:"code" doc:"Setup code from the install script, for example ABCD-EFGH-JKLM."`
 	Name     string `json:"name" maxLength:"100"`
@@ -67,12 +56,12 @@ type SetupRequest struct {
 	Password string `json:"password" maxLength:"1024"`
 }
 
-func (h *Handler) setup(ctx context.Context, in *struct{ Body SetupRequest }) (*sessionOutput, error) {
+func (h *Handler) setup(ctx context.Context, in *body[SetupRequest]) (*sessionOutput, error) {
 	c := clientOf(ctx)
 	b := in.Body
 	u, token, err := h.d.Auth.Setup(ctx, b.Code, b.Name, b.Email, b.Password, c.ip, c.userAgent)
 	if err != nil {
-		return nil, h.authErr(err, "body.password")
+		return nil, authErr(err, "body.password")
 	}
 	h.audit(context.WithValue(ctx, userKey{}, u), "setup.done", u.ID, map[string]any{"email": u.Email})
 	return h.newSession(ctx, u, token), nil
@@ -92,7 +81,6 @@ type HostCheck struct {
 	Checks        []Check `json:"checks"`
 }
 
-// Check is the result of one doctor check.
 type Check struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -106,17 +94,17 @@ type setupHostInput struct {
 	Code string `query:"code" required:"true" doc:"The setup code."`
 }
 
-func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*struct{ Body HostCheck }, error) {
+func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*body[HostCheck], error) {
 	users, err := h.d.Store.CountUsers(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	if users > 0 {
 		return nil, huma.Error409Conflict("The setup is done.")
 	}
 	ok, err := h.d.Auth.SetupCodeValid(ctx, in.Code)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	if !ok {
 		return nil, invalid("query.code", sentence(auth.ErrBadSetupCode), nil)
@@ -135,5 +123,5 @@ func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*struct
 			h.d.Log.Warn("save doctor result", "server", local.ID, "err", err)
 		}
 	}
-	return &struct{ Body HostCheck }{hc}, nil
+	return &body[HostCheck]{hc}, nil
 }

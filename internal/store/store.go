@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,8 +29,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("already exists")
+	ErrNotFound  = errors.New("not found")
+	ErrConflict  = errors.New("already exists")
+	ErrBadCursor = errors.New("bad cursor")
 )
 
 //go:embed migrations/*.sql
@@ -60,25 +63,23 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	w.SetMaxOpenConns(1)
-	w.SetMaxIdleConns(1)
-	w.SetConnMaxIdleTime(0)
-	w.SetConnMaxLifetime(0)
-	if err := migrate(context.Background(), w); err != nil {
+	s := &Store{w: w}
+	if err := s.migrate(context.Background()); err != nil {
 		w.Close()
 		return nil, err
 	}
 
 	// The readers are not query_only, because VACUUM INTO needs write access
 	// to its target file.
-	r, err := sql.Open("sqlite", path+"?"+pragmas)
+	s.r, err = sql.Open("sqlite", path+"?"+pragmas)
 	if err != nil {
 		w.Close()
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	n := max(4, runtime.NumCPU())
-	r.SetMaxOpenConns(n)
-	r.SetMaxIdleConns(n)
-	return &Store{w: w, r: r}, nil
+	s.r.SetMaxOpenConns(n)
+	s.r.SetMaxIdleConns(n)
+	return s, nil
 }
 
 func (s *Store) Close() error {
@@ -88,55 +89,59 @@ func (s *Store) Close() error {
 // DB returns the reader pool for VACUUM INTO, which then does not stop writes.
 func (s *Store) DB() *sql.DB { return s.r }
 
-func migrate(ctx context.Context, db *sql.DB) error {
-	files, err := fs.Glob(migrations, "migrations/*.sql")
-	if err != nil {
-		return fmt.Errorf("list migrations: %w", err)
-	}
+func (s *Store) migrate(ctx context.Context) error {
 	// Each file name starts with its number. The numbers start at 1 and have no gaps.
-	type migration struct {
-		n   int
-		sql string
-	}
-	list := make([]migration, len(files))
+	files, _ := fs.Glob(migrations, "migrations/*.sql")
+	list := make([]string, len(files))
 	for _, name := range files {
 		base := strings.TrimPrefix(name, "migrations/")
 		num, _, _ := strings.Cut(base, "_")
 		n, err := strconv.Atoi(num)
-		if err != nil || n < 1 || n > len(files) || list[n-1].sql != "" {
+		if err != nil || n < 1 || n > len(files) || list[n-1] != "" {
 			return fmt.Errorf("migration %s: bad number", base)
 		}
-		b, err := migrations.ReadFile(name)
-		if err != nil {
-			return fmt.Errorf("read migration: %w", err)
-		}
-		list[n-1] = migration{n, string(b)}
+		b, _ := migrations.ReadFile(name)
+		list[n-1] = string(b)
 	}
+	return s.tx(ctx, "migrate database", func(tx *sql.Tx) error {
+		var version int
+		if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+			return fmt.Errorf("read schema version: %w", err)
+		}
+		if version > len(list) {
+			return fmt.Errorf("database schema %d is newer than this runplane (%d)", version, len(list))
+		}
+		for i, m := range list[version:] {
+			n := version + i + 1
+			if _, err := tx.ExecContext(ctx, m); err != nil {
+				return fmt.Errorf("apply migration %d: %w", n, err)
+			}
+			if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", n)); err != nil {
+				return fmt.Errorf("apply migration %d: %w", n, err)
+			}
+		}
+		return nil
+	})
+}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-	defer tx.Rollback()
-	var version int
-	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
-	}
-	if version > len(list) {
-		return fmt.Errorf("database schema %d is newer than this runplane (%d)", version, len(list))
-	}
-	for _, m := range list[version:] {
-		if _, err := tx.ExecContext(ctx, m.sql); err != nil {
-			return fmt.Errorf("apply migration %d: %w", m.n, err)
+// DeleteExpired deletes the sessions, manifest states, setup codes, invites,
+// and server tokens that expired at now. It keeps the used setup codes,
+// accepted invites, and used server tokens as a record.
+func (s *Store) DeleteExpired(ctx context.Context, now time.Time) error {
+	return s.tx(ctx, "delete expired rows", func(tx *sql.Tx) error {
+		for _, q := range []string{
+			"DELETE FROM sessions WHERE expires_at <= ?",
+			"DELETE FROM manifest_states WHERE expires_at <= ?",
+			"DELETE FROM setup_codes WHERE used_at IS NULL AND expires_at <= ?",
+			"DELETE FROM invites WHERE accepted_at IS NULL AND expires_at <= ?",
+			"DELETE FROM server_tokens WHERE used_at IS NULL AND expires_at <= ?",
+		} {
+			if _, err := tx.ExecContext(ctx, q, ms(now)); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", m.n)); err != nil {
-			return fmt.Errorf("apply migration %d: %w", m.n, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("migrate database: %w", err)
-	}
-	return nil
+		return nil
+	})
 }
 
 type querier interface {
@@ -145,33 +150,103 @@ type querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// tx runs fn in one write transaction.
-func (s *Store) tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+type scanner interface{ Scan(dest ...any) error }
+
+// tx runs fn in one write transaction. Errors get op as a prefix.
+func (s *Store) tx(ctx context.Context, op string, fn func(tx *sql.Tx) error) error {
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", op, err)
 	}
+	defer tx.Rollback()
 	if err := fn(tx); err != nil {
-		tx.Rollback()
-		return err
+		return fmt.Errorf("%s: %w", op, err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return nil
 }
 
-// exec1 runs a write that must change one row, or returns ErrNotFound.
-func exec1(ctx context.Context, q querier, query string, args ...any) error {
+// queryOne scans the row of a query, or returns ErrNotFound. Errors get op
+// as a prefix.
+func queryOne[T any](ctx context.Context, q querier, op string, scan func(scanner) (T, error), query string, args ...any) (T, error) {
+	v, err := scan(q.QueryRowContext(ctx, query, args...))
+	if err != nil {
+		var zero T
+		return zero, fmt.Errorf("%s: %w", op, dbErr(err))
+	}
+	return v, nil
+}
+
+// queryAll scans all rows of a query. Errors get op as a prefix.
+func queryAll[T any](ctx context.Context, q querier, op string, scan func(scanner) (T, error), query string, args ...any) ([]T, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	defer rows.Close()
+	var list []T
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		list = append(list, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	return list, nil
+}
+
+// queryMap scans all rows of a query into a map. Errors get op as a prefix.
+func queryMap[K comparable, V any](ctx context.Context, q querier, op string, scan func(scanner) (K, V, error), query string, args ...any) (map[K]V, error) {
+	m := map[K]V{}
+	_, err := queryAll(ctx, q, op, func(sc scanner) (K, error) {
+		k, v, err := scan(sc)
+		m[k] = v
+		return k, err
+	}, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// scanValue scans a row of one column.
+func scanValue[T any](sc scanner) (T, error) {
+	var v T
+	err := sc.Scan(&v)
+	return v, err
+}
+
+// exec runs a write. Errors get op as a prefix.
+func exec(ctx context.Context, q querier, op, query string, args ...any) error {
+	_, err := changed(ctx, q, op, query, args...)
+	return err
+}
+
+// exec1 runs a write that must change a row, or returns ErrNotFound.
+func exec1(ctx context.Context, q querier, op, query string, args ...any) error {
+	ok, err := changed(ctx, q, op, query, args...)
+	if err == nil && !ok {
+		return fmt.Errorf("%s: %w", op, ErrNotFound)
+	}
+	return err
+}
+
+// changed runs a write and reports whether it changed a row.
+func changed(ctx context.Context, q querier, op, query string, args ...any) (bool, error) {
 	res, err := q.ExecContext(ctx, query, args...)
 	if err != nil {
-		return dbErr(err)
+		return false, fmt.Errorf("%s: %w", op, dbErr(err))
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return false, fmt.Errorf("%s: %w", op, err)
 	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return n > 0, nil
 }
 
 // dbErr maps "no rows" to ErrNotFound and unique violations to ErrConflict.
@@ -189,24 +264,81 @@ func dbErr(err error) error {
 	return err
 }
 
-// scanAll reads all rows with scan, which scans one row into a new T.
-func scanAll[T any](rows *sql.Rows, err error, scan func(sc scanner) (T, error)) ([]T, error) {
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var list []T
-	for rows.Next() {
-		v, err := scan(rows)
-		if err != nil {
-			return nil, err
-		}
-		list = append(list, v)
-	}
-	return list, rows.Err()
+// insert returns an INSERT with one placeholder for each column.
+func insert(table, cols string) string {
+	return "INSERT INTO " + table + " (" + cols + ") VALUES (" + placeholders(strings.Count(cols, ",")+1) + ")"
 }
 
-type scanner interface{ Scan(dest ...any) error }
+// upsert returns an insert that updates the row on a conflict on the key
+// columns. The update sets each column except the key columns and created_at.
+func upsert(table, cols, key string) string {
+	keep := append(splitCols(key), "created_at")
+	var set []string
+	for _, c := range splitCols(cols) {
+		if !slices.Contains(keep, c) {
+			set = append(set, c+" = excluded."+c)
+		}
+	}
+	return insert(table, cols) + " ON CONFLICT (" + key + ") DO UPDATE SET " + strings.Join(set, ", ")
+}
+
+// assign returns "a = ?, b = ?" for the columns "a, b".
+func assign(cols string) string {
+	return strings.Join(splitCols(cols), " = ?, ") + " = ?"
+}
+
+func splitCols(cols string) []string {
+	list := strings.Split(cols, ",")
+	for i, c := range list {
+		list[i] = strings.TrimSpace(c)
+	}
+	return list
+}
+
+// placeholders returns "?, ?, ?" for n values.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+}
+
+// where returns " WHERE a AND b" for the conditions a and b, or "" for none.
+func where(conds []string) string {
+	if len(conds) == 0 {
+		return ""
+	}
+	return " WHERE " + strings.Join(conds, " AND ")
+}
+
+// encodeCursor returns the cursor of a page that ends with the row at t with id.
+func encodeCursor(t int64, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(t, 10) + "." + id))
+}
+
+func decodeCursor(c string) (int64, string, error) {
+	b, err := base64.RawURLEncoding.DecodeString(c)
+	if err != nil {
+		return 0, "", ErrBadCursor
+	}
+	n, id, ok := strings.Cut(string(b), ".")
+	t, err := strconv.ParseInt(n, 10, 64)
+	if !ok || err != nil || id == "" {
+		return 0, "", ErrBadCursor
+	}
+	return t, id, nil
+}
+
+// row is a pointer to a model whose cols method returns its fields in the
+// order of its columns.
+type row[T any] interface {
+	*T
+	cols() []any
+}
+
+// scanRow scans one row into a T.
+func scanRow[T any, P row[T]](sc scanner) (T, error) {
+	var v T
+	err := sc.Scan(P(&v).cols()...)
+	return v, err
+}
 
 func ms(t time.Time) int64 { return t.UnixMilli() }
 
@@ -217,74 +349,6 @@ func msPtr(t *time.Time) any {
 	return t.UnixMilli()
 }
 
-func fromMS(v int64) time.Time { return time.UnixMilli(v).UTC() }
-
-// at scans a NOT NULL time column.
-func at(dst *time.Time) sql.Scanner { return timeCol{dst} }
-
-// atPtr scans a time column that can be NULL.
-func atPtr(dst **time.Time) sql.Scanner { return timePtrCol{dst} }
-
-type timeCol struct{ dst *time.Time }
-
-func (c timeCol) Scan(v any) error {
-	n, ok := v.(int64)
-	if !ok {
-		return fmt.Errorf("scan time: got %T", v)
-	}
-	*c.dst = fromMS(n)
-	return nil
-}
-
-type timePtrCol struct{ dst **time.Time }
-
-func (c timePtrCol) Scan(v any) error {
-	if v == nil {
-		*c.dst = nil
-		return nil
-	}
-	n, ok := v.(int64)
-	if !ok {
-		return fmt.Errorf("scan time: got %T", v)
-	}
-	t := fromMS(n)
-	*c.dst = &t
-	return nil
-}
-
-// jsonArg writes v as JSON text. A nil slice becomes [].
-func jsonArg(v any) driver.Valuer { return jsonValue{v} }
-
-type jsonValue struct{ v any }
-
-func (j jsonValue) Value() (driver.Value, error) {
-	if rv := reflect.ValueOf(j.v); rv.Kind() == reflect.Slice && rv.IsNil() {
-		return "[]", nil
-	}
-	b, err := json.Marshal(j.v)
-	if err != nil {
-		return nil, err
-	}
-	return string(b), nil
-}
-
-// jsonCol scans JSON text into dst.
-func jsonCol(dst any) sql.Scanner { return jsonScan{dst} }
-
-type jsonScan struct{ dst any }
-
-func (j jsonScan) Scan(v any) error {
-	switch x := v.(type) {
-	case nil:
-		return nil
-	case string:
-		return json.Unmarshal([]byte(x), j.dst)
-	case []byte:
-		return json.Unmarshal(x, j.dst)
-	}
-	return fmt.Errorf("scan json: got %T", v)
-}
-
 // nullStr writes "" as NULL.
 func nullStr(s string) any {
 	if s == "" {
@@ -293,7 +357,88 @@ func nullStr(s string) any {
 	return s
 }
 
-// placeholders returns "?, ?, ?" for n values.
-func placeholders(n int) string {
-	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+// col maps a field to a column that needs a conversion. It is a scan
+// destination and a query argument.
+type col struct {
+	scan  func(v any) error
+	value func() (driver.Value, error)
+}
+
+func (c col) Scan(v any) error             { return c.scan(v) }
+func (c col) Value() (driver.Value, error) { return c.value() }
+
+// at maps a time to a NOT NULL column.
+func at(t *time.Time) col {
+	return col{
+		scan: func(v any) error {
+			n, ok := v.(int64)
+			if !ok {
+				return fmt.Errorf("scan time: got %T", v)
+			}
+			*t = time.UnixMilli(n).UTC()
+			return nil
+		},
+		value: func() (driver.Value, error) { return ms(*t), nil },
+	}
+}
+
+// atPtr maps a time to a column that can be NULL.
+func atPtr(t **time.Time) col {
+	return col{
+		scan: func(v any) error {
+			if v == nil {
+				*t = nil
+				return nil
+			}
+			*t = new(time.Time)
+			return at(*t).Scan(v)
+		},
+		value: func() (driver.Value, error) { return msPtr(*t), nil },
+	}
+}
+
+// text maps a string to a text column that can be NULL. NULL is "".
+func text(s *string) col {
+	return col{
+		scan: func(v any) error {
+			switch x := v.(type) {
+			case nil:
+				*s = ""
+			case string:
+				*s = x
+			default:
+				return fmt.Errorf("scan text: got %T", v)
+			}
+			return nil
+		},
+		value: func() (driver.Value, error) { return nullStr(*s), nil },
+	}
+}
+
+// jsonCol maps the value that p points to to a column of JSON text. A nil
+// slice becomes [].
+func jsonCol(p any) col {
+	return col{
+		scan: func(v any) error {
+			switch x := v.(type) {
+			case nil:
+				return nil
+			case string:
+				return json.Unmarshal([]byte(x), p)
+			case []byte:
+				return json.Unmarshal(x, p)
+			}
+			return fmt.Errorf("scan json: got %T", v)
+		},
+		value: func() (driver.Value, error) {
+			if rv := reflect.ValueOf(p).Elem(); rv.Kind() == reflect.Slice && rv.IsNil() {
+				return "[]", nil
+			}
+			b, err := json.Marshal(p)
+			if err != nil {
+				return nil, err
+			}
+			return string(b), nil
+		},
+	}
 }

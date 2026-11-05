@@ -31,7 +31,7 @@ var testSpec = sandbox.Spec{
 }
 
 func TestCreateOptionsContainerMode(t *testing.T) {
-	o := Options{Runtime: "sysbox-runc", Scratch: ScratchLoop, CgroupParent: "runplane.slice", ServiceHost: "10.213.0.1",
+	o := Options{Mode: sandbox.ModeContainer, Runtime: "sysbox-runc", Scratch: ScratchLoop, ServiceHost: "10.213.0.1",
 		Config: config.Config{DataDir: "/var/lib/runplane"}}
 	m := mounts{init: "/tmp/runplane-init", ctl: "/var/lib/runplane/sandboxes/x/ctl", bundle: "/var/lib/runplane/runners/2.330.0-x64", scratch: "/var/lib/runplane/sandboxes/x/scratch"}
 	dns := []netip.Addr{netip.MustParseAddr("1.1.1.1")}
@@ -84,7 +84,7 @@ func TestCreateOptionsContainerMode(t *testing.T) {
 }
 
 func TestCreateOptionsDevMode(t *testing.T) {
-	o := Options{Runtime: "runc", Privileged: true, Scratch: ScratchVolume, ServiceHost: "host.docker.internal"}
+	o := Options{Mode: sandbox.ModeDev, Runtime: "runc", Privileged: true, Scratch: ScratchVolume, ServiceHost: "host.docker.internal"}
 	m := mounts{init: "/i", ctl: "/c", bundle: "/b", scratch: "runplane-scratch-01jbz3x0aaaaaaaaaaaaaaaaaa"}
 	h := createOptions(o, testSpec, m, nil).HostConfig
 
@@ -155,21 +155,12 @@ func TestGuestConfig(t *testing.T) {
 			if got.RegistryMirror != c.wantMirror {
 				t.Errorf("registry mirror = %q, want %q", got.RegistryMirror, c.wantMirror)
 			}
-			if got.JITConfig != "jit" || got.TimeLimitSeconds != 3600 || !got.Debug || got.SandboxID != spec.ID || got.Hostname != "runplane-aaaaaaaa" {
+			// The container mounts the bundle at /.runplane/runner.
+			if got.JITConfig != "jit" || got.TimeLimitSeconds != 3600 || !got.Debug || got.SandboxID != spec.ID ||
+				got.Hostname != "runplane-aaaaaaaa" || got.RunnerDir != "/.runplane/runner" {
 				t.Errorf("config = %+v", got)
 			}
 		})
-	}
-}
-
-// The guest finds the bundle at RunnerDir, so it must be where the
-// container mounts it.
-func TestRunnerDirIsTheBundleMount(t *testing.T) {
-	cfg := guestConfig(testSpec, sandbox.Settings{}, image.Bundle{}, "")
-	h := createOptions(Options{Scratch: ScratchLoop}, testSpec, mounts{bundle: "/bundle"}, nil).HostConfig
-	i := slices.IndexFunc(h.Mounts, func(m mount.Mount) bool { return m.Source == "/bundle" })
-	if i < 0 || h.Mounts[i].Target != cfg.RunnerDir {
-		t.Fatalf("RunnerDir %q, bundle mounts %+v", cfg.RunnerDir, h.Mounts)
 	}
 }
 
@@ -199,39 +190,34 @@ func TestForward(t *testing.T) {
 
 func TestPastLimit(t *testing.T) {
 	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
-	// A warm sandbox waits up to the limit and the idle grace for a job.
-	b := &box{created: t0, spec: sandbox.Spec{TimeLimit: time.Hour}}
-	if pastLimit(b, t0.Add(time.Hour+9*time.Minute)) {
-		t.Error("an idle sandbox is past the limit within the idle and the limit grace")
+	cases := []struct {
+		name           string
+		limit          time.Duration
+		busyAt, holdTo time.Duration // after t0; 0 means none
+		at             time.Duration
+		want           bool
+	}{
+		// A warm sandbox waits up to the limit, the idle grace (5m), and
+		// the limit grace (5m) for a job.
+		{"idle within the graces", time.Hour, 0, 0, time.Hour + 9*time.Minute, false},
+		{"idle after the graces", time.Hour, 0, 0, time.Hour + 11*time.Minute, true},
+		// The limit of a job counts from its start.
+		{"job within the grace", time.Hour, 50 * time.Minute, 0, time.Hour + 54*time.Minute, false},
+		{"job after the grace", time.Hour, 50 * time.Minute, 0, time.Hour + 56*time.Minute, true},
+		{"during a debug hold", time.Hour, 50 * time.Minute, 3 * time.Hour, 2 * time.Hour, false},
+		{"after the hold and the grace", time.Hour, 50 * time.Minute, 3 * time.Hour, 3*time.Hour + 6*time.Minute, true},
+		{"no time limit", 0, 0, 0, 1000 * time.Hour, false},
 	}
-	if !pastLimit(b, t0.Add(time.Hour+11*time.Minute)) {
-		t.Error("an idle sandbox is not past the limit after the idle and the limit grace")
-	}
-	// The limit of a job counts from its start, not from the sandbox start.
-	b.busyAt = t0.Add(50 * time.Minute)
-	if pastLimit(b, t0.Add(time.Hour+54*time.Minute)) {
-		t.Error("past the limit within the grace time after the job start")
-	}
-	if !pastLimit(b, t0.Add(time.Hour+56*time.Minute)) {
-		t.Error("not past the limit after the grace time")
-	}
-	b.holdUntil = t0.Add(3 * time.Hour)
-	if pastLimit(b, t0.Add(2*time.Hour)) {
-		t.Error("past the limit during a debug hold")
-	}
-	if !pastLimit(b, t0.Add(3*time.Hour+6*time.Minute)) {
-		t.Error("not past the limit after the hold and the grace time")
-	}
-	if pastLimit(&box{created: t0}, t0.Add(1000*time.Hour)) {
-		t.Error("a sandbox without a time limit is past its limit")
-	}
-}
-
-// The first ULID characters hold the time, so sandboxes that start in the
-// same second share them.
-func TestHostnameDiffersWithinASecond(t *testing.T) {
-	a, b := hostname("01m6jwd94yx8aj3sdamaedysaw"), hostname("01m6jwd94z4kq7c1v9b3rt2xnm")
-	if a != "runplane-maedysaw" || b != "runplane-b3rt2xnm" {
-		t.Errorf("host names %q and %q, want runplane-maedysaw and runplane-b3rt2xnm", a, b)
+	for _, c := range cases {
+		b := &box{created: t0, spec: sandbox.Spec{TimeLimit: c.limit}}
+		if c.busyAt > 0 {
+			b.busyAt = t0.Add(c.busyAt)
+		}
+		if c.holdTo > 0 {
+			b.holdUntil = t0.Add(c.holdTo)
+		}
+		if got := pastLimit(b, t0.Add(c.at)); got != c.want {
+			t.Errorf("%s: pastLimit = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

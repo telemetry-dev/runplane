@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -25,14 +26,14 @@ type Members struct {
 	Invites []Invite `json:"invites" doc:"Invites that are not accepted and not expired."`
 }
 
-func (h *Handler) listUsers(ctx context.Context, _ *struct{}) (*struct{ Body Members }, error) {
+func (h *Handler) listUsers(ctx context.Context, _ *struct{}) (*body[Members], error) {
 	users, err := h.d.Store.ListUsers(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	invites, err := h.d.Store.ListOpenInvites(ctx, time.Now())
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	out := Members{Users: make([]User, len(users)), Invites: make([]Invite, len(invites))}
 	for i, u := range users {
@@ -41,7 +42,7 @@ func (h *Handler) listUsers(ctx context.Context, _ *struct{}) (*struct{ Body Mem
 	for i, inv := range invites {
 		out.Invites[i] = inviteOut(inv)
 	}
-	return &struct{ Body Members }{out}, nil
+	return &body[Members]{out}, nil
 }
 
 func inviteOut(inv store.Invite) Invite {
@@ -55,25 +56,23 @@ type UpdateUserRequest struct {
 func (h *Handler) updateUser(ctx context.Context, in *struct {
 	PathID
 	Body UpdateUserRequest
-}) (*struct{ Body User }, error) {
+}) (*body[User], error) {
 	u, err := h.d.Store.GetUser(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No user has this ID.")
+		return nil, notFound(err, "No user has this ID.")
 	}
 	if u.Role == in.Body.Role {
-		return &struct{ Body User }{userOut(u)}, nil
+		return &body[User]{userOut(u)}, nil
 	}
-	if u.Role == auth.RoleAdmin {
-		if err := h.keepAnAdmin(ctx); err != nil {
-			return nil, err
-		}
+	if err := h.keepAnAdmin(ctx, u); err != nil {
+		return nil, err
 	}
 	u.Role = in.Body.Role
 	if err := h.d.Store.UpdateUser(ctx, u); err != nil {
-		return nil, h.storeErr(err, "No user has this ID.")
+		return nil, notFound(err, "No user has this ID.")
 	}
 	h.audit(ctx, "user.update", u.ID, map[string]any{"email": u.Email, "role": u.Role})
-	return &struct{ Body User }{userOut(u)}, nil
+	return &body[User]{userOut(u)}, nil
 }
 
 func (h *Handler) deleteUser(ctx context.Context, in *PathID) (*empty, error) {
@@ -82,31 +81,32 @@ func (h *Handler) deleteUser(ctx context.Context, in *PathID) (*empty, error) {
 	}
 	u, err := h.d.Store.GetUser(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No user has this ID.")
+		return nil, notFound(err, "No user has this ID.")
 	}
-	if u.Role == auth.RoleAdmin {
-		if err := h.keepAnAdmin(ctx); err != nil {
-			return nil, err
-		}
+	if err := h.keepAnAdmin(ctx, u); err != nil {
+		return nil, err
 	}
 	// The sessions of the user go with it.
 	if err := h.d.Store.DeleteUser(ctx, u.ID); err != nil {
-		return nil, h.storeErr(err, "No user has this ID.")
+		return nil, notFound(err, "No user has this ID.")
 	}
 	h.audit(ctx, "user.delete", u.ID, map[string]any{"email": u.Email})
 	return nil, nil
 }
 
-// keepAnAdmin returns a conflict if only one admin exists, before a change
-// that takes away an admin.
-func (h *Handler) keepAnAdmin(ctx context.Context) error {
+// keepAnAdmin returns a conflict when u is the only admin, before a change
+// that takes the admin role from u.
+func (h *Handler) keepAnAdmin(ctx context.Context, u store.User) error {
+	if u.Role != auth.RoleAdmin {
+		return nil
+	}
 	users, err := h.d.Store.ListUsers(ctx)
 	if err != nil {
-		return h.internal(err)
+		return err
 	}
 	admins := 0
-	for _, u := range users {
-		if u.Role == auth.RoleAdmin {
+	for _, v := range users {
+		if v.Role == auth.RoleAdmin {
 			admins++
 		}
 	}
@@ -126,22 +126,21 @@ type CreatedInvite struct {
 	Invite Invite `json:"invite"`
 }
 
-func (h *Handler) createInvite(ctx context.Context, in *struct{ Body CreateInviteRequest }) (*struct{ Body CreatedInvite }, error) {
+func (h *Handler) createInvite(ctx context.Context, in *body[CreateInviteRequest]) (*body[CreatedInvite], error) {
 	out, err := h.invite(ctx, in.Body.Email, in.Body.Role)
 	if err != nil {
 		return nil, err
 	}
 	h.audit(ctx, "invite.create", out.Invite.ID, map[string]any{"email": out.Invite.Email, "role": out.Invite.Role})
-	return &struct{ Body CreatedInvite }{out}, nil
+	return &body[CreatedInvite]{out}, nil
 }
 
 // newInviteLink replaces an open invite with a new one for the same email
-// and role, because only the hash of the old token is stored. The old link
-// stops working.
-func (h *Handler) newInviteLink(ctx context.Context, in *PathID) (*struct{ Body CreatedInvite }, error) {
+// and role, because only the hash of the old token is stored.
+func (h *Handler) newInviteLink(ctx context.Context, in *PathID) (*body[CreatedInvite], error) {
 	invites, err := h.d.Store.ListOpenInvites(ctx, time.Now())
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	i := slices.IndexFunc(invites, func(inv store.Invite) bool { return inv.ID == in.ID })
 	if i < 0 {
@@ -152,7 +151,7 @@ func (h *Handler) newInviteLink(ctx context.Context, in *PathID) (*struct{ Body 
 		return nil, err
 	}
 	h.audit(ctx, "invite.link", out.Invite.ID, map[string]any{"email": out.Invite.Email, "old_id": in.ID})
-	return &struct{ Body CreatedInvite }{out}, nil
+	return &body[CreatedInvite]{out}, nil
 }
 
 // invite makes an invite from the current user. Open invites for the email
@@ -160,15 +159,15 @@ func (h *Handler) newInviteLink(ctx context.Context, in *PathID) (*struct{ Body 
 func (h *Handler) invite(ctx context.Context, email, role string) (CreatedInvite, error) {
 	token, err := h.d.Auth.CreateInvite(ctx, currentUser(ctx).ID, email, role)
 	if err != nil {
-		return CreatedInvite{}, h.authErr(err, "")
+		return CreatedInvite{}, authErr(err, "")
 	}
 	inv, err := h.d.Auth.GetInvite(ctx, token)
 	if err != nil {
-		return CreatedInvite{}, h.internal(err)
+		return CreatedInvite{}, err
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return CreatedInvite{}, h.internal(err)
+		return CreatedInvite{}, err
 	}
 	return CreatedInvite{URL: base + "/invite/" + token, Invite: inviteOut(inv)}, nil
 }
@@ -176,8 +175,54 @@ func (h *Handler) invite(ctx context.Context, email, role string) (CreatedInvite
 func (h *Handler) deleteInvite(ctx context.Context, in *PathID) (*empty, error) {
 	inv, err := h.d.Store.DeleteInvite(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No invite has this ID.")
+		return nil, notFound(err, "No invite has this ID.")
 	}
 	h.audit(ctx, "invite.delete", inv.ID, map[string]any{"email": inv.Email, "role": inv.Role})
 	return nil, nil
+}
+
+type InviteInfo struct {
+	Email     string    `json:"email"`
+	Role      string    `json:"role" enum:"admin,member"`
+	ExpiresAt time.Time `json:"expires_at"`
+	InvitedBy string    `json:"invited_by" doc:"Name of the admin who made the invite. Empty if that user is deleted."`
+}
+
+// InviteToken is the id path parameter of the invite routes, which share
+// the path /api/invites/{id} with the delete route of the admins.
+type InviteToken struct {
+	Token string `path:"id" maxLength:"100" doc:"The token from the invite URL."`
+}
+
+func (h *Handler) getInvite(ctx context.Context, in *InviteToken) (*body[InviteInfo], error) {
+	inv, err := h.d.Auth.GetInvite(ctx, in.Token)
+	if err != nil {
+		return nil, authErr(err, "")
+	}
+	out := InviteInfo{Email: inv.Email, Role: inv.Role, ExpiresAt: inv.ExpiresAt}
+	if inv.CreatedBy != "" {
+		u, err := h.d.Store.GetUser(ctx, inv.CreatedBy)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+		out.InvitedBy = u.Name
+	}
+	return &body[InviteInfo]{out}, nil
+}
+
+type AcceptInviteRequest struct {
+	Name     string `json:"name" maxLength:"100"`
+	Password string `json:"password" maxLength:"1024"`
+}
+
+func (h *Handler) acceptInvite(ctx context.Context, in *struct {
+	InviteToken
+	Body AcceptInviteRequest
+}) (*sessionOutput, error) {
+	c := clientOf(ctx)
+	u, token, err := h.d.Auth.AcceptInvite(ctx, in.Token, in.Body.Name, in.Body.Password, c.ip, c.userAgent)
+	if err != nil {
+		return nil, authErr(err, "body.password")
+	}
+	return h.newSession(ctx, u, token), nil
 }

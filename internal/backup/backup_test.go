@@ -195,24 +195,14 @@ func TestRun(t *testing.T) {
 		t.Fatalf("backup dir has %d files, want only the backup", len(entries))
 	}
 
-	restored := gunzip(t, res.Path)
-	rdb, err := sql.Open("sqlite", "file:"+restored+"?mode=ro")
+	rdb, err := sql.Open("sqlite", "file:"+gunzip(t, res.Path)+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rdb.Close()
-	var ids []string
-	rows, err := rdb.Query(`SELECT id FROM jobs ORDER BY id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var id string
-		rows.Scan(&id)
-		ids = append(ids, id)
-	}
-	if !slices.Equal(ids, []string{"j1", "j2", "j3"}) {
-		t.Fatalf("restored jobs %v", ids)
+	var ids string
+	if err := rdb.QueryRow(`SELECT group_concat(id) FROM (SELECT id FROM jobs ORDER BY id)`).Scan(&ids); err != nil || ids != "j1,j2,j3" {
+		t.Fatalf("restored jobs %q, %v; want j1,j2,j3", ids, err)
 	}
 }
 
@@ -298,11 +288,13 @@ func gunzip(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(t.TempDir(), "restored.db")
 	data, err := io.ReadAll(zr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(out, data, 0o600)
+	out := filepath.Join(t.TempDir(), "restored.db")
+	if err := os.WriteFile(out, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }

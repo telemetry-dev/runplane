@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -46,7 +47,7 @@ func TestPullCachesManifestsAndBlobs(t *testing.T) {
 	if n := hub.count("GET", "/v2/library/alpine/blobs/"+sha(img.layer)); n != 1 {
 		t.Errorf("upstream got %d blob GETs, want 1", n)
 	}
-	if n := hub.unauthorized(); n != 1 {
+	if n := hub.denied.Load(); n != 1 {
 		t.Errorf("upstream answered 401 %d times, want 1 (the token is not reused)", n)
 	}
 	size := int64(len(img.manifest) + len(img.layer))
@@ -171,7 +172,7 @@ func TestTagTTL(t *testing.T) {
 	t.Run("fresh tag stays on the cached digest", func(t *testing.T) {
 		hub := newHub(t)
 		old := hub.push("library/alpine", "latest", "a")
-		_, url := newMirror(t, hub, Config{TagTTL: time.Hour})
+		_, url := newMirror(t, hub, Config{})
 
 		get(t, url+tagPath)
 		hub.push("library/alpine", "latest", "b")
@@ -185,13 +186,15 @@ func TestTagTTL(t *testing.T) {
 	t.Run("expired tag follows upstream", func(t *testing.T) {
 		hub := newHub(t)
 		hub.push("library/alpine", "latest", "a")
-		_, url := newMirror(t, hub, Config{TagTTL: time.Nanosecond})
+		m, url := newMirror(t, hub, Config{})
 
 		get(t, url+tagPath)
 		img := hub.push("library/alpine", "latest", "b")
+		expireTags(m)
 		for range 2 {
 			resp, body := get(t, url+tagPath)
 			wantResponse(t, resp, body, 200, typeSchema2, sha(img.manifest), img.manifest)
+			expireTags(m)
 		}
 		// The check of an unchanged tag uses HEAD only, which does not count
 		// against the Docker Hub pull limit.
@@ -203,10 +206,11 @@ func TestTagTTL(t *testing.T) {
 	t.Run("expired tag works while upstream is down", func(t *testing.T) {
 		hub := newHub(t)
 		img := hub.push("library/alpine", "latest", "a")
-		_, url := newMirror(t, hub, Config{TagTTL: time.Nanosecond})
+		m, url := newMirror(t, hub, Config{})
 
 		get(t, url+tagPath)
 		hub.setDown(true)
+		expireTags(m)
 		resp, body := get(t, url+tagPath)
 		wantResponse(t, resp, body, 200, typeSchema2, sha(img.manifest), img.manifest)
 	})
@@ -287,7 +291,7 @@ func TestCacheSurvivesRestart(t *testing.T) {
 	first.Close()
 
 	hub.setDown(true)
-	_, url = newMirror(t, hub, Config{Dir: dir, TagTTL: time.Hour})
+	_, url = newMirror(t, hub, Config{Dir: dir})
 	resp, body := get(t, url+"/v2/library/alpine/manifests/latest")
 	wantResponse(t, resp, body, 200, typeSchema2, sha(img.manifest), img.manifest)
 	resp, body = get(t, url+"/v2/library/alpine/blobs/"+sha(img.layer))
@@ -372,15 +376,15 @@ func TestParsePath(t *testing.T) {
 // fakeHub is a registry with the token flow of Docker Hub: a request without
 // a pull token for its repository gets 401 and a Bearer challenge.
 type fakeHub struct {
-	srv  *httptest.Server
-	gate chan struct{} // if set, a blob response waits for it after half of the body
+	srv    *httptest.Server
+	gate   chan struct{} // if set, a blob response waits for it after half of the body
+	denied atomic.Int32  // registry requests without a token
 
 	mu        sync.Mutex
 	tags      map[string]string       // "name:tag" to digest
 	manifests map[string]fakeManifest // by digest
 	blobs     map[string][]byte       // by digest; the content can be wrong
 	requests  []string                // "METHOD path" of the served registry requests
-	denied    int                     // registry requests without a token
 	down      bool
 }
 
@@ -464,12 +468,6 @@ func (h *fakeHub) count(method, path string) int {
 	return n
 }
 
-func (h *fakeHub) unauthorized() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.denied
-}
-
 func (h *fakeHub) serve(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/token" {
 		h.serveToken(w, r)
@@ -493,9 +491,7 @@ func (h *fakeHub) serve(w http.ResponseWriter, r *http.Request) {
 	kind, ref, _ := strings.Cut(path[i+1:], "/")
 	scope := "repository:" + name + ":pull"
 	if r.Header.Get("Authorization") != "Bearer token-for-"+scope {
-		h.mu.Lock()
-		h.denied++
-		h.mu.Unlock()
+		h.denied.Add(1)
 		w.Header().Set("WWW-Authenticate",
 			fmt.Sprintf(`Bearer realm="%s/token",service="registry.docker.io",scope="%s"`, h.srv.URL, scope))
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
@@ -551,18 +547,31 @@ func (h *fakeHub) serveToken(w http.ResponseWriter, r *http.Request) {
 
 func newMirror(t *testing.T, hub *fakeHub, cfg Config) (*Mirror, string) {
 	t.Helper()
-	cfg.Upstream = hub.srv.URL
 	if cfg.Dir == "" {
 		cfg.Dir = t.TempDir()
+	}
+	if cfg.Allow == nil {
+		cfg.Allow = func(netip.Addr) bool { return true }
 	}
 	m, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.up.base = hub.srv.URL
 	t.Cleanup(func() { m.Close() })
 	srv := httptest.NewServer(m)
 	t.Cleanup(srv.Close)
 	return m, srv.URL
+}
+
+// expireTags makes the tags of m due for a check with upstream.
+func expireTags(m *Mirror) {
+	m.tags.mu.Lock()
+	defer m.tags.mu.Unlock()
+	for k, te := range m.tags.tags {
+		te.Checked = time.Time{}
+		m.tags.tags[k] = te
+	}
 }
 
 // settle waits until m has moved the blobs of finished downloads into the

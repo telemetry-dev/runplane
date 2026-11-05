@@ -18,60 +18,98 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-func TestDispatcherSendsToSubscribersAndRecordsDeliveries(t *testing.T) {
-	var mu sync.Mutex
-	hits := map[string]int{}
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		hits[r.URL.Path]++
-		mu.Unlock()
+// hook is a webhook receiver that records the events it gets. It answers
+// 404 on the path /bad.
+type hook struct {
+	*httptest.Server
+	mu   sync.Mutex
+	got  []webhookBody
+	done chan struct{} // gets a value for each request
+}
+
+type webhookBody struct {
+	Path  string
+	Event string         `json:"event"`
+	Text  string         `json:"text"`
+	Data  map[string]any `json:"data"`
+}
+
+func (h *hook) events() []webhookBody {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.got)
+}
+
+func newDispatcher(t *testing.T) (*Dispatcher, *hook) {
+	t.Helper()
+	h := &hook{done: make(chan struct{}, 10)}
+	h.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := webhookBody{Path: r.URL.Path}
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+			t.Errorf("webhook body: %v", err)
+		}
+		h.mu.Lock()
+		h.got = append(h.got, b)
+		h.mu.Unlock()
+		select {
+		case h.done <- struct{}{}:
+		default:
+		}
 		if r.URL.Path == "/bad" {
 			http.Error(w, "no such hook", http.StatusNotFound)
-			return
 		}
-		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer srv.Close()
-	prev := http.DefaultClient
-	http.DefaultClient = srv.Client()
-	defer func() { http.DefaultClient = prev }()
-
+	t.Cleanup(h.Close)
 	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
-	box, err := secret.NewBox(bytes.Repeat([]byte{3}, secret.KeySize))
+	t.Cleanup(func() { st.Close() })
+	box, err := secret.NewBox(bytes.Repeat([]byte{7}, secret.KeySize))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	now := time.Now()
-	add := func(id, path string, enabled bool, events ...string) {
-		t.Helper()
-		err := st.CreateNotificationChannel(ctx, store.NotificationChannel{
-			ID: id, Name: id, Kind: string(Webhook), URLEnc: box.Seal([]byte(srv.URL + path)),
-			Events: events, Enabled: enabled, CreatedAt: now, UpdatedAt: now,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	add("ok", "/ok", true, string(JobFailed))
-	add("bad", "/bad", true, string(DiskLow), string(JobFailed))
-	add("off", "/off", false, string(JobFailed))
-	add("other", "/other", true, string(DiskLow))
+	return &Dispatcher{Store: st, Box: box}, h
+}
 
-	d := &Dispatcher{Store: st, Box: box}
-	err = d.Notify(ctx, failedJob())
+// subscribe adds the webhook channel id, with the URL path /id on h, for types.
+func subscribe(t *testing.T, d *Dispatcher, h *hook, id string, enabled bool, types ...Type) {
+	t.Helper()
+	var names []string
+	for _, typ := range types {
+		names = append(names, string(typ))
+	}
+	err := d.Store.CreateNotificationChannel(context.Background(), store.NotificationChannel{
+		ID: id, Name: id, Kind: Webhook, URLEnc: d.Box.Seal([]byte(h.URL + "/" + id)),
+		Events: names, Enabled: enabled, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDispatcherSendsToSubscribersAndRecordsDeliveries(t *testing.T) {
+	d, h := newDispatcher(t)
+	subscribe(t, d, h, "ok", true, JobFailed)
+	subscribe(t, d, h, "bad", true, DiskLow, JobFailed)
+	subscribe(t, d, h, "off", false, JobFailed)
+	subscribe(t, d, h, "other", true, DiskLow)
+	ctx := context.Background()
+
+	err := d.Notify(ctx, failedJob())
 	if err == nil || !strings.Contains(err.Error(), "channel bad") || strings.Contains(err.Error(), "channel ok") {
 		t.Fatalf("Notify error = %v, want only the error of channel bad", err)
 	}
-	if hits["/ok"] != 1 || hits["/bad"] != 1 || hits["/off"] != 0 || hits["/other"] != 0 {
-		t.Fatalf("requests by path = %v, want one to /ok and one to /bad", hits)
+	var paths []string
+	for _, b := range h.events() {
+		paths = append(paths, b.Path)
+	}
+	slices.Sort(paths)
+	if !slices.Equal(paths, []string{"/bad", "/ok"}) {
+		t.Fatalf("requests to %q, want one to /bad and one to /ok", paths)
 	}
 
-	got, err := st.NotificationDeliveries(ctx)
+	got, err := d.Store.NotificationDeliveries(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,68 +126,9 @@ func TestDispatcherSendsToSubscribersAndRecordsDeliveries(t *testing.T) {
 	}
 }
 
-// hook is a webhook channel that records the events it gets.
-type hook struct {
-	mu   sync.Mutex
-	got  []webhookBody
-	done chan struct{} // gets a value for each request
-}
-
-type webhookBody struct {
-	Event string         `json:"event"`
-	Text  string         `json:"text"`
-	Data  map[string]any `json:"data"`
-}
-
-func (h *hook) events() []webhookBody {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return slices.Clone(h.got)
-}
-
-// newDispatcher returns a dispatcher with one webhook channel for types.
-func newDispatcher(t *testing.T, types ...Type) (*Dispatcher, *hook) {
-	t.Helper()
-	h := &hook{done: make(chan struct{}, 10)}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var b webhookBody
-		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-			t.Errorf("webhook body: %v", err)
-		}
-		h.mu.Lock()
-		h.got = append(h.got, b)
-		h.mu.Unlock()
-		select {
-		case h.done <- struct{}{}:
-		default:
-		}
-	}))
-	t.Cleanup(srv.Close)
-	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	box, err := secret.NewBox(bytes.Repeat([]byte{7}, secret.KeySize))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, typ := range types {
-		names = append(names, string(typ))
-	}
-	err = st.CreateNotificationChannel(context.Background(), store.NotificationChannel{
-		ID: "hook", Name: "hook", Kind: string(Webhook), URLEnc: box.Seal([]byte(srv.URL)),
-		Events: names, Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &Dispatcher{Store: st, Box: box}, h
-}
-
 func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
-	d, h := newDispatcher(t, JobFailed)
+	d, h := newDispatcher(t)
+	subscribe(t, d, h, "hook", true, JobFailed)
 	bus := runDispatcher(t, d)
 	ctx := context.Background()
 
@@ -206,7 +185,8 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 	prev := enrichWait
 	enrichWait = 50 * time.Millisecond
 	t.Cleanup(func() { enrichWait = prev })
-	d, h := newDispatcher(t, JobFailed)
+	d, h := newDispatcher(t)
+	subscribe(t, d, h, "hook", true, JobFailed)
 	bus := runDispatcher(t, d)
 
 	j, err := d.Store.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
@@ -221,7 +201,8 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 }
 
 func TestDispatcherDiskLow(t *testing.T) {
-	d, h := newDispatcher(t, DiskLow)
+	d, h := newDispatcher(t)
+	subscribe(t, d, h, "hook", true, DiskLow)
 	ctx := context.Background()
 	at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
 	if err := d.Store.CreateServer(ctx, store.Server{ID: "s1", Name: "builder-1", Kind: store.ServerAgent,
@@ -263,7 +244,8 @@ func TestDispatcherDiskLow(t *testing.T) {
 }
 
 func TestDispatcherServerUnreachableOncePerOutage(t *testing.T) {
-	d, h := newDispatcher(t, ServerUnreachable)
+	d, h := newDispatcher(t)
+	subscribe(t, d, h, "hook", true, ServerUnreachable)
 	ctx := context.Background()
 	down := store.Server{ID: "s1", Name: "builder-1", Status: store.ServerUnreachable}
 	// The fleet and the server.state event report the same outage.

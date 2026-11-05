@@ -18,9 +18,6 @@ import (
 // side the address hostCIDR, and sets it up. It replaces a device with the
 // same name.
 func CreateTap(name string, uid, gid int, hostCIDR netip.Prefix) error {
-	if !hostCIDR.Addr().Is4() {
-		return fmt.Errorf("netrules: TAP address %s is not IPv4", hostCIDR)
-	}
 	if err := DeleteTap(name); err != nil {
 		return err
 	}

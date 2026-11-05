@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,26 +25,27 @@ type NotificationChannel struct {
 	LastError  string     `json:"last_error" doc:"Why the last delivery failed. Empty if it worked."`
 }
 
-func (h *Handler) channelOut(c store.NotificationChannel, d store.NotificationDelivery) NotificationChannel {
-	masked := ""
-	if plain, err := h.d.Box.Open(c.URLEnc); err == nil {
-		masked = maskURL(string(plain))
-	} else {
-		h.d.Log.Warn("open notification URL", "channel", c.ID, "err", err)
-	}
-	return NotificationChannel{
-		ID: c.ID, Name: c.Name, Kind: c.Kind, URL: masked, Events: orEmpty(c.Events), Enabled: c.Enabled,
-		CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, LastSentAt: d.SentAt, LastError: d.Error,
-	}
-}
-
-// channelOutput reads the last delivery of the channel c and converts it.
-func (h *Handler) channelOutput(ctx context.Context, c store.NotificationChannel) (*struct{ Body NotificationChannel }, error) {
+// channels converts store channels and adds their last delivery.
+func (h *Handler) channels(ctx context.Context, list []store.NotificationChannel) ([]NotificationChannel, error) {
 	deliveries, err := h.d.Store.NotificationDeliveries(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	return &struct{ Body NotificationChannel }{h.channelOut(c, deliveries[c.ID])}, nil
+	out := make([]NotificationChannel, len(list))
+	for i, c := range list {
+		masked := ""
+		if plain, err := h.d.Box.Open(c.URLEnc); err == nil {
+			masked = maskURL(string(plain))
+		} else {
+			h.d.Log.Warn("open notification URL", "channel", c.ID, "err", err)
+		}
+		d := deliveries[c.ID]
+		out[i] = NotificationChannel{
+			ID: c.ID, Name: c.Name, Kind: c.Kind, URL: masked, Events: orEmpty(c.Events), Enabled: c.Enabled,
+			CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, LastSentAt: d.SentAt, LastError: d.Error,
+		}
+	}
+	return out, nil
 }
 
 // maskURL keeps the scheme, the host, and the last 4 characters. The path of
@@ -60,20 +62,12 @@ func maskURL(raw string) string {
 	return u.Scheme + "://" + u.Host + "/…" + tail
 }
 
-func (h *Handler) listNotifications(ctx context.Context, _ *struct{}) (*struct{ Body []NotificationChannel }, error) {
+func (h *Handler) listNotifications(ctx context.Context, _ *struct{}) (*body[[]NotificationChannel], error) {
 	list, err := h.d.Store.ListNotificationChannels(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	deliveries, err := h.d.Store.NotificationDeliveries(ctx)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	out := make([]NotificationChannel, len(list))
-	for i, c := range list {
-		out[i] = h.channelOut(c, deliveries[c.ID])
-	}
-	return &struct{ Body []NotificationChannel }{out}, nil
+	return reply(h.channels(ctx, list))
 }
 
 type CreateNotificationRequest struct {
@@ -84,7 +78,7 @@ type CreateNotificationRequest struct {
 	Enabled *bool    `json:"enabled,omitempty" doc:"Defaults to true."`
 }
 
-func (h *Handler) createNotification(ctx context.Context, in *struct{ Body CreateNotificationRequest }) (*struct{ Body NotificationChannel }, error) {
+func (h *Handler) createNotification(ctx context.Context, in *body[CreateNotificationRequest]) (*body[NotificationChannel], error) {
 	b := in.Body
 	name, rawURL := strings.TrimSpace(b.Name), strings.TrimSpace(b.URL)
 	var errs problems
@@ -101,10 +95,10 @@ func (h *Handler) createNotification(ctx context.Context, in *struct{ Body Creat
 		Enabled: b.Enabled == nil || *b.Enabled, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := h.d.Store.CreateNotificationChannel(ctx, c); err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	h.audit(ctx, "notification.create", c.ID, map[string]any{"name": c.Name, "kind": c.Kind})
-	return h.channelOutput(ctx, c)
+	return reply(first(h.channels(ctx, []store.NotificationChannel{c})))
 }
 
 type UpdateNotificationRequest struct {
@@ -118,10 +112,10 @@ type UpdateNotificationRequest struct {
 func (h *Handler) updateNotification(ctx context.Context, in *struct {
 	PathID
 	Body UpdateNotificationRequest
-}) (*struct{ Body NotificationChannel }, error) {
+}) (*body[NotificationChannel], error) {
 	c, err := h.d.Store.GetNotificationChannel(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No notification channel has this ID.")
+		return nil, notFound(err, "No notification channel has this ID.")
 	}
 	b := in.Body
 	var errs problems
@@ -151,15 +145,15 @@ func (h *Handler) updateNotification(ctx context.Context, in *struct {
 		c.URLEnc = h.d.Box.Seal([]byte(rawURL))
 	}
 	if err := h.d.Store.UpdateNotificationChannel(ctx, c); err != nil {
-		return nil, h.storeErr(err, "No notification channel has this ID.")
+		return nil, notFound(err, "No notification channel has this ID.")
 	}
 	h.audit(ctx, "notification.update", c.ID, map[string]any{"name": c.Name, "kind": c.Kind, "url_changed": b.URL != nil})
-	return h.channelOutput(ctx, c)
+	return reply(first(h.channels(ctx, []store.NotificationChannel{c})))
 }
 
 func (h *Handler) deleteNotification(ctx context.Context, in *PathID) (*empty, error) {
 	if err := h.d.Store.DeleteNotificationChannel(ctx, in.ID); err != nil {
-		return nil, h.storeErr(err, "No notification channel has this ID.")
+		return nil, notFound(err, "No notification channel has this ID.")
 	}
 	h.audit(ctx, "notification.delete", in.ID, nil)
 	return nil, nil
@@ -171,15 +165,15 @@ func (h *Handler) testNotification(ctx context.Context, in *PathID) (*empty, err
 	}
 	c, err := h.d.Store.GetNotificationChannel(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No notification channel has this ID.")
+		return nil, notFound(err, "No notification channel has this ID.")
 	}
 	plain, err := h.d.Box.Open(c.URLEnc)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	sendErr := h.d.Notifier.Test(ctx, base, c.Kind, string(plain))
 	msg := ""
@@ -200,8 +194,7 @@ type TestChannelRequest struct {
 	URL  string `json:"url" minLength:"1" maxLength:"2048"`
 }
 
-// testChannel sends a test message to a channel that is not saved yet.
-func (h *Handler) testChannel(ctx context.Context, in *struct{ Body TestChannelRequest }) (*empty, error) {
+func (h *Handler) testChannel(ctx context.Context, in *body[TestChannelRequest]) (*empty, error) {
 	rawURL := strings.TrimSpace(in.Body.URL)
 	var errs problems
 	checkChannelURL(&errs, in.Body.Kind, rawURL)
@@ -213,7 +206,7 @@ func (h *Handler) testChannel(ctx context.Context, in *struct{ Body TestChannelR
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	if err := h.d.Notifier.Test(ctx, base, in.Body.Kind, rawURL); err != nil {
 		return nil, h.serviceErr(err)
@@ -221,7 +214,6 @@ func (h *Handler) testChannel(ctx context.Context, in *struct{ Body TestChannelR
 	return nil, nil
 }
 
-// checkChannelURL checks the webhook URL for the kind of channel.
 func checkChannelURL(errs *problems, kind, raw string) {
 	u, err := url.Parse(raw)
 	switch {
@@ -234,10 +226,8 @@ func checkChannelURL(errs *problems, kind, raw string) {
 
 func dedupe(list []string) []string {
 	out := []string{}
-	seen := map[string]bool{}
 	for _, v := range list {
-		if !seen[v] {
-			seen[v] = true
+		if !slices.Contains(out, v) {
 			out = append(out, v)
 		}
 	}

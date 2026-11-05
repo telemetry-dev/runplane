@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/danielgtaylor/huma/v2"
-
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -126,13 +124,9 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 	if err != nil {
 		return GitHubStatus{}, err
 	}
-	pools, err := st.ListPools(ctx)
+	r, err := h.loadRefs(ctx)
 	if err != nil {
 		return GitHubStatus{}, err
-	}
-	labels := map[string]string{}
-	for _, p := range pools {
-		labels[p.ID] = p.Label
 	}
 	for _, x := range sets {
 		repo := ""
@@ -140,7 +134,7 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 			repo = repoNames[*x.RepositoryID]
 		}
 		out.ScaleSets = append(out.ScaleSets, ScaleSetStatus{
-			ID: x.ID, PoolID: x.PoolID, PoolLabel: labels[x.PoolID], InstallationID: x.InstallationID,
+			ID: x.ID, PoolID: x.PoolID, PoolLabel: r.pools[x.PoolID].Label, InstallationID: x.InstallationID,
 			AccountLogin: accounts[x.InstallationID], Repository: repo, RunnerGroup: runnerGroup(x.RunnerGroupID),
 			Status: x.Status, Error: x.Error,
 			LastPollAt: x.LastPollAt, Stats: ScaleSetStats(x.Stats),
@@ -176,12 +170,18 @@ func runnerGroup(id int64) string {
 	return "Group " + strconv.FormatInt(id, 10)
 }
 
-func (h *Handler) getGitHub(ctx context.Context, _ *struct{}) (*struct{ Body GitHubStatus }, error) {
-	out, err := h.gitHubStatus(ctx)
-	if err != nil {
-		return nil, h.internal(err)
+func (h *Handler) getGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {
+	return reply(h.gitHubStatus(ctx))
+}
+
+func (h *Handler) githubConnected(ctx context.Context) (bool, error) {
+	if _, err := h.d.Store.GetGitHubApp(ctx); errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
 	}
-	return &struct{ Body GitHubStatus }{out}, nil
+	list, err := h.d.Store.ListInstallations(ctx)
+	return len(list) > 0, err
 }
 
 type ManifestRequest struct {
@@ -194,7 +194,7 @@ type ManifestForm struct {
 	Manifest  string `json:"manifest" doc:"The app manifest as JSON text, the value of the form field manifest."`
 }
 
-func (h *Handler) createManifest(ctx context.Context, in *struct{ Body ManifestRequest }) (*struct{ Body ManifestForm }, error) {
+func (h *Handler) createManifest(ctx context.Context, in *body[ManifestRequest]) (*body[ManifestForm], error) {
 	b := in.Body
 	if b.AccountType == "organization" && b.Organization == "" {
 		return nil, invalid("body.organization", "Enter the organization.", nil)
@@ -207,14 +207,14 @@ func (h *Handler) createManifest(ctx context.Context, in *struct{ Body ManifestR
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	action, manifest, err := h.d.GitHub.Manifest(ctx, base, b.AccountType, b.Organization)
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "github.manifest", "", map[string]any{"account_type": b.AccountType, "organization": b.Organization})
-	return &struct{ Body ManifestForm }{ManifestForm{ActionURL: action, Manifest: manifest}}, nil
+	return &body[ManifestForm]{ManifestForm{ActionURL: action, Manifest: manifest}}, nil
 }
 
 type redirectOutput struct {
@@ -224,12 +224,6 @@ type redirectOutput struct {
 
 func redirect(to string) *redirectOutput {
 	return &redirectOutput{Status: http.StatusFound, Location: to}
-}
-
-func redirectResponse(op *huma.Operation) {
-	op.DefaultStatus = http.StatusFound
-	op.Description = "The browser comes here from GitHub. The response sends it on to GitHub or to the dashboard. " +
-		"Errors go to the dashboard page in the query parameter error."
 }
 
 type githubCallbackInput struct {
@@ -248,7 +242,7 @@ func (h *Handler) githubCallback(ctx context.Context, in *githubCallbackInput) (
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	to, err = h.d.GitHub.Callback(ctx, base, in.Code, in.State)
 	if err != nil {
@@ -278,7 +272,7 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	to, err = h.d.GitHub.Setup(ctx, base, in.InstallationID, in.SetupAction)
 	if err != nil {
@@ -314,7 +308,7 @@ func (h *Handler) githubErrorPage(ctx context.Context, msg string) string {
 	return page + "?" + url.Values{"error": {msg}}.Encode()
 }
 
-func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*struct{ Body GitHubStatus }, error) {
+func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {
 	if h.d.GitHub == nil {
 		return nil, unavailable("The GitHub connection")
 	}
@@ -322,7 +316,7 @@ func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*struct{ Body Gi
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "github.sync", "", nil)
-	return h.getGitHub(ctx, nil)
+	return reply(h.gitHubStatus(ctx))
 }
 
 func (h *Handler) disconnectGitHub(ctx context.Context, _ *struct{}) (*empty, error) {

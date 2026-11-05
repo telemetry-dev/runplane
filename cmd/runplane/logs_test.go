@@ -68,7 +68,8 @@ func TestStepLines(t *testing.T) {
 	for _, tt := range tests {
 		got := readAll(t, filterLines(io.NopCloser(strings.NewReader(jobLog)), stepLines(jobSteps(), tt.step)))
 		var texts []string
-		for _, line := range lines(got) {
+		for line := range strings.Lines(got) {
+			line = strings.TrimSuffix(line, "\n")
 			stamp, text, _ := strings.Cut(line, " ")
 			if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
 				t.Errorf("step %d: line %q has no time", tt.step, line)
@@ -127,7 +128,7 @@ func TestJobLog(t *testing.T) {
 		if serverID != "s1" {
 			return nil
 		}
-		return consoleDriver(console)
+		return consoleDriver{log: console}
 	}}
 
 	rc, live, err := l.JobLog(ctx, stored.ID, 3, false)
@@ -156,25 +157,15 @@ func TestJobLog(t *testing.T) {
 	}
 }
 
-// consoleDriver is a driver whose sandboxes all have one console log.
-type consoleDriver string
+// consoleDriver is a driver whose sandboxes all have one console log. JobLog
+// calls no other method of the driver.
+type consoleDriver struct {
+	sandbox.Driver
+	log string
+}
 
 func (d consoleDriver) Logs(context.Context, string, bool) (io.ReadCloser, error) {
-	return io.NopCloser(strings.NewReader(string(d))), nil
-}
-
-func (consoleDriver) Mode() sandbox.Mode                              { return sandbox.ModeDev }
-func (consoleDriver) Start(context.Context, sandbox.Spec) error       { return nil }
-func (consoleDriver) Stop(context.Context, string) error              { return nil }
-func (consoleDriver) List(context.Context) ([]sandbox.Sandbox, error) { return nil, nil }
-func (consoleDriver) Capacity(context.Context) (sandbox.Capacity, error) {
-	return sandbox.Capacity{}, nil
-}
-func (consoleDriver) Events() <-chan sandbox.Event                  { return nil }
-func (consoleDriver) Hold(context.Context, string, time.Time) error { return nil }
-func (consoleDriver) Close() error                                  { return nil }
-func (consoleDriver) Shell(context.Context, string, sandbox.TermSize) (sandbox.Terminal, error) {
-	return nil, errors.ErrUnsupported
+	return io.NopCloser(strings.NewReader(d.log)), nil
 }
 
 func openStore(t *testing.T) *store.Store {
@@ -195,11 +186,4 @@ func readAll(t *testing.T, rc io.ReadCloser) string {
 		t.Fatal(err)
 	}
 	return string(b)
-}
-
-func lines(s string) []string {
-	if s == "" {
-		return nil
-	}
-	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
 }

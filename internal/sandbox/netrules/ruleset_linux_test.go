@@ -11,23 +11,20 @@ import (
 // A job must not reach the metadata or host agent service of the cloud it
 // runs in: they give out credentials and the settings of the host.
 func TestBlockedNetsCoverCloudHostServices(t *testing.T) {
-	for _, addr := range []string{
-		"169.254.169.254", // AWS, GCP, Azure IMDS, Oracle, DigitalOcean, Hetzner
-		"168.63.129.16",   // Azure WireServer and HostGAPlugin
-		"100.100.100.200", // Alibaba
-		"10.0.0.1",
-		"172.17.0.1",
-		"192.168.1.1",
+	for addr, want := range map[string]bool{
+		"169.254.169.254": true, // AWS, GCP, Azure IMDS, Oracle, DigitalOcean, Hetzner
+		"168.63.129.16":   true, // Azure WireServer and HostGAPlugin
+		"100.100.100.200": true, // Alibaba
+		"10.0.0.1":        true,
+		"172.17.0.1":      true,
+		"192.168.1.1":     true,
+		"1.1.1.1":         false,
+		"140.82.112.3":    false,
+		"168.63.129.17":   false,
 	} {
 		a := netip.MustParseAddr(addr)
-		if !slices.ContainsFunc(blockedNets, func(p netip.Prefix) bool { return p.Contains(a) }) {
-			t.Errorf("%s is not in blockedNets", addr)
-		}
-	}
-	for _, addr := range []string{"1.1.1.1", "140.82.112.3", "168.63.129.17"} {
-		a := netip.MustParseAddr(addr)
-		if slices.ContainsFunc(blockedNets, func(p netip.Prefix) bool { return p.Contains(a) }) {
-			t.Errorf("the public address %s is in blockedNets", addr)
+		if got := slices.ContainsFunc(blockedNets, func(p netip.Prefix) bool { return p.Contains(a) }); got != want {
+			t.Errorf("%s blocked: %v, want %v", addr, got, want)
 		}
 	}
 }

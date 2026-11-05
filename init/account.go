@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
-	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -73,20 +71,4 @@ func (a account) env(extra ...string) []string {
 	}
 	env = append(env, "HOME="+a.home, "USER="+a.name, "LOGNAME="+a.name, "SHELL="+a.shell)
 	return append(env, extra...)
-}
-
-// writeEnvFile writes the runner .env file. The runner sets each
-// "key=value" line as an environment variable, so it skips an entry that
-// cannot fit on one line.
-func writeEnvFile(path string, env map[string]string, log *slog.Logger) error {
-	var b strings.Builder
-	for _, k := range slices.Sorted(maps.Keys(env)) {
-		v := env[k]
-		if k == "" || strings.ContainsAny(k, "=\r\n") || strings.ContainsAny(v, "\r\n") {
-			log.Warn("skipping a runner environment variable that does not fit in .env", "key", k)
-			continue
-		}
-		fmt.Fprintf(&b, "%s=%s\n", k, v)
-	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

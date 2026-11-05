@@ -2,9 +2,12 @@ package sysbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -12,6 +15,20 @@ import (
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
 )
+
+// meta is the file sandbox.json in the sandbox folder. A new driver reads it
+// after a runplane restart. It never holds the JIT config.
+type meta struct {
+	Spec        sandbox.Spec  `json:"spec"`
+	ContainerID string        `json:"container_id"`
+	IP          string        `json:"ip"`
+	State       sandbox.State `json:"state"`
+	CreatedAt   time.Time     `json:"created_at"`
+	HoldUntil   time.Time     `json:"hold_until,omitzero"`
+	BusyAt      time.Time     `json:"busy_at,omitzero"`
+}
+
+const metaFile = "sandbox.json"
 
 // recover takes over the sandbox containers that still operate after a
 // runplane restart: it opens their control channels again, and the guests
@@ -28,9 +45,8 @@ func (d *Driver) recover(ctx context.Context) error {
 	for _, c := range res.Items {
 		id := c.Labels[sandbox.LabelSandbox]
 		if c.State == container.StateRunning && idPattern.MatchString(id) {
-			err := d.adopt(id, c.ID)
+			err := d.adopt(ctx, id, c.ID)
 			if err == nil {
-				d.bindAdopted(ctx, id, c.ID)
 				continue
 			}
 			d.log.Warn("cannot take over sandbox, removing it", "sandbox", id, "err", err)
@@ -75,21 +91,7 @@ func (d *Driver) recover(ctx context.Context) error {
 	return nil
 }
 
-// bindAdopted binds the bridge port of a sandbox that operates since before
-// the restart. The bridge table usually has the binding already.
-func (d *Driver) bindAdopted(ctx context.Context, id, containerID string) {
-	b := d.get(id)
-	info, err := d.docker.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
-	if err == nil {
-		err = d.bindPort(b, info.Container)
-	}
-	if err != nil {
-		d.log.Warn("bind the bridge port of a sandbox", "sandbox", id, "err", err)
-	}
-}
-
-// adopt takes over one running sandbox container.
-func (d *Driver) adopt(id, containerID string) error {
+func (d *Driver) adopt(ctx context.Context, id, containerID string) error {
 	dir := d.opts.Config.SandboxDir(id)
 	m, err := readMeta(dir)
 	if err != nil {
@@ -116,7 +118,7 @@ func (d *Driver) adopt(id, containerID string) error {
 		return err
 	}
 	// The guest asked for its config before; it asks only one time.
-	if b.ctl, err = d.listen(b, b.logs, control.GuestConfig{SandboxID: id}); err != nil {
+	if b.ctl, err = d.listen(b, control.GuestConfig{SandboxID: id}); err != nil {
 		b.logs.Close()
 		return err
 	}
@@ -127,5 +129,54 @@ func (d *Driver) adopt(id, containerID string) error {
 	if b.state == sandbox.StateStopping {
 		go d.stop(context.Background(), b)
 	}
+
+	// The bridge table usually has the binding of the port already.
+	info, err := d.docker.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err == nil {
+		err = d.bindPort(b, info.Container)
+	}
+	if err != nil {
+		d.log.Warn("bind the bridge port of a sandbox", "sandbox", id, "err", err)
+	}
 	return nil
+}
+
+// save writes the meta file of b. Call it with d.mu held. Only a sandbox
+// with a container needs one.
+func (d *Driver) save(b *box) error {
+	if b.containerID == "" || b.state.Done() {
+		return nil
+	}
+	data, err := json.Marshal(meta{
+		Spec:        b.spec,
+		ContainerID: b.containerID,
+		IP:          b.ip,
+		State:       b.state,
+		CreatedAt:   b.created,
+		HoldUntil:   b.holdUntil,
+		BusyAt:      b.busyAt,
+	})
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(b.dir, metaFile+".tmp")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("save sandbox state: %w", err)
+	}
+	if err := os.Rename(tmp, filepath.Join(b.dir, metaFile)); err != nil {
+		return fmt.Errorf("save sandbox state: %w", err)
+	}
+	return nil
+}
+
+func readMeta(dir string) (meta, error) {
+	var m meta
+	data, err := os.ReadFile(filepath.Join(dir, metaFile))
+	if err != nil {
+		return m, fmt.Errorf("read sandbox state: %w", err)
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return m, fmt.Errorf("read sandbox state: %w", err)
+	}
+	return m, nil
 }

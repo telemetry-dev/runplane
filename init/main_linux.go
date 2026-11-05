@@ -86,7 +86,7 @@ func (g *guest) run() int {
 	defer cancel()
 	go func() {
 		select {
-		case <-g.req.stopped():
+		case <-g.req.stop:
 			cancel()
 		case <-ctx.Done():
 		}
@@ -108,9 +108,7 @@ func (g *guest) run() int {
 		code, failure = g.runRunner(acct)
 	}
 	g.link.event(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, ExitCode: code, Error: failure})
-	if !g.req.shuttingDown() {
-		g.req.waitHold(cfg.Debug, holdGrace)
-	}
+	g.req.waitHold(cfg.Debug, holdGrace)
 	if dockerd != nil {
 		dockerd.stop()
 	}

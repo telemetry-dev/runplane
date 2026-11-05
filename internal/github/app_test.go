@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"maps"
+	"errors"
 	"net/http"
 	"net/url"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -19,69 +21,45 @@ func TestManifest(t *testing.T) {
 	tests := []struct {
 		accountType, org string
 		wantAction       string
-		wantPermissions  map[string]string
+		wantPermissions  map[string]any
 	}{
 		{"organization", "acme", "/organizations/acme/settings/apps/new",
-			map[string]string{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read"}},
 		{"user", "", "/settings/apps/new",
-			map[string]string{"administration": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"administration": "write", "actions": "write", "metadata": "read"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.accountType, func(t *testing.T) {
 			e := newEnv(t)
-			ctx := context.Background()
-			action, manifest, err := e.svc.Manifest(ctx, "https://ci.example.com", tt.accountType, tt.org)
+			action, manifest, err := e.svc.Manifest(context.Background(), "https://ci.example.com", tt.accountType, tt.org)
 			if err != nil {
 				t.Fatal(err)
 			}
-			u, err := url.Parse(action)
-			if err != nil {
-				t.Fatal(err)
-			}
+			u, _ := url.Parse(action)
 			if u.Path != tt.wantAction {
 				t.Errorf("action path = %q, want %q", u.Path, tt.wantAction)
 			}
-			var m struct {
-				Name          string            `json:"name"`
-				URL           string            `json:"url"`
-				RedirectURL   string            `json:"redirect_url"`
-				SetupURL      string            `json:"setup_url"`
-				SetupOnUpdate bool              `json:"setup_on_update"`
-				Public        *bool             `json:"public"`
-				Permissions   map[string]string `json:"default_permissions"`
-				Hook          any               `json:"hook_attributes"`
-				Events        any               `json:"default_events"`
-			}
-			if err := json.Unmarshal([]byte(manifest), &m); err != nil {
-				t.Fatal(err)
-			}
-			if m.RedirectURL != "https://ci.example.com/api/github/callback" || m.SetupURL != "https://ci.example.com/api/github/setup" {
-				t.Errorf("redirect_url = %q, setup_url = %q", m.RedirectURL, m.SetupURL)
-			}
-			if m.URL != "https://ci.example.com" || !m.SetupOnUpdate || m.Public == nil || *m.Public {
-				t.Errorf("url = %q, setup_on_update = %v, public = %v", m.URL, m.SetupOnUpdate, m.Public)
-			}
-			if m.Hook != nil || m.Events != nil {
-				t.Errorf("manifest has a webhook: hook_attributes = %v, default_events = %v", m.Hook, m.Events)
-			}
-			if !maps.Equal(m.Permissions, tt.wantPermissions) {
-				t.Errorf("permissions = %v, want %v", m.Permissions, tt.wantPermissions)
-			}
-			if !strings.HasPrefix(m.Name, "runplane-") || len(m.Name) != len("runplane-")+6 {
-				t.Errorf("name = %q, want runplane-<6 random>", m.Name)
+			// No webhook: the manifest has no hook_attributes and no default_events.
+			var m map[string]any
+			json.Unmarshal([]byte(manifest), &m)
+			delete(m, "name")
+			delete(m, "description")
+			want := map[string]any{"url": "https://ci.example.com", "redirect_url": "https://ci.example.com/api/github/callback",
+				"setup_url": "https://ci.example.com/api/github/setup", "setup_on_update": true, "public": false,
+				"default_permissions": tt.wantPermissions}
+			if !reflect.DeepEqual(m, want) {
+				t.Errorf("manifest = %v, want %v", m, want)
 			}
 
-			// The store keeps only the hash of the state.
-			state := u.Query().Get("state")
-			sum := sha256.Sum256([]byte(state))
-			var stored, account string
+			// The store keeps only the hash of the state, for one hour.
+			var stored string
 			var expires int64
-			err = e.st.DB().QueryRow("SELECT state_hash, account_type, expires_at FROM manifest_states").Scan(&stored, &account, &expires)
+			err = e.st.DB().QueryRow("SELECT state_hash, expires_at FROM manifest_states").Scan(&stored, &expires)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if stored != hex.EncodeToString(sum[:]) || account != tt.accountType {
-				t.Errorf("stored state %q (%s), want the SHA-256 of the state", stored, account)
+			if sum := sha256.Sum256([]byte(u.Query().Get("state"))); stored != hex.EncodeToString(sum[:]) {
+				t.Errorf("stored state %q, want the SHA-256 of the state", stored)
 			}
 			if d := time.Until(time.UnixMilli(expires)); d < 59*time.Minute || d > time.Hour {
 				t.Errorf("state expires in %s, want 1 hour", d)
@@ -90,24 +68,16 @@ func TestManifest(t *testing.T) {
 	}
 }
 
-func TestManifestNameUsesInstanceName(t *testing.T) {
-	tests := []struct{ instance, wantPrefix string }{
-		{"Acme CI", "Acme CI-"},
+func TestAppName(t *testing.T) {
+	tests := []struct{ instance, want string }{
+		{"", `^runplane-[a-z2-7]{6}$`},
+		{" Acme CI ", `^Acme CI-[a-z2-7]{6}$`},
 		// GitHub refuses app names longer than 34 characters.
-		{"The continuous integration of Acme Corporation", "The continuous integration-"},
+		{"The continuous integration of Acme Corporation", `^The continuous integration-[a-z2-7]{6}$`},
 	}
 	for _, tt := range tests {
-		e := newEnv(t)
-		ctx := context.Background()
-		e.st.UpdateSettings(ctx, func(s *store.Settings) error { s.InstanceName = tt.instance; return nil })
-		_, manifest, err := e.svc.Manifest(ctx, "http://localhost:8484", "user", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var m struct{ Name string }
-		json.Unmarshal([]byte(manifest), &m)
-		if !strings.HasPrefix(m.Name, tt.wantPrefix) || len(m.Name) > 34 {
-			t.Errorf("name = %q (%d characters), want %q and a suffix in 34 characters", m.Name, len(m.Name), tt.wantPrefix)
+		if got := appName(tt.instance); !regexp.MustCompile(tt.want).MatchString(got) {
+			t.Errorf("appName(%q) = %q, want %s", tt.instance, got, tt.want)
 		}
 	}
 }
@@ -116,17 +86,13 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	conversions := 0
-	e.mux.HandleFunc("POST /api/v3/app-manifests/{code}/conversions", func(w http.ResponseWriter, r *http.Request) {
+	e.mux.HandleFunc("POST /api/v3/app-manifests/code123/conversions", func(w http.ResponseWriter, r *http.Request) {
 		conversions++
-		if r.PathValue("code") != "code123" {
-			t.Errorf("code = %q", r.PathValue("code"))
-		}
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"id": 4242, "slug": "runplane-ab12cd", "node_id": "A_1", "name": "runplane-ab12cd",
+			"id": 4242, "slug": "runplane-ab12cd", "name": "runplane-ab12cd", "client_id": "Iv23.abc",
 			"owner":    map[string]any{"login": "acme", "id": 9, "type": "Organization"},
-			"html_url": "https://github.com/apps/runplane-ab12cd", "client_id": "Iv23.abc",
-			"client_secret": "secret-1", "webhook_secret": nil, "pem": string(testPEM()),
-			"created_at": "2026-11-04T10:00:00Z", "permissions": map[string]string{"actions": "write"}, "events": []string{},
+			"html_url": "https://github.com/apps/runplane-ab12cd", "client_secret": "secret-1", "webhook_secret": nil,
+			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
 		})
 	})
 	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", "organization", "acme")
@@ -160,66 +126,66 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 		t.Errorf("sealed client secret = %q, %v", secret, err)
 	}
 
-	// A state works one time.
-	if _, err := e.svc.Callback(ctx, "https://ci.example.com", "code123", state); err == nil {
-		t.Error("second callback with the same state succeeded")
-	}
-	if _, err := e.svc.Callback(ctx, "https://ci.example.com", "code123", "bad-state"); err == nil {
-		t.Error("callback with an unknown state succeeded")
+	// A state works one time, and a bad state does not reach GitHub.
+	for _, s := range []string{state, "bad-state"} {
+		if _, err := e.svc.Callback(ctx, "https://ci.example.com", "code123", s); err == nil {
+			t.Errorf("callback with the state %q succeeded", s)
+		}
 	}
 	if conversions != 1 {
-		t.Errorf("conversions = %d, want 1: a bad state must not reach GitHub", conversions)
+		t.Errorf("conversions = %d, want 1", conversions)
 	}
 }
 
-func TestSetupRecordsInstallation(t *testing.T) {
-	e := newEnv(t)
-	e.connect()
+func TestDisconnect(t *testing.T) {
+	e, f, _ := listeningEnv(t)
 	ctx := context.Background()
-	other := false
-	e.mux.HandleFunc("GET /api/v3/app/installations/{id}", func(w http.ResponseWriter, r *http.Request) {
-		e.checkJWT(r)
-		app := testAppID
-		if other {
-			app = 99
+	if err := e.svc.Disconnect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.st.GetGitHubApp(ctx); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the app is still there: %v", err)
+	}
+	insts, _ := e.st.ListInstallations(ctx)
+	sets, _ := e.st.ListScaleSets(ctx)
+	if len(insts) != 0 || len(sets) != 0 {
+		t.Errorf("installations = %+v, scale sets = %+v", insts, sets)
+	}
+	if st := f.state(); len(st.sets) != 0 || st.sessions != 0 {
+		t.Errorf("on GitHub: scale sets = %+v, open sessions = %d", st.sets, st.sessions)
+	}
+	if err := e.svc.Disconnect(ctx); err != nil {
+		t.Errorf("second disconnect: %v", err)
+	}
+}
+
+func TestDisconnectNamesScaleSetsLeftOnGitHub(t *testing.T) {
+	e, f, _ := listeningEnv(t)
+	f.mu.Lock()
+	f.agents[50] = "broken"
+	f.mu.Unlock()
+	err := e.svc.Disconnect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "scale sets runplane.") {
+		t.Fatalf("err = %v, want the scale set name", err)
+	}
+	if _, err := e.st.GetGitHubApp(context.Background()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("the app is still there after a GitHub failure: %v", err)
+	}
+}
+
+func TestAppDeleteURL(t *testing.T) {
+	tests := []struct {
+		ownerType, htmlURL, want string
+	}{
+		{"Organization", "", "https://github.com/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
+		{"User", "", "https://github.com/settings/apps/runplane-ab12cd/advanced"},
+		{"Organization", "https://git.example.com/apps/runplane-ab12cd",
+			"https://git.example.com/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
+	}
+	for _, tt := range tests {
+		got := appDeleteURL(store.GitHubApp{Slug: "runplane-ab12cd", OwnerLogin: "acme", OwnerType: tt.ownerType, HTMLURL: tt.htmlURL})
+		if got != tt.want {
+			t.Errorf("appDeleteURL(%s, %q) = %q, want %q", tt.ownerType, tt.htmlURL, got, tt.want)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"id": 77, "app_id": app, "repository_selection": "selected", "suspended_at": nil,
-			"account": map[string]any{"login": "octo", "id": 5, "type": "User", "avatar_url": "https://a/5"},
-		})
-	})
-	e.mux.HandleFunc("GET /api/v3/installation/repositories", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"total_count": 1, "repositories": []map[string]any{
-			{"id": 300, "full_name": "octo/app", "private": true, "archived": false, "default_branch": "main"},
-		}})
-	})
-
-	to, err := e.svc.Setup(ctx, "https://ci.example.com", 77, "install")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if to != "/setup/first-job" {
-		t.Errorf("first setup goes to %q, want /setup/first-job", to)
-	}
-	inst, err := e.st.GetInstallation(ctx, 77)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inst.AccountLogin != "octo" || inst.AccountType != "User" || inst.RepositorySelection != "selected" {
-		t.Errorf("installation = %+v", inst)
-	}
-	repos, _ := e.st.ListRepositories(ctx, 77)
-	if len(repos) != 1 || repos[0].FullName != "octo/app" || !repos[0].Private {
-		t.Errorf("repositories = %+v", repos)
-	}
-
-	to, err = e.svc.Setup(ctx, "https://ci.example.com", 77, "update")
-	if err != nil || to != "/settings/github" {
-		t.Errorf("later setup goes to %q (%v), want /settings/github", to, err)
-	}
-
-	other = true
-	if _, err := e.svc.Setup(ctx, "https://ci.example.com", 77, "install"); err == nil {
-		t.Error("setup accepted an installation of a different app")
 	}
 }

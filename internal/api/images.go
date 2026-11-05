@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"strings"
@@ -59,9 +58,8 @@ func (h *Handler) images(ctx context.Context, list []store.Image) ([]Image, erro
 	for _, b := range builds {
 		if img := byID[b.ImageID]; img != nil {
 			img.Builds = append(img.Builds, ImageBuild{
-				ServerID: b.ServerID, ServerName: r.serverName(b.ServerID), Arch: r.servers[b.ServerID].Arch,
-				Digest: b.Digest, Status: b.Status,
-				Error: b.Error, SizeBytes: b.SizeBytes, UpdatedAt: b.UpdatedAt,
+				ServerID: b.ServerID, ServerName: r.servers[b.ServerID].Name, Arch: r.servers[b.ServerID].Arch,
+				Digest: b.Digest, Status: b.Status, Error: b.Error, SizeBytes: b.SizeBytes, UpdatedAt: b.UpdatedAt,
 			})
 		}
 	}
@@ -75,28 +73,20 @@ func (h *Handler) images(ctx context.Context, list []store.Image) ([]Image, erro
 	return out, nil
 }
 
-func (h *Handler) listImages(ctx context.Context, _ *struct{}) (*struct{ Body []Image }, error) {
+func (h *Handler) listImages(ctx context.Context, _ *struct{}) (*body[[]Image], error) {
 	list, err := h.d.Store.ListImages(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	out, err := h.images(ctx, list)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body []Image }{out}, nil
+	return reply(h.images(ctx, list))
 }
 
-func (h *Handler) imageOutput(ctx context.Context, id string) (*struct{ Body Image }, error) {
+func (h *Handler) imageOutput(ctx context.Context, id string) (*body[Image], error) {
 	img, err := h.d.Store.GetImage(ctx, id)
 	if err != nil {
-		return nil, h.storeErr(err, "No image has this ID.")
+		return nil, notFound(err, "No image has this ID.")
 	}
-	out, err := h.images(ctx, []store.Image{img})
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body Image }{out[0]}, nil
+	return reply(first(h.images(ctx, []store.Image{img})))
 }
 
 type CreateImageRequest struct {
@@ -104,7 +94,7 @@ type CreateImageRequest struct {
 	Ref  string `json:"ref" minLength:"1" maxLength:"512" doc:"OCI reference. Build it FROM a runplane base image."`
 }
 
-func (h *Handler) createImage(ctx context.Context, in *struct{ Body CreateImageRequest }) (*struct{ Body Image }, error) {
+func (h *Handler) createImage(ctx context.Context, in *body[CreateImageRequest]) (*body[Image], error) {
 	imgName, ref, err := checkImage(in.Body.Name, in.Body.Ref)
 	if err != nil {
 		return nil, err
@@ -112,7 +102,7 @@ func (h *Handler) createImage(ctx context.Context, in *struct{ Body CreateImageR
 	now := time.Now()
 	img := store.Image{ID: ids.New(), Name: imgName, Ref: ref, Source: "registry", CreatedAt: now, UpdatedAt: now}
 	if err := h.d.Store.CreateImage(ctx, img); err != nil {
-		return nil, h.imageErr(err)
+		return nil, imageErr(err)
 	}
 	h.audit(ctx, "image.create", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
 	h.d.Bus.Publish(events.Event{Type: events.ImageState, Data: img})
@@ -129,10 +119,10 @@ type UpdateImageRequest struct {
 func (h *Handler) updateImage(ctx context.Context, in *struct {
 	PathID
 	Body UpdateImageRequest
-}) (*struct{ Body Image }, error) {
+}) (*body[Image], error) {
 	img, err := h.d.Store.GetImage(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No image has this ID.")
+		return nil, notFound(err, "No image has this ID.")
 	}
 	b := in.Body
 	if b.IsDefault != nil && !*b.IsDefault && img.IsDefault {
@@ -141,20 +131,22 @@ func (h *Handler) updateImage(ctx context.Context, in *struct {
 	if b.Ref != nil && *b.Ref != img.Ref && img.Source == "builtin" {
 		return nil, invalid("body.ref", "The ref of a built-in image cannot change. Add a new image instead.", *b.Ref)
 	}
-	newName, ref, err := checkImage(cmp.Or(ptrValue(b.Name), img.Name), cmp.Or(ptrValue(b.Ref), img.Ref))
-	if err != nil {
+	newName, ref := img.Name, img.Ref
+	set(&newName, b.Name)
+	set(&ref, b.Ref)
+	if newName, ref, err = checkImage(newName, ref); err != nil {
 		return nil, err
 	}
 	refChanged := ref != img.Ref
 	if newName != img.Name || refChanged {
 		img.Name, img.Ref = newName, ref
 		if err := h.d.Store.UpdateImage(ctx, img); err != nil {
-			return nil, h.imageErr(err)
+			return nil, imageErr(err)
 		}
 	}
 	if b.IsDefault != nil && *b.IsDefault && !img.IsDefault {
 		if err := h.d.Store.SetDefaultImage(ctx, img.ID); err != nil {
-			return nil, h.imageErr(err)
+			return nil, imageErr(err)
 		}
 		h.poolsChanged(ctx)
 	}
@@ -166,18 +158,10 @@ func (h *Handler) updateImage(ctx context.Context, in *struct {
 	return h.imageOutput(ctx, img.ID)
 }
 
-func ptrValue[T any](p *T) T {
-	var zero T
-	if p == nil {
-		return zero
-	}
-	return *p
-}
-
 func (h *Handler) deleteImage(ctx context.Context, in *PathID) (*empty, error) {
 	img, err := h.d.Store.GetImage(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No image has this ID.")
+		return nil, notFound(err, "No image has this ID.")
 	}
 	if img.IsDefault {
 		return nil, huma.Error409Conflict("The default image cannot be removed. Make another image the default first.")
@@ -190,7 +174,7 @@ func (h *Handler) deleteImage(ctx context.Context, in *PathID) (*empty, error) {
 	}
 	// Pools with this image change to the default image.
 	if err := h.d.Store.DeleteImage(ctx, img.ID); err != nil {
-		return nil, h.storeErr(err, "No image has this ID.")
+		return nil, notFound(err, "No image has this ID.")
 	}
 	h.poolsChanged(ctx)
 	h.audit(ctx, "image.delete", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
@@ -203,7 +187,7 @@ func (h *Handler) refreshImage(ctx context.Context, in *PathID) (*empty, error) 
 	}
 	img, err := h.d.Store.GetImage(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No image has this ID.")
+		return nil, notFound(err, "No image has this ID.")
 	}
 	if err := h.d.Images.Refresh(ctx, img.ID); err != nil {
 		return nil, h.serviceErr(err)
@@ -223,7 +207,6 @@ func (h *Handler) refresh(ctx context.Context, id string) {
 	}
 }
 
-// checkImage trims the name and the ref and checks the ref syntax.
 func checkImage(imgName, ref string) (string, string, error) {
 	imgName, ref = strings.TrimSpace(imgName), strings.TrimSpace(ref)
 	var errs problems
@@ -236,10 +219,9 @@ func checkImage(imgName, ref string) (string, string, error) {
 	return imgName, ref, errs.err()
 }
 
-func (h *Handler) imageErr(err error) error {
+func imageErr(err error) error {
 	if errors.Is(err, store.ErrConflict) {
-		msg := "An image with this ref exists."
-		return huma.Error409Conflict(msg, &huma.ErrorDetail{Location: "body.ref", Message: msg})
+		return conflict("body.ref", "An image with this ref exists.")
 	}
-	return h.storeErr(err, "No image has this ID.")
+	return notFound(err, "No image has this ID.")
 }

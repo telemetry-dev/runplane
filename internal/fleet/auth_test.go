@@ -24,7 +24,8 @@ func TestInstallToken(t *testing.T) {
 	hello := agent.Hello{
 		Token: tok.Token, Version: version.Version, Mode: sandbox.ModeContainer, Host: newFakeNode("x64").info, Addr: "198.51.100.7",
 	}
-	id, secret, err := h.f.Authenticate(ctx, hello)
+	auth := func(hello agent.Hello) (string, string, error) { return h.f.Authenticate(ctx, hello) }
+	id, secret, err := auth(hello)
 	if err != nil || id == "" || secret == "" {
 		t.Fatalf("register: id %q, secret %q, %v", id, secret, err)
 	}
@@ -32,8 +33,11 @@ func TestInstallToken(t *testing.T) {
 	if v.Name != "build-1" || v.Kind != store.ServerAgent || v.Status != store.ServerOnline || v.Arch != "x64" || v.Address != "198.51.100.7" {
 		t.Errorf("new server row %+v", v)
 	}
+	// GET /api/servers/tokens/{token_id}/status follows the install.
+	if stored, err := h.st.GetServerToken(ctx, tok.ID); err != nil || stored.ServerID != id || stored.UsedAt == nil {
+		t.Errorf("token_id %q names %+v, %v; want the token that registered %s", tok.ID, stored, err, id)
+	}
 
-	auth := func(h0 agent.Hello) (string, string, error) { return h.f.Authenticate(ctx, h0) }
 	if gotID, gotSecret, err := auth(agent.Hello{ServerID: id, Secret: secret}); err != nil || gotID != id || gotSecret != "" {
 		t.Errorf("known agent: id %q, secret %q, %v; want its ID and no new secret", gotID, gotSecret, err)
 	}
@@ -62,12 +66,26 @@ func TestInstallToken(t *testing.T) {
 		t.Error("used token after the grace time: no error")
 	}
 
+	// A token without a name names the server after its host.
+	unnamed, err := h.f.NewToken(ctx, "https://ci.example.com", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello.Token, hello.Addr = unnamed.Token, "198.51.100.8"
+	unnamedID, _, err := auth(hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := h.server(unnamedID); v.Name != "node-x64" {
+		t.Errorf("server name %q of a token without a name, want the host name node-x64", v.Name)
+	}
+
 	late, err := h.f.NewToken(ctx, "https://ci.example.com", "build-2", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.clock.add(time.Hour)
-	if _, _, err := auth(agent.Hello{Token: late.Token, Addr: "198.51.100.8"}); err == nil {
+	if _, _, err := auth(agent.Hello{Token: late.Token, Addr: "198.51.100.9"}); err == nil {
 		t.Error("expired token: no error")
 	}
 }

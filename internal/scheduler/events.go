@@ -23,21 +23,16 @@ type metricsBuffer struct {
 // for each event. Events for a sandbox of a different server are dropped, so
 // an agent can change only its own sandboxes.
 func (s *Scheduler) HandleEvent(serverID string, ev sandbox.Event) {
-	ctx := s.bg
 	if ev.Time.IsZero() {
 		ev.Time = s.now()
 	}
-	switch ev.Type {
-	case sandbox.EventMetrics:
-		if ev.Metrics != nil {
-			s.addSample(serverID, ev)
-		}
-	case sandbox.EventState:
-		s.onState(ctx, serverID, ev)
-	case sandbox.EventRunner:
-		if ev.Runner != nil {
-			s.onRunner(ctx, serverID, ev)
-		}
+	switch {
+	case ev.Type == sandbox.EventMetrics && ev.Metrics != nil:
+		s.addSample(serverID, ev)
+	case ev.Type == sandbox.EventState:
+		s.onState(s.bg, serverID, ev)
+	case ev.Type == sandbox.EventRunner && ev.Runner != nil:
+		s.onRunner(s.bg, serverID, ev)
 	}
 }
 

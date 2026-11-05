@@ -3,10 +3,10 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +14,8 @@ import (
 
 	"github.com/runplane/runplane/internal/sandbox"
 )
+
+const defaultConfigDir = "/etc/runplane"
 
 type Config struct {
 	Listen      string // dashboard and API
@@ -25,35 +27,51 @@ type Config struct {
 	Dev         bool         // relaxed cookies and CORS for the Vite dev server
 	DevInsecure bool         // lets the devdocker driver operate
 	SSHListen   string       // SSH gateway for debug shells (primary)
-
-	// GitHubAPIURL and GitHubURL point runplane at another GitHub, for
-	// example the fake GitHub of the tests. Empty means github.com.
-	GitHubAPIURL string
-	GitHubURL    string
-	// DevRunnerDir is a runner bundle folder that every runner version
-	// resolves to, unpatched. Tests set it to testdata/fakerunner.
-	DevRunnerDir string
 }
 
-// Parse reads the environment, then the flags in args. Define the other flags
-// of the subcommand on fs before the call.
+// Parse reads the RUNPLANE_* environment variables over the defaults, then
+// the flags in args. Define the other flags of the subcommand on fs before
+// the call. The flag names are the variable names without RUNPLANE_, in
+// lowercase, with dashes: -listen, -data-dir.
 func Parse(fs *flag.FlagSet, args []string) (Config, error) {
-	c, err := Load()
+	c, err := load()
 	if err != nil {
 		return Config{}, err
 	}
-	c.Bind(fs)
+	fs.StringVar(&c.Listen, "listen", c.Listen, "dashboard and API address (RUNPLANE_LISTEN)")
+	fs.StringVar(&c.AgentListen, "agent-listen", c.AgentListen, "TLS address for agents (RUNPLANE_AGENT_LISTEN)")
+	fs.IntVar(&c.ServicePort, "service-port", c.ServicePort, "cache and registry mirror port for sandboxes (RUNPLANE_SERVICE_PORT)")
+	fs.StringVar(&c.DataDir, "data-dir", c.DataDir, "data folder (RUNPLANE_DATA_DIR)")
+	fs.StringVar(&c.ConfigDir, "config-dir", c.ConfigDir, "configuration folder (RUNPLANE_CONFIG_DIR)")
+	fs.StringVar((*string)(&c.Mode), "mode", string(c.Mode), "sandbox mode: container, vm, or dev (RUNPLANE_MODE)")
+	fs.BoolVar(&c.Dev, "dev", c.Dev, "relaxed cookies and CORS for the Vite dev server (RUNPLANE_DEV)")
+	fs.BoolVar(&c.DevInsecure, "dev-insecure", c.DevInsecure, "let the devdocker driver operate (RUNPLANE_DEV_INSECURE)")
+	fs.StringVar(&c.SSHListen, "ssh-listen", c.SSHListen, "SSH gateway address for debug shells (RUNPLANE_SSH_LISTEN)")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
-	if err := c.Validate(); err != nil {
-		return Config{}, err
+
+	switch c.Mode {
+	case "", sandbox.ModeContainer, sandbox.ModeVM, sandbox.ModeDev:
+	default:
+		return Config{}, fmt.Errorf("mode %q: use container, vm, or dev", c.Mode)
+	}
+	if c.ServicePort < 1 || c.ServicePort > 65535 {
+		return Config{}, fmt.Errorf("service port %d: use 1 to 65535", c.ServicePort)
+	}
+	// Drivers give the folders to Docker and Firecracker as mount sources,
+	// so they must be absolute.
+	for _, dir := range []*string{&c.DataDir, &c.ConfigDir} {
+		abs, err := filepath.Abs(*dir)
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve folder %q: %w", *dir, err)
+		}
+		*dir = abs
 	}
 	return c, nil
 }
 
-// Load reads the RUNPLANE_* environment variables over the defaults.
-func Load() (Config, error) {
+func load() (Config, error) {
 	c := Config{
 		Listen:      ":8484",
 		AgentListen: ":8485",
@@ -86,9 +104,6 @@ func Load() (Config, error) {
 	str("RUNPLANE_CONFIG_DIR", &c.ConfigDir)
 	str("RUNPLANE_MODE", (*string)(&c.Mode))
 	str("RUNPLANE_SSH_LISTEN", &c.SSHListen)
-	str("RUNPLANE_GITHUB_API_URL", &c.GitHubAPIURL)
-	str("RUNPLANE_GITHUB_URL", &c.GitHubURL)
-	str("RUNPLANE_DEV_RUNNER_DIR", &c.DevRunnerDir)
 	boolean("RUNPLANE_DEV", &c.Dev)
 	boolean("RUNPLANE_DEV_INSECURE", &c.DevInsecure)
 	if v := os.Getenv("RUNPLANE_SERVICE_PORT"); v != "" {
@@ -104,54 +119,27 @@ func Load() (Config, error) {
 	return c, nil
 }
 
-// Bind adds flags to fs that override the values in c. The flag names are the
-// variable names without RUNPLANE_, in lowercase, with dashes: -listen, -data-dir.
-func (c *Config) Bind(fs *flag.FlagSet) {
-	fs.StringVar(&c.Listen, "listen", c.Listen, "dashboard and API address (RUNPLANE_LISTEN)")
-	fs.StringVar(&c.AgentListen, "agent-listen", c.AgentListen, "TLS address for agents (RUNPLANE_AGENT_LISTEN)")
-	fs.IntVar(&c.ServicePort, "service-port", c.ServicePort, "cache and registry mirror port for sandboxes (RUNPLANE_SERVICE_PORT)")
-	fs.StringVar(&c.DataDir, "data-dir", c.DataDir, "data folder (RUNPLANE_DATA_DIR)")
-	fs.StringVar(&c.ConfigDir, "config-dir", c.ConfigDir, "configuration folder (RUNPLANE_CONFIG_DIR)")
-	fs.StringVar((*string)(&c.Mode), "mode", string(c.Mode), "sandbox mode: container, vm, or dev (RUNPLANE_MODE)")
-	fs.BoolVar(&c.Dev, "dev", c.Dev, "relaxed cookies and CORS for the Vite dev server (RUNPLANE_DEV)")
-	fs.BoolVar(&c.DevInsecure, "dev-insecure", c.DevInsecure, "let the devdocker driver operate (RUNPLANE_DEV_INSECURE)")
-	fs.StringVar(&c.SSHListen, "ssh-listen", c.SSHListen, "SSH gateway address for debug shells (RUNPLANE_SSH_LISTEN)")
-	fs.StringVar(&c.GitHubAPIURL, "github-api-url", c.GitHubAPIURL, "GitHub REST API URL, for tests (RUNPLANE_GITHUB_API_URL)")
-	fs.StringVar(&c.GitHubURL, "github-url", c.GitHubURL, "GitHub web URL, for tests (RUNPLANE_GITHUB_URL)")
-	fs.StringVar(&c.DevRunnerDir, "dev-runner-dir", c.DevRunnerDir, "runner bundle folder for all runner versions, for tests (RUNPLANE_DEV_RUNNER_DIR)")
-}
-
-// Validate checks the values and makes the folders absolute, because
-// drivers give them to Docker and Firecracker as mount sources.
-func (c *Config) Validate() error {
-	switch c.Mode {
-	case "", sandbox.ModeContainer, sandbox.ModeVM, sandbox.ModeDev:
-	default:
-		return fmt.Errorf("mode %q: use container, vm, or dev", c.Mode)
-	}
-	if c.ServicePort < 1 || c.ServicePort > 65535 {
-		return fmt.Errorf("service port %d: use 1 to 65535", c.ServicePort)
-	}
-	for _, u := range []*string{&c.GitHubAPIURL, &c.GitHubURL} {
-		if *u == "" {
+// LoadEnvFile sets the RUNPLANE_* variables of runplane.env, the environment
+// file of the systemd units, that the environment does not have. sudo starts
+// a command without them, so the commands that an operator runs by hand call
+// LoadEnvFile before Parse to see the configuration of the service. It reads
+// the file in RUNPLANE_CONFIG_DIR, or in /etc/runplane. A file that is
+// missing or that the user cannot read changes nothing.
+func LoadEnvFile() {
+	dir := cmp.Or(os.Getenv("RUNPLANE_CONFIG_DIR"), defaultConfigDir)
+	b, _ := os.ReadFile(filepath.Join(dir, "runplane.env"))
+	for line := range strings.Lines(string(b)) {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || !strings.HasPrefix(key, "RUNPLANE_") {
 			continue
 		}
-		p, err := url.Parse(*u)
-		if err != nil || p.Host == "" || (p.Scheme != "http" && p.Scheme != "https") {
-			return fmt.Errorf("GitHub URL %q: use an http or https URL", *u)
+		if _, set := os.LookupEnv(key); set {
+			continue
 		}
-		*u = strings.TrimRight(*u, "/")
-	}
-	dirs := []*string{&c.DataDir, &c.ConfigDir}
-	if c.DevRunnerDir != "" {
-		dirs = append(dirs, &c.DevRunnerDir)
-	}
-	for _, dir := range dirs {
-		abs, err := filepath.Abs(*dir)
-		if err != nil {
-			return fmt.Errorf("resolve folder %q: %w", *dir, err)
+		// systemd also takes a value in quotes.
+		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+			value = value[1 : len(value)-1]
 		}
-		*dir = abs
+		os.Setenv(key, value)
 	}
-	return nil
 }

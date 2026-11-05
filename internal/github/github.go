@@ -8,9 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,13 +32,11 @@ type Scheduler interface {
 	Detach(scaleSetID string)
 }
 
-// Bundles makes runner bundles on the servers.
+// Bundles makes the runner bundles of a version on each server.
 type Bundles interface {
-	// EnsureLatest makes the bundles of this runner version on each server.
 	EnsureLatest(ctx context.Context, version string) error
 }
 
-// Notifier sends an event to the notification channels that want it.
 type Notifier interface {
 	Notify(ctx context.Context, e notify.Event) error
 }
@@ -51,15 +47,8 @@ type Config struct {
 	Bus       *events.Bus
 	Log       *slog.Logger
 	Scheduler Scheduler
-	Bundles   Bundles  // optional
-	Notifier  Notifier // optional
-	// HTTP is the client for all GitHub requests. Nil uses a new client.
-	HTTP *http.Client
-	// APIURL and WebURL default to https://api.github.com and https://github.com.
-	APIURL string
-	WebURL string
-	// Owner names the listener sessions on GitHub. The default is the host name.
-	Owner string
+	Bundles   Bundles
+	Notifier  Notifier
 }
 
 // Service implements api.GitHub and scheduler.GitHub.
@@ -72,9 +61,8 @@ type Service struct {
 	bundles Bundles
 	notify  Notifier
 	api     *rest
-	http    *http.Client // for the scaleset library
 	web     string
-	owner   string
+	owner   string // names the listener sessions on GitHub
 
 	// ops serializes the changes of installations and scale sets.
 	ops  sync.Mutex
@@ -93,55 +81,39 @@ type Service struct {
 	lmu       sync.Mutex
 	listeners map[string]*setListener
 
-	checks runChecks
+	checkMu sync.Mutex
+	checks  map[int64]runCheck // CheckJob results by run ID
 
-	warnMu sync.Mutex
-	warned map[string]bool // runner versions with a sent end date warning
+	// warned has the runner versions with a sent end date warning. Only
+	// releaseLoop uses it.
+	warned map[string]bool
 
 	pollEvent atomic.Int64 // unix ms of the last github.state event for a poll
 }
 
 func New(cfg Config) *Service {
-	hc := cfg.HTTP
-	if hc == nil {
-		hc = &http.Client{}
-	}
-	// The scaleset library has no timeout of its own except for the long
-	// poll, so its client gets one. It shares the transport.
-	sc := *hc
-	if sc.Timeout == 0 {
-		sc.Timeout = 2 * time.Minute
-	}
-	owner := cfg.Owner
-	if owner == "" {
-		owner, _ = os.Hostname()
-	}
+	owner, _ := os.Hostname()
 	base, stop := context.WithCancel(context.Background())
 	return &Service{
 		st:        cfg.Store,
 		box:       cfg.Box,
 		bus:       cfg.Bus,
-		log:       cmp.Or(cfg.Log, slog.New(slog.DiscardHandler)),
+		log:       cfg.Log,
 		sched:     cfg.Scheduler,
 		bundles:   cfg.Bundles,
 		notify:    cfg.Notifier,
-		api:       newREST(hc, cmp.Or(cfg.APIURL, "https://api.github.com")),
-		http:      &sc,
-		web:       strings.TrimRight(cmp.Or(cfg.WebURL, "https://github.com"), "/"),
+		api:       newREST("https://api.github.com"),
+		web:       "https://github.com",
 		owner:     cmp.Or(owner, "runplane"),
 		poke:      make(chan struct{}, 1),
 		base:      base,
 		stop:      stop,
 		tokens:    map[int64]token{},
 		listeners: map[string]*setListener{},
+		checks:    map[int64]runCheck{},
 		warned:    map[string]bool{},
 	}
 }
-
-const (
-	syncInterval    = 5 * time.Minute
-	releaseInterval = time.Hour
-)
 
 // Run syncs the installations and starts the scale set listeners, then
 // keeps them in step with GitHub, the pools, and the settings. It syncs each
@@ -155,7 +127,7 @@ func (s *Service) Run(ctx context.Context) {
 	wg.Go(func() { s.releaseLoop(ctx) })
 
 	s.syncAll(ctx)
-	tick := time.NewTicker(syncInterval)
+	tick := time.NewTicker(5 * time.Minute)
 	defer tick.Stop()
 	for {
 		select {
@@ -176,8 +148,8 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// PoolsChanged makes the scale sets agree with the pools soon. It does not
-// block.
+// PoolsChanged makes the scale sets agree with the pools soon, without
+// blocking.
 func (s *Service) PoolsChanged(context.Context) {
 	select {
 	case s.poke <- struct{}{}:
@@ -195,15 +167,12 @@ func (s *Service) Token(ctx context.Context) (string, error) {
 	return s.installationToken(ctx, inst.ID)
 }
 
-// syncAll reads the installations from GitHub, then makes the scale sets
-// agree. The scale sets also start when GitHub cannot be read.
+// syncAll is Sync for the loop. The scale sets also start when GitHub
+// cannot be read.
 func (s *Service) syncAll(ctx context.Context) {
-	s.ops.Lock()
-	defer s.ops.Unlock()
-	if err := s.syncInstallations(ctx); err != nil && !errors.Is(err, ErrNotConnected) {
+	if err := s.Sync(ctx); err != nil && !errors.Is(err, errNotConnected) {
 		s.log.Warn("sync GitHub installations", "err", err)
 	}
-	s.reconcile(ctx)
 }
 
 func (s *Service) reconcileNow(ctx context.Context) {
@@ -226,19 +195,16 @@ func (s *Service) anyInstallation(ctx context.Context) (store.Installation, bool
 	return store.Installation{}, false
 }
 
-// pollEventEvery limits the github.state events that only a new poll time causes.
-const pollEventEvery = 30 * time.Second
-
 // changed tells the browsers that the GitHub status changed.
 func (s *Service) changed() {
 	s.bus.Publish(events.Event{Type: events.GitHubState})
 }
 
 // polledChanged tells the browsers about a new poll time, at most once in
-// pollEventEvery for all listeners.
+// 30 seconds for all listeners.
 func (s *Service) polledChanged(now time.Time) {
 	last := s.pollEvent.Load()
-	if now.UnixMilli()-last < pollEventEvery.Milliseconds() || !s.pollEvent.CompareAndSwap(last, now.UnixMilli()) {
+	if now.UnixMilli()-last < (30*time.Second).Milliseconds() || !s.pollEvent.CompareAndSwap(last, now.UnixMilli()) {
 		return
 	}
 	s.changed()

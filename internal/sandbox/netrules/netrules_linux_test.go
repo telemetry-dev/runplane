@@ -32,7 +32,6 @@ var testCfg = Config{
 	TapSubnet:   DefaultTapSubnet,
 	ServicePort: 8486,
 	DNS:         []netip.Addr{netip.MustParseAddr("192.168.77.2")},
-	Refresh:     time.Hour,
 }
 
 func TestSetupIsIdempotentAndLeavesOtherTablesAlone(t *testing.T) {
@@ -281,7 +280,7 @@ func TestPackets(t *testing.T) {
 	sb2 := peer(t, host, "rp-1", "10.214.0.5/30", "10.214.0.6/30")
 	wan := peer(t, host, "wan0", "198.51.100.1/24", "198.51.100.2/24")
 	lan := peer(t, host, "lan0", "192.168.77.1/24", "192.168.77.2/24")
-	addAddr(t, wan, "198.51.100.3/24")
+	setUp(t, handleAt(t, wan), "wan0p", "198.51.100.3/24")
 	addRoute(t, wan, "10.214.0.0/16", "198.51.100.1")
 	// Reverse path filtering would also drop spoofed packets; turn it off
 	// to test the rules alone.
@@ -326,7 +325,8 @@ func TestPackets(t *testing.T) {
 	block(t, host, sb1, "198.51.100.1:8486") // other host address
 	block(t, host, sb1, "192.168.77.2:80")   // private network
 	block(t, host, wan, "10.214.0.2:9000")   // new connection into a sandbox
-	addAddr(t, sb1, "10.214.0.6/32")         // to spoof the address of sb2
+	// sb1 also takes the address of sb2, to spoof it.
+	setUp(t, handleAt(t, sb1), "rp-0p", "10.214.0.6/32")
 	if !udpArrives(t, host, sb1, "", udp) {
 		t.Error("datagram from the real source address did not arrive")
 	}
@@ -397,9 +397,9 @@ func TestBridgePackets(t *testing.T) {
 	if err := m.Bridge("rpbr0", netip.MustParsePrefix("198.18.0.0/24"), mustAddr("198.18.0.1")); err != nil {
 		t.Fatal(err)
 	}
-	bind := func(m *Manager, ns netns.NsHandle, mac net.HardwareAddr, addr string) {
+	bind := func(m *Manager, ns netns.NsHandle, dev string, mac net.HardwareAddr, addr string) {
 		t.Helper()
-		veth, err := HostPeer(fmt.Sprintf("/proc/self/fd/%d", ns), peerName(t, ns))
+		veth, err := HostPeer(fmt.Sprintf("/proc/self/fd/%d", ns), dev)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -409,7 +409,7 @@ func TestBridgePackets(t *testing.T) {
 	}
 	// A port without a binding, such as the one of a doctor probe, passes.
 	reach(t, host, c1, "198.18.0.1:8486")
-	bind(m, c2, mac2, "198.18.0.3")
+	bind(m, c2, "c2p", mac2, "198.18.0.3")
 
 	if got := reach(t, host, c1, "198.51.100.2:9000"); got != "198.51.100.1" {
 		t.Errorf("internet server saw %s, want the masqueraded host address 198.51.100.1", got)
@@ -422,7 +422,7 @@ func TestBridgePackets(t *testing.T) {
 	} else {
 		t.Log("no br_netfilter: skip the check between containers")
 	}
-	addAddr(t, c1, "10.99.0.9/32")
+	setUp(t, handleAt(t, c1), "c1p", "10.99.0.9/32")
 	if !udpArrives(t, host, c1, "", udp) {
 		t.Error("datagram from the bridge subnet did not arrive")
 	}
@@ -432,11 +432,11 @@ func TestBridgePackets(t *testing.T) {
 
 	// c1 takes the address of c2 inside the subnet, first with no binding
 	// of its own, then with one.
-	addAddr(t, c1, "198.18.0.3/32")
+	setUp(t, handleAt(t, c1), "c1p", "198.18.0.3/32")
 	reach(t, host, c2, "198.18.0.1:8486")
 	for _, bound := range []bool{false, true} {
 		if bound {
-			bind(m, c1, mac1, "198.18.0.2")
+			bind(m, c1, "c1p", mac1, "198.18.0.2")
 		}
 		if udpArrives(t, host, c1, "198.18.0.3", udp) {
 			t.Errorf("bound %v: datagram from the address of the other container arrived", bound)
@@ -471,37 +471,11 @@ func TestBridgePackets(t *testing.T) {
 // linkMAC returns the MAC of the link name in ns.
 func linkMAC(t *testing.T, ns netns.NsHandle, name string) net.HardwareAddr {
 	t.Helper()
-	h, err := netlink.NewHandleAt(ns)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer h.Close()
-	l, err := h.LinkByName(name)
+	l, err := handleAt(t, ns).LinkByName(name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return l.Attrs().HardwareAddr
-}
-
-// peerName returns the name of the device in ns other than lo.
-func peerName(t *testing.T, ns netns.NsHandle) string {
-	t.Helper()
-	h, err := netlink.NewHandleAt(ns)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer h.Close()
-	links, err := h.LinkList()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, l := range links {
-		if l.Attrs().Name != "lo" {
-			return l.Attrs().Name
-		}
-	}
-	t.Fatal("namespace has no device")
-	return ""
 }
 
 // neighMAC returns the MAC that the host has for ip on dev, or "".
@@ -595,10 +569,7 @@ func TestCreateTapLetsTheOwnerOpenIt(t *testing.T) {
 
 func TestRecoverFindsUsedIndexes(t *testing.T) {
 	isolate(t)
-	a, err := NewAllocator(netip.MustParsePrefix("10.214.0.0/27")) // 8 blocks
-	if err != nil {
-		t.Fatal(err)
-	}
+	a := NewAllocator(netip.MustParsePrefix("10.214.0.0/27")) // 8 blocks
 	for _, i := range []int{2, 5} {
 		l := a.Lease(i)
 		if err := CreateTap(l.Tap, 0, 0, l.HostCIDR()); err != nil {
@@ -734,11 +705,7 @@ func peer(t *testing.T, host netns.NsHandle, hostIf, hostCIDR, peerCIDR string) 
 		t.Fatal(err)
 	}
 	setUp(t, nil, hostIf, hostCIDR)
-	h, err := netlink.NewHandleAt(ns)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(h.Close)
+	h := handleAt(t, ns)
 	setUp(t, h, "lo", "")
 	setUp(t, h, hostIf+"p", peerCIDR)
 	// The host side, or the bridge, has the first address of the subnet.
@@ -786,40 +753,23 @@ func setUp(t *testing.T, h *netlink.Handle, name, cidr string) {
 	}
 }
 
-func addAddr(t *testing.T, ns netns.NsHandle, cidr string) {
-	t.Helper()
-	h, err := netlink.NewHandleAt(ns)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer h.Close()
-	links, err := h.LinkList()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, l := range links {
-		if l.Attrs().Name != "lo" {
-			a, _ := netlink.ParseAddr(cidr)
-			if err := h.AddrAdd(l, a); err != nil {
-				t.Fatal(err)
-			}
-			return
-		}
-	}
-	t.Fatal("namespace has no device")
-}
-
 func addRoute(t *testing.T, ns netns.NsHandle, dst, gw string) {
 	t.Helper()
+	_, ipnet, _ := net.ParseCIDR(dst)
+	if err := handleAt(t, ns).RouteAdd(&netlink.Route{Dst: ipnet, Gw: net.ParseIP(gw)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// handleAt returns a netlink handle in ns that lives until the end of the test.
+func handleAt(t *testing.T, ns netns.NsHandle) *netlink.Handle {
+	t.Helper()
 	h, err := netlink.NewHandleAt(ns)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer h.Close()
-	_, ipnet, _ := net.ParseCIDR(dst)
-	if err := h.RouteAdd(&netlink.Route{Dst: ipnet, Gw: net.ParseIP(gw)}); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(h.Close)
+	return h
 }
 
 // serve listens on addr in ns and writes the client address to each

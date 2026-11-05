@@ -69,10 +69,7 @@ func (d *Driver) recover() error {
 func (d *Driver) resume(rec record) error {
 	id := rec.Spec.ID
 	v := newVM(d, rec.Spec, d.taps.Lease(rec.Tap), rec.CreatedAt)
-	v.state = rec.State
-	v.jobStarted = rec.JobStarted
-	v.holdUntil = rec.HoldUntil
-	v.runnerExit, v.runnerErr = rec.RunnerExit, rec.RunnerErr
+	v.record = rec
 	v.heard.Store(rec.State != sandbox.StateStarting)
 	if err := d.sys.keepTap(v.lease); err != nil {
 		return err
@@ -102,7 +99,7 @@ func (d *Driver) resume(rec record) error {
 	d.vms[id] = v
 	d.mu.Unlock()
 	d.spawn(func() { d.watchScope(v) })
-	if v.state != sandbox.StateStopping {
+	if v.State != sandbox.StateStopping {
 		v.armTimer()
 		return nil
 	}

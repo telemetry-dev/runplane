@@ -3,12 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
 )
 
 const (
@@ -192,4 +197,51 @@ func writeProblem(w http.ResponseWriter, status int, detail string) {
 		"status": status,
 		"detail": detail,
 	})
+}
+
+// stream sends rc to the client. With follow, it flushes after each read,
+// and it ends when the client leaves or the server shuts down.
+func (h *Handler) stream(rc io.ReadCloser, contentType string, follow bool) *huma.StreamResponse {
+	return &huma.StreamResponse{Body: func(hctx huma.Context) {
+		_, w := humago.Unwrap(hctx)
+		closeReader := sync.OnceFunc(func() { rc.Close() })
+		defer closeReader()
+
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-store")
+		if !follow {
+			w.WriteHeader(http.StatusOK)
+			io.Copy(w, rc)
+			return
+		}
+		// A reverse proxy must not buffer the stream.
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		rcw := http.NewResponseController(w)
+		rcw.Flush()
+
+		finished := make(chan struct{})
+		defer close(finished)
+		go func() {
+			select {
+			case <-h.done:
+			case <-hctx.Context().Done():
+			case <-finished:
+			}
+			closeReader()
+		}()
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := rc.Read(buf)
+			if n > 0 {
+				if _, werr := w.Write(buf[:n]); werr != nil {
+					return
+				}
+				rcw.Flush()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}}
 }

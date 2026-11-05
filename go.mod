@@ -12,7 +12,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.22.1
 	github.com/google/nftables v0.3.0
-	github.com/google/uuid v1.6.0
 	github.com/hashicorp/yamux v0.1.2
 	github.com/mdlayher/vsock v1.4.0
 	github.com/moby/moby/api v1.56.1
@@ -41,6 +40,7 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect

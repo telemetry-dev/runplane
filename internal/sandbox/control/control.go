@@ -3,12 +3,12 @@
 //
 // The guest dials a Unix socket (container mode), vsock (VM mode, which
 // Firecracker forwards to a Unix socket on the host), or one shared TCP port
-// (dev mode, see TCPListener). Both sides use yamux on
-// the connection, and each side serves HTTP/1.1 on the streams that the other
-// side opens.
+// (dev mode, see TCPListener). Both sides use yamux on the connection, and
+// each side serves HTTP/1.1 on the streams that the other side opens.
 package control
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -63,7 +63,6 @@ type Handler interface {
 	OnLostConfig()
 }
 
-// ErrNotConnected means that no guest connection is open at the moment.
 var ErrNotConnected = errors.New("guest is not connected")
 
 // MaxLine is the longest line that the log stream carries. Longer lines are split.
@@ -78,8 +77,7 @@ type Server struct {
 	// stopListening closes the Unix socket, or takes the sandbox off the
 	// shared TCP listener.
 	stopListening func() error
-
-	lost sync.Once // OnLostConfig
+	lost          sync.Once // OnLostConfig
 
 	mu     sync.Mutex
 	guest  *guestConn // nil when no guest is connected
@@ -123,7 +121,6 @@ func newServer(cfg GuestConfig, h Handler, log *slog.Logger) *Server {
 	return s
 }
 
-// Connected reports if a guest connection is open.
 func (s *Server) Connected() bool {
 	return s.current() != nil
 }
@@ -211,7 +208,7 @@ func (s *Server) accept(ln net.Listener) {
 	}
 }
 
-// serve starts yamux on a new guest connection.
+// serve starts yamux on a new guest connection. It replaces the old one.
 func (s *Server) serve(conn net.Conn) {
 	cfg := yamux.DefaultConfig()
 	cfg.LogOutput = nil
@@ -222,10 +219,6 @@ func (s *Server) serve(conn net.Conn) {
 		s.log.Warn("start yamux session", "err", err)
 		return
 	}
-	s.attach(sess)
-}
-
-func (s *Server) attach(sess *yamux.Session) {
 	g := &guestConn{sess: sess, client: &http.Client{Transport: &http.Transport{
 		DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
 	}}}
@@ -338,6 +331,29 @@ func parseLogLine(line string) LogLine {
 		return LogLine{Time: time.Now().UTC(), Text: line}
 	}
 	return LogLine{Time: time.UnixMilli(n).UTC(), Source: source, Text: text}
+}
+
+// ReadLines calls fn for each line of r, without the line end, until r ends.
+// It splits lines longer than MaxLine.
+func ReadLines(r io.Reader, fn func(line string)) error {
+	return readLines(r, MaxLine, fn)
+}
+
+func readLines(r io.Reader, max int, fn func(string)) error {
+	br := bufio.NewReaderSize(r, max)
+	for {
+		b, err := br.ReadSlice('\n')
+		if len(b) > 0 {
+			fn(strings.TrimSuffix(strings.TrimSuffix(string(b), "\n"), "\r"))
+		}
+		switch {
+		case err == nil, errors.Is(err, bufio.ErrBufferFull):
+		case errors.Is(err, io.EOF):
+			return nil
+		default:
+			return err
+		}
+	}
 }
 
 type terminal struct {

@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"io"
+	"net/netip"
 	"time"
 )
 
@@ -207,6 +208,17 @@ type Settings struct {
 	BandwidthMbps      int      `json:"bandwidth_mbps"` // VM mode, 0 = no limit
 	RegistryMirror     bool     `json:"registry_mirror"`
 	ActionsCache       bool     `json:"actions_cache"`
+}
+
+// IPv4DNS returns the IPv4 addresses of DNS. Sandboxes have no IPv6.
+func (s Settings) IPv4DNS() []netip.Addr {
+	var list []netip.Addr
+	for _, v := range s.DNS {
+		if a, err := netip.ParseAddr(v); err == nil && a.Is4() {
+			list = append(list, a)
+		}
+	}
+	return list
 }
 
 // Configurable is a driver that can take new settings while it operates.

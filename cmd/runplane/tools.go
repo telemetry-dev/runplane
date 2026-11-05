@@ -8,10 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
-	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/moby/moby/client"
@@ -24,14 +24,29 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/update"
+	"github.com/runplane/runplane/internal/version"
 )
 
-func init() {
-	commands["doctor"] = command{"check this server for runplane", doctor}
-	commands["update"] = command{"install the latest release (-check: only report it)", updateCmd}
-	commands["reset-password"] = command{"set a new random password for a user: reset-password <email>", resetPassword}
-	commands["set-mode"] = command{"set the sandbox mode of the primary: set-mode container|vm|dev", setMode}
-	commands["set-domain"] = command{"set the HTTPS domain of the dashboard: set-domain <domain>, or set-domain '' for no HTTPS", setDomain}
+func setupCode(ctx context.Context, args []string) error {
+	config.LoadEnvFile()
+	cfg, err := config.Parse(flag.NewFlagSet("setup-code", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	code, err := auth.NewService(st, nil).NewSetupCode(ctx)
+	if errors.Is(err, auth.ErrSetupDone) {
+		return errors.New("an admin exists, so the setup is done: log in, or ask an admin for an invite")
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Println(code)
+	return nil
 }
 
 // doctor runs the checks of the host package for this server: a primary,
@@ -60,54 +75,42 @@ func doctor(ctx context.Context, args []string) error {
 		opts.MinFreeDiskPercent = settings.MinFreeDiskPercent
 		dns = settings.DNSServers
 	}
-	probe, err := internetProbe(cfg, mode, dns)
-	if err != nil {
-		return err
-	}
-	if probe != nil {
+	// The probe needs the runplane network and the firewall rules, which the
+	// running service makes. In VM mode only the service can add the rule.
+	opts.Internet = func(context.Context) error { return host.ErrProbeInService }
+	if mode == sandbox.ModeContainer || mode == sandbox.ModeDev {
+		probe, err := internetProbe(cfg, mode, dns)
+		if err != nil {
+			return err
+		}
 		defer probe.Docker.Close()
-		opts.Internet = func(ctx context.Context) error { return sysbox.Probe(ctx, *probe) }
-	}
-	if mode == sandbox.ModeVM {
-		// The doctor of the running service does the VM probe.
-		opts.Internet = func(context.Context) error { return host.ErrProbeInService }
+		opts.Internet = func(ctx context.Context) error { return sysbox.Probe(ctx, probe) }
 	}
 	checks := host.Doctor(ctx, mode, opts)
 	if err := host.FormatDoctor(os.Stdout, checks); err != nil {
 		return err
 	}
-	if host.Worst(checks) == host.StatusFail {
+	if slices.ContainsFunc(checks, func(c host.Check) bool { return c.Status == host.StatusFail }) {
 		return errors.New("a check failed")
 	}
 	return nil
 }
 
 // internetProbe returns the options of the sandbox internet probe for the
-// container and dev mode drivers, or nil for VM mode. The probe needs the
-// runplane network and the firewall rules, which the running service makes.
-func internetProbe(cfg config.Config, mode sandbox.Mode, dns []string) (*sysbox.ProbeOptions, error) {
-	// The runtimes and the cgroup parent of the drivers (local.go,
-	// sysbox.New, and devdocker.New).
-	o := sysbox.ProbeOptions{DataDir: cfg.DataDir}
-	switch mode {
-	case sandbox.ModeContainer:
+// container and dev mode drivers, with the runtimes and the cgroup parent
+// of sysbox.New and devdocker.New.
+func internetProbe(cfg config.Config, mode sandbox.Mode, dns []string) (sysbox.ProbeOptions, error) {
+	o := sysbox.ProbeOptions{DataDir: cfg.DataDir, Runtime: "runc"}
+	if mode == sandbox.ModeContainer {
 		o.Runtime, o.CgroupParent = "sysbox-runc", "runplane.slice"
-	case sandbox.ModeDev:
-		o.Runtime = "runc"
-	default:
-		return nil, nil
 	}
-	for _, v := range dns {
-		if a, err := netip.ParseAddr(v); err == nil && a.Is4() {
-			o.DNS = append(o.DNS, a)
-		}
-	}
+	o.DNS = sandbox.Settings{DNS: dns}.IPv4DNS()
 	docker, err := client.New(client.FromEnv)
 	if err != nil {
-		return nil, fmt.Errorf("connect to Docker: %w", err)
+		return o, fmt.Errorf("connect to Docker: %w", err)
 	}
 	o.Docker = docker
-	return &o, nil
+	return o, nil
 }
 
 func updateCmd(ctx context.Context, args []string) error {
@@ -118,7 +121,7 @@ func updateCmd(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	u := newUpdater(cfg)
+	u := update.New(cfg.KernelPath())
 	s, err := u.Check(ctx)
 	if err != nil {
 		return err
@@ -146,14 +149,6 @@ func updateCmd(ctx context.Context, args []string) error {
 	}
 	fmt.Println("runplane restarted.")
 	return nil
-}
-
-// newUpdater returns the updater of this build. It also replaces the guest
-// kernel when this server has one (VM mode).
-func newUpdater(cfg config.Config) *update.Updater {
-	u := update.New()
-	u.Kernel = cfg.KernelPath()
-	return u
 }
 
 // resetPassword gives a user a new random password and ends the sessions
@@ -218,7 +213,7 @@ func setMode(ctx context.Context, args []string) error {
 		f.Close()
 	case sandbox.ModeDev:
 		if !cfg.DevInsecure {
-			return errors.New("mode dev runs jobs in privileged containers; set RUNPLANE_DEV_INSECURE=1 to allow it on a development machine")
+			return errDevInsecure
 		}
 	default:
 		return fmt.Errorf("mode %q: use container, vm, or dev", mode)
@@ -244,6 +239,26 @@ func setMode(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf("runplane uses %s mode after its next start.\n", mode)
+	return nil
+}
+
+func openapi(_ context.Context, args []string) error {
+	if err := flag.NewFlagSet("openapi", flag.ContinueOnError).Parse(args); err != nil {
+		return err
+	}
+	spec, err := api.OpenAPI()
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(spec)
+	return err
+}
+
+func printVersion(_ context.Context, args []string) error {
+	if err := flag.NewFlagSet("version", flag.ContinueOnError).Parse(args); err != nil {
+		return err
+	}
+	fmt.Println("runplane", version.String())
 	return nil
 }
 

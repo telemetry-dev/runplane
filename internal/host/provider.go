@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -63,10 +64,15 @@ func readDMI(fsys fs.FS) dmi {
 	}
 }
 
+// names returns the vendor and product names in lower case.
+func (d dmi) names() string {
+	return strings.ToLower(strings.Join([]string{d.sysVendor, d.productName, d.biosVendor, d.boardVendor, d.chassisVendor}, " "))
+}
+
 // provider guesses the hosting provider. The DMI rules follow cloud-init's
 // ds-identify. It returns "" for unknown providers and most bare metal.
 func (d dmi) provider(hostname string) string {
-	text := strings.ToLower(strings.Join([]string{d.sysVendor, d.productName, d.biosVendor, d.boardVendor, d.chassisVendor}, " "))
+	text := d.names()
 	hostname = strings.ToLower(hostname)
 	switch {
 	case d.chassisAssetTag == azureAssetTag:
@@ -103,13 +109,9 @@ func ec2UUID(uuid string) bool {
 
 // virtual reports if the DMI data names a hypervisor.
 func (d dmi) virtual() bool {
-	text := strings.ToLower(strings.Join([]string{d.sysVendor, d.productName, d.biosVendor, d.boardVendor, d.chassisVendor}, " "))
-	for _, word := range []string{"qemu", "kvm", "virtual", "vmware", "xen", "bochs", "bhyve", "openstack", "vserver", "droplet"} {
-		if strings.Contains(text, word) {
-			return true
-		}
-	}
-	return false
+	text := d.names()
+	return slices.ContainsFunc([]string{"qemu", "kvm", "virtual", "vmware", "xen", "bochs", "bhyve", "openstack", "vserver", "droplet"},
+		func(word string) bool { return strings.Contains(text, word) })
 }
 
 // region asks the metadata service of the provider for the region or zone.
@@ -118,65 +120,56 @@ func region(ctx context.Context, base, provider string) string {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	// The zero Transport uses no proxy; a proxy cannot reach link-local addresses.
-	m := metadata{base: base, client: &http.Client{Transport: &http.Transport{}}}
+	client := &http.Client{Transport: &http.Transport{}}
+	// ask returns the trimmed body of a 200 response, or "".
+	ask := func(method, path string, h http.Header) string {
+		req, err := http.NewRequestWithContext(ctx, method, base+path, nil)
+		if err != nil {
+			return ""
+		}
+		if h != nil {
+			req.Header = h
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return ""
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if err != nil || resp.StatusCode != http.StatusOK {
+			return ""
+		}
+		return strings.TrimSpace(string(body))
+	}
+	get := func(path string, h http.Header) string { return ask(http.MethodGet, path, h) }
 	switch provider {
 	case providerHetzner:
-		return m.get(ctx, "/hetzner/v1/metadata/availability-zone", nil)
+		return get("/hetzner/v1/metadata/availability-zone", nil)
 	case providerDigitalOcean:
-		return m.get(ctx, "/metadata/v1/region", nil)
+		return get("/metadata/v1/region", nil)
 	case providerVultr:
-		return m.get(ctx, "/v1/region/regioncode", nil)
+		return get("/v1/region/regioncode", nil)
 	case providerGCE:
-		zone := m.get(ctx, "/computeMetadata/v1/instance/zone", http.Header{"Metadata-Flavor": {"Google"}})
+		zone := get("/computeMetadata/v1/instance/zone", http.Header{"Metadata-Flavor": {"Google"}})
 		return path.Base(zone) // projects/<n>/zones/<zone>
 	case providerAzure:
-		return m.get(ctx, "/metadata/instance/compute/location?api-version=2021-02-01&format=text", http.Header{"Metadata": {"true"}})
+		return get("/metadata/instance/compute/location?api-version=2021-02-01&format=text", http.Header{"Metadata": {"true"}})
 	case providerEC2:
-		token := m.do(ctx, http.MethodPut, "/latest/api/token", http.Header{"X-Aws-Ec2-Metadata-Token-Ttl-Seconds": {"60"}})
+		token := ask(http.MethodPut, "/latest/api/token", http.Header{"X-Aws-Ec2-Metadata-Token-Ttl-Seconds": {"60"}})
 		if token == "" {
 			return ""
 		}
-		return m.get(ctx, "/latest/meta-data/placement/region", http.Header{"X-Aws-Ec2-Metadata-Token": {token}})
+		return get("/latest/meta-data/placement/region", http.Header{"X-Aws-Ec2-Metadata-Token": {token}})
 	case providerLinode:
-		token := m.do(ctx, http.MethodPut, "/v1/token", http.Header{"Metadata-Token-Expiry-Seconds": {"60"}})
+		token := ask(http.MethodPut, "/v1/token", http.Header{"Metadata-Token-Expiry-Seconds": {"60"}})
 		if token == "" {
 			return ""
 		}
-		for line := range strings.Lines(m.get(ctx, "/v1/instance", http.Header{"Metadata-Token": {token}})) {
+		for line := range strings.Lines(get("/v1/instance", http.Header{"Metadata-Token": {token}})) {
 			if v, ok := strings.CutPrefix(line, "region:"); ok {
 				return strings.TrimSpace(v)
 			}
 		}
 	}
 	return ""
-}
-
-type metadata struct {
-	base   string
-	client *http.Client
-}
-
-func (m metadata) get(ctx context.Context, path string, h http.Header) string {
-	return m.do(ctx, http.MethodGet, path, h)
-}
-
-// do returns the trimmed body of a 200 response, or "".
-func (m metadata) do(ctx context.Context, method, path string, h http.Header) string {
-	req, err := http.NewRequestWithContext(ctx, method, m.base+path, nil)
-	if err != nil {
-		return ""
-	}
-	if h != nil {
-		req.Header = h
-	}
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	return strings.TrimSpace(string(body))
 }

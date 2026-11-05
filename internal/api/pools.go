@@ -4,12 +4,11 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -111,32 +110,20 @@ func (h *Handler) pools(ctx context.Context, list []store.Pool) ([]Pool, error) 
 	return out, nil
 }
 
-func (h *Handler) listPools(ctx context.Context, _ *struct{}) (*struct{ Body []Pool }, error) {
+func (h *Handler) listPools(ctx context.Context, _ *struct{}) (*body[[]Pool], error) {
 	list, err := h.d.Store.ListPools(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	out, err := h.pools(ctx, list)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body []Pool }{out}, nil
+	return reply(h.pools(ctx, list))
 }
 
-func (h *Handler) getPool(ctx context.Context, in *PathID) (*struct{ Body Pool }, error) {
+func (h *Handler) getPool(ctx context.Context, in *PathID) (*body[Pool], error) {
 	p, err := h.d.Store.GetPool(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No pool has this ID.")
+		return nil, notFound(err, "No pool has this ID.")
 	}
-	return h.poolOutput(ctx, p)
-}
-
-func (h *Handler) poolOutput(ctx context.Context, p store.Pool) (*struct{ Body Pool }, error) {
-	out, err := h.pools(ctx, []store.Pool{p})
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body Pool }{out[0]}, nil
+	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
 type CreatePoolRequest struct {
@@ -154,7 +141,7 @@ type CreatePoolRequest struct {
 	Enabled          *bool    `json:"enabled,omitempty" doc:"Defaults to true."`
 }
 
-func (h *Handler) createPool(ctx context.Context, in *struct{ Body CreatePoolRequest }) (*struct{ Body Pool }, error) {
+func (h *Handler) createPool(ctx context.Context, in *body[CreatePoolRequest]) (*body[Pool], error) {
 	b := in.Body
 	now := time.Now()
 	p := store.Pool{
@@ -166,7 +153,7 @@ func (h *Handler) createPool(ctx context.Context, in *struct{ Body CreatePoolReq
 	if p.Arch == "" {
 		arch, err := h.defaultArch(ctx)
 		if err != nil {
-			return nil, h.internal(err)
+			return nil, err
 		}
 		p.Arch = arch
 	}
@@ -174,11 +161,11 @@ func (h *Handler) createPool(ctx context.Context, in *struct{ Body CreatePoolReq
 		return nil, err
 	}
 	if err := h.d.Store.CreatePool(ctx, p); err != nil {
-		return nil, h.poolErr(err)
+		return nil, poolErr(err)
 	}
 	h.poolsChanged(ctx)
 	h.audit(ctx, "pool.create", p.ID, map[string]any{"label": p.Label})
-	return h.poolOutput(ctx, p)
+	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
 type UpdatePoolRequest struct {
@@ -199,10 +186,10 @@ type UpdatePoolRequest struct {
 func (h *Handler) updatePool(ctx context.Context, in *struct {
 	PathID
 	Body UpdatePoolRequest
-}) (*struct{ Body Pool }, error) {
+}) (*body[Pool], error) {
 	p, err := h.d.Store.GetPool(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No pool has this ID.")
+		return nil, notFound(err, "No pool has this ID.")
 	}
 	old := p
 	b := in.Body
@@ -223,13 +210,13 @@ func (h *Handler) updatePool(ctx context.Context, in *struct {
 		return nil, err
 	}
 	if err := h.d.Store.UpdatePool(ctx, p); err != nil {
-		return nil, h.poolErr(err)
+		return nil, poolErr(err)
 	}
 	h.poolsChanged(ctx)
 	if changes := h.poolChanges(ctx, old, p); len(changes) > 0 {
 		h.audit(ctx, "pool.update", p.ID, map[string]any{"label": p.Label, "changes": changes})
 	}
-	return h.poolOutput(ctx, p)
+	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
 // poolChanges gives the old and new value of each changed field of a pool,
@@ -259,7 +246,7 @@ func (h *Handler) poolChanges(ctx context.Context, old, p store.Pool) map[string
 		names := func(ids []string) []string {
 			out := make([]string, len(ids))
 			for i, id := range ids {
-				out[i] = cmp.Or(r.serverName(id), id)
+				out[i] = cmp.Or(r.servers[id].Name, id)
 			}
 			return out
 		}
@@ -269,22 +256,15 @@ func (h *Handler) poolChanges(ctx context.Context, old, p store.Pool) map[string
 	return changes
 }
 
-// set copies *v to dst if v is not nil.
-func set[T any](dst *T, v *T) {
-	if v != nil {
-		*dst = *v
-	}
-}
-
 func (h *Handler) deletePool(ctx context.Context, in *PathID) (*empty, error) {
 	p, err := h.d.Store.GetPool(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No pool has this ID.")
+		return nil, notFound(err, "No pool has this ID.")
 	}
 	// The scheduler stops the sandboxes of the pool and the GitHub code
 	// deletes its scale sets when they see that the pool is gone.
 	if err := h.d.Store.DeletePool(ctx, p.ID); err != nil {
-		return nil, h.storeErr(err, "No pool has this ID.")
+		return nil, notFound(err, "No pool has this ID.")
 	}
 	h.poolsChanged(ctx)
 	h.audit(ctx, "pool.delete", p.ID, map[string]any{"label": p.Label})
@@ -306,7 +286,7 @@ func (h *Handler) checkPool(ctx context.Context, p store.Pool, saved []string) e
 		if _, err := h.d.Store.GetImage(ctx, p.ImageID); errors.Is(err, store.ErrNotFound) {
 			errs.add("body.image_id", "No image has this ID.", p.ImageID)
 		} else if err != nil {
-			return h.internal(err)
+			return err
 		}
 	}
 	for i, id := range p.ServerIDs {
@@ -314,9 +294,9 @@ func (h *Handler) checkPool(ctx context.Context, p store.Pool, saved []string) e
 			continue
 		}
 		if _, err := h.d.Store.GetServer(ctx, id); errors.Is(err, store.ErrNotFound) {
-			errs.add(locIndex("body.server_ids", i), "No server has this ID.", id)
+			errs.add(fmt.Sprintf("body.server_ids[%d]", i), "No server has this ID.", id)
 		} else if err != nil {
-			return h.internal(err)
+			return err
 		}
 	}
 	return errs.err()
@@ -331,15 +311,14 @@ type placementInput struct {
 
 // getPlacement answers the placement of a size that is not saved, for
 // the hint of the pool editor.
-func (h *Handler) getPlacement(ctx context.Context, in *placementInput) (*struct{ Body PoolPlacement }, error) {
+func (h *Handler) getPlacement(ctx context.Context, in *placementInput) (*body[PoolPlacement], error) {
 	placer, err := h.newPlacer(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	return &struct{ Body PoolPlacement }{placer.place(in.Arch, in.VCPU, in.MemoryMB, in.ServerIDs)}, nil
+	return &body[PoolPlacement]{placer.place(in.Arch, in.VCPU, in.MemoryMB, in.ServerIDs)}, nil
 }
 
-// placer holds the online servers and the settings that placement needs.
 type placer struct {
 	servers  []store.Server
 	settings store.Settings
@@ -382,12 +361,11 @@ func (p placer) place(arch string, vcpu, memoryMB int, serverIDs []string) PoolP
 	return out
 }
 
-func (h *Handler) poolErr(err error) error {
+func poolErr(err error) error {
 	if errors.Is(err, store.ErrConflict) {
-		msg := "A pool with this label exists."
-		return huma.Error409Conflict(msg, &huma.ErrorDetail{Location: "body.label", Message: msg})
+		return conflict("body.label", "A pool with this label exists.")
 	}
-	return h.storeErr(err, "No pool has this ID.")
+	return notFound(err, "No pool has this ID.")
 }
 
 func (h *Handler) poolsChanged(ctx context.Context) {

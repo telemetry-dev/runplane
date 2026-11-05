@@ -3,6 +3,7 @@ package image
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -25,7 +26,6 @@ import (
 	"github.com/runplane/runplane/internal/update"
 )
 
-// runnerArches are the runner arch names that runplane uses.
 var runnerArches = []string{"x64", "arm64"}
 
 var versionRE = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -33,44 +33,26 @@ var versionRE = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 type BundleConfig struct {
 	Mode sandbox.Mode // in VM mode, each bundle also gets an ext4 drive
 	Dir  string       // the runners folder
-	HTTP *http.Client // nil means http.DefaultClient
 	// Token, if not nil, gives a GitHub token for the API calls.
-	Token func(context.Context) (string, error)
-	// APIURL and WebURL point the release reads and downloads at another
-	// GitHub, for tests. The defaults are https://api.github.com and
-	// https://github.com.
-	APIURL, WebURL string
-	Logger         *slog.Logger
+	Token  func(context.Context) (string, error)
+	Logger *slog.Logger
 }
 
 // Bundles downloads and patches the GitHub Actions runner.
 type Bundles struct {
-	cfg  BundleConfig
-	log  *slog.Logger
-	work keyLock
+	cfg      BundleConfig
+	log      *slog.Logger
+	work     keyLock
+	api, web string // GitHub base URLs; tests point them at a fake
 }
 
 func NewBundles(cfg BundleConfig) *Bundles {
-	if cfg.HTTP == nil {
-		cfg.HTTP = http.DefaultClient
+	return &Bundles{
+		cfg: cfg,
+		log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)),
+		api: "https://api.github.com",
+		web: "https://github.com",
 	}
-	if cfg.APIURL == "" {
-		cfg.APIURL = "https://api.github.com"
-	}
-	if cfg.WebURL == "" {
-		cfg.WebURL = "https://github.com"
-	}
-	log := cfg.Logger
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
-	return &Bundles{cfg: cfg, log: log}
-}
-
-// Release is a release of actions/runner.
-type Release struct {
-	Version string            `json:"version"`
-	SHA256  map[string]string `json:"sha256"` // hex, by arch ("x64", "arm64")
 }
 
 // Bundle is a runner that is ready on this server.
@@ -152,11 +134,11 @@ func (b *Bundles) ensure(ctx context.Context, version, arch string) (Bundle, err
 // fetch downloads and checks the release archive, then extracts and patches
 // it into dir.
 func (b *Bundles) fetch(ctx context.Context, version, arch, dir string) (stamp, error) {
-	rel, err := b.release(ctx, "/releases/tags/v"+version)
+	_, sums, err := b.release(ctx, "/releases/tags/v"+version)
 	if err != nil {
 		return stamp{}, fmt.Errorf("read release: %w", err)
 	}
-	want := rel.SHA256[arch]
+	want := sums[arch]
 	if want == "" {
 		return stamp{}, fmt.Errorf("release v%s has no SHA-256 for linux-%s", version, arch)
 	}
@@ -170,7 +152,7 @@ func (b *Bundles) fetch(ctx context.Context, version, arch, dir string) (stamp, 
 	defer os.RemoveAll(tmp)
 
 	archive := filepath.Join(tmp, "runner.tar.gz")
-	got, err := b.download(ctx, b.cfg.WebURL+"/actions/runner/releases/download/v"+version+"/"+archiveName(version, arch), archive)
+	got, err := b.download(ctx, b.web+"/actions/runner/releases/download/v"+version+"/"+archiveName(version, arch), archive)
 	if err != nil {
 		return stamp{}, err
 	}
@@ -208,30 +190,32 @@ func archiveName(version, arch string) string {
 	return "actions-runner-linux-" + arch + "-" + version + ".tar.gz"
 }
 
-func (b *Bundles) release(ctx context.Context, path string) (Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.APIURL+"/repos/actions/runner"+path, nil)
+// release reads a release of actions/runner and returns its version and the
+// hex SHA-256 of the archive of each arch.
+func (b *Bundles) release(ctx context.Context, path string) (string, map[string]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.api+"/repos/actions/runner"+path, nil)
 	if err != nil {
-		return Release{}, err
+		return "", nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if b.cfg.Token != nil {
 		token, err := b.cfg.Token(ctx)
 		if err != nil {
-			return Release{}, fmt.Errorf("get GitHub token: %w", err)
+			return "", nil, fmt.Errorf("get GitHub token: %w", err)
 		}
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
-	resp, err := b.cfg.HTTP.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return Release{}, err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return Release{}, fmt.Errorf("GET %s: %s: %s", path, resp.Status, bytes.TrimSpace(msg))
+		return "", nil, fmt.Errorf("GET %s: %s: %s", path, resp.Status, bytes.TrimSpace(msg))
 	}
 	var body struct {
 		TagName string `json:"tag_name"`
@@ -242,27 +226,25 @@ func (b *Bundles) release(ctx context.Context, path string) (Release, error) {
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return Release{}, fmt.Errorf("GET %s: %w", path, err)
+		return "", nil, fmt.Errorf("GET %s: %w", path, err)
 	}
-	rel := Release{
-		Version: strings.TrimPrefix(body.TagName, "v"),
-		SHA256:  map[string]string{},
-	}
+	version := strings.TrimPrefix(body.TagName, "v")
+	sums := map[string]string{}
 	for _, arch := range runnerArches {
 		sum := markedSHA(body.Body, "linux-"+arch)
 		if sum == "" {
 			// GitHub also gives the digest of each asset.
 			for _, a := range body.Assets {
-				if a.Name == archiveName(rel.Version, arch) {
+				if a.Name == archiveName(version, arch) {
 					sum, _ = strings.CutPrefix(a.Digest, "sha256:")
 				}
 			}
 		}
 		if isHex(sum, 64) {
-			rel.SHA256[arch] = sum
+			sums[arch] = sum
 		}
 	}
-	return rel, nil
+	return version, sums, nil
 }
 
 // markedSHA reads the SHA-256 between the markers that the runner release
@@ -286,7 +268,7 @@ func (b *Bundles) download(ctx context.Context, url, dst string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	resp, err := b.cfg.HTTP.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
 	}

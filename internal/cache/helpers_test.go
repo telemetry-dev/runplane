@@ -7,14 +7,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/runplane/runplane/internal/store"
 )
 
 // sandboxes resolves by sandbox ID when the header has one, else by IP.
@@ -32,51 +35,16 @@ func (s sandboxes) Sandbox(_ context.Context, ip string, h http.Header) (Identit
 	return ident, nil
 }
 
-type countStats struct {
-	mu     sync.Mutex
-	byRepo map[string]Counts
-}
+type clock struct{ ns atomic.Int64 }
 
-func (c *countStats) Add(repo string, d Counts) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	t := c.byRepo[repo]
-	t.Hits += d.Hits
-	t.Misses += d.Misses
-	t.BytesRead += d.BytesRead
-	t.BytesWritten += d.BytesWritten
-	c.byRepo[repo] = t
-}
-
-func (c *countStats) get(repo string) Counts {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.byRepo[repo]
-}
-
-type clock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func (c *clock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
-}
-
-func (c *clock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.t = c.t.Add(d)
-}
+func (c *clock) now() time.Time          { return time.Unix(0, c.ns.Load()).UTC() }
+func (c *clock) advance(d time.Duration) { c.ns.Add(int64(d)) }
 
 type fixture struct {
 	limit   atomic.Int64
 	srv     *Server
-	index   *MemIndex
-	stats   *countStats
-	clock   *clock
+	st      *store.Store
+	clock   clock
 	dir     string
 	url     string // direct sandbox traffic
 	proxied string // traffic from a trusted proxy
@@ -87,16 +55,12 @@ type fixture struct {
 // send through the trusted proxy (see via).
 func newFixture(t *testing.T, maxBytes int64) *fixture {
 	t.Helper()
-	f := &fixture{
-		index: NewMemIndex(),
-		stats: &countStats{byRepo: map[string]Counts{}},
-		clock: &clock{t: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)},
-		dir:   t.TempDir(),
-	}
+	f := &fixture{st: openStore(t), dir: t.TempDir()}
 	f.limit.Store(maxBytes)
+	f.clock.ns.Store(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixNano())
 	srv, err := New(Config{
 		Dir:   f.dir,
-		Index: f.index,
+		Store: f.st,
 		Resolver: sandboxes{
 			"127.0.0.1":  acme("sb-1", "refs/heads/main", ""),
 			"sb-feature": acme("sb-feature", "refs/heads/feature", ""),
@@ -109,15 +73,18 @@ func newFixture(t *testing.T, maxBytes int64) *fixture {
 			"sb-unknown": {SandboxID: "sb-unknown", Repository: "acme/app"},
 			"sb-other":   {SandboxID: "sb-other", Repository: "other/lib", DefaultBranch: "trunk", Ref: "refs/heads/trunk"},
 			"sb-idle":    {SandboxID: "sb-idle"},
+			"10.213.0.5": {SandboxID: "sb-idle"},
 		},
-		Stats:    f.stats,
-		MaxBytes: f.limit.Load,
-		JobWait:  100 * time.Millisecond,
+		Stats:          NewStats(f.st, slog.New(slog.DiscardHandler)),
+		MaxBytes:       f.limit.Load,
+		DiskSpace:      func() (int64, int64, error) { return 0, 0, nil },
+		MinFreePercent: func() float64 { return 0 },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv.now = f.clock.now
+	srv.jobWait = 100 * time.Millisecond
 	f.srv = srv
 	direct := httptest.NewServer(srv)
 	proxied := httptest.NewServer(srv.Proxied())
@@ -127,13 +94,36 @@ func newFixture(t *testing.T, maxBytes int64) *fixture {
 	return f
 }
 
+// counts returns the cache statistics of a repository.
+func (f *fixture) counts(t *testing.T, repository string) store.CacheCounts {
+	f.srv.cfg.Stats.flush(t.Context())
+	counts, err := f.st.CacheStatsByRepository(t.Context(), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return counts[repository]
+}
+
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
+}
+
 func acme(id, ref, baseRef string) Identity {
 	return Identity{SandboxID: id, Repository: "acme/app", DefaultBranch: "main", Ref: ref, BaseRef: baseRef}
 }
 
-// via returns a client of a sandbox whose requests come through the trusted proxy.
+// via returns a client of a sandbox whose requests come through the trusted
+// proxy. A job can write any cache scopes into its runtime token, because
+// runplane cannot check the signature. So each of these tokens claims main,
+// and the branch rules must hold anyway.
 func (f *fixture) via(t *testing.T, sandboxID string) client {
-	return client{t: t, url: f.proxied, header: http.Header{SandboxHeader: {sandboxID}}}
+	return client{t: t, url: f.proxied, token: token(scope{"refs/heads/main", 3}), header: http.Header{SandboxHeader: {sandboxID}}}
 }
 
 type scope struct {

@@ -3,7 +3,6 @@
 package scratch
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -22,9 +21,6 @@ import (
 // Create makes a sparse ext4 disk of sizeGB at path. It replaces a file at
 // path.
 func (d *Disks) Create(path string, sizeGB int) error {
-	if sizeGB <= 0 {
-		return fmt.Errorf("scratch: disk size %d GB is not positive", sizeGB)
-	}
 	tpl, err := d.template(sizeGB)
 	if err != nil {
 		return err
@@ -84,9 +80,14 @@ func Attach(path, mountpoint string) error {
 	if err := os.MkdirAll(mountpoint, 0o700); err != nil {
 		return fmt.Errorf("create mountpoint: %w", err)
 	}
-	loop, err := attachLoop(path)
+	loop, err := configureLoop(path)
 	if err != nil {
-		return fmt.Errorf("attach %s to a loop device: %w", path, err)
+		// losetup also works without /dev/loop-control and on kernels
+		// before 5.8, which have no LOOP_CONFIGURE.
+		var lerr error
+		if loop, lerr = losetup(path); lerr != nil {
+			return fmt.Errorf("attach %s to a loop device: %w", path, errors.Join(err, lerr))
+		}
 	}
 	defer loop.Close()
 	if err := unix.Mount(loop.Name(), mountpoint, "ext4", unix.MS_NOATIME, ""); err != nil {
@@ -108,12 +109,11 @@ func Detach(mountpoint string) error {
 	if loop != nil {
 		defer loop.Close()
 	}
-	if err := unix.Unmount(mountpoint, 0); errors.Is(err, unix.EBUSY) {
+	err = unix.Unmount(mountpoint, 0)
+	if errors.Is(err, unix.EBUSY) {
 		err = unix.Unmount(mountpoint, unix.MNT_DETACH)
-		if err != nil {
-			return fmt.Errorf("unmount %s: %w", mountpoint, err)
-		}
-	} else if err != nil {
+	}
+	if err != nil {
 		return fmt.Errorf("unmount %s: %w", mountpoint, err)
 	}
 	if loop == nil || !strings.HasPrefix(filepath.Base(dev), "loop") {
@@ -123,14 +123,6 @@ func Detach(mountpoint string) error {
 	// device when the last user closes it.
 	if err := unix.IoctlSetInt(int(loop.Fd()), unix.LOOP_CLR_FD, 0); err != nil && !errors.Is(err, unix.ENXIO) {
 		return fmt.Errorf("free loop device %s: %w", dev, err)
-	}
-	return nil
-}
-
-// Remove removes the disk file. A missing file is not an error.
-func Remove(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove scratch disk: %w", err)
 	}
 	return nil
 }
@@ -153,35 +145,30 @@ func Usage(dir string) (int64, error) {
 	if err := unix.Lstat(dir, &root); err != nil {
 		return 0, fmt.Errorf("measure %s: %w", dir, err)
 	}
-	type inode struct{ dev, ino uint64 }
-	seen := map[inode]bool{}
+	seen := map[uint64]bool{} // inodes with more than one link
 	var total int64
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		var st unix.Stat_t
+		if err == nil {
+			err = unix.Lstat(path, &st)
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil // removed while we walk
 		}
 		if err != nil {
 			return err
 		}
-		var st unix.Stat_t
-		if err := unix.Lstat(path, &st); err != nil {
-			if errors.Is(err, unix.ENOENT) {
-				return nil
-			}
-			return err
-		}
-		if uint64(st.Dev) != uint64(root.Dev) {
+		if st.Dev != root.Dev {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if !d.IsDir() && st.Nlink > 1 {
-			k := inode{uint64(st.Dev), st.Ino}
-			if seen[k] {
+			if seen[st.Ino] {
 				return nil
 			}
-			seen[k] = true
+			seen[st.Ino] = true
 		}
 		total += st.Blocks * 512
 		return nil
@@ -256,25 +243,10 @@ func copySparse(out, in *os.File) error {
 	return nil
 }
 
-// attachLoop gives the file a loop device with autoclear set and returns
-// the open device.
-func attachLoop(path string) (*os.File, error) {
-	loop, err := configureLoop(path)
-	if err == nil {
-		return loop, nil
-	}
-	// losetup also works without /dev/loop-control and on kernels before
-	// 5.8, which have no LOOP_CONFIGURE.
-	loop, lerr := losetup(path)
-	if lerr != nil {
-		return nil, errors.Join(err, lerr)
-	}
-	return loop, nil
-}
-
-// configureLoop binds a free loop device to the file with LOOP_CONFIGURE.
-// Direct I/O keeps the data out of the page cache of the backing file; the
-// kernel turns it off if the file system cannot do it.
+// configureLoop binds a free loop device with autoclear to the file with
+// LOOP_CONFIGURE and returns the open device. Direct I/O keeps the data out
+// of the page cache of the backing file; the kernel turns it off if the
+// file system cannot do it.
 func configureLoop(path string) (*os.File, error) {
 	back, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
@@ -373,16 +345,14 @@ func mountSource(mountpoint string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	f, err := os.Open("/proc/self/mountinfo")
+	b, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
 	var source string
-	s := bufio.NewScanner(f)
-	for s.Scan() {
+	for line := range strings.Lines(string(b)) {
 		// id parent major:minor root mountpoint options [optional...] - fstype source superoptions
-		fields := strings.Fields(s.Text())
+		fields := strings.Fields(line)
 		sep := slices.Index(fields, "-")
 		if len(fields) < 5 || sep < 0 || sep+2 >= len(fields) {
 			continue
@@ -391,7 +361,7 @@ func mountSource(mountpoint string) (string, error) {
 			source = unescape(fields[sep+2])
 		}
 	}
-	return source, s.Err()
+	return source, nil
 }
 
 // unescape decodes the octal escapes (\040 for a space) of mountinfo.

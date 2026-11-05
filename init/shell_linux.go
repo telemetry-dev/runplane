@@ -14,7 +14,6 @@ import (
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
-// shellStarter starts login shells of acct on a new PTY.
 func shellStarter(acct account, rp *reaper) func(sandbox.TermSize) (*shell, error) {
 	return func(size sandbox.TermSize) (*shell, error) {
 		ptmx, tty, err := pty.Open()

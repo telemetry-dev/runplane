@@ -26,8 +26,8 @@ func currentUser(ctx context.Context) store.User {
 // authorize is the Huma middleware that checks the session and the role
 // for the auth.Action of the operation.
 func (h *Handler) authorize(ctx huma.Context, next func(huma.Context)) {
-	action, ok := ctx.Operation().Metadata[actionKey].(auth.Action)
-	if ok && action == public {
+	action, _ := ctx.Operation().Metadata[actionKey].(auth.Action)
+	if action == public {
 		next(ctx)
 		return
 	}
@@ -90,11 +90,11 @@ type LoginRequest struct {
 	Password string `json:"password" maxLength:"1024"`
 }
 
-func (h *Handler) login(ctx context.Context, in *struct{ Body LoginRequest }) (*sessionOutput, error) {
+func (h *Handler) login(ctx context.Context, in *body[LoginRequest]) (*sessionOutput, error) {
 	c := clientOf(ctx)
 	u, token, err := h.d.Auth.Login(ctx, in.Body.Email, in.Body.Password, c.device, c.ip, c.userAgent)
 	if err != nil {
-		return nil, h.authErr(err, "body.password")
+		return nil, authErr(err, "body.password")
 	}
 	// The new cookie replaces the old one, so the old session is of no use.
 	if c.token != "" {
@@ -112,7 +112,7 @@ type cookieOutput struct {
 func (h *Handler) logout(ctx context.Context, _ *struct{}) (*cookieOutput, error) {
 	if token := clientOf(ctx).token; token != "" {
 		if err := h.d.Auth.Logout(ctx, token); err != nil {
-			return nil, h.internal(err)
+			return nil, err
 		}
 	}
 	return &cookieOutput{SetCookie: sessionCookieValue(ctx, "")}, nil
@@ -124,7 +124,7 @@ type UpdateMeRequest struct {
 	NewPassword     *string `json:"new_password,omitempty" maxLength:"1024" doc:"Logs out the other sessions of the user."`
 }
 
-func (h *Handler) updateMe(ctx context.Context, in *struct{ Body UpdateMeRequest }) (*sessionOutput, error) {
+func (h *Handler) updateMe(ctx context.Context, in *body[UpdateMeRequest]) (*sessionOutput, error) {
 	u := currentUser(ctx)
 	b := in.Body
 	out := &sessionOutput{}
@@ -143,7 +143,7 @@ func (h *Handler) updateMe(ctx context.Context, in *struct{ Body UpdateMeRequest
 		c := clientOf(ctx)
 		token, err := h.d.Auth.ChangePassword(ctx, u.ID, *b.CurrentPassword, *b.NewPassword, c.ip, c.userAgent)
 		if err != nil {
-			return nil, h.authErr(err, "body.new_password")
+			return nil, authErr(err, "body.new_password")
 		}
 		out = h.newSession(ctx, u, token)
 		h.audit(ctx, "user.password", u.ID, nil)
@@ -151,62 +151,16 @@ func (h *Handler) updateMe(ctx context.Context, in *struct{ Body UpdateMeRequest
 	if name != u.Name {
 		u.Name = name
 		if err := h.d.Store.UpdateUser(ctx, u); err != nil {
-			return nil, h.internal(err)
+			return nil, err
 		}
 	}
 	out.Body = userOut(u)
 	return out, nil
 }
 
-type InviteInfo struct {
-	Email     string    `json:"email"`
-	Role      string    `json:"role" enum:"admin,member"`
-	ExpiresAt time.Time `json:"expires_at"`
-	InvitedBy string    `json:"invited_by" doc:"Name of the admin who made the invite. Empty if that user is deleted."`
-}
-
-// InviteToken is the id path parameter of the invite routes, which share
-// the path /api/invites/{id} with the delete route of the admins.
-type InviteToken struct {
-	Token string `path:"id" maxLength:"100" doc:"The token from the invite URL."`
-}
-
-func (h *Handler) getInvite(ctx context.Context, in *InviteToken) (*struct{ Body InviteInfo }, error) {
-	inv, err := h.d.Auth.GetInvite(ctx, in.Token)
-	if err != nil {
-		return nil, h.authErr(err, "")
-	}
-	out := InviteInfo{Email: inv.Email, Role: inv.Role, ExpiresAt: inv.ExpiresAt}
-	if inv.CreatedBy != "" {
-		u, err := h.d.Store.GetUser(ctx, inv.CreatedBy)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return nil, h.internal(err)
-		}
-		out.InvitedBy = u.Name
-	}
-	return &struct{ Body InviteInfo }{out}, nil
-}
-
-type AcceptInviteRequest struct {
-	Name     string `json:"name" maxLength:"100"`
-	Password string `json:"password" maxLength:"1024"`
-}
-
-func (h *Handler) acceptInvite(ctx context.Context, in *struct {
-	InviteToken
-	Body AcceptInviteRequest
-}) (*sessionOutput, error) {
-	c := clientOf(ctx)
-	u, token, err := h.d.Auth.AcceptInvite(ctx, in.Token, in.Body.Name, in.Body.Password, c.ip, c.userAgent)
-	if err != nil {
-		return nil, h.authErr(err, "body.password")
-	}
-	return h.newSession(ctx, u, token), nil
-}
-
 // authErr maps the errors of auth to problems. passwordLoc is the field
 // that ErrShortPassword belongs to.
-func (h *Handler) authErr(err error, passwordLoc string) error {
+func authErr(err error, passwordLoc string) error {
 	msg := sentence(err)
 	switch {
 	case errors.Is(err, auth.ErrRateLimited):
@@ -218,7 +172,7 @@ func (h *Handler) authErr(err error, passwordLoc string) error {
 	case errors.Is(err, auth.ErrBadInvite):
 		return huma.Error404NotFound(msg)
 	case errors.Is(err, auth.ErrEmailTaken):
-		return huma.Error409Conflict(msg, &huma.ErrorDetail{Location: "body.email", Message: msg})
+		return conflict("body.email", msg)
 	case errors.Is(err, auth.ErrBadSetupCode):
 		return invalid("body.code", msg, nil)
 	case errors.Is(err, auth.ErrBadName):
@@ -232,7 +186,7 @@ func (h *Handler) authErr(err error, passwordLoc string) error {
 	case errors.Is(err, auth.ErrBadPassword):
 		return invalid("body.current_password", msg, nil)
 	}
-	return h.internal(err)
+	return err
 }
 
 // sentence makes an error message into a sentence for the UI.

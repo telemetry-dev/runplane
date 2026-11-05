@@ -3,14 +3,10 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/runplane/runplane/internal/auth"
-	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/store"
 )
 
 func TestNewInviteLinkReplacesTheOldOne(t *testing.T) {
@@ -114,7 +110,7 @@ func TestUpdateState(t *testing.T) {
 		t.Fatalf("state before the update = %q, want idle", st.State)
 	}
 	done := make(chan response)
-	go func() { done <- b.send("POST", "/api/update", nil, nil, true) }()
+	go func() { done <- b.do("POST", "/api/update", nil, nil) }()
 	recv(t, u.applying)
 	other.do("GET", "/api/update", nil, &st).want(t, 200)
 	if st.State != "applying" {
@@ -126,79 +122,5 @@ func TestUpdateState(t *testing.T) {
 	other.do("GET", "/api/update", nil, &st).want(t, 200)
 	if st.State != "restarting" {
 		t.Fatalf("state after the update = %q, want restarting", st.State)
-	}
-}
-
-func TestRunnerVersionsCurrentIsTheNewestReady(t *testing.T) {
-	e := newEnv(t)
-	ctx := context.Background()
-	for _, b := range []store.RunnerBundle{
-		{Version: "2.331.0", Arch: "x64", Status: store.BundleFailed},
-		{Version: "2.330.0", Arch: "x64", Status: store.BundleReady},
-		{Version: "2.99.0", Arch: "x64", Status: store.BundleReady},
-		{Version: "2.331.0", Arch: "arm64", Status: store.BundlePending},
-	} {
-		if err := e.st.SetRunnerBundleBuild(ctx, b); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var got RunnerVersions
-	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/runner-versions", nil, &got).want(t, 200)
-	if got.Latest != "2.331.0" || got.Current != (RunnerCurrent{X64: "2.330.0"}) {
-		t.Fatalf("latest %q, current %+v; want 2.331.0 and x64 2.330.0 only", got.Latest, got.Current)
-	}
-}
-
-func TestOverviewHasNoRatesWithoutData(t *testing.T) {
-	e := newEnv(t)
-	b := e.login("ada@example.com", auth.RoleMember)
-	ctx := context.Background()
-	now := time.Now().UTC()
-	e.addJob(1, "acme/api", now.Add(-time.Minute))
-
-	res := b.do("GET", "/api/overview", nil, nil)
-	res.want(t, 200)
-	for _, want := range []string{`"median_queue_ms":null`, `"cache_hit_rate":null`} {
-		if !strings.Contains(string(res.body), want) {
-			t.Errorf("overview without assigned jobs and cache lookups has no %s: %s", want, res.body)
-		}
-	}
-
-	if _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.st.AddCacheStats(ctx, now, "acme/api", store.CacheCounts{Misses: 4}); err != nil {
-		t.Fatal(err)
-	}
-	var o Overview
-	b.do("GET", "/api/overview", nil, &o).want(t, 200)
-	if o.Stats.MedianQueueMS == nil || o.Stats.CacheHitRate == nil || *o.Stats.CacheHitRate != 0 {
-		t.Fatalf("overview stats %+v, want a median and a hit rate of 0", o.Stats)
-	}
-}
-
-// An unreachable agent keeps its sandbox rows until it connects again. Its
-// sandboxes must not count against the vCPUs of the servers that are left.
-func TestOverviewVCPUsSkipUnreachableServers(t *testing.T) {
-	e := newEnv(t)
-	b := e.login("ada@example.com", auth.RoleMember)
-	e.addServer("online", "x64", store.ServerOnline, 8, 16384)
-	e.addServer("lost", "x64", store.ServerUnreachable, 16, 32768)
-	for i, x := range []struct {
-		server string
-		vcpu   int
-	}{{"online", 2}, {"lost", 4}, {"lost", 4}} {
-		err := e.st.InsertSandbox(context.Background(), store.Sandbox{
-			ID: fmt.Sprint("box", i), PoolID: "p", ServerID: x.server, Mode: sandbox.ModeContainer,
-			State: sandbox.StateBusy, VCPU: x.vcpu, MemoryMB: 4096, CreatedAt: time.Now(),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	var o Overview
-	b.do("GET", "/api/overview", nil, &o).want(t, 200)
-	if o.Stats.VCPUInUse != 2 || o.Stats.VCPUTotal != 8 {
-		t.Fatalf("vCPUs %d / %d, want 2 / 8", o.Stats.VCPUInUse, o.Stats.VCPUTotal)
 	}
 }

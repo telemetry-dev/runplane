@@ -1,6 +1,7 @@
 package github
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,9 +18,6 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// manifestTTL is how long a manifest state stays valid.
-const manifestTTL = time.Hour
-
 // Manifest returns the GitHub URL for the manifest form and the manifest
 // JSON. accountType is "organization" or "user".
 func (s *Service) Manifest(ctx context.Context, base, accountType, organization string) (string, string, error) {
@@ -34,13 +32,13 @@ func (s *Service) Manifest(ctx context.Context, base, accountType, organization 
 	now := time.Now()
 	err = s.st.CreateManifestState(ctx, store.ManifestState{
 		StateHash: hashState(state), AccountType: accountType, Organization: organization,
-		CreatedAt: now, ExpiresAt: now.Add(manifestTTL),
+		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	})
 	if err != nil {
 		return "", "", err
 	}
 
-	m := map[string]any{
+	manifest, err := json.Marshal(map[string]any{
 		"name":                appName(settings.InstanceName),
 		"url":                 base,
 		"description":         "Runs GitHub Actions jobs in runplane sandboxes at " + base + ".",
@@ -49,8 +47,7 @@ func (s *Service) Manifest(ctx context.Context, base, accountType, organization 
 		"setup_on_update":     true,
 		"public":              false,
 		"default_permissions": permissions(accountType),
-	}
-	manifest, err := json.Marshal(m)
+	})
 	if err != nil {
 		return "", "", err
 	}
@@ -77,10 +74,7 @@ func permissions(accountType string) map[string]string {
 // appName makes a name from the instance name. GitHub App names are unique
 // on GitHub and have at most 34 characters, so it adds a random suffix.
 func appName(instance string) string {
-	name := strings.TrimSpace(instance)
-	if name == "" {
-		name = "runplane"
-	}
+	name := cmp.Or(strings.TrimSpace(instance), "runplane")
 	if r := []rune(name); len(r) > 27 {
 		name = strings.TrimSpace(string(r[:27]))
 	}
@@ -100,16 +94,15 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 		return "", err
 	}
 	var conv struct {
-		ID            int64     `json:"id"`
-		Slug          string    `json:"slug"`
-		Name          string    `json:"name"`
-		ClientID      string    `json:"client_id"`
-		ClientSecret  string    `json:"client_secret"`
-		WebhookSecret *string   `json:"webhook_secret"`
-		PEM           string    `json:"pem"`
-		HTMLURL       string    `json:"html_url"`
-		Owner         account   `json:"owner"`
-		CreatedAt     time.Time `json:"created_at"`
+		ID            int64   `json:"id"`
+		Slug          string  `json:"slug"`
+		Name          string  `json:"name"`
+		ClientID      string  `json:"client_id"`
+		ClientSecret  string  `json:"client_secret"`
+		WebhookSecret string  `json:"webhook_secret"`
+		PEM           string  `json:"pem"`
+		HTMLURL       string  `json:"html_url"`
+		Owner         account `json:"owner"`
 	}
 	err := s.api.json(ctx, call{method: http.MethodPost, path: "/app-manifests/" + url.PathEscape(code) + "/conversions"}, &conv)
 	if err != nil {
@@ -121,10 +114,8 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 
 	s.ops.Lock()
 	defer s.ops.Unlock()
-	if _, err := s.creds(ctx); err == nil {
-		if err := s.removeApp(ctx); err != nil {
-			s.log.Warn("remove the earlier GitHub App", "err", err)
-		}
+	if err := s.removeApp(ctx); err != nil && !errors.Is(err, errNotConnected) {
+		s.log.Warn("remove the earlier GitHub App", "err", err)
 	}
 	app := store.GitHubApp{
 		ID: ids.New(), AppID: conv.ID, Slug: conv.Slug, Name: conv.Name, ClientID: conv.ClientID,
@@ -133,8 +124,8 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 		ClientSecretEnc: s.box.Seal([]byte(conv.ClientSecret)),
 		CreatedAt:       time.Now(),
 	}
-	if conv.WebhookSecret != nil && *conv.WebhookSecret != "" {
-		app.WebhookSecretEnc = s.box.Seal([]byte(*conv.WebhookSecret))
+	if conv.WebhookSecret != "" {
+		app.WebhookSecretEnc = s.box.Seal([]byte(conv.WebhookSecret))
 	}
 	if err := s.st.SaveGitHubApp(ctx, app); err != nil {
 		return "", err
@@ -145,69 +136,15 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 	return s.web + "/apps/" + url.PathEscape(app.Slug) + "/installations/new", nil
 }
 
-// Setup records the installation that GitHub sends the browser back with,
-// reads its repositories, and makes its scale sets. It returns the first job
-// page the first time GitHub connects, and the GitHub settings page after.
-func (s *Service) Setup(ctx context.Context, _ string, installationID int64, setupAction string) (string, error) {
-	s.ops.Lock()
-	defer s.ops.Unlock()
-	c, err := s.creds(ctx)
-	if err != nil {
-		return "", err
-	}
-	known, err := s.st.ListInstallations(ctx)
-	if err != nil {
-		return "", err
-	}
-	connected := len(known) > 0
-	if setupAction == "request" || installationID == 0 {
-		// An organization owner must approve the request on GitHub first.
-		if connected {
-			return "/settings/github?requested=1", nil
-		}
-		return "/setup/github?requested=1", nil
-	}
-
-	var inst installation
-	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/app/installations/%d", installationID), auth: appAuth{s}}, &inst)
-	if err != nil {
-		return "", fmt.Errorf("read the installation: %w", err)
-	}
-	if inst.AppID != c.app.AppID {
-		return "", fmt.Errorf("installation %d belongs to a different GitHub App", installationID)
-	}
-	if err := s.saveInstallation(ctx, inst); err != nil {
-		return "", err
-	}
-	if err := s.syncRepositories(ctx, inst.ID); err != nil {
-		return "", err
-	}
-	s.reconcile(ctx)
-	if connected {
-		return "/settings/github", nil
-	}
-	return "/setup/first-job", nil
-}
-
-// Sync reads the installations, their repositories, and suspensions now,
-// then makes the scale sets agree.
-func (s *Service) Sync(ctx context.Context) error {
-	s.ops.Lock()
-	defer s.ops.Unlock()
-	err := s.syncInstallations(ctx)
-	s.reconcile(ctx)
-	return err
-}
-
 // Disconnect stops the listeners, deletes the scale sets and their runners
 // on GitHub, and removes the app from runplane. GitHub has no API to delete
-// an app, so the app stays on GitHub; AppDeleteURL gives the page where the
+// an app, so the app stays on GitHub; the log gives the page where the
 // owner deletes it.
 func (s *Service) Disconnect(ctx context.Context) error {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	c, err := s.creds(ctx)
-	if errors.Is(err, ErrNotConnected) {
+	if errors.Is(err, errNotConnected) {
 		return nil
 	}
 	if err != nil {
@@ -215,13 +152,13 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	}
 	err = s.removeApp(ctx)
 	s.changed()
-	s.log.Info("disconnected GitHub; delete the app on GitHub", "url", AppDeleteURL(c.app))
+	s.log.Info("disconnected GitHub; delete the app on GitHub", "url", appDeleteURL(c.app))
 	return err
 }
 
-// AppDeleteURL is the GitHub page with the "Delete GitHub App" button.
+// appDeleteURL is the GitHub page with the "Delete GitHub App" button.
 // It is on the host of the app page, so GitHub Enterprise Server works.
-func AppDeleteURL(app store.GitHubApp) string {
+func appDeleteURL(app store.GitHubApp) string {
 	web := "https://github.com"
 	if u, err := url.Parse(app.HTMLURL); err == nil && u.Host != "" {
 		web = u.Scheme + "://" + u.Host
@@ -262,7 +199,9 @@ func (s *Service) removeApp(ctx context.Context) error {
 		}
 	}
 	s.dropCreds()
-	s.checks.clear()
+	s.checkMu.Lock()
+	clear(s.checks)
+	s.checkMu.Unlock()
 	if len(failed) > 0 {
 		return fmt.Errorf("runplane forgot the GitHub App, but GitHub did not delete the scale sets %s. "+
 			"Remove them in the Actions runner settings on GitHub", strings.Join(failed, ", "))

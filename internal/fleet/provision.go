@@ -361,7 +361,6 @@ func (f *Fleet) EnsureLatest(ctx context.Context, version string) error {
 	return errors.Join(errs...)
 }
 
-// Images returns the api.Images service of the fleet.
 func (f *Fleet) Images() api.Images { return imageService{f} }
 
 type imageService struct{ f *Fleet }

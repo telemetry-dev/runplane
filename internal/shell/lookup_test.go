@@ -98,12 +98,9 @@ func TestDriversOpenOnServerOfSandbox(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	insertSandbox(t, st, debugID, sandbox.StateBusy, true, "") // on server "srv"
-	local, agent := &shellDriver{}, &shellDriver{term: &fakeTerm{}}
+	agent := &shellDriver{term: &fakeTerm{}}
 	d := Drivers{Store: st, Driver: func(serverID string) sandbox.Driver {
-		switch serverID {
-		case "local":
-			return local
-		case "srv":
+		if serverID == "srv" {
 			return agent
 		}
 		return nil
@@ -113,8 +110,8 @@ func TestDriversOpenOnServerOfSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if term != agent.term || len(local.got) != 0 || len(agent.got) != 1 || agent.got[0] != debugID {
-		t.Errorf("shell opened on local %q and srv %q, want only srv %q", local.got, agent.got, debugID)
+	if term != agent.term || len(agent.got) != 1 || agent.got[0] != debugID {
+		t.Errorf("shell opened on srv for %q, want %q", agent.got, debugID)
 	}
 
 	d.Driver = func(string) sandbox.Driver { return nil }

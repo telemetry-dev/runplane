@@ -4,8 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
-
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -13,52 +11,25 @@ import (
 func TestPlacement(t *testing.T) {
 	tests := []struct {
 		name  string
-		pool  func(p *store.Pool, ids map[string]string)
-		setup func(e *testEnv, ids map[string]string)
-		want  string // server name, "" = no server
+		setup func(e *testEnv, p *store.Pool, ids map[string]string) // ids: server ID by name
+		want  string                                                 // server name, "" = no server
 	}{
-		{
-			name: "most free memory of the same arch",
-			want: "x64-large",
-		},
-		{
-			name: "arm64 pool",
-			pool: func(p *store.Pool, _ map[string]string) { p.Arch = "arm64" },
-			want: "arm-huge",
-		},
-		{
-			name: "server_ids limits the servers",
-			pool: func(p *store.Pool, ids map[string]string) { p.ServerIDs = []string{ids["x64-small"]} },
-			want: "x64-small",
-		},
-		{
-			name:  "image not ready",
-			setup: func(e *testEnv, ids map[string]string) { e.fleet.noImage[ids["x64-large"]] = true },
-			want:  "x64-small",
-		},
-		{
-			name:  "server offline",
-			setup: func(e *testEnv, ids map[string]string) { e.fleet.offline[ids["x64-large"]] = true },
-			want:  "x64-small",
-		},
-		{
-			name: "free disk at the minimum",
-			setup: func(e *testEnv, ids map[string]string) {
-				e.setSettings(func(s *store.Settings) { s.MinFreeDiskPercent = 60 }) // the servers have 60% free
-			},
-			want: "",
-		},
-		{
-			name: "too large for all servers",
-			pool: func(p *store.Pool, _ map[string]string) { p.VCPU = 32 },
-			want: "",
-		},
+		{"most free memory of the same arch", func(*testEnv, *store.Pool, map[string]string) {}, "x64-large"},
+		{"arm64 pool", func(_ *testEnv, p *store.Pool, _ map[string]string) { p.Arch = "arm64" }, "arm-huge"},
+		{"server_ids limits the servers", func(_ *testEnv, p *store.Pool, ids map[string]string) {
+			p.ServerIDs = []string{ids["x64-small"]}
+		}, "x64-small"},
+		{"image not ready", func(e *testEnv, _ *store.Pool, ids map[string]string) { e.fleet.noImage[ids["x64-large"]] = true }, "x64-small"},
+		{"server offline", func(e *testEnv, _ *store.Pool, ids map[string]string) { e.fleet.offline[ids["x64-large"]] = true }, "x64-small"},
+		{"free disk at the minimum", func(e *testEnv, _ *store.Pool, _ map[string]string) {
+			e.setSettings(func(s *store.Settings) { s.MinFreeDiskPercent = 60 }) // the servers have 60% free
+		}, ""},
+		{"too large for all servers", func(_ *testEnv, p *store.Pool, _ map[string]string) { p.VCPU = 32 }, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newTestEnv(t)
-			ids := map[string]string{}
-			names := map[string]string{}
+			byName, names := map[string]string{}, map[string]string{}
 			for _, s := range []struct {
 				name string
 				cap  sandbox.Capacity
@@ -68,16 +39,9 @@ func TestPlacement(t *testing.T) {
 				{"x64-large", capacity("x64", 16, 32768)},
 			} {
 				id, _ := e.addServer(s.name, s.cap)
-				ids[s.name], names[id] = id, s.name
+				byName[s.name], names[id] = id, s.name
 			}
-			if tt.setup != nil {
-				tt.setup(e, ids)
-			}
-			pool := e.addPool("runplane", func(p *store.Pool) {
-				if tt.pool != nil {
-					tt.pool(p, ids)
-				}
-			})
+			pool := e.addPool("runplane", func(p *store.Pool) { tt.setup(e, p, byName) })
 			st, err := e.st.GetSettings(e.ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -105,18 +69,15 @@ func TestConcurrentStartsDoNotOverbook(t *testing.T) {
 	_, scA, _ := e.attach(e.addPool("runplane-a"))
 	_, scB, _ := e.attach(e.addPool("runplane-b"))
 
-	msg := func() *scaleset.RunnerScaleSetMessage {
-		return &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1)}
-	}
 	doneA := make(chan error, 1)
-	go func() { doneA <- scA.Scale(e.ctx, msg()) }()
+	go func() { doneA <- scA.Scale(e.ctx, msg(1)) }()
 	select {
 	case <-driver.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("first start did not begin")
 	}
 	doneB := make(chan error, 1)
-	go func() { doneB <- scB.Scale(e.ctx, msg()) }()
+	go func() { doneB <- scB.Scale(e.ctx, msg(1)) }()
 	select {
 	case err := <-doneB:
 		if err != nil {
@@ -133,7 +94,7 @@ func TestConcurrentStartsDoNotOverbook(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if n := len(driver.startedSpecs()); n != 1 {
+	if n := len(driver.specs); n != 1 {
 		t.Fatalf("%d starts on a server with room for one, want 1", n)
 	}
 	if len(e.s.reserved) != 0 {

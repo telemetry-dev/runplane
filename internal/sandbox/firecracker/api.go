@@ -9,6 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+
+	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
 // apiClient calls the Firecracker API on its Unix socket.
@@ -49,33 +52,25 @@ func (a *apiClient) call(ctx context.Context, method, path string, body any) err
 	return fmt.Errorf("firecracker %s %s: %s: %s", method, path, resp.Status, fault.Message)
 }
 
-// machine is the VM as the Firecracker API sees it.
-type machine struct {
-	vcpu, memoryMB int
-	tap            string
-	guest, host    netip.Addr
-	bandwidthMbps  int // 0 = no limit
-}
-
-// configure sets up the VM through the API and boots it. The drive order
-// gives the guest vda (root disk), vdb (runner bundle), and vdc (scratch).
-// The paths are inside the chroot.
-func configure(ctx context.Context, api *apiClient, m machine) error {
+// boot sets up the VM through the API and starts it. The drive order gives
+// the guest vda (root disk), vdb (runner bundle), and vdc (scratch). The
+// paths are inside the chroot.
+func (a *apiClient) boot(ctx context.Context, spec sandbox.Spec, l netrules.Lease, bandwidthMbps int) error {
 	steps := []struct {
 		path string
 		body any
 	}{
-		{"/boot-source", bootSource{KernelImagePath: "/" + kernelFile, BootArgs: bootArgs(m.guest, m.host)}},
+		{"/boot-source", bootSource{KernelImagePath: "/" + kernelFile, BootArgs: bootArgs(l.Guest, l.Host)}},
 		{"/drives/rootfs", drive{ID: "rootfs", Path: "/" + rootFile, Root: true, ReadOnly: true}},
 		{"/drives/runner", drive{ID: "runner", Path: "/" + runnerFile, ReadOnly: true}},
 		{"/drives/scratch", drive{ID: "scratch", Path: "/" + scratchFile}},
-		{"/machine-config", machineConfig{VCPU: m.vcpu, MemoryMiB: m.memoryMB}},
+		{"/machine-config", machineConfig{VCPU: spec.VCPU, MemoryMiB: spec.MemoryMB}},
 		{"/network-interfaces/eth0", netInterface{
 			ID:      "eth0",
-			HostDev: m.tap,
-			MAC:     guestMAC(m.guest),
-			RX:      bandwidthLimit(m.bandwidthMbps),
-			TX:      bandwidthLimit(m.bandwidthMbps),
+			HostDev: l.Tap,
+			MAC:     guestMAC(l.Guest),
+			RX:      bandwidthLimit(bandwidthMbps),
+			TX:      bandwidthLimit(bandwidthMbps),
 		}},
 		// Unix sockets back the vsock of Firecracker, so all VMs can
 		// have CID 3.
@@ -84,7 +79,7 @@ func configure(ctx context.Context, api *apiClient, m machine) error {
 		{"/actions", action{Type: "InstanceStart"}},
 	}
 	for _, s := range steps {
-		if err := api.call(ctx, http.MethodPut, s.path, s.body); err != nil {
+		if err := a.call(ctx, http.MethodPut, s.path, s.body); err != nil {
 			return err
 		}
 	}

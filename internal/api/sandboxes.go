@@ -43,21 +43,24 @@ type Sandbox struct {
 	StoppedAt       *time.Time `json:"stopped_at"`
 }
 
-func (h *Handler) sandboxes(ctx context.Context, list []store.Sandbox, r refs) ([]Sandbox, error) {
+func (h *Handler) sandboxes(ctx context.Context, list []store.Sandbox) ([]Sandbox, error) {
+	r, err := h.loadRefs(ctx)
+	if err != nil {
+		return nil, err
+	}
 	jobs := map[string]store.Job{}
 	out := make([]Sandbox, len(list))
 	for i, b := range list {
 		j, ok := jobs[b.JobID]
 		if !ok && b.JobID != "" {
-			var err error
 			if j, err = h.d.Store.GetJob(ctx, b.JobID); err != nil && !errors.Is(err, store.ErrNotFound) {
 				return nil, err
 			}
 			jobs[b.JobID] = j
 		}
 		out[i] = Sandbox{
-			ID: b.ID, PoolID: b.PoolID, PoolLabel: r.poolLabel(b.PoolID), ServerID: b.ServerID,
-			ServerName: r.serverName(b.ServerID), State: string(b.State), RunnerName: b.RunnerName, IP: b.IP,
+			ID: b.ID, PoolID: b.PoolID, PoolLabel: r.pools[b.PoolID].Label, ServerID: b.ServerID,
+			ServerName: r.servers[b.ServerID].Name, State: string(b.State), RunnerName: b.RunnerName, IP: b.IP,
 			JobID: b.JobID, JobName: j.JobName, JobRepository: j.Repository, JobWorkflowFile: j.WorkflowFile,
 			Debug: b.Debug, HoldUntil: b.HoldUntil, VCPU: b.VCPU, MemoryMB: b.MemoryMB,
 			Error: b.Error, CreatedAt: b.CreatedAt, IdleAt: b.IdleAt, BusyAt: b.BusyAt, StoppedAt: b.StoppedAt,
@@ -76,7 +79,7 @@ type listSandboxesInput struct {
 // until the retention cleanup.
 const maxSandboxes = 500
 
-func (h *Handler) listSandboxes(ctx context.Context, in *listSandboxesInput) (*struct{ Body []Sandbox }, error) {
+func (h *Handler) listSandboxes(ctx context.Context, in *listSandboxesInput) (*body[[]Sandbox], error) {
 	f := store.SandboxFilter{PoolID: in.PoolID, ServerID: in.ServerID}
 	if in.State != "" {
 		f.States = []sandbox.State{sandbox.State(in.State)}
@@ -85,33 +88,17 @@ func (h *Handler) listSandboxes(ctx context.Context, in *listSandboxesInput) (*s
 	}
 	list, err := h.d.Store.ListSandboxes(ctx, f)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	r, err := h.loadRefs(ctx)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	out, err := h.sandboxes(ctx, list[:min(len(list), maxSandboxes)], r)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body []Sandbox }{out}, nil
+	return reply(h.sandboxes(ctx, list[:min(len(list), maxSandboxes)]))
 }
 
-func (h *Handler) getSandbox(ctx context.Context, in *PathID) (*struct{ Body Sandbox }, error) {
+func (h *Handler) getSandbox(ctx context.Context, in *PathID) (*body[Sandbox], error) {
 	b, err := h.d.Store.GetSandbox(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No sandbox has this ID.")
+		return nil, notFound(err, "No sandbox has this ID.")
 	}
-	r, err := h.loadRefs(ctx)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	out, err := h.sandboxes(ctx, []store.Sandbox{b}, r)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body Sandbox }{out[0]}, nil
+	return reply(first(h.sandboxes(ctx, []store.Sandbox{b})))
 }
 
 func (h *Handler) stopSandbox(ctx context.Context, in *PathID) (*empty, error) {
@@ -120,7 +107,7 @@ func (h *Handler) stopSandbox(ctx context.Context, in *PathID) (*empty, error) {
 	}
 	b, err := h.d.Store.GetSandbox(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No sandbox has this ID.")
+		return nil, notFound(err, "No sandbox has this ID.")
 	}
 	if b.State.Done() {
 		return nil, nil
@@ -157,7 +144,7 @@ func (h *Handler) sandboxLog(ctx context.Context, in *sandboxLogInput) (*huma.St
 		return nil, unavailable("The sandbox log")
 	}
 	if _, err := h.d.Store.GetSandbox(ctx, in.ID); err != nil {
-		return nil, h.storeErr(err, "No sandbox has this ID.")
+		return nil, notFound(err, "No sandbox has this ID.")
 	}
 	rc, err := h.d.Logs.SandboxLog(ctx, in.ID, in.Follow)
 	if err != nil {
@@ -185,7 +172,7 @@ func (h *Handler) openShell(ctx context.Context, in *shellInput) (*huma.StreamRe
 	}
 	b, err := h.d.Store.GetSandbox(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No sandbox has this ID.")
+		return nil, notFound(err, "No sandbox has this ID.")
 	}
 	if err := shellAllowed(b, time.Now()); err != nil {
 		return nil, err
@@ -253,8 +240,6 @@ func (h *Handler) sshPort() int {
 	return 2222
 }
 
-// sshCommand is the command that opens the debug shell of a sandbox
-// through the SSH gateway.
 func (h *Handler) sshCommand(ctx context.Context, sandboxID string) (string, error) {
 	base, err := h.baseURL(ctx)
 	if err != nil {

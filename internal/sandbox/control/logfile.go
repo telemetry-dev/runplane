@@ -9,10 +9,7 @@ import (
 	"sync"
 )
 
-const (
-	logName = "console.log"
-	logMax  = 64 << 20 // at this size, console.log moves to console.log.1
-)
+const logMax = 64 << 20 // at this size, console.log moves to console.log.1
 
 // LogFile is the console log of one sandbox: <dir>/console.log and the older
 // part console.log.1. Each line is "<RFC 3339 UTC time> <source> <text>".
@@ -27,9 +24,8 @@ type LogFile struct {
 	closed  bool
 }
 
-// OpenLogFile opens <dir>/console.log to append lines.
 func OpenLogFile(dir string) (*LogFile, error) {
-	path := filepath.Join(dir, logName)
+	path := filepath.Join(dir, "console.log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open console log: %w", err)
@@ -42,7 +38,6 @@ func OpenLogFile(dir string) (*LogFile, error) {
 	return &LogFile{path: path, f: f, size: st.Size(), written: make(chan struct{})}, nil
 }
 
-// Write appends one line.
 func (l *LogFile) Write(line LogLine) error {
 	b := make([]byte, 0, 32+len(line.Source)+len(line.Text))
 	b = line.Time.UTC().AppendFormat(b, "2006-01-02T15:04:05.000Z07:00")

@@ -160,7 +160,6 @@ func (m *Mirror) download(d *download, name string) {
 	m.endDownload(d)
 }
 
-// endDownload removes d from the downloads in progress.
 func (m *Mirror) endDownload(d *download) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

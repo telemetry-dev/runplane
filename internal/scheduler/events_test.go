@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
-
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -43,6 +41,16 @@ func TestRunnerAndStateEvents(t *testing.T) {
 		t.Errorf("stopped at %v, exit reason %q", got.StoppedAt, got.ExitReason)
 	}
 
+	// The runner error from runplane-init is the exit reason, not the exit
+	// code, which is 0 after a bad JIT config.
+	noJIT := e.insertSandbox(pool, set, serverID, sandbox.StateStarting, start)
+	exited := runnerEvent(sandbox.RunnerExited)
+	exited.Runner.Error = "the runner did not connect to GitHub"
+	e.event(serverID, noJIT.ID, exited)
+	if got := e.sandbox(noJIT.ID); got.State != sandbox.StateStopping || got.ExitReason != "the runner did not connect to GitHub" {
+		t.Errorf("state %q, exit reason %q; want stopping because the runner did not connect", got.State, got.ExitReason)
+	}
+
 	// A failed sandbox also loses its runner on GitHub.
 	failed := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
 	client.runners[failed.RunnerID] = Runner{ID: failed.RunnerID, Name: failed.RunnerName}
@@ -52,23 +60,6 @@ func TestRunnerAndStateEvents(t *testing.T) {
 	}
 	if _, ok := client.runners[failed.RunnerID]; ok {
 		t.Error("the runner of the failed sandbox is still on GitHub")
-	}
-}
-
-// The runner error from runplane-init is the exit reason, not the exit
-// code, which is 0 after a bad JIT config.
-func TestRunnerErrorIsTheExitReason(t *testing.T) {
-	e := newTestEnv(t)
-	serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	pool := e.addPool("runplane")
-	_, _, set := e.attach(pool)
-	b := e.insertSandbox(pool, set, serverID, sandbox.StateStarting, start)
-
-	exited := runnerEvent(sandbox.RunnerExited)
-	exited.Runner.Error = "the runner did not connect to GitHub"
-	e.event(serverID, b.ID, exited)
-	if got := e.sandbox(b.ID); got.State != sandbox.StateStopping || got.ExitReason != "the runner did not connect to GitHub" {
-		t.Errorf("state %q, exit reason %q; want stopping because the runner did not connect", got.State, got.ExitReason)
 	}
 }
 
@@ -92,25 +83,21 @@ func TestDebugRerunHoldsSandbox(t *testing.T) {
 		t.Fatal("GitHub got no re-run")
 	}
 	// The next attempt has a new request ID. Another job of the run stays normal.
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0), JobAvailableMessages: []*scaleset.JobAvailable{
-		available(301, "acme/api", 5150, "integration"), available(302, "acme/api", 5150, "lint"),
-	}})
+	e.scale(sc, msg(0, available(301, "acme/api", 5150, "integration"), available(302, "acme/api", 5150, "lint")))
 	if !e.job(301).Debug || e.job(302).Debug {
 		t.Fatalf("debug flags: attempt %v, other job %v; want true, false", e.job(301).Debug, e.job(302).Debug)
 	}
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1)})
-	specs := driver.startedSpecs()
-	if len(specs) != 1 || !specs[0].Debug {
-		t.Fatalf("specs %+v, want one debug sandbox", specs)
+	e.scale(sc, msg(1))
+	if len(driver.specs) != 1 || !driver.specs[0].Debug {
+		t.Fatalf("specs %+v, want one debug sandbox", driver.specs)
 	}
-	b := e.sandbox(specs[0].ID)
+	b := e.sandbox(driver.specs[0].ID)
 	if !b.Debug {
 		t.Error("sandbox row is not debug")
 	}
 
 	e.clock.add(4 * time.Minute)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 3, Statistics: stats(1), JobStartedMessages: []*scaleset.JobStarted{
-		started(301, "acme/api", 5150, "integration", b)}})
+	e.scale(sc, msg(1, started(301, "acme/api", 5150, "integration", b)))
 	e.clock.add(3 * time.Minute)
 	e.event(serverID, b.ID, sandbox.Event{Type: sandbox.EventRunner, Runner: &sandbox.RunnerEvent{
 		Kind: sandbox.RunnerJobCompleted, JobName: "integration", Result: "failed"}})
@@ -123,8 +110,7 @@ func TestDebugRerunHoldsSandbox(t *testing.T) {
 	}
 
 	e.clock.add(time.Second)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 4, Statistics: stats(0), JobCompletedMessages: []*scaleset.JobCompleted{
-		completed(301, "acme/api", 5150, "integration", b, "failed")}})
+	e.scale(sc, msg(0, completed(301, "acme/api", 5150, "integration", b, "failed")))
 	e.settle()
 	if n := len(e.rec.matching("hold ")); n != 1 {
 		t.Errorf("%d hold calls, want 1 (the hold stays)", n)
@@ -142,10 +128,8 @@ func TestDebugJobOnWarmSandbox(t *testing.T) {
 	driver.running[warm.ID] = sandbox.Spec{ID: warm.ID, VCPU: 2, MemoryMB: 4096}
 	e.s.reruns[rerunKey{"acme/api", 5150, "integration"}] = start
 
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(0), JobAvailableMessages: []*scaleset.JobAvailable{
-		available(301, "acme/api", 5150, "integration")}})
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(1), JobStartedMessages: []*scaleset.JobStarted{
-		started(301, "acme/api", 5150, "integration", warm)}})
+	e.scale(sc, msg(0, available(301, "acme/api", 5150, "integration")))
+	e.scale(sc, msg(1, started(301, "acme/api", 5150, "integration", warm)))
 
 	want := start.Add(60*time.Minute + 30*time.Minute)
 	if got := driver.holds[warm.ID]; !got.Equal(want) {
@@ -170,8 +154,7 @@ func TestMetricsFlush(t *testing.T) {
 	// Samples before the job is linked wait for it.
 	e.event(serverID, b.ID, metrics(12.5, 900))
 	e.s.flushMetrics(e.ctx)
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 1, Statistics: stats(1), JobStartedMessages: []*scaleset.JobStarted{
-		started(401, "acme/api", 6000, "build", b)}})
+	e.scale(sc, msg(1, started(401, "acme/api", 6000, "build", b)))
 	job := e.job(401)
 	e.event(serverID, b.ID, metrics(87.5, 3100))
 	e.event(serverID, b.ID, metrics(50, 2048))
@@ -188,8 +171,7 @@ func TestMetricsFlush(t *testing.T) {
 		t.Fatalf("samples %+v, want the 3 samples in order", list)
 	}
 
-	e.scale(sc, &scaleset.RunnerScaleSetMessage{MessageID: 2, Statistics: stats(0), JobCompletedMessages: []*scaleset.JobCompleted{
-		completed(401, "acme/api", 6000, "build", b, "succeeded")}})
+	e.scale(sc, msg(0, completed(401, "acme/api", 6000, "build", b, "succeeded")))
 	e.settle()
 	job = e.job(401)
 	if job.CPUPeak == nil || *job.CPUPeak != 87.5 || *job.CPUAvg != 50 || *job.MemPeakMB != 3100 {

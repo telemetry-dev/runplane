@@ -30,14 +30,10 @@ func TestAuditDetails(t *testing.T) {
 		{ID: "s1", Name: "fsn1-a", Kind: store.ServerAgent, Status: store.ServerOnline, CreatedAt: now, UpdatedAt: now},
 		{ID: "s2", Name: "fsn1-b", Kind: store.ServerAgent, Status: store.ServerOnline, CreatedAt: now, UpdatedAt: now},
 	} {
-		if err := e.st.CreateServer(ctx, v); err != nil {
-			t.Fatal(err)
-		}
+		must(t, e.st.CreateServer(ctx, v))
 	}
 	img := store.Image{ID: "img26", Name: "ubuntu-26.04", Ref: "builtin:ubuntu-26.04", Source: "builtin", CreatedAt: now, UpdatedAt: now}
-	if err := e.st.CreateImage(ctx, img); err != nil {
-		t.Fatal(err)
-	}
+	must(t, e.st.CreateImage(ctx, img))
 
 	var pool Pool
 	b.do("POST", "/api/pools", map[string]any{
@@ -58,20 +54,13 @@ func TestAuditDetails(t *testing.T) {
 		RunnerRequestID: 7, State: store.JobCompleted, Result: store.ResultFailed, Repository: "acme/api", JobName: "build",
 		WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", QueuedAt: now,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := e.st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{RunNumber: 2290}); err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
+	must(t, e.st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{RunNumber: 2290}))
 	b.do("POST", "/api/jobs/"+job.ID+"/rerun", map[string]any{"debug": true}, nil).want(t, 204)
-	err = e.st.InsertSandbox(ctx, store.Sandbox{
+	must(t, e.st.InsertSandbox(ctx, store.Sandbox{
 		ID: "sb1", PoolID: pool.ID, ServerID: "s2", RunnerName: "runplane-8cpu-7q2m", Mode: sandbox.ModeContainer,
 		State: sandbox.StateBusy, JobID: job.ID, VCPU: 8, MemoryMB: 16384, CreatedAt: now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	}))
 	b.do("POST", "/api/sandboxes/sb1/stop", nil, nil).want(t, 204)
 
 	res := b.do("GET", "/api/audit", nil, nil)
@@ -86,9 +75,7 @@ func TestAuditDetails(t *testing.T) {
 			Detail json.RawMessage `json:"detail"`
 		} `json:"items"`
 	}
-	if err := json.Unmarshal(res.body, &page); err != nil {
-		t.Fatal(err)
-	}
+	must(t, json.Unmarshal(res.body, &page))
 	got := map[string][]string{}
 	for _, item := range page.Items {
 		got[item.Action] = append(got[item.Action], string(item.Detail))
@@ -118,11 +105,7 @@ func TestAuditDetails(t *testing.T) {
 func sameJSON(t *testing.T, a, b string) bool {
 	t.Helper()
 	var va, vb any
-	if err := json.Unmarshal([]byte(a), &va); err != nil {
-		t.Fatalf("decode %s: %v", a, err)
-	}
-	if err := json.Unmarshal([]byte(b), &vb); err != nil {
-		t.Fatalf("decode %s: %v", b, err)
-	}
+	must(t, json.Unmarshal([]byte(a), &va))
+	must(t, json.Unmarshal([]byte(b), &vb))
 	return reflect.DeepEqual(va, vb)
 }

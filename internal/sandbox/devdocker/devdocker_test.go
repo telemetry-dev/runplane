@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/ids"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/devdocker"
 	"github.com/runplane/runplane/internal/sandbox/sysbox/sysboxtest"
@@ -59,25 +57,17 @@ func TestSandbox(t *testing.T) {
 	}
 
 	work := t.TempDir()
-	driverLog := &sysboxtest.Log{}
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("driver log:\n%s", driverLog)
-		}
-	})
 	goarch := map[string]string{"aarch64": "arm64", "x86_64": "amd64"}[info.Info.Architecture]
 	initPath := sysboxtest.Init(t, work, goarch)
 	bundle := sysboxtest.NewBundle(t, filepath.Join(work, "runner"))
 	cfg := config.Config{DataDir: filepath.Join(work, "data"), ServicePort: freePort(t) - 1, DevInsecure: true}
 	opts := devdocker.Options{
-		Docker: docker,
-		Config: cfg,
-		Bundle: func(_ context.Context, version, arch string) (image.Bundle, error) {
-			return image.Bundle{Version: version, Arch: arch, Dir: bundle.Dir, Patched: true}, nil
-		},
+		Docker:   docker,
+		Config:   cfg,
+		Bundle:   bundle.Ensure,
 		InitPath: func() (string, error) { return initPath, nil },
 		Settings: sandbox.Settings{DNS: []string{"1.1.1.1"}, ActionsCache: true, ReserveVCPU: 1, ReserveMemoryMB: 1024, Overcommit: 1},
-		Logger:   slog.New(slog.NewTextHandler(driverLog, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Logger:   sysboxtest.Logger(t),
 	}
 	drv, err := devdocker.New(opts)
 	if err != nil {

@@ -118,7 +118,6 @@ func overlayOnScratch(path string) error {
 	return mount("overlay", path, "overlay", 0, "lowerdir="+path+",upperdir="+upper+",workdir="+work)
 }
 
-// startDockerd starts the Docker daemon. An image without dockerd gets no Docker.
 func (g *guest) startDockerd() *child {
 	path, err := exec.LookPath("dockerd")
 	if err != nil {
@@ -236,7 +235,7 @@ wait:
 			killSession(sid, unix.SIGKILL)
 			code = <-r.exit
 			break wait
-		case <-g.req.stopped():
+		case <-g.req.stop:
 			g.log.Info("stopping the runner")
 			unix.Kill(sid, unix.SIGTERM)
 			select {
@@ -300,7 +299,6 @@ func (g *guest) startLogged(cmd *exec.Cmd, source string, onLine func(string)) (
 	return c, nil
 }
 
-// stop sends SIGTERM and, after stopGrace, SIGKILL.
 func (c *child) stop() {
 	unix.Kill(c.pid, unix.SIGTERM)
 	select {

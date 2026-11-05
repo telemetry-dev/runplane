@@ -21,10 +21,7 @@ var dist embed.FS
 // hashed names, so browsers may keep them for a year. Every other path that
 // is not a file gets the SPA shell, so the client router can handle it.
 func Handler() http.Handler {
-	sub, err := fs.Sub(dist, "dist")
-	if err != nil {
-		panic(err) // the embed pattern guarantees the folder
-	}
+	sub, _ := fs.Sub(dist, "dist")
 	return newHandler(sub)
 }
 
@@ -47,10 +44,7 @@ func newHandler(fsys fs.FS) *handler {
 		if err != nil || d.IsDir() || strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
-		data, err := fs.ReadFile(fsys, name)
-		if err != nil {
-			return nil
-		}
+		data, _ := fs.ReadFile(fsys, name)
 		sum := sha256.Sum256(data)
 		h.files[name] = file{data: data, etag: `"` + base64.RawURLEncoding.EncodeToString(sum[:12]) + `"`}
 		return nil

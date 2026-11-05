@@ -55,7 +55,6 @@ func (r *reaper) start(cmd *exec.Cmd) (int, <-chan int, error) {
 	return pid, exit, nil
 }
 
-// run starts cmd and waits for it.
 func (r *reaper) run(cmd *exec.Cmd) (int, error) {
 	_, exit, err := r.start(cmd)
 	if err != nil {

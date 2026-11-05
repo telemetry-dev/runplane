@@ -31,36 +31,29 @@ const (
 
 // Check is the result of one doctor check.
 type Check struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status Status `json:"status"`
-	Detail string `json:"detail"`
-	Fix    string `json:"fix,omitempty"` // one sentence that says how to fix a check that is not ok
-	// Command does the fix, when one shell command can.
-	Command string `json:"command,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Status  Status `json:"status"`
+	Detail  string `json:"detail"`
+	Fix     string `json:"fix,omitempty"`     // one sentence that says how to fix a check that is not ok
+	Command string `json:"command,omitempty"` // one shell command that does the fix, if one can
 }
 
 // Options configure Doctor.
 type Options struct {
-	DataDir string
-	// GuestKernel is the guest kernel file for VM mode.
-	GuestKernel string
-	// Listen holds the TCP addresses of runplane, for example ":8484".
-	Listen []string
+	DataDir     string
+	GuestKernel string   // the guest kernel file of VM mode
+	Listen      []string // TCP addresses of runplane, for example ":8484"
 	// Serving tells that this process listens on Listen, as the doctor of a
 	// running server does. Then an address in use needs no owner lookup,
 	// which works only on Linux.
-	Serving bool
-	// MinFreeDiskPercent is the min_free_disk_percent setting. 0 means 15.
-	MinFreeDiskPercent float64
-	// Unit is the systemd unit of runplane, for example "runplane". Empty
-	// skips the check of the unit state.
-	Unit string
-	// Internet starts a sandbox that connects to the internet. Nil skips
-	// the check.
+	Serving            bool
+	MinFreeDiskPercent float64 // the min_free_disk_percent setting; 0 means 15
+	Unit               string  // systemd unit of runplane, for example "runplane"; empty skips its state
+	// Internet starts a sandbox that connects to the internet.
 	Internet func(ctx context.Context) error
-	// BaseImage tries to pull the default builtin image and returns its
-	// registry ref and the error of the pull. Nil skips the check.
+	// BaseImage tries to pull the default builtin image, and returns its
+	// registry ref and the error of the pull.
 	BaseImage func(ctx context.Context) (ref string, err error)
 }
 
@@ -72,15 +65,46 @@ func Doctor(ctx context.Context, mode sandbox.Mode, opts Options) []Check {
 		return []Check{first}
 	}
 	s := inspect(ctx, mode, opts)
-	checks := append([]Check{first}, s.checks(mode, opts)...)
-	if opts.BaseImage != nil {
-		ref, err := opts.BaseImage(ctx)
-		checks = append(checks, s.baseImageCheck(mode, ref, err))
+	ref, pullErr := opts.BaseImage(ctx)
+	checks := append([]Check{first}, s.checks()...)
+	return append(checks, s.baseImageCheck(ref, pullErr), internetCheck(opts.Internet(ctx)))
+}
+
+// FormatDoctor writes the checks for a terminal: one line for each check
+// with a status mark, the fix and its command below a check that is not ok,
+// and a summary.
+func FormatDoctor(w io.Writer, checks []Check) error {
+	marks := map[Status]string{StatusOK: "✓", StatusWarn: "!", StatusFail: "✗"}
+	width := 0
+	for _, c := range checks {
+		width = max(width, len(c.Name))
 	}
-	if opts.Internet != nil {
-		checks = append(checks, internetCheck(opts.Internet(ctx)))
+	var b strings.Builder
+	count := map[Status]int{}
+	for _, c := range checks {
+		count[c.Status]++
+		fmt.Fprintf(&b, "%s %-*s  %s\n", marks[c.Status], width, c.Name, c.Detail)
+		if c.Status != StatusOK && c.Fix != "" {
+			fmt.Fprintf(&b, "  %-*s  Fix: %s\n", width, "", c.Fix)
+		}
+		if c.Status != StatusOK && c.Command != "" {
+			fmt.Fprintf(&b, "  %-*s  Run: %s\n", width, "", c.Command)
+		}
 	}
-	return checks
+	if count[StatusFail]+count[StatusWarn] == 0 {
+		b.WriteString("\nAll checks passed.\n")
+	} else {
+		fmt.Fprintf(&b, "\n%s, %s.\n", plural(count[StatusFail], "failure"), plural(count[StatusWarn], "warning"))
+	}
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }
 
 // The doctor measures the clock against an NTP server, because GitHub
@@ -104,10 +128,12 @@ var ErrNoProbe = errors.New("this server has no sandbox image yet")
 // service can add without a conflict.
 var ErrProbeInService = errors.New("in VM mode, only the running runplane service can do this check, because it owns the firewall rules of the sandboxes")
 
-// scan holds what the doctor reads in addition to Info.
+// scan holds what the doctor reads for a mode, in addition to Info.
 type scan struct {
 	Info
 	notes
+	mode sandbox.Mode
+	opts Options
 	root bool
 
 	clockSynced bool
@@ -137,7 +163,7 @@ type portScan struct {
 
 func inspect(ctx context.Context, mode sandbox.Mode, opts Options) scan {
 	info, n := gather(ctx, opts.DataDir)
-	s := scan{Info: info, notes: n, root: os.Geteuid() == 0}
+	s := scan{Info: info, notes: n, mode: mode, opts: opts, root: os.Geteuid() == 0}
 	s.clockSynced, s.clockErr = clockSynced()
 	s.skew, s.skewErr = ntpOffset(ctx, ntpServer)
 	s.systemd = exists("/run/systemd/system")
@@ -154,7 +180,7 @@ func inspect(ctx context.Context, mode sandbox.Mode, opts Options) scan {
 		}
 	}
 	if mode == sandbox.ModeVM {
-		s.guestKernelErr = checkFile(opts.GuestKernel)
+		s.guestKernelErr = checkKernel(opts.GuestKernel)
 	}
 	for _, addr := range opts.Listen {
 		s.ports = append(s.ports, scanPort(addr, opts.Serving))
@@ -162,26 +188,27 @@ func inspect(ctx context.Context, mode sandbox.Mode, opts Options) scan {
 	return s
 }
 
-// checks returns the checks for a valid mode.
-func (s scan) checks(mode sandbox.Mode, opts Options) []Check {
+// checks returns the checks for a valid mode, in the order that the
+// dashboard and the command show them.
+func (s scan) checks() []Check {
 	var cs []Check
-	switch mode {
-	case sandbox.ModeContainer:
-		cs = append(cs, s.osCheck(mode), s.kernelCheck(mode), s.cgroupCheck(), s.kvmCheck(mode),
-			s.nftablesCheck(), s.forwardCheck(opts.Unit), s.diskCheck(opts), s.dockerCheck(mode), s.sysboxCheck())
-	case sandbox.ModeVM:
-		cs = append(cs, s.osCheck(mode), s.kernelCheck(mode), s.cgroupCheck(), s.kvmCheck(mode),
-			s.nftablesCheck(), s.forwardCheck(opts.Unit), s.diskCheck(opts), s.dockerCheck(mode),
-			s.firecrackerCheck(), s.guestKernelCheck(opts.GuestKernel))
-	case sandbox.ModeDev:
-		cs = append(cs, s.diskCheck(opts), s.dockerCheck(mode))
+	if s.mode != sandbox.ModeDev {
+		cs = append(cs, s.osCheck(), s.kernelCheck(), s.cgroupCheck(), s.kvmCheck(), s.nftablesCheck(), s.forwardCheck())
 	}
-	if c, ok := s.firewallCheck(mode); ok {
-		cs = append(cs, c)
+	cs = append(cs, s.diskCheck(), s.dockerCheck())
+	switch s.mode {
+	case sandbox.ModeContainer:
+		cs = append(cs, s.sysboxCheck())
+		// Without Docker, the docker check tells the problem.
+		if s.DockerVersion != "" {
+			cs = append(cs, s.firewallCheck())
+		}
+	case sandbox.ModeVM:
+		cs = append(cs, s.firecrackerCheck(), s.guestKernelCheck(), s.firewallCheck())
 	}
 	cs = append(cs, s.clockCheck())
-	if mode != sandbox.ModeDev {
-		cs = append(cs, s.systemdCheck(mode, opts.Unit))
+	if s.mode != sandbox.ModeDev {
+		cs = append(cs, s.systemdCheck())
 	}
 	return append(cs, s.portChecks()...)
 }
@@ -225,22 +252,22 @@ func modeCheck(mode sandbox.Mode) Check {
 	return c.fail(fmt.Sprintf("Unknown mode %q", mode), "Set RUNPLANE_MODE to container, vm, or dev in /etc/runplane/runplane.env.")
 }
 
-func (s scan) osCheck(mode sandbox.Mode) Check {
+func (s scan) osCheck() Check {
 	c := Check{ID: "os", Name: "Operating system"}
 	name := cmp.Or(s.OS, "Unknown")
-	if mode == sandbox.ModeVM || s.OSID == "ubuntu" && (s.OSVersion == "22.04" || s.OSVersion == "24.04") {
+	if s.mode == sandbox.ModeVM || s.OSID == "ubuntu" && (s.OSVersion == "22.04" || s.OSVersion == "24.04") {
 		return c.ok(name)
 	}
 	return c.warn(name+": Sysbox supports only Ubuntu 22.04 and 24.04", "Use Ubuntu 24.04 for container mode.")
 }
 
-func (s scan) kernelCheck(mode sandbox.Mode) Check {
+func (s scan) kernelCheck() Check {
 	c := Check{ID: "kernel", Name: "Kernel"}
 	v, ok := parseVersion(s.Kernel)
 	if !ok {
 		return c.warn(fmt.Sprintf("Cannot read the kernel version %q", s.Kernel), "Check that uname -r prints a version such as 6.8.0.").run("uname -r")
 	}
-	if mode == sandbox.ModeContainer {
+	if s.mode == sandbox.ModeContainer {
 		switch {
 		case v.less(version{5, 5}):
 			return c.fail(s.Kernel+": Sysbox needs kernel 5.5 or newer", "Upgrade the kernel to 5.15 or newer.")
@@ -267,9 +294,9 @@ func (s scan) cgroupCheck() Check {
 	return c.fail("The host uses cgroup v1", "Add systemd.unified_cgroup_hierarchy=1 to the kernel command line and reboot.")
 }
 
-func (s scan) kvmCheck(mode sandbox.Mode) Check {
+func (s scan) kvmCheck() Check {
 	c := Check{ID: "kvm", Name: "KVM"}
-	if mode != sandbox.ModeVM {
+	if s.mode != sandbox.ModeVM {
 		if s.KVM || errors.Is(s.kvmErr, fs.ErrPermission) {
 			return c.ok("Available: VM mode gives stronger isolation")
 		}
@@ -307,21 +334,22 @@ func (s scan) nftablesCheck() Check {
 // forwardCheck looks at IP forwarding. runplane turns it on when it starts,
 // after Docker, and not with a sysctl file at boot: Docker sets the FORWARD
 // policy to DROP only when it turns on forwarding itself.
-func (s scan) forwardCheck(unit string) Check {
+func (s scan) forwardCheck() Check {
 	c := Check{ID: "ip_forward", Name: "IP forwarding"}
 	if s.IPForward {
 		return c.ok("net.ipv4.ip_forward = 1")
 	}
 	return c.fail("net.ipv4.ip_forward = 0, so sandboxes have no internet access", "runplane turns on IP forwarding when it starts. Restart runplane.").
-		run("sudo systemctl restart " + cmp.Or(unit, "runplane"))
+		run("sudo systemctl restart " + cmp.Or(s.opts.Unit, "runplane"))
 }
 
-func (s scan) diskCheck(opts Options) Check {
+func (s scan) diskCheck() Check {
 	c := Check{ID: "disk", Name: "Free disk space"}
 	if s.resourcesErr != nil || s.DiskBytes <= 0 {
-		return c.fail(fmt.Sprintf("Cannot read the data disk: %v", s.resourcesErr), "Make sure that "+opts.DataDir+" is on a mounted disk.")
+		return c.fail(fmt.Sprintf("Cannot read the data disk: %v", s.resourcesErr), "Make sure that "+s.opts.DataDir+" is on a mounted disk.")
 	}
-	minPercent := cmp.Or(opts.MinFreeDiskPercent, 15)
+	gigabytes := func(b int64) string { return fmt.Sprintf("%.1f GB", float64(b)/1e9) }
+	minPercent := cmp.Or(s.opts.MinFreeDiskPercent, 15)
 	freePercent := float64(s.FreeDiskBytes) * 100 / float64(s.DiskBytes)
 	detail := fmt.Sprintf("%s free of %s (%.0f%%)", gigabytes(s.FreeDiskBytes), gigabytes(s.DiskBytes), freePercent)
 	switch {
@@ -333,13 +361,9 @@ func (s scan) diskCheck(opts Options) Check {
 	return c.ok(detail)
 }
 
-func gigabytes(b int64) string {
-	return fmt.Sprintf("%.1f GB", float64(b)/1e9)
-}
-
-func (s scan) dockerCheck(mode sandbox.Mode) Check {
+func (s scan) dockerCheck() Check {
 	c := Check{ID: "docker", Name: "Docker"}
-	if mode == sandbox.ModeVM {
+	if s.mode == sandbox.ModeVM {
 		if s.DockerVersion != "" {
 			return c.ok("Docker Engine " + s.DockerVersion)
 		}
@@ -388,18 +412,15 @@ func (s scan) firecrackerCheck() Check {
 	return c.ok(fmt.Sprintf("Firecracker %s and jailer %s", s.FirecrackerVersion, s.JailerVersion))
 }
 
-func (s scan) guestKernelCheck(path string) Check {
+func (s scan) guestKernelCheck() Check {
 	c := Check{ID: "guest_kernel", Name: "Guest kernel"}
 	if s.guestKernelErr != nil {
 		return c.fail(fmt.Sprintf("Cannot use the guest kernel: %v", s.guestKernelErr), "Run the install script again to download the guest kernel.")
 	}
-	return c.ok(path)
+	return c.ok(s.opts.GuestKernel)
 }
 
-func checkFile(path string) error {
-	if path == "" {
-		return errors.New("no file is set")
-	}
+func checkKernel(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -416,64 +437,53 @@ func checkFile(path string) error {
 // policy there, as from ufw, is fine. A drop policy of another nftables
 // chain on these hooks, as from a hand-written ruleset, blocks the sandboxes
 // whatever runplane accepts: in nftables, each base chain must accept.
-func (s scan) firewallCheck(mode sandbox.Mode) (Check, bool) {
+func (s scan) firewallCheck() Check {
 	c := Check{ID: "firewall", Name: "Firewall rules"}
-	policy, dockerUser := parseIptables(s.iptables)
-	if len(s.nftDrops) > 0 && (mode == sandbox.ModeVM || mode == sandbox.ModeContainer && s.DockerVersion != "") {
+	if len(s.nftDrops) > 0 {
 		return c.fail(fmt.Sprintf("The nftables chain %s drops by default, so sandboxes cannot reach the internet or the cache", strings.Join(s.nftDrops, ", ")),
 			"Accept the traffic of the sandbox interfaces in that chain: rp-* in VM mode, runplane0 in container mode.").
-			run("sudo nft list ruleset"), true
+			run("sudo nft list ruleset")
 	}
-	switch mode {
-	case sandbox.ModeContainer:
-		switch {
-		case s.DockerVersion == "":
-			return c, false
-		case s.DockerFirewall == "nftables":
-			return c.fail("Docker uses its nftables firewall backend, which has no DOCKER-USER chain", `Remove "firewall-backend" from /etc/docker/daemon.json and restart Docker.`), true
-		case errors.Is(s.iptablesErr, errNeedRoot):
-			return c.asRoot("Cannot read the firewall without root"), true
-		case s.iptablesErr != nil:
-			return c.fail(fmt.Sprintf("Cannot read the iptables rules: %v", s.iptablesErr), "Install iptables.").run("sudo apt-get install -y iptables"), true
-		case !dockerUser:
-			return c.fail("The DOCKER-USER chain is missing, so Docker does not manage iptables", `Remove "iptables": false from /etc/docker/daemon.json and restart Docker.`), true
-		case s.openForward(policy):
-			return openForwardWarning(c), true
-		}
-		return c.ok("DOCKER-USER chain present"), true
-	case sandbox.ModeVM:
-		switch {
-		case errors.Is(s.iptablesErr, exec.ErrNotFound):
-			return c.ok("No iptables rules"), true
-		case errors.Is(s.iptablesErr, errNeedRoot):
-			return c.asRoot("Cannot read the firewall without root"), true
-		case s.iptablesErr != nil:
-			return c.warn(fmt.Sprintf("Cannot read the iptables rules: %v", s.iptablesErr), "Check the policy of the FORWARD chain.").run("sudo iptables -S FORWARD"), true
-		case s.openForward(policy):
-			return openForwardWarning(c), true
-		case policy != "DROP":
-			return c.ok("FORWARD policy " + cmp.Or(policy, "ACCEPT")), true
-		case dockerUser:
-			return c.ok("Docker sets the FORWARD policy to DROP; runplane adds accept rules for its sandboxes"), true
-		}
-		return c.ok("The FORWARD policy is DROP; runplane adds accept rules for its sandboxes at the top of INPUT and FORWARD"), true
-	}
-	return c, false
-}
-
-// openForward tells if Docker kept the FORWARD policy ACCEPT. Docker sets
-// DROP only when it turns on IP forwarding itself, so here forwarding was on
-// before Docker started. Without Docker, the policy is the choice of the
-// host firewall.
-func (s scan) openForward(policy string) bool {
-	return policy != "DROP" && s.IPForward && s.DockerVersion != ""
-}
-
-func openForwardWarning(c Check) Check {
-	return c.warn("The FORWARD policy is ACCEPT, so this server forwards packets between all its networks, not only for the sandboxes",
+	policy, dockerUser := parseIptables(s.iptables)
+	// Docker sets the FORWARD policy to DROP only when it turns on IP
+	// forwarding itself, so an ACCEPT here means that forwarding was on
+	// before Docker started. Without Docker, the policy is the choice of the
+	// host firewall.
+	openForward := policy != "DROP" && s.IPForward && s.DockerVersion != ""
+	openForwardWarning := c.warn("The FORWARD policy is ACCEPT, so this server forwards packets between all its networks, not only for the sandboxes",
 		"Set the policy to DROP. Docker and runplane accept the sandbox traffic with their own rules. "+
 			"So that Docker sets DROP at each boot, remove net.ipv4.ip_forward from /etc/sysctl.conf and /etc/sysctl.d: runplane turns on forwarding after Docker starts.").
 		run("sudo iptables -P FORWARD DROP")
+	if s.mode == sandbox.ModeContainer {
+		switch {
+		case s.DockerFirewall == "nftables":
+			return c.fail("Docker uses its nftables firewall backend, which has no DOCKER-USER chain", `Remove "firewall-backend" from /etc/docker/daemon.json and restart Docker.`)
+		case errors.Is(s.iptablesErr, errNeedRoot):
+			return c.asRoot("Cannot read the firewall without root")
+		case s.iptablesErr != nil:
+			return c.fail(fmt.Sprintf("Cannot read the iptables rules: %v", s.iptablesErr), "Install iptables.").run("sudo apt-get install -y iptables")
+		case !dockerUser:
+			return c.fail("The DOCKER-USER chain is missing, so Docker does not manage iptables", `Remove "iptables": false from /etc/docker/daemon.json and restart Docker.`)
+		case openForward:
+			return openForwardWarning
+		}
+		return c.ok("DOCKER-USER chain present")
+	}
+	switch {
+	case errors.Is(s.iptablesErr, exec.ErrNotFound):
+		return c.ok("No iptables rules")
+	case errors.Is(s.iptablesErr, errNeedRoot):
+		return c.asRoot("Cannot read the firewall without root")
+	case s.iptablesErr != nil:
+		return c.warn(fmt.Sprintf("Cannot read the iptables rules: %v", s.iptablesErr), "Check the policy of the FORWARD chain.").run("sudo iptables -S FORWARD")
+	case openForward:
+		return openForwardWarning
+	case policy != "DROP":
+		return c.ok("FORWARD policy " + cmp.Or(policy, "ACCEPT"))
+	case dockerUser:
+		return c.ok("Docker sets the FORWARD policy to DROP; runplane adds accept rules for its sandboxes")
+	}
+	return c.ok("The FORWARD policy is DROP; runplane adds accept rules for its sandboxes at the top of INPUT and FORWARD")
 }
 
 func readIptables(ctx context.Context, root bool) (string, error) {
@@ -570,10 +580,11 @@ func ntpTime(b []byte) time.Time {
 	return time.Unix(sec-unixToNTP, frac*1e9>>32)
 }
 
-func (s scan) systemdCheck(mode sandbox.Mode, unit string) Check {
+func (s scan) systemdCheck() Check {
 	c := Check{ID: "systemd", Name: "systemd"}
+	unit := s.opts.Unit
 	switch {
-	case !s.systemd && mode == sandbox.ModeVM:
+	case !s.systemd && s.mode == sandbox.ModeVM:
 		return c.fail("The host does not run systemd, which keeps VMs in scopes", "Use a Linux distribution with systemd.")
 	case !s.systemd:
 		return c.warn("The host does not run systemd", "Use a Linux distribution with systemd.")
@@ -629,15 +640,17 @@ func scanPort(addr string, own bool) portScan {
 		return p
 	}
 	p.err = err
-	if own && errors.Is(p.err, syscall.EADDRINUSE) {
-		p.self, p.pid = true, os.Getpid()
+	if !errors.Is(err, syscall.EADDRINUSE) {
 		return p
 	}
-	if _, port, err := net.SplitHostPort(addr); err == nil && errors.Is(p.err, syscall.EADDRINUSE) {
-		n, _ := strconv.Atoi(port)
-		p.pid, p.name = portOwner(n)
-		p.self = p.pid == os.Getpid()
+	if own {
+		p.self = true
+		return p
 	}
+	_, port, _ := net.SplitHostPort(addr)
+	n, _ := strconv.Atoi(port)
+	p.pid, p.name = portOwner(n)
+	p.self = p.pid == os.Getpid()
 	return p
 }
 
@@ -662,7 +675,7 @@ func listenInodes(r io.Reader, port int) []string {
 
 // baseImageCheck tells where the default image comes from: a pull of ref,
 // or a build of its Dockerfile with Docker when the pull fails (pullErr).
-func (s scan) baseImageCheck(mode sandbox.Mode, ref string, pullErr error) Check {
+func (s scan) baseImageCheck(ref string, pullErr error) Check {
 	c := Check{ID: "base_image", Name: "Base image source"}
 	if pullErr == nil {
 		return c.ok("Pulls " + ref)
@@ -674,7 +687,7 @@ func (s scan) baseImageCheck(mode sandbox.Mode, ref string, pullErr error) Check
 	switch {
 	case s.DockerVersion != "":
 		return c.ok(fmt.Sprintf("Builds the image from its Dockerfile with Docker, because %s cannot be pulled: %s", ref, why))
-	case mode != sandbox.ModeVM:
+	case s.mode != sandbox.ModeVM:
 		return c.fail(fmt.Sprintf("Cannot pull %s (%s), and Docker does not answer to build it", ref, why), "Fix the Docker check above.")
 	case !s.root:
 		return c.asRoot(fmt.Sprintf("Cannot pull %s (%s), and Docker does not answer to this user", ref, why))
@@ -685,13 +698,12 @@ func (s scan) baseImageCheck(mode sandbox.Mode, ref string, pullErr error) Check
 
 func internetCheck(err error) Check {
 	c := Check{ID: "internet", Name: "Sandbox internet access"}
-	if errors.Is(err, ErrNoProbe) {
+	switch {
+	case errors.Is(err, ErrNoProbe):
 		return c.warn(fmt.Sprintf("Not checked: %v.", err), "Run runplane doctor again when the default image is ready.")
-	}
-	if errors.Is(err, ErrProbeInService) {
+	case errors.Is(err, ErrProbeInService):
 		return c.warn(fmt.Sprintf("Not checked here: %v.", err), "Open this server in the dashboard and select Run doctor.")
-	}
-	if err != nil {
+	case err != nil:
 		return c.fail(fmt.Sprintf("A sandbox cannot reach the internet: %v", err), "Fix the IP forwarding and firewall checks above.")
 	}
 	return c.ok("A sandbox reached the internet")

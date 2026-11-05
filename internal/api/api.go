@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -18,6 +18,10 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
 	"github.com/runplane/runplane/internal/webui"
@@ -37,6 +41,36 @@ type Handler struct {
 
 	updateMu sync.Mutex
 	updating string // state of an update that POST /api/update applies; empty when idle
+}
+
+// Deps are the parts that the API uses. Store, Auth, Bus, Box, and Config are
+// required. Each service is optional: without it, its routes answer 503.
+//
+// A service error is shown to the user as the detail of a 500 problem, so
+// services should return errors that make sense to an admin. A service can
+// also return a huma.StatusError to choose the status.
+type Deps struct {
+	Store  *store.Store
+	Auth   *auth.Service
+	Bus    *events.Bus
+	Box    *secret.Box
+	Log    *slog.Logger
+	Config config.Config
+
+	Scheduler     Scheduler
+	GitHub        GitHub
+	Servers       Servers
+	Images        Images
+	Caches        Caches
+	Backups       Backups
+	Updater       Updater
+	Notifier      Notifier
+	Logs          Logs
+	Shell         Shell
+	HostChecker   HostChecker
+	InstallScript InstallScript
+	SettingsHook  SettingsHook
+	HTTPS         HTTPS
 }
 
 // New registers all routes. It does not use d until a request comes, so
@@ -75,6 +109,129 @@ func OpenAPI() ([]byte, error) {
 	return b.Bytes(), err
 }
 
+type Scheduler interface {
+	// PoolsChanged tells the scheduler that a pool was made, changed, or deleted.
+	PoolsChanged(ctx context.Context)
+	StopSandbox(ctx context.Context, id string) error
+	// RerunJob asks GitHub to run the job again. With debug, the new attempt
+	// keeps its sandbox after the job for a debug shell.
+	RerunJob(ctx context.Context, jobID string, debug bool) error
+}
+
+// GitHub has the GitHub App flows. base is the browser URL of runplane, for
+// example "https://ci.example.com", without a trailing slash.
+type GitHub interface {
+	// Manifest returns the GitHub URL that the browser posts the form to and
+	// the manifest JSON for the form field "manifest".
+	Manifest(ctx context.Context, base, accountType, organization string) (actionURL, manifest string, err error)
+	// Callback converts the manifest code into the app and returns the URL
+	// for the browser, normally the app installation page on GitHub.
+	Callback(ctx context.Context, base, code, state string) (redirect string, err error)
+	// Setup records an installation, syncs its repositories, and makes the
+	// scale sets. It returns the URL for the browser. installationID is 0
+	// when setupAction is "request".
+	Setup(ctx context.Context, base string, installationID int64, setupAction string) (redirect string, err error)
+	// Sync reads the installations, repositories, and suspensions now.
+	Sync(ctx context.Context) error
+	// Disconnect stops the listeners, deletes the scale sets, and removes the app.
+	Disconnect(ctx context.Context) error
+}
+
+type Servers interface {
+	// NewToken makes a one-time install token for a new agent and the
+	// command that installs the agent with it. An empty name means the host
+	// name of the agent.
+	NewToken(ctx context.Context, base, name, createdBy string) (ServerToken, error)
+	// InstallSSH starts an install over SSH and returns the ID of the new
+	// server. The install continues in the background; the server status
+	// and status detail show its progress.
+	InstallSSH(ctx context.Context, base string, req SSHInstall) (serverID string, err error)
+	// SSHPublicKey returns the runplane SSH key in authorized_keys format.
+	SSHPublicKey(ctx context.Context) (string, error)
+	Doctor(ctx context.Context, serverID string) ([]Check, error)
+	// Remove stops the sandboxes of an agent and disconnects it. The API
+	// then deletes the server row.
+	Remove(ctx context.Context, serverID string) error
+	// UpdateState tells whether the server runs the release of the
+	// primary: one of the Update* values.
+	UpdateState(v store.Server) string
+	// UpdateAgent makes a connected agent install the release of the
+	// primary. The update runs in the background, and UpdateState shows it.
+	UpdateAgent(ctx context.Context, serverID string) error
+}
+
+type Images interface {
+	// Refresh pulls the image again on all servers.
+	Refresh(ctx context.Context, imageID string) error
+	// Remove deletes the files of the image on all servers. The API then
+	// deletes the image row.
+	Remove(ctx context.Context, imageID string) error
+}
+
+type Caches interface {
+	// Delete removes the cache entry id, or all entries of repository if id
+	// is empty, with their blobs. It returns the count of removed entries.
+	Delete(ctx context.Context, repository, id string) (int, error)
+	// MirrorStats returns the counts of the mirror. The API sets StartedAt.
+	MirrorStats(ctx context.Context) (MirrorStats, error)
+	// MaxBytes returns the limit that the cache server uses now: the
+	// cache_max_gb setting, at most a quarter of the disk of the cache.
+	MaxBytes() int64
+}
+
+type Backups interface {
+	Run(ctx context.Context) (backupID string, err error)
+}
+
+type Updater interface {
+	// Check reads the latest release. It sets State while an update that
+	// did not come through the API (auto update) runs.
+	Check(ctx context.Context) (UpdateStatus, error)
+	// Apply installs the latest release. The process restarts afterwards.
+	Apply(ctx context.Context) error
+}
+
+type Notifier interface {
+	Test(ctx context.Context, base, kind, url string) error
+}
+
+type Logs interface {
+	// SandboxLog returns the console and runner log of a sandbox. With
+	// follow, the reader stays open until the sandbox stops or ctx ends.
+	SandboxLog(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+	// JobLog returns the log of a job: the stored GitHub log after the job,
+	// the sandbox log while it runs. step 0 means all steps. The sandbox log
+	// has no step marks, so it always has all steps: live is true for it.
+	JobLog(ctx context.Context, jobID string, step int, follow bool) (log io.ReadCloser, live bool, err error)
+}
+
+type Shell interface {
+	// Open starts a login shell as the runner user in the sandbox.
+	Open(ctx context.Context, sandboxID string, size sandbox.TermSize) (sandbox.Terminal, error)
+}
+
+type HostChecker interface {
+	// Check reads this server and runs the doctor checks for the setup page.
+	Check(ctx context.Context) (HostCheck, error)
+}
+
+type InstallScript interface {
+	// Script returns install.sh with the primary URL and the agent
+	// certificate fingerprint filled in for the request.
+	Script(r *http.Request) []byte
+}
+
+type SettingsHook interface {
+	// SettingsChanged runs after an admin changes the settings.
+	SettingsChanged(ctx context.Context, old, new store.Settings)
+}
+
+// HTTPS reports the ACME certificate of the domain setting. Without it, the
+// settings have no https field.
+type HTTPS interface {
+	CertificateStatus(ctx context.Context) HTTPSStatus
+}
+
 // Handlers send [] for empty lists, never null.
 func init() { huma.DefaultArrayNullable = false }
 
@@ -100,43 +257,7 @@ func humaConfig() huma.Config {
 	}
 }
 
-// public marks a route that needs no session. The other routes need the
-// auth.Action in their metadata.
-const public = auth.Action(-1)
-
-const actionKey = "runplane.action"
-
-// handle registers a Huma operation. pattern is "METHOD /path".
-func handle[I, O any](h *Handler, a auth.Action, pattern, id, summary string, fn func(context.Context, *I) (*O, error), opts ...func(*huma.Operation)) {
-	huma.Register(h.api, operation(a, pattern, id, summary, opts...), fn)
-}
-
-func operation(a auth.Action, pattern, id, summary string, opts ...func(*huma.Operation)) huma.Operation {
-	method, path, _ := strings.Cut(pattern, " ")
-	tag, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(path, "/api"), "/"), "/")
-	op := huma.Operation{
-		OperationID: id,
-		Method:      method,
-		Path:        path,
-		Summary:     summary,
-		Tags:        []string{tag},
-		Metadata:    map[string]any{actionKey: a},
-	}
-	if a != public {
-		op.Security = []map[string][]string{{"session": {}}}
-	}
-	for _, o := range opts {
-		o(&op)
-	}
-	return op
-}
-
-func describe(text string) func(*huma.Operation) {
-	return func(op *huma.Operation) { op.Description = text }
-}
-
 func (h *Handler) routes() {
-	// Setup, sessions, and the current user.
 	handle(h, public, "GET /api/status", "get-status", "Read the instance status", h.getStatus)
 	handle(h, public, "POST /api/setup", "setup", "Make the first admin with the setup code", h.setup)
 	handle(h, public, "GET /api/setup/host", "get-setup-host", "Check this server during setup", h.getSetupHost)
@@ -147,7 +268,6 @@ func (h *Handler) routes() {
 
 	handle(h, auth.ActionRead, "GET /api/overview", "get-overview", "Read the overview numbers, running jobs, servers, and chart", h.getOverview)
 
-	// GitHub.
 	handle(h, auth.ActionRead, "GET /api/github", "get-github", "Read the GitHub App, installations, and listener status", h.getGitHub)
 	handle(h, auth.ActionAdmin, "POST /api/github/manifest", "create-github-manifest", "Start the GitHub App manifest flow", h.createManifest)
 	handle(h, public, "GET /api/github/callback", "github-callback", "Finish the manifest flow (browser redirect from GitHub)", h.githubCallback, redirectResponse)
@@ -155,7 +275,6 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionAdmin, "POST /api/github/sync", "sync-github", "Sync the installations now", h.syncGitHub)
 	handle(h, auth.ActionAdmin, "DELETE /api/github", "disconnect-github", "Disconnect GitHub", h.disconnectGitHub)
 
-	// Pools and sandboxes.
 	handle(h, auth.ActionRead, "GET /api/pools", "list-pools", "List the pools with live sandbox counts", h.listPools)
 	handle(h, auth.ActionAdmin, "POST /api/pools", "create-pool", "Make a pool", h.createPool)
 	handle(h, auth.ActionRead, "GET /api/pools/placement", "get-pool-placement", "Count the servers where a sandbox of a size can start", h.getPlacement)
@@ -169,7 +288,6 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionOpenShell, "GET /api/sandboxes/{id}/shell", "open-sandbox-shell", "Open the debug shell (WebSocket)", h.openShell, websocketResponse,
 		describe("Only a debug sandbox has a shell, while its job runs and during its hold after the job."))
 
-	// Jobs.
 	handle(h, auth.ActionRead, "GET /api/jobs", "list-jobs", "List jobs, newest first", h.listJobs)
 	handle(h, auth.ActionRead, "GET /api/jobs/facets", "get-job-facets", "List the values for the job filters", h.getJobFacets)
 	handle(h, auth.ActionRead, "GET /api/jobs/{id}", "get-job", "Read a job", h.getJob)
@@ -177,7 +295,6 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionRead, "GET /api/jobs/{id}/metrics", "get-job-metrics", "Read the CPU and memory samples of a job", h.getJobMetrics)
 	handle(h, auth.ActionRerunJob, "POST /api/jobs/{id}/rerun", "rerun-job", "Run a job again", h.rerunJob)
 
-	// Servers.
 	handle(h, auth.ActionRead, "GET /api/servers", "list-servers", "List servers with live stats", h.listServers)
 	handle(h, auth.ActionAdmin, "POST /api/servers/tokens", "create-server-token", "Make an install token for a new server", h.createServerToken)
 	handle(h, auth.ActionAdmin, "GET /api/servers/tokens/{id}/status", "get-server-token-status", "Read whether an agent used an install token", h.getServerTokenStatus)
@@ -191,7 +308,6 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionRead, "GET /api/servers/{id}/doctor", "get-server-doctor", "Read the last doctor result of a server", h.getDoctor)
 	handle(h, auth.ActionAdmin, "POST /api/servers/{id}/doctor", "run-server-doctor", "Run the doctor checks on a server and keep the result", h.runDoctor)
 
-	// Images, caches, and runner versions.
 	handle(h, auth.ActionRead, "GET /api/images", "list-images", "List images with the build status on each server", h.listImages)
 	handle(h, auth.ActionAdmin, "POST /api/images", "create-image", "Add an image", h.createImage)
 	handle(h, auth.ActionAdmin, "PATCH /api/images/{id}", "update-image", "Change an image or make it the default", h.updateImage)
@@ -202,7 +318,6 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionAdmin, "DELETE /api/caches", "delete-cache-entries", "Remove cache entries", h.deleteCacheEntries)
 	handle(h, auth.ActionRead, "GET /api/runner-versions", "list-runner-versions", "List the runner bundles", h.listRunnerVersions)
 
-	// Settings and administration.
 	handle(h, auth.ActionRead, "GET /api/settings", "get-settings", "Read the settings", h.getSettings)
 	handle(h, auth.ActionAdmin, "PATCH /api/settings", "update-settings", "Change settings", h.updateSettings)
 	handle(h, auth.ActionRead, "GET /api/settings/dns", "get-domain-dns", "Check that the DNS record of the domain points to this server", h.getDomainDNS)
@@ -232,21 +347,165 @@ func (h *Handler) routes() {
 	handle(h, public, "GET /install.sh", "get-install-script", "Read the install script", h.installScript, binaryResponse("text/x-shellscript"))
 }
 
-// Error helpers. Handlers return these so that internal error text never
-// reaches the client, except the text of service errors.
+// public marks a route that needs no session. The other routes need the
+// auth.Action in their metadata.
+const public = auth.Action(-1)
 
-// internal logs err and returns a 500 problem without the error text.
-func (h *Handler) internal(err error) error {
-	h.d.Log.Error("request failed", "err", err)
-	return huma.Error500InternalServerError("Something went wrong. The server log has the details.")
+const actionKey = "runplane.action"
+
+// handle registers a Huma operation. pattern is "METHOD /path". An error that
+// is not a huma.StatusError goes to the log, and the client gets a 500
+// problem without its text.
+func handle[I, O any](h *Handler, a auth.Action, pattern, id, summary string, fn func(context.Context, *I) (*O, error), opts ...func(*huma.Operation)) {
+	huma.Register(h.api, operation(a, pattern, id, summary, opts...), func(ctx context.Context, in *I) (*O, error) {
+		out, err := fn(ctx, in)
+		var se huma.StatusError
+		if err != nil && !errors.As(err, &se) {
+			h.d.Log.Error("request failed", "err", err)
+			return nil, huma.Error500InternalServerError("Something went wrong. The server log has the details.")
+		}
+		return out, err
+	})
 }
 
-// storeErr maps store.ErrNotFound to a 404 with the message notFound.
-func (h *Handler) storeErr(err error, notFound string) error {
-	if errors.Is(err, store.ErrNotFound) {
-		return huma.Error404NotFound(notFound)
+func operation(a auth.Action, pattern, id, summary string, opts ...func(*huma.Operation)) huma.Operation {
+	method, path, _ := strings.Cut(pattern, " ")
+	tag, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(path, "/api"), "/"), "/")
+	op := huma.Operation{
+		OperationID: id,
+		Method:      method,
+		Path:        path,
+		Summary:     summary,
+		Tags:        []string{tag},
+		Metadata:    map[string]any{actionKey: a},
 	}
-	return h.internal(err)
+	if a != public {
+		op.Security = []map[string][]string{{"session": {}}}
+	}
+	for _, o := range opts {
+		o(&op)
+	}
+	return op
+}
+
+func describe(text string) func(*huma.Operation) {
+	return func(op *huma.Operation) { op.Description = text }
+}
+
+func textResponse(op *huma.Operation) {
+	op.Responses = map[string]*huma.Response{"200": {
+		Description: "The log as plain text. With follow=1, the response streams until the log ends.",
+		Content:     map[string]*huma.MediaType{"text/plain": {Schema: &huma.Schema{Type: huma.TypeString}}},
+	}}
+}
+
+func jobLogResponse(op *huma.Operation) {
+	textResponse(op)
+	op.Responses["200"].Headers = map[string]*huma.Param{stepFilterHeader: {
+		Description: "ignored: the log has all steps, because the job runs and its live log has no step marks.",
+		Schema:      &huma.Schema{Type: huma.TypeString, Enum: []any{"ignored"}},
+	}}
+}
+
+func binaryResponse(contentType string) func(*huma.Operation) {
+	return func(op *huma.Operation) {
+		op.Responses = map[string]*huma.Response{"200": {
+			Description: "OK",
+			Content:     map[string]*huma.MediaType{contentType: {Schema: &huma.Schema{Type: huma.TypeString, Format: "binary"}}},
+		}}
+	}
+}
+
+func websocketResponse(op *huma.Operation) {
+	op.DefaultStatus = http.StatusSwitchingProtocols
+	op.Responses = map[string]*huma.Response{"101": {
+		Description: "The connection becomes a WebSocket. Binary frames carry the terminal bytes in both directions. " +
+			`The client resizes the terminal with a text frame {"type":"resize","rows":N,"cols":N}.`,
+	}}
+}
+
+func redirectResponse(op *huma.Operation) {
+	op.DefaultStatus = http.StatusFound
+	op.Description = "The browser comes here from GitHub. The response sends it on to GitHub or to the dashboard. " +
+		"Errors go to the dashboard page in the query parameter error."
+}
+
+// PathID is the id path parameter. Input structs embed it; Huma finds
+// parameters only in exported embedded types.
+type PathID struct {
+	ID string `path:"id" maxLength:"100"`
+}
+
+// body is the input or output of an operation with a JSON body.
+type body[T any] struct{ Body T }
+
+// empty is the output of operations without a response body (204).
+type empty struct{}
+
+// reply returns v as the response body, or err.
+func reply[T any](v T, err error) (*body[T], error) {
+	if err != nil {
+		return nil, err
+	}
+	return &body[T]{v}, nil
+}
+
+// first returns the item of a converted list of one.
+func first[T any](list []T, err error) (T, error) {
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return list[0], nil
+}
+
+// orEmpty returns list, or an empty slice for nil, so JSON has [] and not null.
+func orEmpty[T any](list []T) []T {
+	if list == nil {
+		return []T{}
+	}
+	return list
+}
+
+// set copies *v to dst if v is not nil.
+func set[T any](dst *T, v *T) {
+	if v != nil {
+		*dst = *v
+	}
+}
+
+// refs holds the pools and servers by ID, for the labels and names that
+// API objects show next to the IDs. Both tables are small.
+type refs struct {
+	pools   map[string]store.Pool
+	servers map[string]store.Server
+}
+
+func (h *Handler) loadRefs(ctx context.Context) (refs, error) {
+	pools, err := h.d.Store.ListPools(ctx)
+	if err != nil {
+		return refs{}, err
+	}
+	servers, err := h.d.Store.ListServers(ctx)
+	if err != nil {
+		return refs{}, err
+	}
+	r := refs{pools: make(map[string]store.Pool, len(pools)), servers: make(map[string]store.Server, len(servers))}
+	for _, p := range pools {
+		r.pools[p.ID] = p
+	}
+	for _, v := range servers {
+		r.servers[v.ID] = v
+	}
+	return r, nil
+}
+
+// notFound maps store.ErrNotFound to a 404 with msg.
+func notFound(err error, msg string) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return huma.Error404NotFound(msg)
+	}
+	return err
 }
 
 // serviceErr shows the error of a service to the user.
@@ -273,15 +532,17 @@ func invalid(loc, msg string, value any) error {
 	return huma.Error422UnprocessableEntity(msg, &huma.ErrorDetail{Location: loc, Message: msg, Value: value})
 }
 
+// conflict returns a 409 problem with one field error.
+func conflict(loc, msg string) error {
+	return huma.Error409Conflict(msg, &huma.ErrorDetail{Location: loc, Message: msg})
+}
+
 // problems collects field errors for one 422 problem.
 type problems []error
 
 func (p *problems) add(loc, msg string, value any) {
 	*p = append(*p, &huma.ErrorDetail{Location: loc, Message: msg, Value: value})
 }
-
-// locIndex returns the location of item i of a list, for example "body.server_ids[2]".
-func locIndex(loc string, i int) string { return fmt.Sprintf("%s[%d]", loc, i) }
 
 func (p problems) err() error {
 	if len(p) == 0 {
@@ -291,21 +552,4 @@ func (p problems) err() error {
 		return huma.Error422UnprocessableEntity(p[0].(*huma.ErrorDetail).Message, p...)
 	}
 	return huma.Error422UnprocessableEntity("Some values are not valid.", p...)
-}
-
-// PathID is the id path parameter. Input structs embed it; Huma finds
-// parameters only in exported embedded types.
-type PathID struct {
-	ID string `path:"id" maxLength:"100"`
-}
-
-// empty is the output of operations without a response body (204).
-type empty struct{}
-
-// orEmpty returns list, or an empty slice for nil, so JSON has [] and not null.
-func orEmpty[T any](list []T) []T {
-	if list == nil {
-		return []T{}
-	}
-	return list
 }

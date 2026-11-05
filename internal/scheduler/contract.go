@@ -8,20 +8,17 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// This file is the contract between the scheduler and the packages that
-// serve it. The github package implements ScaleSetClient and GitHub. The
-// fleet package implements Fleet. Change it only together with them.
+// The github package implements ScaleSetClient and GitHub, and the fleet
+// package implements Fleet. Change these interfaces only together with them.
 
 // ScaleSetClient is the GitHub side of one runner scale set.
 type ScaleSetClient interface {
-	// AcquireJobs asks GitHub to give these job requests to this scale set.
-	// It returns the request IDs that GitHub gave.
+	// AcquireJobs returns the request IDs that GitHub gave to the scale set.
 	AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error)
 	GenerateJITConfig(ctx context.Context, runnerName string) (JITConfig, error)
-	// RemoveRunner returns ErrRunnerBusy if the runner has a job.
-	// It returns nil if the runner does not exist.
+	// RemoveRunner returns ErrRunnerBusy if the runner has a job, and nil if
+	// the runner does not exist.
 	RemoveRunner(ctx context.Context, runnerID int64) error
-	// ListRunners returns the runners that GitHub has for this scale set.
 	ListRunners(ctx context.Context) ([]Runner, error)
 	// SetMaxRunners sets the maxCapacity that the listener sends with each poll.
 	SetMaxRunners(n int)
@@ -50,10 +47,9 @@ type GitHub interface {
 	// Enrich reads the run and job from the REST API and writes the
 	// enrichment fields to the store.
 	Enrich(ctx context.Context, job store.Job) error
-	// Steps reads the steps of a job that Enrich found on GitHub. It returns
-	// nil if the job has no GitHub job ID yet.
+	// Steps returns nil if the job has no GitHub job ID yet.
 	Steps(ctx context.Context, job store.Job) ([]store.JobStep, error)
-	// DownloadLog writes the complete job log from GitHub to path.
+	// DownloadLog writes the complete job log to path.
 	DownloadLog(ctx context.Context, job store.Job, path string) error
 	Rerun(ctx context.Context, job store.Job) error
 }

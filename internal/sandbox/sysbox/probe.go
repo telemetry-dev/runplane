@@ -89,10 +89,10 @@ func Probe(ctx context.Context, o ProbeOptions) error {
 // Probe runs Probe with the settings of the driver.
 func (d *Driver) Probe(ctx context.Context) error {
 	d.mu.Lock()
-	dns := d.dns
+	dns := d.settings.IPv4DNS()
 	d.mu.Unlock()
 	return Probe(ctx, ProbeOptions{
-		Docker: d.docker, Runtime: d.opts.Runtime, DataDir: d.opts.Config.DataDir, CgroupParent: d.opts.CgroupParent, DNS: dns,
+		Docker: d.docker, Runtime: d.opts.Runtime, DataDir: d.opts.Config.DataDir, CgroupParent: d.opts.cgroupParent(), DNS: dns,
 	})
 }
 

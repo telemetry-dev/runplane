@@ -69,15 +69,10 @@ func (b *Bus) Subscribe(buffer int) (<-chan Event, func()) {
 	}
 	b.subs[ch] = struct{}{}
 	b.mu.Unlock()
-
-	var once sync.Once
-	cancel := func() {
-		once.Do(func() {
-			b.mu.Lock()
-			delete(b.subs, ch)
-			b.mu.Unlock()
-			close(ch)
-		})
-	}
-	return ch, cancel
+	return ch, sync.OnceFunc(func() {
+		b.mu.Lock()
+		delete(b.subs, ch)
+		b.mu.Unlock()
+		close(ch)
+	})
 }

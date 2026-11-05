@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -39,10 +40,9 @@ func TestControlChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sent := &sentBytes{}
+	sent := &syncBuffer{}
 	dial := func(ctx context.Context) (net.Conn, error) {
-		var d net.Dialer
-		c, err := d.DialContext(ctx, "unix", sock)
+		c, err := dialHost(ctx, sock)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +110,8 @@ func TestControlChannel(t *testing.T) {
 	waitFor(t, "the log line from the outage", func() bool {
 		return slices.ContainsFunc(rec2.logList(), func(l control.LogLine) bool { return l.Text == "while the host was away" })
 	})
-	if n := sent.count("GET /v1/config "); n != 1 {
+	// HTTP requests travel as plain text inside yamux frames.
+	if n := strings.Count(sent.String(), "GET /v1/config "); n != 1 {
 		t.Errorf("the guest asked for the config %d times, want 1", n)
 	}
 	if !host2.Connected() {
@@ -161,6 +162,33 @@ func TestControlChannel(t *testing.T) {
 	waitFor(t, "the host to see the guest leave", func() bool { return !host2.Connected() })
 	if err := host2.Hold(context.Background(), time.Now()); err != control.ErrNotConnected {
 		t.Errorf("Hold without a guest = %v, want ErrNotConnected", err)
+	}
+}
+
+// In dev mode the guest dials the TCP address in control.addr. After a host
+// restart the address and token change, and the guest must get in again.
+func TestDialHostTCPAfterRestart(t *testing.T) {
+	sock := socketPath(t)
+	log := slog.New(slog.DiscardHandler)
+	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, sock) },
+		log, newLogQueue(1<<20), guestMux(newHostRequests(), newShellServer(log)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for i := range 2 {
+		tcp, err := control.ListenTCP("127.0.0.1:0", "127.0.0.1", log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, err := tcp.Listen(filepath.Dir(sock), control.GuestConfig{SandboxID: "01jbz3x0000000000000000000"}, &recorder{}, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			go link.run(ctx)
+		}
+		waitFor(t, fmt.Sprintf("connection %d over TCP", i+1), host.Connected)
+		host.Close()
+		tcp.Close()
 	}
 }
 
@@ -239,19 +267,16 @@ func TestShutdownWhileWaitingForConfig(t *testing.T) {
 	}
 	defer host.Close()
 
-	dial := func(ctx context.Context) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "unix", sock)
-	}
 	req := newHostRequests()
-	link := newGuestLink(dial, log, newLogQueue(1<<20), guestMux(req, newShellServer(log)))
+	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, sock) },
+		log, newLogQueue(1<<20), guestMux(req, newShellServer(log)))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go link.run(ctx)
 	// As guest.run does: a shutdown ends the wait for the config.
 	configCtx, stop := context.WithCancel(ctx)
 	go func() {
-		<-req.stopped()
+		<-req.stop
 		stop()
 	}()
 	done := make(chan error, 1)
@@ -314,27 +339,31 @@ func (r *recorder) logList() []control.LogLine {
 	return slices.Clone(r.logs)
 }
 
-// sentBytes keeps all bytes that the guest writes on its connections. HTTP
-// requests travel as plain text inside yamux frames.
-type sentBytes struct {
+// recordConn copies what the guest writes to sent.
+type recordConn struct {
+	net.Conn
+	sent io.Writer
+}
+
+func (c *recordConn) Write(p []byte) (int, error) {
+	c.sent.Write(p)
+	return c.Conn.Write(p)
+}
+
+// syncBuffer is a bytes.Buffer that goroutines can share.
+type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
 }
 
-func (s *sentBytes) count(text string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return bytes.Count(s.buf.Bytes(), []byte(text))
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
 }
 
-type recordConn struct {
-	net.Conn
-	sent *sentBytes
-}
-
-func (c *recordConn) Write(p []byte) (int, error) {
-	c.sent.mu.Lock()
-	c.sent.buf.Write(p)
-	c.sent.mu.Unlock()
-	return c.Conn.Write(p)
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

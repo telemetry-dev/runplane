@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +40,6 @@ type Target struct {
 	Job        string     // job name
 }
 
-// Errors of Config.Lookup.
 var (
 	ErrNotFound  = errors.New("no live sandbox has this ID")
 	ErrAmbiguous = errors.New("several live sandboxes have IDs that start with this name")
@@ -121,7 +121,6 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Addr is the address that the gateway listens on.
 func (s *Server) Addr() net.Addr { return s.ln.Addr() }
 
 // Serve accepts connections until ctx ends or Close is called. Then it
@@ -204,13 +203,17 @@ const (
 
 var errDenied = errors.New("key not allowed for this sandbox")
 
+// sandboxName matches a sandbox ID or the start of one. It keeps the user
+// names of internet scanners away from the database.
+var sandboxName = regexp.MustCompile(`^[0-9a-z]{8,26}$`)
+
 // authorize decides if key may connect to the sandbox of the user name. It
 // accepts the key even when the sandbox refuses the connection: verified
 // then tells the reason, but only to a client that has proved it holds the
 // key. Public keys are public, so a key alone must not reveal anything.
 func (s *Server) authorize(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	name := strings.ToLower(meta.User())
-	if !validName(name) {
+	if !sandboxName.MatchString(name) {
 		return nil, errDenied
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, authTimeout)
@@ -285,18 +288,4 @@ func refusal(t Target, now time.Time) string {
 	default:
 		return fmt.Sprintf("Sandbox %s has no job yet. Connect when its job runs.", t.SandboxID)
 	}
-}
-
-// validName reports if name can be a sandbox ID or the start of one. The
-// check keeps the user names of internet scanners away from the database.
-func validName(name string) bool {
-	if len(name) < 8 || len(name) > 26 {
-		return false
-	}
-	for _, c := range name {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'z') {
-			return false
-		}
-	}
-	return true
 }

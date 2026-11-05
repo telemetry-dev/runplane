@@ -43,23 +43,23 @@ type MirrorStats struct {
 
 const cacheStatsWindow = 7 * 24 * time.Hour
 
-func (h *Handler) getCaches(ctx context.Context, _ *struct{}) (*struct{ Body CacheOverview }, error) {
+func (h *Handler) getCaches(ctx context.Context, _ *struct{}) (*body[CacheOverview], error) {
 	st := h.d.Store
 	settings, err := st.GetSettings(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	usage, err := st.CacheUsage(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	stats, err := st.CacheStatsByRepository(ctx, time.Now().Add(-cacheStatsWindow))
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	size, err := st.CacheSize(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	out := CacheOverview{
 		Enabled: settings.ActionsCache, SizeBytes: size, MaxBytes: int64(settings.CacheMaxGB) << 30,
@@ -97,7 +97,7 @@ func (h *Handler) getCaches(ctx context.Context, _ *struct{}) (*struct{ Body Cac
 			out.Mirror = &m
 		}
 	}
-	return &struct{ Body CacheOverview }{out}, nil
+	return &body[CacheOverview]{out}, nil
 }
 
 func rate(hits, misses int64) float64 {
@@ -125,10 +125,10 @@ type cacheEntriesInput struct {
 
 const maxCacheEntries = 1000
 
-func (h *Handler) listCacheEntries(ctx context.Context, in *cacheEntriesInput) (*struct{ Body []CacheEntry }, error) {
+func (h *Handler) listCacheEntries(ctx context.Context, in *cacheEntriesInput) (*body[[]CacheEntry], error) {
 	list, err := h.d.Store.ListCacheEntries(ctx, in.Repository)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	list = list[:min(len(list), maxCacheEntries)]
 	out := make([]CacheEntry, len(list))
@@ -138,7 +138,7 @@ func (h *Handler) listCacheEntries(ctx context.Context, in *cacheEntriesInput) (
 			Finalized: e.Finalized, CreatedAt: e.CreatedAt, LastUsedAt: e.LastUsedAt,
 		}
 	}
-	return &struct{ Body []CacheEntry }{out}, nil
+	return &body[[]CacheEntry]{out}, nil
 }
 
 type deleteCachesInput struct {
@@ -150,7 +150,7 @@ type DeletedCaches struct {
 	Deleted int `json:"deleted"`
 }
 
-func (h *Handler) deleteCacheEntries(ctx context.Context, in *deleteCachesInput) (*struct{ Body DeletedCaches }, error) {
+func (h *Handler) deleteCacheEntries(ctx context.Context, in *deleteCachesInput) (*body[DeletedCaches], error) {
 	if in.Repository == "" && in.ID == "" {
 		return nil, invalid("query.repository", "Give a repository or an entry ID.", nil)
 	}
@@ -162,7 +162,7 @@ func (h *Handler) deleteCacheEntries(ctx context.Context, in *deleteCachesInput)
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "cache.delete", cmp.Or(in.ID, in.Repository), map[string]any{"repository": in.Repository, "id": in.ID, "deleted": n})
-	return &struct{ Body DeletedCaches }{DeletedCaches{Deleted: n}}, nil
+	return &body[DeletedCaches]{DeletedCaches{Deleted: n}}, nil
 }
 
 type RunnerVersion struct {
@@ -200,10 +200,10 @@ func runnerVersion(b store.RunnerBundle, now time.Time) RunnerVersion {
 	}
 }
 
-func (h *Handler) listRunnerVersions(ctx context.Context, _ *struct{}) (*struct{ Body RunnerVersions }, error) {
+func (h *Handler) listRunnerVersions(ctx context.Context, _ *struct{}) (*body[RunnerVersions], error) {
 	list, err := h.d.Store.ListRunnerBundles(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	now := time.Now()
 	out := RunnerVersions{Items: make([]RunnerVersion, len(list))}
@@ -223,5 +223,5 @@ func (h *Handler) listRunnerVersions(ctx context.Context, _ *struct{}) (*struct{
 	if len(list) > 0 {
 		out.Latest = list[0].Version
 	}
-	return &struct{ Body RunnerVersions }{out}, nil
+	return &body[RunnerVersions]{out}, nil
 }

@@ -5,6 +5,7 @@ package mirror
 import (
 	"io"
 	"net/http/httptest"
+	"net/netip"
 	"runtime"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ import (
 // mirror two times. go-containerregistry checks each digest. The second pull
 // must come from the cache only.
 func TestPullAlpineFromDockerHub(t *testing.T) {
-	m, err := New(Config{Dir: t.TempDir()})
+	m, err := New(Config{Dir: t.TempDir(), Allow: func(netip.Addr) bool { return true }})
 	if err != nil {
 		t.Fatal(err)
 	}

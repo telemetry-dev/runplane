@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/runplane/runplane/internal/store"
 )
 
 // Type names an event. Channels store the types they receive.
@@ -20,7 +22,6 @@ const (
 	Test Type = "test"
 )
 
-// Event is one notification.
 type Event struct {
 	Type  Type
 	Title string
@@ -30,55 +31,46 @@ type Event struct {
 	At    time.Time      // Send sets the current time if zero
 }
 
-// Job is the part of a job that a notification shows.
-type Job struct {
-	ID         string
-	Repository string
-	Workflow   string
-	Name       string
-	Branch     string
-	Actor      string
-	RunNumber  int64
-	Duration   time.Duration
-	GitHubURL  string
-}
-
 // The constructors below take the dashboard base URL ("https://runplane.example.com").
 // An empty base gives events without links.
 
-func JobFailedEvent(dashboard string, j Job) Event {
+func JobFailedEvent(dashboard string, j store.Job) Event {
+	var took time.Duration
+	if j.StartedAt != nil && j.FinishedAt != nil {
+		took = j.FinishedAt.Sub(*j.StartedAt)
+	}
 	parts := []string{j.Repository}
-	if j.Workflow != "" {
-		w := j.Workflow
+	if j.WorkflowName != "" {
+		w := j.WorkflowName
 		if j.RunNumber > 0 {
 			w += fmt.Sprintf(" #%d", j.RunNumber)
 		}
 		parts = append(parts, w)
 	}
-	if j.Branch != "" {
-		parts = append(parts, "branch "+j.Branch)
+	if j.HeadBranch != "" {
+		parts = append(parts, "branch "+j.HeadBranch)
 	}
 	if j.Actor != "" {
 		parts = append(parts, "by "+j.Actor)
 	}
-	if j.Duration > 0 {
-		parts = append(parts, "after "+j.Duration.Round(time.Second).String())
+	if took > 0 {
+		parts = append(parts, "after "+took.Round(time.Second).String())
 	}
 	return Event{
 		Type:  JobFailed,
-		Title: "Job failed: " + j.Name,
+		Title: "Job failed: " + j.JobName,
 		Text:  strings.Join(parts, " · "),
 		URL:   link(dashboard, "/jobs/"+j.ID),
 		Data: map[string]any{
 			"job_id":      j.ID,
 			"repository":  j.Repository,
-			"workflow":    j.Workflow,
-			"job_name":    j.Name,
-			"branch":      j.Branch,
+			"workflow":    j.WorkflowName,
+			"job_name":    j.JobName,
+			"branch":      j.HeadBranch,
 			"actor":       j.Actor,
 			"run_number":  j.RunNumber,
-			"duration_ms": j.Duration.Milliseconds(),
-			"github_url":  j.GitHubURL,
+			"duration_ms": took.Milliseconds(),
+			"github_url":  j.HTMLURL,
 		},
 	}
 }

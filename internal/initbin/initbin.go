@@ -16,42 +16,30 @@ import (
 )
 
 //go:embed all:bin
-var files embed.FS
+var bin embed.FS
 
-// Bytes returns the embedded runplane-init binary, or nil when the build
-// has none.
+// gzipped is the embedded binary, or empty when the build has none.
+var gzipped, _ = bin.ReadFile("bin/runplane-init")
+
+// Bytes returns the runplane-init binary: the embedded one, or else
+// runplane-init next to the runplane executable.
 func Bytes() ([]byte, error) {
-	r, err := open()
-	if r == nil || err != nil {
-		return nil, err
+	if len(gzipped) == 0 {
+		p, err := besideExecutable()
+		if err != nil {
+			return nil, err
+		}
+		return os.ReadFile(p)
 	}
-	b, err := io.ReadAll(r)
+	zr, err := gzip.NewReader(bytes.NewReader(gzipped))
+	if err != nil {
+		return nil, fmt.Errorf("read runplane-init: %w", err)
+	}
+	b, err := io.ReadAll(zr)
 	if err != nil {
 		return nil, fmt.Errorf("read runplane-init: %w", err)
 	}
 	return b, nil
-}
-
-// open returns a reader of the embedded binary, or nil when the build has
-// none.
-func open() (io.Reader, error) {
-	b, err := files.ReadFile("bin/runplane-init")
-	if err != nil || len(b) == 0 {
-		return nil, nil
-	}
-	return unpack(b)
-}
-
-// unpack reads a gzipped binary (make init) or a plain one (go build).
-func unpack(b []byte) (io.Reader, error) {
-	if !bytes.HasPrefix(b, []byte{0x1f, 0x8b}) {
-		return bytes.NewReader(b), nil
-	}
-	zr, err := gzip.NewReader(bytes.NewReader(b))
-	if err != nil {
-		return nil, fmt.Errorf("read runplane-init: %w", err)
-	}
-	return zr, nil
 }
 
 var (
@@ -72,27 +60,18 @@ func Path() (string, error) {
 			return path, nil
 		}
 	}
-	r, err := open()
-	if err != nil {
-		return "", err
-	}
-	if r == nil {
+	if len(gzipped) == 0 {
 		return besideExecutable()
 	}
-	p, err := writeTemp(r)
+	b, err := Bytes()
 	if err != nil {
 		return "", err
 	}
-	path = p
-	return path, nil
-}
-
-func writeTemp(r io.Reader) (string, error) {
 	f, err := os.CreateTemp("", "runplane-init-*")
 	if err != nil {
 		return "", fmt.Errorf("write runplane-init: %w", err)
 	}
-	_, err = io.Copy(f, r)
+	_, err = f.Write(b)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -103,7 +82,8 @@ func writeTemp(r io.Reader) (string, error) {
 		os.Remove(f.Name())
 		return "", fmt.Errorf("write runplane-init: %w", err)
 	}
-	return f.Name(), nil
+	path = f.Name()
+	return path, nil
 }
 
 func besideExecutable() (string, error) {

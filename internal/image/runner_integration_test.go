@@ -37,20 +37,20 @@ func TestRealRunnerInBaseImage(t *testing.T) {
 		t.Skipf("no image %s: %v", baseImage, err)
 	}
 	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), Logger: testLogger(t)})
-	rel, err := b.release(ctx, "/releases/latest")
+	version, _, err := b.release(ctx, "/releases/latest")
 	if err != nil {
 		t.Fatal(err)
 	}
 	arch := map[string]string{"amd64": "x64", "arm64": "arm64"}[runtime.GOARCH]
-	bundle, err := b.Ensure(ctx, rel.Version, arch)
+	bundle, err := b.Ensure(ctx, version, arch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("runner %s for linux-%s in %s", rel.Version, arch, bundle.Dir)
+	t.Logf("runner %s for linux-%s in %s", version, arch, bundle.Dir)
 
 	out, code := runRunner(t, docker, bundle.Dir, "./bin/Runner.Listener", "--version")
-	if code != 0 || strings.TrimSpace(out) != rel.Version {
-		t.Fatalf("Runner.Listener --version: exit code %d, output:\n%s\nwant %s: the image lacks a library of the runner", code, out, rel.Version)
+	if code != 0 || strings.TrimSpace(out) != version {
+		t.Fatalf("Runner.Listener --version: exit code %d, output:\n%s\nwant %s: the image lacks a library of the runner", code, out, version)
 	}
 
 	start := time.Now()

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -48,6 +49,11 @@ func (e *testEnv) setup(t *testing.T) (store.User, string) {
 	return u, token
 }
 
+func (e *testEnv) login(email, password, device, ip string) error {
+	_, _, err := e.svc.Login(context.Background(), email, password, device, ip, "")
+	return err
+}
+
 func TestPasswordHashFormat(t *testing.T) {
 	// Made with the reference implementation (libargon2):
 	// echo -n "correct horse battery" | argon2 saltsaltsaltsalt -id -t 2 -k 19456 -p 1 -l 32
@@ -75,11 +81,10 @@ func TestLoginWrongPassword(t *testing.T) {
 	if admin.Email != "admin@example.com" || admin.Role != RoleAdmin {
 		t.Fatalf("admin = %+v", admin)
 	}
-
-	if _, _, err := e.svc.Login(ctx, "admin@example.com", "wrong password", "", "10.0.0.2", ""); !errors.Is(err, ErrBadLogin) {
+	if err := e.login("admin@example.com", "wrong password", "", "10.0.0.2"); !errors.Is(err, ErrBadLogin) {
 		t.Fatalf("wrong password: err = %v", err)
 	}
-	if _, _, err := e.svc.Login(ctx, "nobody@example.com", "first password", "", "10.0.0.2", ""); !errors.Is(err, ErrBadLogin) {
+	if err := e.login("nobody@example.com", "first password", "", "10.0.0.2"); !errors.Is(err, ErrBadLogin) {
 		t.Fatalf("unknown email: err = %v", err)
 	}
 	u, token, err := e.svc.Login(ctx, "ADMIN@example.com", "first password", "", "10.0.0.2", "")
@@ -96,34 +101,31 @@ func TestLoginWrongPassword(t *testing.T) {
 
 func TestLoginRateLimit(t *testing.T) {
 	e := newEnv(t)
-	ctx := context.Background()
 	e.setup(t)
 	// Ten failures for one email, from different addresses, lock the email.
 	for i := range 10 {
-		ip := "10.1.0." + string(rune('a'+i))
-		if _, _, err := e.svc.Login(ctx, "admin@example.com", "wrong password", "", ip, ""); !errors.Is(err, ErrBadLogin) {
+		if err := e.login("admin@example.com", "wrong password", "", fmt.Sprint("10.1.0.", i)); !errors.Is(err, ErrBadLogin) {
 			t.Fatalf("failure %d: err = %v", i+1, err)
 		}
 	}
-	if _, _, err := e.svc.Login(ctx, "admin@example.com", "first password", "", "10.9.9.9", ""); !errors.Is(err, ErrRateLimited) {
+	if err := e.login("admin@example.com", "first password", "", "10.9.9.9"); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("right password after 10 failures: err = %v, want ErrRateLimited", err)
 	}
 	e.wait(15 * time.Minute)
-	if _, _, err := e.svc.Login(ctx, "admin@example.com", "first password", "", "10.9.9.9", ""); err != nil {
+	if err := e.login("admin@example.com", "first password", "", "10.9.9.9"); err != nil {
 		t.Fatalf("after 15 minutes: %v", err)
 	}
 
 	// Ten failures from one address, for different emails, lock the address.
 	for i := range 10 {
-		email := string(rune('a'+i)) + "@example.com"
-		if _, _, err := e.svc.Login(ctx, email, "wrong password", "", "10.2.0.1", ""); !errors.Is(err, ErrBadLogin) {
+		if err := e.login(fmt.Sprintf("user%d@example.com", i), "wrong password", "", "10.2.0.1"); !errors.Is(err, ErrBadLogin) {
 			t.Fatalf("failure %d: err = %v", i+1, err)
 		}
 	}
-	if _, _, err := e.svc.Login(ctx, "admin@example.com", "first password", "", "10.2.0.1", ""); !errors.Is(err, ErrRateLimited) {
+	if err := e.login("admin@example.com", "first password", "", "10.2.0.1"); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("locked address: err = %v, want ErrRateLimited", err)
 	}
-	if _, _, err := e.svc.Login(ctx, "admin@example.com", "first password", "", "10.2.0.2", ""); err != nil {
+	if err := e.login("admin@example.com", "first password", "", "10.2.0.2"); err != nil {
 		t.Fatalf("other address: %v", err)
 	}
 }
@@ -132,45 +134,39 @@ func TestLoginRateLimit(t *testing.T) {
 // that logged in to the account before must still get in.
 func TestLoginFromAKnownDevice(t *testing.T) {
 	e := newEnv(t)
-	ctx := context.Background()
 	admin, _ := e.setup(t)
 	device := e.svc.Device(admin.ID, "")
 	if again := e.svc.Device(admin.ID, device); again != device {
 		t.Fatalf("a valid device token changed at a new login: %q, want %q", again, device)
 	}
-	login := func(password, device, ip string) error {
-		_, _, err := e.svc.Login(ctx, "admin@example.com", password, device, ip, "")
-		return err
-	}
 	for i := range 10 {
-		if err := login("wrong password", "", "10.1.0."+string(rune('a'+i))); !errors.Is(err, ErrBadLogin) {
+		if err := e.login("admin@example.com", "wrong password", "", fmt.Sprint("10.1.0.", i)); !errors.Is(err, ErrBadLogin) {
 			t.Fatalf("failure %d: err = %v", i+1, err)
 		}
 	}
 
-	other := e.svc.Device("someone else", "")
 	id, mac, _ := strings.Cut(device, ".")
 	for name, token := range map[string]string{
 		"no device":                     "",
-		"device of another user":        other,
+		"device of another user":        e.svc.Device("someone else", ""),
 		"device with a changed ID":      "x" + id + "." + mac,
 		"device of a key that is wrong": NewService(e.st, []byte("other key")).Device(admin.ID, ""),
 	} {
-		if err := login("first password", token, "10.9.9.9"); !errors.Is(err, ErrRateLimited) {
+		if err := e.login("admin@example.com", "first password", token, "10.9.9.9"); !errors.Is(err, ErrRateLimited) {
 			t.Errorf("%s with the email locked: err = %v, want ErrRateLimited", name, err)
 		}
 	}
-	if err := login("first password", device, "10.9.9.9"); err != nil {
+	if err := e.login("admin@example.com", "first password", device, "10.9.9.9"); err != nil {
 		t.Fatalf("known device with the email locked: %v", err)
 	}
 
 	// The device has a limit of its own.
 	for i := range 10 {
-		if err := login("wrong password", device, "10.3.0."+string(rune('a'+i))); !errors.Is(err, ErrBadLogin) {
+		if err := e.login("admin@example.com", "wrong password", device, fmt.Sprint("10.3.0.", i)); !errors.Is(err, ErrBadLogin) {
 			t.Fatalf("device failure %d: err = %v", i+1, err)
 		}
 	}
-	if err := login("first password", device, "10.9.9.10"); !errors.Is(err, ErrRateLimited) {
+	if err := e.login("admin@example.com", "first password", device, "10.9.9.10"); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("right password after 10 failures of the device: err = %v, want ErrRateLimited", err)
 	}
 }
@@ -351,10 +347,10 @@ func TestChangePassword(t *testing.T) {
 	if u, err := e.svc.UserForToken(ctx, token); err != nil || u.ID != admin.ID {
 		t.Errorf("new session: %q, %v", u.ID, err)
 	}
-	if _, _, err := e.svc.Login(ctx, "admin@example.com", "first password", "", "", ""); !errors.Is(err, ErrBadLogin) {
+	if err := e.login("admin@example.com", "first password", "", ""); !errors.Is(err, ErrBadLogin) {
 		t.Fatalf("old password: err = %v", err)
 	}
-	if _, _, err := e.svc.Login(ctx, "admin@example.com", "second password", "", "", ""); err != nil {
+	if err := e.login("admin@example.com", "second password", "", ""); err != nil {
 		t.Fatalf("new password: %v", err)
 	}
 }

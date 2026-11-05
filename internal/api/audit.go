@@ -86,17 +86,17 @@ type listAuditInput struct {
 	Limit  int    `query:"limit" minimum:"1" maximum:"200" default:"50"`
 }
 
-func (h *Handler) listAudit(ctx context.Context, in *listAuditInput) (*struct{ Body AuditPage }, error) {
+func (h *Handler) listAudit(ctx context.Context, in *listAuditInput) (*body[AuditPage], error) {
 	list, next, err := h.d.Store.ListAudit(ctx, in.Cursor, in.Limit)
 	if errors.Is(err, store.ErrBadCursor) {
 		return nil, invalid("query.cursor", "The cursor is not valid.", in.Cursor)
 	}
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	users, err := h.d.Store.ListUsers(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	byID := make(map[string]store.User, len(users))
 	for _, u := range users {
@@ -116,5 +116,5 @@ func (h *Handler) listAudit(ctx context.Context, in *listAuditInput) (*struct{ B
 			Action: e.Action, Target: e.Target, Detail: detail, IP: e.IP,
 		}
 	}
-	return &struct{ Body AuditPage }{page}, nil
+	return &body[AuditPage]{page}, nil
 }

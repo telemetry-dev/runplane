@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/ids"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
@@ -61,27 +59,19 @@ func TestContainerMode(t *testing.T) {
 	}
 
 	work := t.TempDir()
-	driverLog := &sysboxtest.Log{}
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("driver log:\n%s", driverLog)
-		}
-	})
-	log := slog.New(slog.NewTextHandler(driverLog, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	log := sysboxtest.Logger(t)
 	bundle := sysboxtest.NewBundle(t, filepath.Join(work, "runner"))
 	initPath := sysboxtest.Init(t, work, "")
 	rules := netrules.New(log)
 	defer rules.Teardown()
 	cfg := config.Config{DataDir: filepath.Join(work, "data"), ServicePort: 8486}
 	opts := sysbox.Options{
-		Docker:  docker,
-		Config:  cfg,
-		Mode:    sandbox.ModeContainer,
-		Runtime: runtime,
-		Scratch: sysbox.ScratchLoop,
-		Bundle: func(_ context.Context, version, arch string) (image.Bundle, error) {
-			return image.Bundle{Version: version, Arch: arch, Dir: bundle.Dir, Patched: true}, nil
-		},
+		Docker:   docker,
+		Config:   cfg,
+		Mode:     sandbox.ModeContainer,
+		Runtime:  runtime,
+		Scratch:  sysbox.ScratchLoop,
+		Bundle:   bundle.Ensure,
 		InitPath: func() (string, error) { return initPath, nil },
 		NetRules: rules,
 		Settings: sandbox.Settings{DNS: []string{"1.1.1.1"}, ActionsCache: true},

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,12 +18,6 @@ import (
 
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
-)
-
-// Listener restart waits.
-const (
-	minBackoff = time.Second
-	maxBackoff = time.Minute
 )
 
 // setListener runs the listener of one scale set. It is also the
@@ -45,14 +40,6 @@ type setListener struct {
 	status   string // the last written status and error, to skip equal writes
 	errText  string
 	answered bool // GitHub answered a poll since the last restart
-}
-
-var _ scheduler.ScaleSetClient = (*setListener)(nil)
-
-func (s *Service) listener(id string) *setListener {
-	s.lmu.Lock()
-	defer s.lmu.Unlock()
-	return s.listeners[id]
 }
 
 // startListener attaches the scale set to the scheduler and starts its
@@ -111,7 +98,7 @@ func (s *Service) stopListeners() {
 // twice as long after each further failure, up to 1 minute.
 func (l *setListener) run(ctx context.Context, scaler listener.Scaler) {
 	defer close(l.done)
-	wait := minBackoff
+	wait := time.Second
 	for {
 		err := l.listen(ctx, scaler)
 		if ctx.Err() != nil {
@@ -125,14 +112,14 @@ func (l *setListener) run(ctx context.Context, scaler listener.Scaler) {
 		}
 		l.mu.Lock()
 		if l.answered {
-			wait = minBackoff
+			wait = time.Second
 		}
 		l.answered = false
 		l.mu.Unlock()
 		if sleep(ctx, wait) != nil {
 			return
 		}
-		wait = min(2*wait, maxBackoff)
+		wait = min(2*wait, time.Minute)
 	}
 }
 
@@ -166,7 +153,7 @@ func (l *setListener) listen(ctx context.Context, scaler listener.Scaler) error 
 	session, err := l.client().MessageSessionClient(ctx, int(id), l.s.owner)
 	switch {
 	case err == nil:
-	case isSessionConflict(err):
+	case errors.Is(err, scaleset.ConflictError) || strings.Contains(err.Error(), "TaskAgentSessionConflictException"):
 		return fmt.Errorf("another listener has the session of scale set %s in %s: a different runplane or "+
 			"Actions Runner Controller uses the same scale set name. Stop it or change the pool label. "+
 			"runplane tries again", l.labelNow(), l.target.owner())
@@ -225,10 +212,11 @@ func (l *setListener) ensureRemote(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	hasLabel := func(x scaleset.Label) bool { return strings.EqualFold(x.Name, label) }
 	switch {
 	case set == nil:
 		set, err = cl.CreateRunnerScaleSet(ctx, scaleSetSpec(label, defaultRunnerGroup))
-	case !hasLabel(set.Labels, label) || !set.RunnerSetting.DisableUpdate:
+	case !slices.ContainsFunc(set.Labels, hasLabel) || !set.RunnerSetting.DisableUpdate:
 		set, err = cl.UpdateRunnerScaleSet(ctx, set.ID, scaleSetSpec(label, cmp.Or(set.RunnerGroupID, defaultRunnerGroup)))
 	}
 	if err != nil {
@@ -254,20 +242,6 @@ func (l *setListener) clearRemote(ctx context.Context) {
 	}
 }
 
-func hasLabel(labels []scaleset.Label, name string) bool {
-	for _, l := range labels {
-		if strings.EqualFold(l.Name, name) {
-			return true
-		}
-	}
-	return false
-}
-
-// isSessionConflict tells if another client owns the message session.
-func isSessionConflict(err error) bool {
-	return errors.Is(err, scaleset.ConflictError) || strings.Contains(err.Error(), "TaskAgentSessionConflictException")
-}
-
 // setStatus writes the status if it changed and tells if it did.
 func (l *setListener) setStatus(ctx context.Context, status, msg string) bool {
 	msg = truncate(msg, 1000)
@@ -281,7 +255,6 @@ func (l *setListener) setStatus(ctx context.Context, status, msg string) bool {
 	return !same
 }
 
-// record writes the statistics of a message or a session.
 func (l *setListener) record(ctx context.Context, st *scaleset.RunnerScaleSetStatistic, at time.Time) {
 	err := l.s.st.SetScaleSetStats(ctx, l.id, store.ScaleSetStats{
 		AvailableJobs: st.TotalAvailableJobs, AcquiredJobs: st.TotalAcquiredJobs, AssignedJobs: st.TotalAssignedJobs,
@@ -293,9 +266,18 @@ func (l *setListener) record(ctx context.Context, st *scaleset.RunnerScaleSetSta
 	}
 }
 
-// polled records one poll that GitHub answered.
-func (l *setListener) polled(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) {
-	now := time.Now()
+// pollRecorder records each poll of the listener that GitHub answered.
+type pollRecorder struct {
+	*scaleset.MessageSessionClient
+	l *setListener
+}
+
+func (p pollRecorder) GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error) {
+	msg, err := p.MessageSessionClient.GetMessage(ctx, lastMessageID, maxCapacity)
+	if err != nil {
+		return msg, err
+	}
+	l, now := p.l, time.Now()
 	l.mu.Lock()
 	l.answered = true
 	l.mu.Unlock()
@@ -307,20 +289,7 @@ func (l *setListener) polled(ctx context.Context, msg *scaleset.RunnerScaleSetMe
 	if !l.setStatus(ctx, store.ScaleSetListening, "") {
 		l.s.polledChanged(now)
 	}
-}
-
-// pollRecorder records each answered poll of the listener.
-type pollRecorder struct {
-	*scaleset.MessageSessionClient
-	l *setListener
-}
-
-func (p pollRecorder) GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error) {
-	msg, err := p.MessageSessionClient.GetMessage(ctx, lastMessageID, maxCapacity)
-	if err == nil {
-		p.l.polled(ctx, msg)
-	}
-	return msg, err
+	return msg, nil
 }
 
 func (l *setListener) setLabel(label string) {
@@ -335,7 +304,6 @@ func (l *setListener) labelNow() string {
 	return l.label
 }
 
-// AcquireJobs acquires job requests through the listener session.
 func (l *setListener) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
 	l.mu.Lock()
 	session := l.session

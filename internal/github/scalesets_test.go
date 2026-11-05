@@ -28,11 +28,9 @@ func TestTargets(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := newEnv(t)
-			e.connect()
+			e := acmeEnv(t)
 			ctx := context.Background()
-			e.installOrg(10, "acme")
-			e.install(store.Installation{ID: 20, AppID: testAppID, AccountLogin: "octo", AccountType: "User", RepositorySelection: "selected"})
+			e.install(20, "octo", "User")
 			e.st.ReplaceRepositories(ctx, 20, []store.Repository{
 				{ID: 200, FullName: "octo/private", Private: true},
 				{ID: 201, FullName: "octo/public"},
@@ -45,28 +43,20 @@ func TestTargets(t *testing.T) {
 				return nil
 			})
 
-			want, _, err := e.svc.targets(ctx)
+			want, err := e.svc.targets(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var personal []string
-			orgs := 0
+			var owners []string
 			for _, tgt := range want {
 				if tgt.pool.ID != "p1" {
 					t.Errorf("target for the disabled pool %s", tgt.pool.Label)
 				}
-				if tgt.repo == nil {
-					orgs++
-					if tgt.owner() != "acme" {
-						t.Errorf("organization target owner = %q", tgt.owner())
-					}
-					continue
-				}
-				personal = append(personal, tgt.owner())
+				owners = append(owners, tgt.owner())
 			}
-			slices.Sort(personal)
-			if orgs != 1 || !slices.Equal(personal, tt.wantPersonal) {
-				t.Errorf("organization targets = %d, personal = %v; want 1 and %v", orgs, personal, tt.wantPersonal)
+			slices.Sort(owners)
+			if wantOwners := append([]string{"acme"}, tt.wantPersonal...); !slices.Equal(owners, wantOwners) {
+				t.Errorf("target owners = %v, want %v", owners, wantOwners)
 			}
 		})
 	}
@@ -75,41 +65,38 @@ func TestTargets(t *testing.T) {
 // listeningEnv has one organization, one enabled pool, and a fake Actions
 // service. It returns after the listener of the pool listens.
 func listeningEnv(t *testing.T) (*env, *fakeActions, store.ScaleSet) {
-	e := newEnv(t)
-	e.connect()
-	e.installOrg(10, "acme")
+	e := acmeEnv(t)
 	e.pool("p1", "runplane", true)
 	f := e.actions()
 	e.sched.max = 3
 	e.mux.HandleFunc("GET /api/v3/orgs/acme/actions/runners", func(w http.ResponseWriter, r *http.Request) {
-		label := func(names ...string) []map[string]any {
-			var out []map[string]any
-			for _, n := range names {
-				out = append(out, map[string]any{"id": 1, "name": n, "type": "read-only"})
-			}
-			return out
+		runner := func(id int, name string, busy bool, label string) map[string]any {
+			return map[string]any{"id": id, "name": name, "busy": busy, "labels": []map[string]any{{"id": 1, "name": label}}}
 		}
+		// Only 50 and 51 belong to the scale set runplane.
 		writeJSON(w, http.StatusOK, map[string]any{"total_count": 4, "runners": []map[string]any{
-			{"id": 50, "name": "runplane-01aaa", "os": "Linux", "status": "online", "busy": false, "labels": label("runplane")},
-			{"id": 51, "name": "runplane-01bbb", "os": "Linux", "status": "online", "busy": true, "labels": label("runplane")},
-			{"id": 52, "name": "runplane-big-01ccc", "os": "Linux", "status": "online", "busy": false, "labels": label("runplane-big")},
-			{"id": 53, "name": "laptop", "os": "macOS", "status": "online", "busy": false, "labels": label("runplane")},
+			runner(50, "runplane-01aaa", false, "runplane"),
+			runner(51, "Runplane-01bbb", true, "RUNPLANE"),
+			runner(52, "runplane-big-01ccc", false, "runplane-big"),
+			runner(53, "laptop", false, "runplane"),
 		}})
 	})
 	e.svc.reconcileNow(context.Background())
-	row := waitListening(t, e)
-	return e, f, row
+	return e, f, waitStatus(t, e, store.ScaleSetListening)
 }
 
-func waitListening(t *testing.T, e *env) store.ScaleSet {
+// waitStatus waits until the only scale set has the status, and a GitHub
+// ID if it listens.
+func waitStatus(t *testing.T, e *env, status string) store.ScaleSet {
 	t.Helper()
 	var row store.ScaleSet
-	eventually(t, "scale set listens", func() bool {
+	eventually(t, "scale set "+status, func() bool {
 		list, _ := e.st.ListScaleSets(context.Background())
-		if len(list) == 1 {
-			row = list[0]
+		if len(list) != 1 {
+			return false
 		}
-		return len(list) == 1 && row.Status == store.ScaleSetListening && row.GitHubID != 0
+		row = list[0]
+		return row.Status == status && (status != store.ScaleSetListening || row.GitHubID != 0)
 	})
 	return row
 }
@@ -147,27 +134,21 @@ func TestScaleSetListens(t *testing.T) {
 	})
 
 	// The max runners of the scheduler go with each poll.
-	if polls := f.state().polls; len(polls) == 0 || polls[0] != 3 {
+	if polls := f.state().polls; polls[0] != 3 {
 		t.Errorf("first polls = %v, want max capacity 3 from Attach", polls)
 	}
-	c := e.sched.client(row.ID)
+	c := e.sched.last
 	c.SetMaxRunners(5)
 	eventually(t, "new max capacity", func() bool { p := f.state().polls; return p[len(p)-1] == 5 })
 
 	jit, err := c.GenerateJITConfig(ctx, "runplane-01xyz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if jit != (scheduler.JITConfig{Encoded: "jit-runplane-01xyz", RunnerID: 9001, RunnerName: "runplane-01xyz"}) {
-		t.Errorf("JIT config = %+v", jit)
+	if err != nil || jit != (scheduler.JITConfig{Encoded: "jit-runplane-01xyz-_work", RunnerID: 9001, RunnerName: "runplane-01xyz"}) {
+		t.Errorf("JIT config = %+v, %v", jit, err)
 	}
 	runners, err := c.ListRunners(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []scheduler.Runner{{ID: 50, Name: "runplane-01aaa"}, {ID: 51, Name: "runplane-01bbb", Busy: true}}
-	if !slices.Equal(runners, want) {
-		t.Errorf("runners = %+v, want %+v", runners, want)
+	want := []scheduler.Runner{{ID: 50, Name: "runplane-01aaa"}, {ID: 51, Name: "Runplane-01bbb", Busy: true}}
+	if err != nil || !slices.Equal(runners, want) {
+		t.Errorf("runners = %+v, %v; want %+v", runners, err, want)
 	}
 
 	// Again with nothing changed: no second scale set or session.
@@ -180,11 +161,14 @@ func TestScaleSetListens(t *testing.T) {
 func TestScaleSetFollowsPool(t *testing.T) {
 	e, f, row := listeningEnv(t)
 	ctx := context.Background()
+	setPool := func(label string, enabled bool) {
+		pool, _ := e.st.GetPool(ctx, "p1")
+		pool.Label, pool.Enabled = label, enabled
+		e.st.UpdatePool(ctx, pool)
+		e.svc.reconcileNow(ctx)
+	}
 
-	pool, _ := e.st.GetPool(ctx, "p1")
-	pool.Label = "runplane-new"
-	e.st.UpdatePool(ctx, pool)
-	e.svc.reconcileNow(ctx)
+	setPool("runplane-new", true)
 	st := f.state()
 	if set := st.sets[int(row.GitHubID)]; len(st.sets) != 1 || set.Name != "runplane-new" || set.Labels[0].Name != "runplane-new" {
 		t.Errorf("after the label change: scale sets = %+v, want the same one renamed", st.sets)
@@ -193,21 +177,14 @@ func TestScaleSetFollowsPool(t *testing.T) {
 		t.Errorf("row name = %q", got.Name)
 	}
 
-	pool.Label = "runplane"
-	e.st.UpdatePool(ctx, pool)
-	e.svc.reconcileNow(ctx)
-	pool.Enabled = false
-	e.st.UpdatePool(ctx, pool)
-	e.svc.reconcileNow(ctx)
+	setPool("runplane", true)
+	setPool("runplane", false)
 	if _, err := e.st.GetScaleSet(ctx, row.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the row of a disabled pool is still there: %v", err)
 	}
 	st = f.state()
-	if len(st.sets) != 0 || !slices.Equal(st.deletedSets, []int{int(row.GitHubID)}) {
-		t.Errorf("scale sets on GitHub = %+v, deleted = %v", st.sets, st.deletedSets)
-	}
-	if len(st.sessions) != 0 || st.closed != 1 {
-		t.Errorf("open sessions = %v, closed = %d; want the session closed", st.sessions, st.closed)
+	if len(st.sets) != 0 || !slices.Equal(st.deleted, []int{int(row.GitHubID)}) || st.sessions != 0 || st.closed != 1 {
+		t.Errorf("on GitHub: scale sets = %+v, deleted = %v, open sessions = %d, closed = %d", st.sets, st.deleted, st.sessions, st.closed)
 	}
 	// Only the idle runner of this scale set; the busy one keeps its job.
 	if !slices.Equal(st.removed, []int64{50}) {
@@ -219,19 +196,16 @@ func TestScaleSetFollowsPool(t *testing.T) {
 }
 
 func TestScaleSetFindsExistingByName(t *testing.T) {
-	e := newEnv(t)
-	e.connect()
-	e.installOrg(10, "acme")
+	e := acmeEnv(t)
 	e.pool("p1", "runplane", true)
 	f := e.actions()
 	// An earlier start made the scale set but stopped before it saved the ID.
-	f.sets[30] = scaleSetSpec("runplane", 1)
-	f.sets[30].ID = 30
-	f.scopes[30] = "acme"
+	set := *scaleSetSpec("runplane", 1)
+	set.ID = 30
+	f.sets[30], f.scopes[30] = set, "acme"
 
 	e.svc.reconcileNow(context.Background())
-	row := waitListening(t, e)
-	if row.GitHubID != 30 || len(f.state().sets) != 1 {
+	if row := waitStatus(t, e, store.ScaleSetListening); row.GitHubID != 30 || len(f.state().sets) != 1 {
 		t.Errorf("github_id = %d, scale sets = %d; want the existing scale set 30", row.GitHubID, len(f.state().sets))
 	}
 }
@@ -240,8 +214,8 @@ func TestScaleSetMadeAgainWhenGoneOnGitHub(t *testing.T) {
 	e, f, row := listeningEnv(t)
 	f.mu.Lock()
 	delete(f.sets, int(row.GitHubID))
-	f.queue <- "not json" // ends the current poll with an error
 	f.mu.Unlock()
+	f.queue <- "not json" // ends the current poll with an error
 
 	var got store.ScaleSet
 	eventually(t, "new scale set", func() bool {
@@ -253,39 +227,31 @@ func TestScaleSetMadeAgainWhenGoneOnGitHub(t *testing.T) {
 	}
 }
 
-// GitHub can revoke the Actions token of a client before it expires. The
-// listener then needs a new client, or it fails until the token expires.
-func TestListenerRenewsRevokedToken(t *testing.T) {
-	e := newEnv(t)
-	e.connect()
-	e.installOrg(10, "acme")
-	e.pool("p1", "runplane", true)
-	f := e.actions()
-	f.revokeNext = true
-
-	e.svc.reconcileNow(context.Background())
-	eventually(t, "listening with a new token", func() bool {
-		list, _ := e.st.ListScaleSets(context.Background())
-		return len(list) == 1 && list[0].Status == store.ScaleSetListening
-	})
-}
-
-func TestSessionConflictIsClearError(t *testing.T) {
-	e := newEnv(t)
-	e.connect()
-	e.installOrg(10, "acme")
-	e.pool("p1", "runplane", true)
-	f := e.actions()
-	f.conflict = true
-
-	e.svc.reconcileNow(context.Background())
-	eventually(t, "error status", func() bool {
-		list, _ := e.st.ListScaleSets(context.Background())
-		return len(list) == 1 && list[0].Status == store.ScaleSetError
-	})
-	list, _ := e.st.ListScaleSets(context.Background())
-	if msg := list[0].Error; !strings.Contains(msg, "another listener has the session") || !strings.Contains(msg, "runplane in acme") {
-		t.Errorf("error = %q, want the session conflict explained", msg)
+func TestListenerErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		conflict   bool
+		revokeNext bool
+		wantStatus string
+		wantError  string
+	}{
+		// GitHub can revoke the Actions token of a client before it expires.
+		// The listener then needs a new client, or it fails until the token
+		// expires.
+		{"listener renews a revoked token", false, true, store.ScaleSetListening, ""},
+		{"session conflict", true, false, store.ScaleSetError, "another listener has the session of scale set runplane in acme"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := acmeEnv(t)
+			e.pool("p1", "runplane", true)
+			f := e.actions()
+			f.conflict, f.revokeNext = tt.conflict, tt.revokeNext
+			e.svc.reconcileNow(context.Background())
+			if row := waitStatus(t, e, tt.wantStatus); !strings.Contains(row.Error, tt.wantError) {
+				t.Errorf("error = %q, want %q", row.Error, tt.wantError)
+			}
+		})
 	}
 }
 
@@ -293,54 +259,40 @@ func TestSuspendedInstallationPausesListener(t *testing.T) {
 	e, f, row := listeningEnv(t)
 	ctx := context.Background()
 	suspend := func(at *time.Time) {
-		t.Helper()
-		inst, err := e.st.GetInstallation(ctx, 10)
-		if err != nil {
-			t.Fatal(err)
-		}
+		inst, _ := e.st.GetInstallation(ctx, 10)
 		inst.SuspendedAt = at
-		if err := e.st.UpsertInstallation(ctx, inst); err != nil {
-			t.Fatal(err)
-		}
+		e.st.UpsertInstallation(ctx, inst)
+		e.svc.reconcileNow(ctx)
 	}
 	now := time.Now()
 	suspend(&now)
-	e.svc.reconcileNow(ctx)
-
 	got, err := e.st.GetScaleSet(ctx, row.ID)
-	if err != nil {
-		t.Fatalf("the row of a suspended installation is gone: %v", err)
+	if err != nil || got.Status != store.ScaleSetError || !strings.Contains(got.Error, "suspended") {
+		t.Errorf("scale set = %s %q, %v; want an error about the suspension", got.Status, got.Error, err)
 	}
-	if got.Status != store.ScaleSetError || !strings.Contains(got.Error, "suspended") {
-		t.Errorf("status = %s %q", got.Status, got.Error)
-	}
-	if st := f.state(); len(st.sessions) != 0 || len(st.sets) != 1 {
-		t.Errorf("sessions = %v, scale sets = %d; want the session closed and the scale set kept", st.sessions, len(st.sets))
+	if st := f.state(); st.sessions != 0 || len(st.sets) != 1 {
+		t.Errorf("sessions = %d, scale sets = %d; want the session closed and the scale set kept", st.sessions, len(st.sets))
 	}
 
 	suspend(nil)
-	e.svc.reconcileNow(ctx)
-	if again := waitListening(t, e); again.GitHubID != row.GitHubID {
+	if again := waitStatus(t, e, store.ScaleSetListening); again.GitHubID != row.GitHubID {
 		t.Errorf("github_id = %d after the suspension, want %d", again.GitHubID, row.GitHubID)
 	}
 }
 
 func TestRemoveRunner(t *testing.T) {
-	e := newEnv(t)
-	e.connect()
-	e.installOrg(10, "acme")
+	e := acmeEnv(t)
 	f := e.actions()
 	f.agents[60], f.agents[61], f.agents[63] = "busy", "gone", "broken"
 	inst, _ := e.st.GetInstallation(context.Background(), 10)
-	cl, err := e.svc.scalesetClient(context.Background(), target{pool: store.Pool{Label: "runplane"}, inst: inst})
+	cl, err := e.svc.scalesetClient(context.Background(), target{inst: inst})
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &setListener{s: e.svc, cl: cl}
+	l := &setListener{cl: cl}
 	tests := []struct {
-		id       int64
-		wantErr  bool
-		wantBusy bool
+		id                int64
+		wantErr, wantBusy bool
 	}{
 		{60, true, true},
 		{61, false, false},
@@ -351,31 +303,6 @@ func TestRemoveRunner(t *testing.T) {
 		err := l.RemoveRunner(context.Background(), tt.id)
 		if (err != nil) != tt.wantErr || errors.Is(err, scheduler.ErrRunnerBusy) != tt.wantBusy {
 			t.Errorf("RemoveRunner(%d) = %v; want error %v, busy %v", tt.id, err, tt.wantErr, tt.wantBusy)
-		}
-	}
-}
-
-func TestInScaleSet(t *testing.T) {
-	r := func(name string, labels ...string) runner {
-		x := runner{Name: name}
-		for _, l := range labels {
-			x.Labels = append(x.Labels, runnerLabel{Name: l})
-		}
-		return x
-	}
-	tests := []struct {
-		r    runner
-		want bool
-	}{
-		{r("runplane-01abc", "runplane"), true},
-		{r("Runplane-01abc", "RUNPLANE"), true},
-		{r("runplane-4cpu-01abc", "runplane-4cpu"), false}, // a pool whose label starts the same
-		{r("laptop", "runplane"), false},
-		{r("runplane-01abc", "other"), false},
-	}
-	for _, tt := range tests {
-		if got := inScaleSet(tt.r, "runplane"); got != tt.want {
-			t.Errorf("inScaleSet(%+v) = %v, want %v", tt.r, got, tt.want)
 		}
 	}
 }

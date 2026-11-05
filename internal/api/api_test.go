@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -37,14 +38,10 @@ func newEnv(t *testing.T, with ...func(*Deps)) *env {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "runplane.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	t.Cleanup(func() { st.Close() })
 	box, err := secret.NewBox(bytes.Repeat([]byte{7}, secret.KeySize))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	d := Deps{
 		Store: st, Auth: auth.NewService(st, []byte("device key")), Bus: &events.Bus{}, Box: box,
 		Config: config.Config{DataDir: dir, ConfigDir: dir, Mode: sandbox.ModeContainer},
@@ -61,19 +58,28 @@ func newEnv(t *testing.T, with ...func(*Deps)) *env {
 	return &env{t: t, srv: srv, st: st, d: d}
 }
 
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // browser is an HTTP client with a cookie jar, like the dashboard.
 type browser struct {
 	e      *env
 	client *http.Client
-	header http.Header // sent with each request
+	header http.Header // sent with each request; has the CSRF header
 }
 
 func (e *env) browser() *browser {
 	jar, _ := cookiejar.New(nil)
-	return &browser{e: e, client: &http.Client{
+	b := &browser{e: e, header: http.Header{}, client: &http.Client{
 		Jar:           jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}, header: http.Header{}}
+	}}
+	b.header.Set("X-Runplane-CSRF", "1")
+	return b
 }
 
 type response struct {
@@ -81,47 +87,30 @@ type response struct {
 	body []byte
 }
 
-// do sends a request with the CSRF header and decodes a JSON body into out.
+// do sends a request and decodes the JSON body of a success into out.
 func (b *browser) do(method, path string, body any, out any) response {
-	b.e.t.Helper()
-	return b.send(method, path, body, out, true)
-}
-
-func (b *browser) send(method, path string, body any, out any, csrf bool) response {
-	b.e.t.Helper()
+	t := b.e.t
+	t.Helper()
 	var rd io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
-		if err != nil {
-			b.e.t.Fatal(err)
-		}
+		must(t, err)
 		rd = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequest(method, b.e.srv.URL+path, rd)
-	if err != nil {
-		b.e.t.Fatal(err)
-	}
-	for k, v := range b.header {
-		req.Header[k] = v
-	}
+	must(t, err)
+	maps.Copy(req.Header, b.header)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if csrf {
-		req.Header.Set("X-Runplane-CSRF", "1")
-	}
 	res, err := b.client.Do(req)
-	if err != nil {
-		b.e.t.Fatal(err)
-	}
+	must(t, err)
 	defer res.Body.Close()
 	raw, err := io.ReadAll(res.Body)
-	if err != nil {
-		b.e.t.Fatal(err)
-	}
+	must(t, err)
 	if out != nil && res.StatusCode < 300 {
 		if err := json.Unmarshal(raw, out); err != nil {
-			b.e.t.Fatalf("%s %s: decode %s: %v", method, path, raw, err)
+			t.Fatalf("%s %s: decode %s: %v", method, path, raw, err)
 		}
 	}
 	return response{res, raw}
@@ -134,43 +123,91 @@ func (r response) want(t *testing.T, status int) {
 	}
 }
 
-// problem is the RFC 9457 body of an error.
-type problem struct {
-	Status int    `json:"status"`
-	Detail string `json:"detail"`
-	Errors []struct {
-		Location string `json:"location"`
-		Message  string `json:"message"`
-	} `json:"errors"`
-}
-
-func (r response) problem(t *testing.T) problem {
+// wantField checks that the response is a problem with status and one field
+// error, at loc.
+func (r response) wantField(t *testing.T, status int, loc string) {
 	t.Helper()
-	var p problem
-	if err := json.Unmarshal(r.body, &p); err != nil {
-		t.Fatalf("decode problem %s: %v", r.body, err)
+	r.want(t, status)
+	var p struct {
+		Errors []struct{ Location string } `json:"errors"`
 	}
-	return p
+	must(t, json.Unmarshal(r.body, &p))
+	if len(p.Errors) != 1 || p.Errors[0].Location != loc {
+		t.Fatalf("%s %s: errors %+v, want one at %s", r.Request.Method, r.Request.URL.Path, p.Errors, loc)
+	}
 }
 
-func (p problem) locations() []string {
-	var locs []string
-	for _, e := range p.Errors {
-		locs = append(locs, e.Location)
+type sseEvent struct{ name, data string }
+
+// events opens the SSE stream of b and sends its events to the channel.
+func (b *browser) events(t *testing.T) <-chan sseEvent {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, _ := http.NewRequestWithContext(ctx, "GET", b.e.srv.URL+"/api/events", nil)
+	res, err := b.client.Do(req)
+	must(t, err)
+	if res.StatusCode != 200 {
+		t.Fatalf("events: status %d", res.StatusCode)
 	}
-	return locs
+	ch := make(chan sseEvent, 64)
+	go func() {
+		defer res.Body.Close()
+		r := bufio.NewReader(res.Body)
+		var name string
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line = strings.TrimRight(line, "\n")
+			if v, ok := strings.CutPrefix(line, "event: "); ok {
+				name = v
+			} else if v, ok := strings.CutPrefix(line, "data: "); ok {
+				ch <- sseEvent{name, v}
+			}
+		}
+	}()
+	return ch
 }
 
-// addUser makes a user directly in the store.
+// publish sends the events again each 20 ms until the test ends, because a
+// stream subscribes to the bus only after it sent its headers.
+func (e *env) publish(evs ...events.Event) {
+	stop := make(chan struct{})
+	e.t.Cleanup(func() { close(stop) })
+	go func() {
+		for {
+			for _, ev := range evs {
+				e.d.Bus.Publish(ev)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+}
+
+// recv fails the test if ch gets no value in 5 seconds.
+func recv[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatal("no value in 5 seconds")
+		panic("unreachable")
+	}
+}
+
 func (e *env) addUser(email, role string) {
 	e.t.Helper()
-	err := e.st.CreateUser(context.Background(), store.User{
+	must(e.t, e.st.CreateUser(context.Background(), store.User{
 		ID: ids.New(), Email: email, Name: email, PasswordHash: auth.HashPassword("correct horse battery"),
 		Role: role, CreatedAt: time.Now(),
-	})
-	if err != nil {
-		e.t.Fatal(err)
-	}
+	}))
 }
 
 // login returns a browser with a session of a new user with role.
@@ -182,12 +219,38 @@ func (e *env) login(email, role string) *browser {
 	return b
 }
 
+// addJob records a queued job of repo.
+func (e *env) addJob(requestID int64, repo string, queued time.Time) store.Job {
+	e.t.Helper()
+	j, err := e.st.UpsertJob(context.Background(), store.JobMessage{
+		RunnerRequestID: requestID, State: store.JobQueued, Repository: repo, JobName: fmt.Sprint("job ", requestID),
+		WorkflowRef: repo + "/.github/workflows/ci.yml@refs/heads/main", QueuedAt: queued,
+	})
+	must(e.t, err)
+	return j
+}
+
+func (e *env) addServer(id, arch, status string, vcpu, memoryMB int) {
+	e.t.Helper()
+	now := time.Now()
+	must(e.t, e.st.CreateServer(context.Background(), store.Server{
+		ID: id, Name: id, Kind: store.ServerAgent, Status: status, CreatedAt: now, UpdatedAt: now,
+		ServerFacts: store.ServerFacts{Arch: arch, VCPU: vcpu, MemoryMB: memoryMB, Mode: sandbox.ModeContainer},
+	}))
+}
+
+func (e *env) addSandbox(id string, state sandbox.State) {
+	e.t.Helper()
+	must(e.t, e.st.InsertSandbox(context.Background(), store.Sandbox{
+		ID: id, PoolID: "p", ServerID: "s", Mode: sandbox.ModeContainer, State: state, VCPU: 2, MemoryMB: 4096,
+		CreatedAt: time.Now(),
+	}))
+}
+
 func TestSetupMakesAdminWithSession(t *testing.T) {
 	e := newEnv(t)
 	code, err := e.d.Auth.NewSetupCode(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	b := e.browser()
 
 	var status Status
@@ -196,18 +259,11 @@ func TestSetupMakesAdminWithSession(t *testing.T) {
 		t.Fatalf("status before setup = %+v, want needs_setup and mode container", status)
 	}
 
-	bad := b.do("POST", "/api/setup", map[string]string{
-		"code": "AAAA-BBBB-CCCC", "name": "Ada", "email": "ada@example.com", "password": "long enough password",
-	}, nil)
-	bad.want(t, 422)
-	if locs := bad.problem(t).locations(); len(locs) != 1 || locs[0] != "body.code" {
-		t.Fatalf("wrong code: error locations %v, want [body.code]", locs)
-	}
-
+	setup := map[string]string{"code": "AAAA-BBBB-CCCC", "name": "Ada", "email": "ada@example.com", "password": "long enough password"}
+	b.do("POST", "/api/setup", setup, nil).wantField(t, 422, "body.code")
+	setup["code"] = code
 	var u User
-	res := b.do("POST", "/api/setup", map[string]string{
-		"code": code, "name": "Ada", "email": "ada@example.com", "password": "long enough password",
-	}, &u)
+	res := b.do("POST", "/api/setup", setup, &u)
 	res.want(t, 200)
 	if u.Role != "admin" || u.Email != "ada@example.com" {
 		t.Fatalf("setup user = %+v, want admin ada@example.com", u)
@@ -256,9 +312,7 @@ func TestSessionCookieSecureBehindHTTPSProxy(t *testing.T) {
 func TestSetupHostChecksTheCode(t *testing.T) {
 	e := newEnv(t)
 	code, err := e.d.Auth.NewSetupCode(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	b := e.browser()
 	b.do("GET", "/api/setup/host?code=AAAA-BBBB-CCCC", nil, nil).want(t, 422)
 	// The code passes without dashes and in lowercase, as it does for setup.
@@ -272,15 +326,18 @@ func TestMutationNeedsCSRFHeader(t *testing.T) {
 	b := e.browser()
 	creds := map[string]string{"email": "ada@example.com", "password": "correct horse battery"}
 
-	res := b.send("POST", "/api/session", creds, nil, false)
+	b.header.Del("X-Runplane-CSRF")
+	res := b.do("POST", "/api/session", creds, nil)
 	res.want(t, 403)
 	if res.Header.Get("Set-Cookie") != "" {
 		t.Fatal("a login without the CSRF header made a session")
 	}
+	b.header.Set("X-Runplane-CSRF", "1")
 	b.do("POST", "/api/session", creds, nil).want(t, 200)
-	b.send("DELETE", "/api/session", nil, nil, false).want(t, 403)
+	b.header.Del("X-Runplane-CSRF")
+	b.do("DELETE", "/api/session", nil, nil).want(t, 403)
 	b.do("GET", "/api/session", nil, nil).want(t, 200) // still logged in
-	b.send("GET", "/api/pools", nil, nil, false).want(t, 200)
+	b.do("GET", "/api/pools", nil, nil).want(t, 200)
 }
 
 func TestRoles(t *testing.T) {
@@ -334,302 +391,15 @@ func TestLoginRateLimitUsesClientIP(t *testing.T) {
 	other.do("POST", "/api/session", creds, nil).want(t, 200)
 }
 
-func TestJobsCursorPages(t *testing.T) {
-	e := newEnv(t)
-	b := e.login("ada@example.com", auth.RoleMember)
-	ctx := context.Background()
-	base := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
-	var want []string
-	for i := range 5 {
-		j, err := e.st.UpsertJob(ctx, store.JobMessage{
-			RunnerRequestID: int64(i + 1), State: store.JobQueued, Repository: "acme/api", JobName: fmt.Sprint("job ", i),
-			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", QueuedAt: base.Add(time.Duration(i) * time.Minute),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		want = append([]string{j.ID}, want...) // newest first
-	}
-
-	var got []string
-	cursor := ""
-	for range 4 {
-		var page JobPage
-		b.do("GET", "/api/jobs?limit=2&cursor="+cursor, nil, &page).want(t, 200)
-		for _, j := range page.Items {
-			got = append(got, j.ID)
-			if j.WorkflowFile != ".github/workflows/ci.yml" || j.State != "queued" || j.Result != nil {
-				t.Fatalf("job %+v: wrong workflow file, state, or result", j)
-			}
-		}
-		if page.NextCursor == "" {
-			break
-		}
-		cursor = page.NextCursor
-	}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("pages gave %v, want %v", got, want)
-	}
-	b.do("GET", "/api/jobs?cursor=bad!", nil, nil).want(t, 422)
-}
-
-func TestSettingsValidation(t *testing.T) {
-	e := newEnv(t)
-	b := e.login("ada@example.com", auth.RoleAdmin)
-
-	for _, tc := range []struct {
-		name  string
-		patch map[string]any
-		loc   string
-	}{
-		{"dns not ipv4", map[string]any{"dns_servers": []string{"1.1.1.1", "2606:4700::1111"}}, "body.dns_servers[1]"},
-		{"no dns", map[string]any{"dns_servers": []string{}}, "body.dns_servers"},
-		{"url with path", map[string]any{"public_url": "https://ci.example.com/runplane"}, "body.public_url"},
-		{"url without scheme", map[string]any{"public_url": "ci.example.com"}, "body.public_url"},
-		{"domain is ip", map[string]any{"domain": "192.0.2.1"}, "body.domain"},
-		{"bad egress", map[string]any{"egress_allowlist": []string{"github.com", "not a host"}}, "body.egress_allowlist[1]"},
-		{"overcommit too high", map[string]any{"cpu_overcommit": 20}, "body.cpu_overcommit"},
-		{"zero time limit", map[string]any{"default_time_limit_minutes": 0}, "body.default_time_limit_minutes"},
-		{"public repos in container mode", map[string]any{"allow_public_repos": true}, "body.allow_public_repos"},
-		{"dev mode without insecure flag", map[string]any{"mode": "dev"}, "body.mode"},
-		{"bucket without secret", map[string]any{"backup_s3": map[string]any{"bucket": "backups", "access_key": "AK"}}, "body.backup_s3.secret_key"},
-		{"unknown key", map[string]any{"instance_nam": "typo"}, "body.instance_nam"},
-	} {
-		res := b.do("PATCH", "/api/settings", tc.patch, nil)
-		if res.StatusCode != 422 {
-			t.Errorf("%s: status %d, want 422: %s", tc.name, res.StatusCode, res.body)
-			continue
-		}
-		if locs := res.problem(t).locations(); !slices.Contains(locs, tc.loc) {
-			t.Errorf("%s: error locations %v, want %s", tc.name, locs, tc.loc)
-		}
-	}
-	st, err := e.st.GetSettings(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.CPUOvercommit != 1 || len(st.DNSServers) != 2 || st.AllowPublicRepos || st.BackupS3.Bucket != "" {
-		t.Fatalf("rejected patches changed the settings: %+v", st)
-	}
-
-	var out Settings
-	b.do("PATCH", "/api/settings", map[string]any{
-		"public_url": "https://ci.example.com/", "dns_servers": []string{" 9.9.9.9 "},
-		"backup_s3": map[string]any{"bucket": "backups", "access_key": "AK", "secret_key": "s3cret"},
-	}, &out).want(t, 200)
-	if out.PublicURL != "https://ci.example.com" || out.DNSServers[0] != "9.9.9.9" || !out.BackupS3.SecretKeySet {
-		t.Fatalf("settings after patch = %+v", out)
-	}
-	if res := b.do("GET", "/api/settings", nil, nil); bytes.Contains(res.body, []byte("s3cret")) {
-		t.Fatal("GET /api/settings shows the S3 secret key")
-	}
-	st, _ = e.st.GetSettings(context.Background())
-	if plain, err := e.d.Box.Open(st.BackupS3.SecretKeyEnc); err != nil || string(plain) != "s3cret" {
-		t.Fatalf("stored S3 secret opens to %q, %v; want s3cret", plain, err)
-	}
-}
-
-func TestPools(t *testing.T) {
-	e := newEnv(t)
-	b := e.login("ada@example.com", auth.RoleAdmin)
-	valid := func(changes map[string]any) map[string]any {
-		p := map[string]any{"label": "runplane", "vcpu": 2, "memory_mb": 8192, "disk_gb": 64, "min_idle": 1, "max_runners": 5}
-		for k, v := range changes {
-			p[k] = v
-		}
-		return p
-	}
-	for _, tc := range []struct {
-		name string
-		pool map[string]any
-		loc  string
-	}{
-		{"uppercase label", valid(map[string]any{"label": "Runplane"}), "body.label"},
-		{"label with dot", valid(map[string]any{"label": "run.plane"}), "body.label"},
-		{"no vcpu", valid(map[string]any{"vcpu": 0}), "body.vcpu"},
-		{"65 vcpu", valid(map[string]any{"vcpu": 65}), "body.vcpu"},
-		{"too little memory", valid(map[string]any{"memory_mb": 511}), "body.memory_mb"},
-		{"too much memory", valid(map[string]any{"memory_mb": 262145}), "body.memory_mb"},
-		{"small disk", valid(map[string]any{"disk_gb": 7}), "body.disk_gb"},
-		{"big disk", valid(map[string]any{"disk_gb": 1025}), "body.disk_gb"},
-		{"more idle than max", valid(map[string]any{"min_idle": 6}), "body.min_idle"},
-		{"unknown image", valid(map[string]any{"image_id": "nope"}), "body.image_id"},
-		{"unknown server", valid(map[string]any{"server_ids": []string{"nope"}}), "body.server_ids[0]"},
-	} {
-		res := b.do("POST", "/api/pools", tc.pool, nil)
-		if res.StatusCode != 422 {
-			t.Errorf("%s: status %d, want 422: %s", tc.name, res.StatusCode, res.body)
-			continue
-		}
-		if locs := res.problem(t).locations(); !slices.Contains(locs, tc.loc) {
-			t.Errorf("%s: error locations %v, want %s", tc.name, locs, tc.loc)
-		}
-	}
-
-	var p Pool
-	b.do("POST", "/api/pools", valid(nil), &p).want(t, 200)
-	if p.Name != "runplane" || !p.Enabled || p.Arch == "" {
-		t.Fatalf("new pool = %+v, want name from label, enabled, and an arch", p)
-	}
-	dup := b.do("POST", "/api/pools", valid(map[string]any{"name": "other"}), nil)
-	dup.want(t, 409)
-	if locs := dup.problem(t).locations(); !slices.Contains(locs, "body.label") {
-		t.Fatalf("duplicate label: locations %v", locs)
-	}
-
-	var changed Pool
-	b.do("PATCH", "/api/pools/"+p.ID, map[string]any{"max_runners": 3}, &changed).want(t, 200)
-	if changed.MaxRunners != 3 || changed.MinIdle != 1 || changed.VCPU != 2 {
-		t.Fatalf("patched pool = %+v, want max_runners 3 and the other fields kept", changed)
-	}
-	b.do("PATCH", "/api/pools/"+p.ID, map[string]any{"max_runners": 0}, nil).want(t, 422)
-	b.do("PATCH", "/api/pools/"+p.ID, map[string]any{"min_idle": 4}, nil).want(t, 422)
-
-	// A live sandbox shows in the counts of its pool.
-	err := e.st.InsertSandbox(context.Background(), store.Sandbox{
-		ID: ids.New(), PoolID: p.ID, ServerID: "s1", Mode: sandbox.ModeContainer, State: sandbox.StateIdle,
-		VCPU: 2, MemoryMB: 8192, CreatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var list []Pool
-	b.do("GET", "/api/pools", nil, &list).want(t, 200)
-	if len(list) != 1 || list[0].Idle != 1 || list[0].Busy != 0 {
-		t.Fatalf("pools = %+v, want one pool with 1 idle sandbox", list)
-	}
-
-	b.do("DELETE", "/api/pools/"+p.ID, nil, nil).want(t, 204)
-	b.do("GET", "/api/pools/"+p.ID, nil, nil).want(t, 404)
-
-	var page AuditPage
-	b.do("GET", "/api/audit", nil, &page).want(t, 200)
-	var actions []string
-	for _, a := range page.Items {
-		actions = append(actions, a.Action+" "+a.UserEmail)
-	}
-	if strings.Join(actions, ",") != "pool.delete ada@example.com,pool.update ada@example.com,pool.create ada@example.com" {
-		t.Fatalf("audit log = %v", actions)
-	}
-}
-
-func TestNotificationURLIsSealedAndMasked(t *testing.T) {
-	e := newEnv(t)
-	b := e.login("ada@example.com", auth.RoleAdmin)
-	secretURL := "https://hooks.slack.com/services/T000/B000/XXXXsecretXXXXa1b2"
-
-	b.do("POST", "/api/notifications", map[string]any{
-		"name": "ops", "kind": "slack", "url": "http://hooks.slack.com/x", "events": []string{"job.failed"},
-	}, nil).want(t, 422)
-
-	var c NotificationChannel
-	res := b.do("POST", "/api/notifications", map[string]any{
-		"name": "ops", "kind": "slack", "url": secretURL, "events": []string{"job.failed", "job.failed"},
-	}, &c)
-	res.want(t, 200)
-	if bytes.Contains(res.body, []byte("secret")) || c.URL != "https://hooks.slack.com/…a1b2" {
-		t.Fatalf("channel URL in response = %q", c.URL)
-	}
-	if len(c.Events) != 1 {
-		t.Fatalf("events = %v, want one job.failed", c.Events)
-	}
-	stored, err := e.st.GetNotificationChannel(context.Background(), c.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(stored.URLEnc, []byte("hooks.slack.com")) {
-		t.Fatal("the database has the URL in plain text")
-	}
-	if plain, err := e.d.Box.Open(stored.URLEnc); err != nil || string(plain) != secretURL {
-		t.Fatalf("sealed URL opens to %q, %v", plain, err)
-	}
-
-	// A change of the kind checks the kept URL against the new kind.
-	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"kind": "webhook", "url": "http://10.0.0.2/hook"}, nil).want(t, 200)
-	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"kind": "discord"}, nil).want(t, 422)
-}
-
-func TestEventsStreamConvertsStoreModels(t *testing.T) {
-	e := newEnv(t)
-	b := e.login("ada@example.com", auth.RoleMember)
-	ctx := context.Background()
-	now := time.Now().UTC().Truncate(time.Millisecond)
-	pool := store.Pool{ID: ids.New(), Name: "Default", Label: "runplane", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 20, MaxRunners: 1, Enabled: true, CreatedAt: now, UpdatedAt: now}
-	if err := e.st.CreatePool(ctx, pool); err != nil {
-		t.Fatal(err)
-	}
-
-	req, _ := http.NewRequest("GET", e.srv.URL+"/api/events", nil)
-	res, err := b.client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/event-stream") {
-		t.Fatalf("events: status %d, type %q", res.StatusCode, res.Header.Get("Content-Type"))
-	}
-
-	// The handler subscribes after the headers, so publish until the event comes.
-	sb := store.Sandbox{ID: "sb1", PoolID: pool.ID, ServerID: "srv", State: sandbox.StateBusy, VCPU: 2, MemoryMB: 4096, CreatedAt: now}
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		for {
-			e.d.Bus.Publish(events.Event{Type: events.SettingsChanged, Data: store.Settings{}})
-			e.d.Bus.Publish(events.Event{Type: events.SandboxState, Data: &sb})
-			select {
-			case <-stop:
-				return
-			case <-time.After(20 * time.Millisecond):
-			}
-		}
-	}()
-
-	r := bufio.NewReader(res.Body)
-	deadline := time.AfterFunc(5*time.Second, func() { res.Body.Close() })
-	defer deadline.Stop()
-	var event string
-	for {
-		line, err := r.ReadString('\n')
-		if err != nil {
-			t.Fatalf("read stream: %v", err)
-		}
-		line = strings.TrimRight(line, "\n")
-		if name, ok := strings.CutPrefix(line, "event: "); ok {
-			event = name
-			continue
-		}
-		data, ok := strings.CutPrefix(line, "data: ")
-		if !ok {
-			continue
-		}
-		if event != "sandbox.state" {
-			t.Fatalf("got event %q with %s; settings.changed must not reach the browser", event, data)
-		}
-		var got Sandbox
-		if err := json.Unmarshal([]byte(data), &got); err != nil {
-			t.Fatal(err)
-		}
-		if got.ID != "sb1" || got.PoolLabel != "runplane" || got.State != "busy" {
-			t.Fatalf("sandbox.state data = %+v, want sb1 busy in pool runplane", got)
-		}
-		return
-	}
-}
-
 func TestPasswordChangeEndsOtherSessions(t *testing.T) {
 	e := newEnv(t)
 	laptop := e.login("ada@example.com", auth.RoleMember)
 	phone := e.browser()
 	phone.do("POST", "/api/session", map[string]string{"email": "ada@example.com", "password": "correct horse battery"}, nil).want(t, 200)
 
-	wrong := laptop.do("PATCH", "/api/me", map[string]string{
+	laptop.do("PATCH", "/api/me", map[string]string{
 		"name": "Ada L", "current_password": "wrong password", "new_password": "a new long password",
-	}, nil)
-	wrong.want(t, 422)
-	if locs := wrong.problem(t).locations(); !slices.Contains(locs, "body.current_password") {
-		t.Fatalf("wrong current password: locations %v", locs)
-	}
+	}, nil).wantField(t, 422, "body.current_password")
 	var me User
 	laptop.do("GET", "/api/session", nil, &me).want(t, 200)
 	if me.Name != "ada@example.com" {
@@ -670,4 +440,171 @@ func TestLockedEmailKeepsKnownBrowsers(t *testing.T) {
 	laptop.do("GET", "/api/session", nil, nil).want(t, 401)
 	laptop.do("POST", "/api/session", map[string]string{"email": "ada@example.com", "password": "a new long password"}, nil).want(t, 200)
 	e.browser().do("POST", "/api/session", map[string]string{"email": "ada@example.com", "password": "a new long password"}, nil).want(t, 429)
+}
+
+func TestSettingsValidation(t *testing.T) {
+	e := newEnv(t)
+	b := e.login("ada@example.com", auth.RoleAdmin)
+
+	for _, tc := range []struct {
+		patch map[string]any
+		loc   string
+	}{
+		{map[string]any{"dns_servers": []string{"1.1.1.1", "2606:4700::1111"}}, "body.dns_servers[1]"},
+		{map[string]any{"dns_servers": []string{}}, "body.dns_servers"},
+		{map[string]any{"public_url": "https://ci.example.com/runplane"}, "body.public_url"},
+		{map[string]any{"public_url": "ci.example.com"}, "body.public_url"},
+		{map[string]any{"domain": "192.0.2.1"}, "body.domain"},
+		{map[string]any{"egress_allowlist": []string{"github.com", "not a host"}}, "body.egress_allowlist[1]"},
+		{map[string]any{"cpu_overcommit": 20}, "body.cpu_overcommit"},
+		{map[string]any{"default_time_limit_minutes": 0}, "body.default_time_limit_minutes"},
+		{map[string]any{"allow_public_repos": true}, "body.allow_public_repos"},
+		{map[string]any{"mode": "dev"}, "body.mode"},
+		{map[string]any{"backup_s3": map[string]any{"bucket": "backups", "access_key": "AK"}}, "body.backup_s3.secret_key"},
+		{map[string]any{"instance_nam": "typo"}, "body.instance_nam"},
+	} {
+		b.do("PATCH", "/api/settings", tc.patch, nil).wantField(t, 422, tc.loc)
+	}
+	st, err := e.st.GetSettings(context.Background())
+	must(t, err)
+	if st.CPUOvercommit != 1 || len(st.DNSServers) != 2 || st.AllowPublicRepos || st.BackupS3.Bucket != "" {
+		t.Fatalf("rejected patches changed the settings: %+v", st)
+	}
+
+	var out Settings
+	b.do("PATCH", "/api/settings", map[string]any{
+		"public_url": "https://ci.example.com/", "dns_servers": []string{" 9.9.9.9 "},
+		"backup_s3": map[string]any{"bucket": "backups", "access_key": "AK", "secret_key": "s3cret"},
+	}, &out).want(t, 200)
+	if out.PublicURL != "https://ci.example.com" || out.DNSServers[0] != "9.9.9.9" || !out.BackupS3.SecretKeySet {
+		t.Fatalf("settings after patch = %+v", out)
+	}
+	if res := b.do("GET", "/api/settings", nil, nil); bytes.Contains(res.body, []byte("s3cret")) {
+		t.Fatal("GET /api/settings shows the S3 secret key")
+	}
+	st, _ = e.st.GetSettings(context.Background())
+	if plain, err := e.d.Box.Open(st.BackupS3.SecretKeyEnc); err != nil || string(plain) != "s3cret" {
+		t.Fatalf("stored S3 secret opens to %q, %v; want s3cret", plain, err)
+	}
+}
+
+func TestPools(t *testing.T) {
+	e := newEnv(t)
+	b := e.login("ada@example.com", auth.RoleAdmin)
+	valid := func(changes map[string]any) map[string]any {
+		p := map[string]any{"label": "runplane", "vcpu": 2, "memory_mb": 8192, "disk_gb": 64, "min_idle": 1, "max_runners": 5}
+		maps.Copy(p, changes)
+		return p
+	}
+	for _, tc := range []struct {
+		pool map[string]any
+		loc  string
+	}{
+		{valid(map[string]any{"label": "Runplane"}), "body.label"},
+		{valid(map[string]any{"label": "run.plane"}), "body.label"},
+		{valid(map[string]any{"vcpu": 0}), "body.vcpu"},
+		{valid(map[string]any{"vcpu": 65}), "body.vcpu"},
+		{valid(map[string]any{"memory_mb": 511}), "body.memory_mb"},
+		{valid(map[string]any{"memory_mb": 262145}), "body.memory_mb"},
+		{valid(map[string]any{"disk_gb": 7}), "body.disk_gb"},
+		{valid(map[string]any{"disk_gb": 1025}), "body.disk_gb"},
+		{valid(map[string]any{"min_idle": 6}), "body.min_idle"},
+		{valid(map[string]any{"image_id": "nope"}), "body.image_id"},
+		{valid(map[string]any{"server_ids": []string{"nope"}}), "body.server_ids[0]"},
+	} {
+		b.do("POST", "/api/pools", tc.pool, nil).wantField(t, 422, tc.loc)
+	}
+
+	var p Pool
+	b.do("POST", "/api/pools", valid(nil), &p).want(t, 200)
+	if p.Name != "runplane" || !p.Enabled || p.Arch == "" {
+		t.Fatalf("new pool = %+v, want name from label, enabled, and an arch", p)
+	}
+	b.do("POST", "/api/pools", valid(map[string]any{"name": "other"}), nil).wantField(t, 409, "body.label")
+
+	var changed Pool
+	b.do("PATCH", "/api/pools/"+p.ID, map[string]any{"max_runners": 3}, &changed).want(t, 200)
+	if changed.MaxRunners != 3 || changed.MinIdle != 1 || changed.VCPU != 2 {
+		t.Fatalf("patched pool = %+v, want max_runners 3 and the other fields kept", changed)
+	}
+	b.do("PATCH", "/api/pools/"+p.ID, map[string]any{"max_runners": 0}, nil).want(t, 422)
+	b.do("PATCH", "/api/pools/"+p.ID, map[string]any{"min_idle": 4}, nil).want(t, 422)
+
+	// A live sandbox shows in the counts of its pool.
+	must(t, e.st.InsertSandbox(context.Background(), store.Sandbox{
+		ID: ids.New(), PoolID: p.ID, ServerID: "s1", Mode: sandbox.ModeContainer, State: sandbox.StateIdle,
+		VCPU: 2, MemoryMB: 8192, CreatedAt: time.Now(),
+	}))
+	var list []Pool
+	b.do("GET", "/api/pools", nil, &list).want(t, 200)
+	if len(list) != 1 || list[0].Idle != 1 || list[0].Busy != 0 {
+		t.Fatalf("pools = %+v, want one pool with 1 idle sandbox", list)
+	}
+
+	b.do("DELETE", "/api/pools/"+p.ID, nil, nil).want(t, 204)
+	b.do("GET", "/api/pools/"+p.ID, nil, nil).want(t, 404)
+
+	var page AuditPage
+	b.do("GET", "/api/audit", nil, &page).want(t, 200)
+	var actions []string
+	for _, a := range page.Items {
+		actions = append(actions, a.Action+" "+a.UserEmail)
+	}
+	if want := []string{"pool.delete ada@example.com", "pool.update ada@example.com", "pool.create ada@example.com"}; !slices.Equal(actions, want) {
+		t.Fatalf("audit log = %v, want %v", actions, want)
+	}
+}
+
+func TestNotificationURLIsSealedAndMasked(t *testing.T) {
+	e := newEnv(t)
+	b := e.login("ada@example.com", auth.RoleAdmin)
+	secretURL := "https://hooks.slack.com/services/T000/B000/XXXXsecretXXXXa1b2"
+
+	b.do("POST", "/api/notifications", map[string]any{
+		"name": "ops", "kind": "slack", "url": "http://hooks.slack.com/x", "events": []string{"job.failed"},
+	}, nil).want(t, 422)
+
+	var c NotificationChannel
+	res := b.do("POST", "/api/notifications", map[string]any{
+		"name": "ops", "kind": "slack", "url": secretURL, "events": []string{"job.failed", "job.failed"},
+	}, &c)
+	res.want(t, 200)
+	if bytes.Contains(res.body, []byte("secret")) || c.URL != "https://hooks.slack.com/…a1b2" {
+		t.Fatalf("channel URL in response = %q", c.URL)
+	}
+	if len(c.Events) != 1 {
+		t.Fatalf("events = %v, want one job.failed", c.Events)
+	}
+	stored, err := e.st.GetNotificationChannel(context.Background(), c.ID)
+	must(t, err)
+	if bytes.Contains(stored.URLEnc, []byte("hooks.slack.com")) {
+		t.Fatal("the database has the URL in plain text")
+	}
+	if plain, err := e.d.Box.Open(stored.URLEnc); err != nil || string(plain) != secretURL {
+		t.Fatalf("sealed URL opens to %q, %v", plain, err)
+	}
+
+	// A change of the kind checks the kept URL against the new kind.
+	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"kind": "webhook", "url": "http://10.0.0.2/hook"}, nil).want(t, 200)
+	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"kind": "discord"}, nil).want(t, 422)
+}
+
+func TestEventsStreamConvertsStoreModels(t *testing.T) {
+	e := newEnv(t)
+	ch := e.login("ada@example.com", auth.RoleMember).events(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	pool := store.Pool{ID: ids.New(), Name: "Default", Label: "runplane", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 20, MaxRunners: 1, Enabled: true, CreatedAt: now, UpdatedAt: now}
+	must(t, e.st.CreatePool(context.Background(), pool))
+	sb := store.Sandbox{ID: "sb1", PoolID: pool.ID, ServerID: "srv", State: sandbox.StateBusy, VCPU: 2, MemoryMB: 4096, CreatedAt: now}
+	e.publish(events.Event{Type: events.SettingsChanged, Data: store.Settings{}}, events.Event{Type: events.SandboxState, Data: &sb})
+
+	ev := recv(t, ch)
+	if ev.name != "sandbox.state" {
+		t.Fatalf("got event %q with %s; settings.changed must not reach the browser", ev.name, ev.data)
+	}
+	var got Sandbox
+	must(t, json.Unmarshal([]byte(ev.data), &got))
+	if got.ID != "sb1" || got.PoolLabel != "runplane" || got.State != "busy" {
+		t.Fatalf("sandbox.state data = %+v, want sb1 busy in pool runplane", got)
+	}
 }

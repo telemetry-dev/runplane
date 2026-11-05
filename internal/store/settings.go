@@ -90,10 +90,10 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 // changed, all in one transaction. It returns the new settings. The table
 // keeps keys that Settings does not know.
 func (s *Store) UpdateSettings(ctx context.Context, fn func(*Settings) error) (Settings, error) {
-	var next Settings
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		st, err := getSettings(ctx, tx)
-		if err != nil {
+	var st Settings
+	err := s.tx(ctx, "update settings", func(tx *sql.Tx) error {
+		var err error
+		if st, err = getSettings(ctx, tx); err != nil {
 			return err
 		}
 		// Encode before fn runs, because fn can change slices in place.
@@ -108,42 +108,30 @@ func (s *Store) UpdateSettings(ctx context.Context, fn func(*Settings) error) (S
 		if err != nil {
 			return err
 		}
-		next = st
 		for key, value := range after {
 			if string(before[key]) == string(value) {
 				continue
 			}
-			_, err := tx.ExecContext(ctx,
-				`INSERT INTO settings (key, value) VALUES (?, ?)
-				 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, string(value))
-			if err != nil {
+			if _, err := tx.ExecContext(ctx, upsert("settings", "key, value", "key"), key, string(value)); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return Settings{}, fmt.Errorf("update settings: %w", err)
+		return Settings{}, err
 	}
-	return next, nil
+	return st, nil
 }
 
 func getSettings(ctx context.Context, q querier) (Settings, error) {
-	rows, err := q.QueryContext(ctx, "SELECT key, value FROM settings")
-	if err != nil {
-		return Settings{}, fmt.Errorf("read settings: %w", err)
-	}
-	defer rows.Close()
-	stored := map[string]json.RawMessage{}
-	for rows.Next() {
+	stored, err := queryMap(ctx, q, "read settings", func(sc scanner) (string, json.RawMessage, error) {
 		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
-			return Settings{}, fmt.Errorf("read settings: %w", err)
-		}
-		stored[key] = json.RawMessage(value)
-	}
-	if err := rows.Err(); err != nil {
-		return Settings{}, fmt.Errorf("read settings: %w", err)
+		err := sc.Scan(&key, &value)
+		return key, json.RawMessage(value), err
+	}, "SELECT key, value FROM settings")
+	if err != nil {
+		return Settings{}, err
 	}
 	// Decode the stored keys over the defaults. Unknown keys have no field.
 	b, err := json.Marshal(stored)

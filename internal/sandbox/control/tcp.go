@@ -10,20 +10,18 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 // AddrFile is the file in the ctl folder that sends the guest to TCP. Its
 // one line is "tcp://<host:port> <sandbox-id> <token>".
 const AddrFile = "control.addr"
-
-// handshakeTimeout limits the wait for the first line of a TCP connection.
-const handshakeTimeout = 5 * time.Second
 
 // TCPListener serves the control channels of all sandboxes on one TCP port.
 // Dev mode uses it, because a Unix socket in a bind mount does not cross the
@@ -73,7 +71,7 @@ func (t *TCPListener) Listen(ctlDir string, cfg GuestConfig, h Handler, log *slo
 	rand.Read(b)
 	token := hex.EncodeToString(b)
 	line := "tcp://" + t.dial + " " + id + " " + token + "\n"
-	if err := writeFileAtomic(filepath.Join(ctlDir, AddrFile), []byte(line), 0o644); err != nil {
+	if err := atomicfile.Write(filepath.Join(ctlDir, AddrFile), strings.NewReader(line), 0o644); err != nil {
 		return nil, fmt.Errorf("write control address: %w", err)
 	}
 
@@ -91,9 +89,6 @@ func (t *TCPListener) Listen(ctlDir string, cfg GuestConfig, h Handler, log *slo
 	t.mu.Unlock()
 	return s, nil
 }
-
-// Addr is the address that the listener listens on.
-func (t *TCPListener) Addr() net.Addr { return t.ln.Addr() }
 
 // Close stops new connections. Connections that a Server took stay until
 // that Server closes.
@@ -121,7 +116,7 @@ func (t *TCPListener) accept() {
 }
 
 func (t *TCPListener) handshake(conn net.Conn) {
-	conn.SetDeadline(time.Now().Add(handshakeTimeout))
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	line, err := readHello(conn)
 	var srv *Server
 	if err == nil {
@@ -179,24 +174,4 @@ func ParseAddr(content []byte) (addr, hello string, err error) {
 		return "", "", fmt.Errorf("bad control address %q", content)
 	}
 	return strings.TrimPrefix(f[0], "tcp://"), "RUNPLANE " + f[1] + " " + f[2] + "\n", nil
-}
-
-// writeFileAtomic replaces path, so that a reader never sees half a file.
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(tmp.Name(), mode)
-	}
-	if err == nil {
-		err = os.Rename(tmp.Name(), path)
-	}
-	return err
 }

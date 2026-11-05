@@ -43,13 +43,7 @@ func create(path string) ([]byte, error) {
 	}
 	defer os.Remove(tmp.Name())
 	_, err = tmp.Write(key)
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
+	if err := errors.Join(err, tmp.Sync(), tmp.Close()); err != nil {
 		return nil, fmt.Errorf("write secret key: %w", err)
 	}
 	if err := os.Link(tmp.Name(), path); err != nil {

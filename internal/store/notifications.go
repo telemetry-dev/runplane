@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -17,54 +16,56 @@ type NotificationChannel struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// NotificationDelivery is the last delivery to a channel.
+type NotificationDelivery struct {
+	SentAt *time.Time // nil before the first delivery
+	Error  string     // empty if the delivery worked
+}
+
 const channelCols = "id, name, kind, url_enc, events_json, enabled, created_at, updated_at"
 
-func scanChannel(sc scanner) (NotificationChannel, error) {
-	var c NotificationChannel
-	err := sc.Scan(&c.ID, &c.Name, &c.Kind, &c.URLEnc, jsonCol(&c.Events), &c.Enabled, at(&c.CreatedAt), at(&c.UpdatedAt))
-	return c, err
+func (c *NotificationChannel) cols() []any {
+	return []any{&c.ID, &c.Name, &c.Kind, &c.URLEnc, jsonCol(&c.Events), &c.Enabled, at(&c.CreatedAt), at(&c.UpdatedAt)}
 }
 
 func (s *Store) CreateNotificationChannel(ctx context.Context, c NotificationChannel) error {
-	_, err := s.w.ExecContext(ctx, "INSERT INTO notification_channels ("+channelCols+") VALUES ("+placeholders(8)+")",
-		c.ID, c.Name, c.Kind, c.URLEnc, jsonArg(c.Events), c.Enabled, ms(c.CreatedAt), ms(c.UpdatedAt))
-	if err != nil {
-		return fmt.Errorf("create notification channel: %w", dbErr(err))
-	}
-	return nil
+	return exec(ctx, s.w, "create notification channel", insert("notification_channels", channelCols), c.cols()...)
 }
 
 func (s *Store) GetNotificationChannel(ctx context.Context, id string) (NotificationChannel, error) {
-	c, err := scanChannel(s.r.QueryRowContext(ctx, "SELECT "+channelCols+" FROM notification_channels WHERE id = ?", id))
-	if err != nil {
-		return NotificationChannel{}, fmt.Errorf("get notification channel: %w", dbErr(err))
-	}
-	return c, nil
+	return queryOne(ctx, s.r, "get notification channel", scanRow[NotificationChannel],
+		"SELECT "+channelCols+" FROM notification_channels WHERE id = ?", id)
 }
 
 func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationChannel, error) {
-	rows, err := s.r.QueryContext(ctx, "SELECT "+channelCols+" FROM notification_channels ORDER BY name, id")
-	list, err := scanAll(rows, err, scanChannel)
-	if err != nil {
-		return nil, fmt.Errorf("list notification channels: %w", err)
-	}
-	return list, nil
+	return queryAll(ctx, s.r, "list notification channels", scanRow[NotificationChannel],
+		"SELECT "+channelCols+" FROM notification_channels ORDER BY name, id")
 }
 
 // UpdateNotificationChannel writes all columns except id and created_at, and sets updated_at.
 func (s *Store) UpdateNotificationChannel(ctx context.Context, c NotificationChannel) error {
-	err := exec1(ctx, s.w, `UPDATE notification_channels SET name = ?, kind = ?, url_enc = ?, events_json = ?,
-		enabled = ?, updated_at = ? WHERE id = ?`,
-		c.Name, c.Kind, c.URLEnc, jsonArg(c.Events), c.Enabled, ms(time.Now()), c.ID)
-	if err != nil {
-		return fmt.Errorf("update notification channel: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "update notification channel", `UPDATE notification_channels SET name = ?, kind = ?,
+		url_enc = ?, events_json = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+		c.Name, c.Kind, c.URLEnc, jsonCol(&c.Events), c.Enabled, ms(time.Now()), c.ID)
 }
 
 func (s *Store) DeleteNotificationChannel(ctx context.Context, id string) error {
-	if err := exec1(ctx, s.w, "DELETE FROM notification_channels WHERE id = ?", id); err != nil {
-		return fmt.Errorf("delete notification channel: %w", err)
-	}
-	return nil
+	return exec1(ctx, s.w, "delete notification channel", "DELETE FROM notification_channels WHERE id = ?", id)
+}
+
+// RecordNotificationDelivery records a delivery to a channel at t. sendErr
+// is empty if it worked.
+func (s *Store) RecordNotificationDelivery(ctx context.Context, channelID string, t time.Time, sendErr string) error {
+	return exec1(ctx, s.w, "record notification delivery",
+		"UPDATE notification_channels SET last_sent_at = ?, last_error = ? WHERE id = ?", ms(t), sendErr, channelID)
+}
+
+// NotificationDeliveries returns the last delivery of each channel.
+func (s *Store) NotificationDeliveries(ctx context.Context) (map[string]NotificationDelivery, error) {
+	return queryMap(ctx, s.r, "list notification deliveries", func(sc scanner) (string, NotificationDelivery, error) {
+		var id string
+		var d NotificationDelivery
+		err := sc.Scan(&id, atPtr(&d.SentAt), &d.Error)
+		return id, d, err
+	}, "SELECT id, last_sent_at, last_error FROM notification_channels")
 }
