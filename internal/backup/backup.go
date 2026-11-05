@@ -31,9 +31,9 @@ const (
 	filePattern = "runplane-????????T??????.???Z.db.gz"
 )
 
-// write copies the database with VACUUM INTO, writes it to
-// dir/runplane-<UTC time>.db.gz, and removes the oldest backups so that
-// keep files stay. If keep is 0 or less, write removes no backups.
+// write copies the database to dir/runplane-<UTC time>.db.gz and removes
+// the oldest backups so that keep files stay. If keep is 0 or less, write
+// removes no backups.
 func write(ctx context.Context, db *sql.DB, dir string, keep int) (result, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return result{}, fmt.Errorf("make backup dir: %w", err)
