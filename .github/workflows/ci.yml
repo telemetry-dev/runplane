@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   go:
-    runs-on: ubuntu-latest
+    runs-on: runplane
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -38,7 +38,7 @@ jobs:
           GOCACHE: /tmp/go-root-cache
 
   web:
-    runs-on: ubuntu-latest
+    runs-on: runplane
     defaults:
       run:
         working-directory: web
@@ -58,15 +58,20 @@ jobs:
       - run: pnpm build
 
   shell:
-    runs-on: ubuntu-latest
+    runs-on: runplane
     steps:
       - uses: actions/checkout@v7
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends shellcheck
       - run: shellcheck -s sh install.sh kernel/build.sh deploy/*.sh
       - name: install.sh dry runs on Ubuntu, Debian, and Fedora
         run: sh deploy/test-install.sh
 
   # A real container mode install on the runner VM: Docker, Sysbox, the
-  # systemd units, the service, and the uninstall.
+  # systemd units, the service, and the uninstall. runplane sandboxes have no
+  # systemd, thus this job uses a GitHub-hosted runner.
   install:
     runs-on: ubuntu-24.04
     steps:

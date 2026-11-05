@@ -2,9 +2,8 @@
 # ghcr.io/<owner>/<repo>/runner-ubuntu-24.04 and -26.04. runplane pulls the
 # "latest" tag. A weekly build gets the new packages and tool versions.
 #
-# The arm64 builds use the ubuntu-24.04-arm runners. For a private repository
-# without these runners, change the runner to ubuntu-24.04 and add
-# docker/setup-qemu-action (the arm64 build is then much slower).
+# The builds use the runplane runners. QEMU builds the architecture that the
+# runner does not have, which makes that build much slower.
 name: Images
 
 on:
@@ -27,7 +26,7 @@ jobs:
       matrix:
         image: [ubuntu-24.04, ubuntu-26.04]
         arch: [amd64, arm64]
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    runs-on: runplane
     permissions:
       contents: read
       packages: write
@@ -35,6 +34,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/runner-${{ matrix.image }}" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         if: github.event_name != 'pull_request'
@@ -82,7 +82,7 @@ jobs:
     strategy:
       matrix:
         image: [ubuntu-24.04, ubuntu-26.04]
-    runs-on: ubuntu-24.04
+    runs-on: runplane
     permissions:
       contents: read
       packages: write
