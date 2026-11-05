@@ -89,6 +89,11 @@ func TestControlChannel(t *testing.T) {
 	// runplane restarts: the guest keeps events and logs, connects again,
 	// sends resume first, and does not ask for the config again.
 	host1.Close()
+	waitFor(t, "the guest to see the host leave", func() bool {
+		link.mu.Lock()
+		defer link.mu.Unlock()
+		return link.conn == nil
+	})
 	link.event(sandbox.RunnerEvent{Kind: "job.started", JobName: "build"})
 	logs.push("runner", "while the host was away")
 	rec2 := &recorder{}

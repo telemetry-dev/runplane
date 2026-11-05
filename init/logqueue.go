@@ -76,9 +76,15 @@ func (q *logQueue) signal() {
 }
 
 // take waits for lines and returns all of them. It returns io.EOF when the
-// queue is closed and empty, and errLinkDown when done closes first.
+// queue is closed and empty, and errLinkDown when done closes first. After
+// done closes, it leaves the lines in the queue for the next connection.
 func (q *logQueue) take(done <-chan struct{}) ([]byte, error) {
 	for {
+		select {
+		case <-done:
+			return nil, errLinkDown
+		default:
+		}
 		q.mu.Lock()
 		if len(q.lines) > 0 || q.dropped > 0 {
 			var b []byte
