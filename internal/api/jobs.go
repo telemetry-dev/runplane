@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -272,7 +271,7 @@ func (h *Handler) jobURL(j store.Job) string {
 	if j.HTMLURL != "" || j.RunID == 0 || j.Repository == "" {
 		return j.HTMLURL
 	}
-	u := fmt.Sprintf("%s/%s/actions/runs/%d", cmp.Or(h.d.Config.GitHubURL, "https://github.com"), j.Repository, j.RunID)
+	u := fmt.Sprintf("https://github.com/%s/actions/runs/%d", j.Repository, j.RunID)
 	if j.RunAttempt > 1 {
 		u += fmt.Sprintf("/attempts/%d", j.RunAttempt)
 	}

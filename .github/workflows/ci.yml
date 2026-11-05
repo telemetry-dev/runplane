@@ -31,9 +31,6 @@ jobs:
       # The non-Linux files must also compile, for development on macOS.
       - run: GOOS=darwin go vet ./...
       - run: go test ./...
-      # The dev seed is in a build only with the tag devseed.
-      - run: go vet -tags devseed ./internal/devseed ./cmd/runplane
-      - run: go test -tags devseed ./internal/devseed
       # Tests of netlink, nftables, loop devices, and mounts skip without root.
       - name: go test as root
         run: sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME "$(go env GOROOT)/bin/go" test ./internal/...

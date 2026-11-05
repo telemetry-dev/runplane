@@ -15,8 +15,6 @@ func TestParseEnvAndFlags(t *testing.T) {
 	t.Setenv("RUNPLANE_DATA_DIR", "rel/data")
 	t.Setenv("RUNPLANE_MODE", "vm")
 	t.Setenv("RUNPLANE_DEV", "1")
-	t.Setenv("RUNPLANE_GITHUB_API_URL", "http://127.0.0.1:9100/api/v3/")
-	t.Setenv("RUNPLANE_DEV_RUNNER_DIR", "testdata/fakerunner")
 
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	c, err := Parse(fs, []string{"-listen", ":9001", "-mode", "container"})
@@ -30,15 +28,12 @@ func TestParseEnvAndFlags(t *testing.T) {
 		t.Errorf("environment or defaults lost: %+v", c)
 	}
 	wd, _ := os.Getwd()
+	// Docker bind-mounts the data folder, so it must be absolute.
 	if c.DataDir != filepath.Join(wd, "rel/data") || c.ConfigDir != "/etc/runplane" {
 		t.Errorf("folders: %q, %q", c.DataDir, c.ConfigDir)
 	}
-	// Docker bind-mounts the runner folder, so it must be absolute.
-	if c.DevRunnerDir != filepath.Join(wd, "testdata/fakerunner") {
-		t.Errorf("dev runner folder: %q", c.DevRunnerDir)
-	}
-	if c.GitHubAPIURL != "http://127.0.0.1:9100/api/v3" || c.GitHubURL != "" || c.SSHListen != ":2222" {
-		t.Errorf("GitHub URLs or SSH address: %q, %q, %q", c.GitHubAPIURL, c.GitHubURL, c.SSHListen)
+	if c.SSHListen != ":2222" {
+		t.Errorf("SSH address: %q", c.SSHListen)
 	}
 }
 
@@ -63,8 +58,6 @@ func TestParseErrors(t *testing.T) {
 		{"RUNPLANE_SERVICE_PORT", "http"},
 		{"RUNPLANE_SERVICE_PORT", "70000"},
 		{"RUNPLANE_MODE", "kvm"},
-		{"RUNPLANE_GITHUB_URL", "127.0.0.1:9100"},
-		{"RUNPLANE_GITHUB_API_URL", "ftp://example.com"},
 	} {
 		t.Run(env[0]+"="+env[1], func(t *testing.T) {
 			t.Setenv(env[0], env[1])

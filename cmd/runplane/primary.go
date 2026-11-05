@@ -70,11 +70,8 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, restart func(), fa
 	}
 	p.settings.Store(&settings)
 
-	var token func(context.Context) (string, error)
-	if cfg.GitHubAPIURL == "" {
-		// Release reads with an installation token have a higher rate limit.
-		token = func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
-	}
+	// Release reads with an installation token have a higher rate limit.
+	token := func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
 	local, err := newLocal(context.Background(), cfg, localConfig{
 		mode: mode, settings: fleet.DriverSettings(settings), unit: "runplane", token: token,
 		listen: primaryAddrs(cfg, settings.Domain),
@@ -104,7 +101,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, restart func(), fa
 	})
 	p.gh = github.New(github.Config{
 		Store: st, Box: d.Box, Bus: d.Bus, Log: log.With("component", "github"), Scheduler: p.sched,
-		Bundles: p.fleet, Notifier: notifier, APIURL: cfg.GitHubAPIURL, WebURL: cfg.GitHubURL,
+		Bundles: p.fleet, Notifier: notifier,
 	})
 	ghRef.Service = p.gh
 	// The scheduler stops after the fleet, so that no driver event comes

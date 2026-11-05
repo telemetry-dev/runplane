@@ -275,30 +275,15 @@ make dev
 
 `make dev` starts the backend with `RUNPLANE_MODE=dev` and its data in `.dev/`. At the same time, it starts the Vite dev server for the frontend.
 
-`make dev` builds the backend with the build tag `devseed`. This tag adds the `dev-seed` command, which fills an empty database with demo data for design reviews. A build without the tag, for example `make build` or a release, has no demo data. To fill the empty `.dev/data` before `make dev`, run this command:
-
-```sh
-RUNPLANE_DATA_DIR=.dev/data RUNPLANE_CONFIG_DIR=.dev/etc go run -tags devseed ./cmd/runplane dev-seed
-```
-
-`make fake` starts the backend in dev mode with a fake GitHub (`internal/github/fakegh`) and a fake runner (`testdata/fakerunner`). The backend uses these variables:
-
-| Variable | Use |
-| --- | --- |
-| `RUNPLANE_GITHUB_API_URL`, `RUNPLANE_GITHUB_URL` | The REST API and the web URL of a GitHub that is not github.com |
-| `RUNPLANE_DEV_RUNNER_DIR` | One runner bundle folder for all runner versions, without the cache patch (container and dev mode) |
-
 Other commands:
 
 | Command | Result |
 | --- | --- |
 | `make build` | Frontend, `runplane-init`, and `bin/runplane` for this computer |
 | `make build-linux-amd64`, `make build-linux-arm64` | `bin/runplane-linux-<arch>` |
-| `make test` | `go test ./...`, and the tests of the dev seed with the tag `devseed` |
-| `make e2e` | The whole job flow in dev mode: setup, GitHub, jobs, scaling, a restart, debug shells, the registry mirror. It needs Docker and the image `runplane/runner-ubuntu-24.04:local`. |
+| `make test` | `go test ./...` |
 | `make runner-smoke` | The latest `actions/runner` of this arch in the image `runplane/runner-ubuntu-24.04:local`: `Runner.Listener --version` must start, and `run.sh` with a bad JIT config must stop. It needs Docker and the network. |
-| `sh e2e/linux/lima.sh container`, `sh e2e/linux/lima.sh vm` | `install.sh` and the job flow in container mode or VM mode, in the Lima VM `rp-e2e` on macOS. Then a reboot, the uninstall, and a new install with the setup code and `runplane doctor`. Lima with nested virtualization is necessary. |
-| `make lint` | `go vet` for this OS, for Linux, and with the tag `devseed`, and `shellcheck` |
+| `make lint` | `go vet` for this OS and for Linux, and `shellcheck` |
 | `make openapi` | The OpenAPI spec and the TypeScript types in `web/src/api/` |
 | `make dist` | Release archives, `install.sh`, and `SHA256SUMS` in `dist/`. It runs `make size-check` first. |
 | `make size-check` | Stops with an error if `bin/runplane-linux-amd64` or `bin/runplane-linux-arm64` has 30,000,000 bytes or more |

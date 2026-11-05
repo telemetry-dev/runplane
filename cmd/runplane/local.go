@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -65,14 +64,9 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		return nil, fmt.Errorf("start the image manager: %w", err)
 	}
 	l.bundles = image.NewBundles(image.BundleConfig{
-		Mode: lc.mode, Dir: cfg.RunnersDir(), Token: lc.token, APIURL: cfg.GitHubAPIURL, WebURL: cfg.GitHubURL,
-		Logger: log.With("component", "runners"),
+		Mode: lc.mode, Dir: cfg.RunnersDir(), Token: lc.token, Logger: log.With("component", "runners"),
 	})
-	runners := runnerSource{bundles: l.bundles, dir: cfg.DevRunnerDir}
-	l.node = &node{runners: runners}
-	if runners.dir != "" {
-		log.Warn("every runner version comes from RUNPLANE_DEV_RUNNER_DIR, unpatched", "dir", runners.dir)
-	}
+	l.node = &node{}
 
 	var probe func(context.Context) error
 	switch lc.mode {
@@ -81,7 +75,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		l.onClose(func() { rules.Close() })
 		drv, err := sysbox.New(sysbox.Options{
 			Docker: docker, Config: cfg, Mode: sandbox.ModeContainer, Runtime: "sysbox-runc", Scratch: sysbox.ScratchLoop,
-			Bundle: runners.Ensure, InitPath: initbin.Path, NetRules: rules, Settings: lc.settings,
+			Bundle: l.bundles.Ensure, InitPath: initbin.Path, NetRules: rules, Settings: lc.settings,
 			Logger: log.With("driver", "sysbox"),
 		})
 		if err != nil {
@@ -95,7 +89,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		l.node.noCache = true
 		lc.settings.ActionsCache = false
 		drv, err := devdocker.New(devdocker.Options{
-			Docker: docker, Config: cfg, Bundle: runners.Ensure, InitPath: initbin.Path, Settings: lc.settings,
+			Docker: docker, Config: cfg, Bundle: l.bundles.Ensure, InitPath: initbin.Path, Settings: lc.settings,
 			Logger: log.With("driver", "devdocker"),
 		})
 		if err != nil {
@@ -103,9 +97,6 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		}
 		l.driver, probe = drv, drv.Probe
 	case sandbox.ModeVM:
-		if cfg.DevRunnerDir != "" {
-			return nil, errors.New("RUNPLANE_DEV_RUNNER_DIR works only in container and dev mode: VM mode needs runner drives")
-		}
 		drv, err := firecracker.New(firecracker.Options{
 			DataDir: cfg.DataDir, Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: l.images.RootDisk,
 			RunnerDrive: func(ctx context.Context, version, arch string) (string, error) {
@@ -185,30 +176,11 @@ func initBinary() ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// runnerSource gives the runner bundles: downloaded releases, or the one
-// folder of RUNPLANE_DEV_RUNNER_DIR for every version.
-type runnerSource struct {
-	bundles *image.Bundles
-	dir     string
-}
-
-func (r runnerSource) Ensure(ctx context.Context, version, arch string) (image.Bundle, error) {
-	if r.dir != "" {
-		return image.Bundle{Version: version, Arch: arch, Dir: r.dir}, nil
-	}
-	return r.bundles.Ensure(ctx, version, arch)
-}
-
-// node is the LocalNode with the runner source of this process. In dev
-// mode it also keeps the Actions cache off for the sandboxes.
+// node is the LocalNode of this process. In dev mode it keeps the Actions
+// cache off for the sandboxes.
 type node struct {
 	*agent.LocalNode
-	runners runnerSource
 	noCache bool
-}
-
-func (n *node) EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error) {
-	return n.runners.Ensure(ctx, version, arch)
 }
 
 func (n *node) Configure(ctx context.Context, s sandbox.Settings) error {

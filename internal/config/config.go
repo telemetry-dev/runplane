@@ -6,11 +6,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/runplane/runplane/internal/sandbox"
 )
@@ -25,14 +23,6 @@ type Config struct {
 	Dev         bool         // relaxed cookies and CORS for the Vite dev server
 	DevInsecure bool         // lets the devdocker driver operate
 	SSHListen   string       // SSH gateway for debug shells (primary)
-
-	// GitHubAPIURL and GitHubURL point runplane at another GitHub, for
-	// example the fake GitHub of the tests. Empty means github.com.
-	GitHubAPIURL string
-	GitHubURL    string
-	// DevRunnerDir is a runner bundle folder that every runner version
-	// resolves to, unpatched. Tests set it to testdata/fakerunner.
-	DevRunnerDir string
 }
 
 // Parse reads the environment, then the flags in args. Define the other flags
@@ -86,9 +76,6 @@ func Load() (Config, error) {
 	str("RUNPLANE_CONFIG_DIR", &c.ConfigDir)
 	str("RUNPLANE_MODE", (*string)(&c.Mode))
 	str("RUNPLANE_SSH_LISTEN", &c.SSHListen)
-	str("RUNPLANE_GITHUB_API_URL", &c.GitHubAPIURL)
-	str("RUNPLANE_GITHUB_URL", &c.GitHubURL)
-	str("RUNPLANE_DEV_RUNNER_DIR", &c.DevRunnerDir)
 	boolean("RUNPLANE_DEV", &c.Dev)
 	boolean("RUNPLANE_DEV_INSECURE", &c.DevInsecure)
 	if v := os.Getenv("RUNPLANE_SERVICE_PORT"); v != "" {
@@ -116,9 +103,6 @@ func (c *Config) Bind(fs *flag.FlagSet) {
 	fs.BoolVar(&c.Dev, "dev", c.Dev, "relaxed cookies and CORS for the Vite dev server (RUNPLANE_DEV)")
 	fs.BoolVar(&c.DevInsecure, "dev-insecure", c.DevInsecure, "let the devdocker driver operate (RUNPLANE_DEV_INSECURE)")
 	fs.StringVar(&c.SSHListen, "ssh-listen", c.SSHListen, "SSH gateway address for debug shells (RUNPLANE_SSH_LISTEN)")
-	fs.StringVar(&c.GitHubAPIURL, "github-api-url", c.GitHubAPIURL, "GitHub REST API URL, for tests (RUNPLANE_GITHUB_API_URL)")
-	fs.StringVar(&c.GitHubURL, "github-url", c.GitHubURL, "GitHub web URL, for tests (RUNPLANE_GITHUB_URL)")
-	fs.StringVar(&c.DevRunnerDir, "dev-runner-dir", c.DevRunnerDir, "runner bundle folder for all runner versions, for tests (RUNPLANE_DEV_RUNNER_DIR)")
 }
 
 // Validate checks the values and makes the folders absolute, because
@@ -132,21 +116,7 @@ func (c *Config) Validate() error {
 	if c.ServicePort < 1 || c.ServicePort > 65535 {
 		return fmt.Errorf("service port %d: use 1 to 65535", c.ServicePort)
 	}
-	for _, u := range []*string{&c.GitHubAPIURL, &c.GitHubURL} {
-		if *u == "" {
-			continue
-		}
-		p, err := url.Parse(*u)
-		if err != nil || p.Host == "" || (p.Scheme != "http" && p.Scheme != "https") {
-			return fmt.Errorf("GitHub URL %q: use an http or https URL", *u)
-		}
-		*u = strings.TrimRight(*u, "/")
-	}
-	dirs := []*string{&c.DataDir, &c.ConfigDir}
-	if c.DevRunnerDir != "" {
-		dirs = append(dirs, &c.DevRunnerDir)
-	}
-	for _, dir := range dirs {
+	for _, dir := range []*string{&c.DataDir, &c.ConfigDir} {
 		abs, err := filepath.Abs(*dir)
 		if err != nil {
 			return fmt.Errorf("resolve folder %q: %w", *dir, err)
