@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -89,9 +90,9 @@ type runCheck struct {
 // app has no installation for the repository, or GitHub hides the run (404)
 // or refuses it for a reason other than a rate limit (403).
 func unreadable(err error) bool {
-	var e *apiError
+	var e *ghrest.APIError
 	if errors.As(err, &e) {
-		return e.status == http.StatusNotFound || e.status == http.StatusForbidden && e.retryAt.IsZero()
+		return e.Status == http.StatusNotFound || e.Status == http.StatusForbidden && e.RetryAt.IsZero()
 	}
 	return errors.Is(err, errNoInstallation)
 }
@@ -138,7 +139,7 @@ func (s *Service) enrich(ctx context.Context, job store.Job) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	jobs, err := list[workflowJob](ctx, s.api, a,
+	jobs, err := ghrest.List[workflowJob](ctx, s.api, a,
 		fmt.Sprintf("/repos/%s/actions/runs/%d/jobs?filter=all&per_page=100", job.Repository, job.RunID), "jobs")
 	if err != nil {
 		return 0, fmt.Errorf("list jobs of run %d: %w", job.RunID, err)
@@ -188,7 +189,7 @@ func (s *Service) Steps(ctx context.Context, job store.Job) ([]store.JobStep, er
 		return nil, err
 	}
 	var gj workflowJob
-	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/repos/%s/actions/jobs/%d", job.Repository, job.GitHubJobID), auth: a}, &gj)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/repos/%s/actions/jobs/%d", job.Repository, job.GitHubJobID), Auth: a}, &gj)
 	if err != nil {
 		return nil, fmt.Errorf("read job %d: %w", job.GitHubJobID, err)
 	}
@@ -254,16 +255,18 @@ func (s *Service) DownloadLog(ctx context.Context, job store.Job, path string) e
 	}
 	// GitHub answers with a redirect to a short-lived blob URL. The blob
 	// store must not get the token, so runplane follows the redirect itself.
-	resp, err := s.api.do(ctx, call{
-		method: http.MethodGet, path: fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", job.Repository, id),
-		auth: a, timeout: logTimeout, noRedirect: true,
+	resp, err := s.api.Do(ctx, ghrest.Call{
+		Method: http.MethodGet, Path: fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", job.Repository, id),
+		Auth: a, Timeout: logTimeout, NoRedirect: true,
 	})
 	if err != nil {
 		return fmt.Errorf("download log of job %d: %w", id, err)
 	}
 	if loc := resp.Header.Get("Location"); resp.StatusCode >= 300 && loc != "" {
 		resp.Body.Close()
-		resp, err = s.api.do(ctx, call{method: http.MethodGet, path: loc, timeout: logTimeout})
+		ctx, cancel := context.WithTimeout(ctx, logTimeout)
+		defer cancel()
+		resp, err = s.api.Download(ctx, loc)
 		if err != nil {
 			return fmt.Errorf("download log of job %d: %w", id, err)
 		}
@@ -283,7 +286,7 @@ func (s *Service) Rerun(ctx context.Context, job store.Job) error {
 	if err != nil {
 		return err
 	}
-	err = s.api.json(ctx, call{method: http.MethodPost, path: fmt.Sprintf("/repos/%s/actions/jobs/%d/rerun", job.Repository, id), auth: a}, nil)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodPost, Path: fmt.Sprintf("/repos/%s/actions/jobs/%d/rerun", job.Repository, id), Auth: a}, nil)
 	if err != nil {
 		return fmt.Errorf("re-run job %d: %w", id, err)
 	}
@@ -305,7 +308,7 @@ func (s *Service) run(ctx context.Context, repository string, runID int64) (work
 		return workflowRun{}, err
 	}
 	var run workflowRun
-	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/repos/%s/actions/runs/%d", repository, runID), auth: a}, &run)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/repos/%s/actions/runs/%d", repository, runID), Auth: a}, &run)
 	if err != nil {
 		return workflowRun{}, fmt.Errorf("read run %d of %s: %w", runID, repository, err)
 	}
@@ -316,7 +319,7 @@ var errNoInstallation = errors.New("no installation of the GitHub App can read")
 
 // repoAuth returns the installation that can read the repository: the one
 // that lists it, or else the one of the repository owner.
-func (s *Service) repoAuth(ctx context.Context, repository string) (auth, error) {
+func (s *Service) repoAuth(ctx context.Context, repository string) (ghrest.Auth, error) {
 	owner, name, ok := strings.Cut(repository, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 		return nil, fmt.Errorf("bad repository name %q", repository)

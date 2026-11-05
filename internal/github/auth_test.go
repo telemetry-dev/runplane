@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/runplane/runplane/internal/ghrest"
 )
 
 func TestSignJWT(t *testing.T) {
@@ -55,7 +57,7 @@ func TestInstallationToken(t *testing.T) {
 				writeJSON(w, http.StatusOK, map[string]any{})
 			})
 			for range 3 {
-				if err := e.svc.api.json(context.Background(), call{method: http.MethodGet, path: "/repos/acme/web", auth: installAuth{e.svc, 7}}, nil); err != nil {
+				if err := e.svc.api.JSON(context.Background(), ghrest.Call{Method: http.MethodGet, Path: "/repos/acme/web", Auth: installAuth{e.svc, 7}}, nil); err != nil {
 					t.Fatal(err)
 				}
 			}

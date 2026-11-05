@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/version"
 )
 
@@ -82,25 +83,15 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 		Body        string    `json:"body"`
 		PublishedAt time.Time `json:"published_at"`
 	}
-	url := cmp.Or(u.APIURL, "https://api.github.com") + "/repos/" + u.Repo + "/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return Status{}, fmt.Errorf("check update: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "runplane/"+u.Current)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+	resp, err := ghrest.Client{URL: u.APIURL}.Do(ctx, ghrest.Call{Method: http.MethodGet, Path: "/repos/" + u.Repo + "/releases/latest"})
+	var apiErr *ghrest.APIError
+	switch {
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound:
+		return Status{}, fmt.Errorf("check update: %s has %w", u.Repo, ErrNoRelease)
+	case err != nil:
 		return Status{}, fmt.Errorf("check update: %w", err)
 	}
 	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return Status{}, fmt.Errorf("check update: %s has %w", u.Repo, ErrNoRelease)
-	case resp.StatusCode != http.StatusOK:
-		return Status{}, fmt.Errorf("check update: GitHub answered %s", resp.Status)
-	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetaSize)).Decode(&rel); err != nil {
 		return Status{}, fmt.Errorf("check update: decode release: %w", err)
 	}
@@ -129,13 +120,13 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 		return err
 	}
 	num := strings.TrimPrefix(v, "v")
-	base := cmp.Or(u.DownloadURL, "https://github.com") + "/" + u.Repo + "/releases/download/" + v + "/"
+	base := cmp.Or(u.DownloadURL, ghrest.Web) + "/" + u.Repo + "/releases/download/" + v + "/"
 
 	var sums, sig bytes.Buffer
-	if err := u.download(ctx, base+"SHA256SUMS", &sums, maxMetaSize); err != nil {
+	if err := download(ctx, base+"SHA256SUMS", &sums, maxMetaSize); err != nil {
 		return err
 	}
-	if err := u.download(ctx, base+"SHA256SUMS.sig", &sig, maxMetaSize); err != nil {
+	if err := download(ctx, base+"SHA256SUMS.sig", &sig, maxMetaSize); err != nil {
 		return err
 	}
 	if !ed25519.Verify(pub, sums.Bytes(), sig.Bytes()) {
@@ -200,7 +191,7 @@ func (u *Updater) fetch(ctx context.Context, url, want, dir, pattern string) (st
 		return "", fmt.Errorf("update: %w", err)
 	}
 	h := sha256.New()
-	err = u.download(ctx, url, io.MultiWriter(f, h), maxFileSize)
+	err = download(ctx, url, io.MultiWriter(f, h), maxFileSize)
 	if err == nil {
 		err = f.Sync()
 	}
@@ -244,20 +235,12 @@ func (u *Updater) exe() (string, error) {
 	return real, nil
 }
 
-func (u *Updater) download(ctx context.Context, url string, w io.Writer, limit int64) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func download(ctx context.Context, url string, w io.Writer, limit int64) error {
+	resp, err := ghrest.Client{}.Download(ctx, url)
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
-	req.Header.Set("User-Agent", "runplane/"+u.Current)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("update: download %s: %w", path.Base(url), err)
-	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("update: download %s: %s", path.Base(url), resp.Status)
-	}
 	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return fmt.Errorf("update: download %s: %w", path.Base(url), err)

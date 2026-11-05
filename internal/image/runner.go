@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -40,18 +41,18 @@ type BundleConfig struct {
 
 // Bundles downloads and patches the GitHub Actions runner.
 type Bundles struct {
-	cfg      BundleConfig
-	log      *slog.Logger
-	work     keyLock
-	api, web string // GitHub base URLs; tests point them at a fake
+	cfg  BundleConfig
+	log  *slog.Logger
+	work keyLock
+	api  ghrest.Client
+	web  string // the GitHub URL; tests point it and api at a fake
 }
 
 func NewBundles(cfg BundleConfig) *Bundles {
 	return &Bundles{
 		cfg: cfg,
 		log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)),
-		api: "https://api.github.com",
-		web: "https://github.com",
+		web: ghrest.Web,
 	}
 }
 
@@ -193,29 +194,9 @@ func archiveName(version, arch string) string {
 // release reads a release of actions/runner and returns its version and the
 // hex SHA-256 of the archive of each arch.
 func (b *Bundles) release(ctx context.Context, path string) (string, map[string]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.api+"/repos/actions/runner"+path, nil)
-	if err != nil {
-		return "", nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	var a ghrest.Auth
 	if b.cfg.Token != nil {
-		token, err := b.cfg.Token(ctx)
-		if err != nil {
-			return "", nil, fmt.Errorf("get GitHub token: %w", err)
-		}
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", nil, fmt.Errorf("GET %s: %s: %s", path, resp.Status, bytes.TrimSpace(msg))
+		a = tokenAuth(b.cfg.Token)
 	}
 	var body struct {
 		TagName string `json:"tag_name"`
@@ -225,8 +206,8 @@ func (b *Bundles) release(ctx context.Context, path string) (string, map[string]
 			Digest string `json:"digest"`
 		} `json:"assets"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", nil, fmt.Errorf("GET %s: %w", path, err)
+	if err := b.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: "/repos/actions/runner" + path, Auth: a}, &body); err != nil {
+		return "", nil, err
 	}
 	version := strings.TrimPrefix(body.TagName, "v")
 	sums := map[string]string{}
@@ -262,20 +243,27 @@ func markedSHA(body, platform string) string {
 	return strings.ToLower(strings.TrimSpace(sum))
 }
 
+// tokenAuth sends the token that the function gives, if it gives one.
+type tokenAuth func(context.Context) (string, error)
+
+func (t tokenAuth) Header(ctx context.Context) (string, error) {
+	token, err := t(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get GitHub token: %w", err)
+	}
+	if token == "" {
+		return "", nil
+	}
+	return "Bearer " + token, nil
+}
+
 // download writes the file at url to dst and returns its SHA-256 in hex.
 func (b *Bundles) download(ctx context.Context, url, dst string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := b.api.Download(ctx, url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", url, resp.Status)
-	}
 	f, err := os.Create(dst)
 	if err != nil {
 		return "", err

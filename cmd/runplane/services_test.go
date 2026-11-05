@@ -144,9 +144,10 @@ func TestUpdaterCheck(t *testing.T) {
 		t.Errorf("%d release reads for two checks, want 1", n)
 	}
 
-	// A GitHub fault is not kept, so the next visit reads again.
+	// A GitHub fault is not kept, so the next visit reads again. A 403
+	// fault, because the client tries a 5xx again.
 	u.checked = time.Time{}
-	status.Store(http.StatusBadGateway)
+	status.Store(http.StatusForbidden)
 	if _, err := u.Check(ctx); err == nil {
 		t.Fatal("Check with a GitHub fault returned no error")
 	}

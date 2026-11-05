@@ -16,6 +16,7 @@ import (
 	"github.com/actions/scaleset/listener"
 
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/secret"
@@ -60,7 +61,7 @@ type Service struct {
 	sched   Scheduler
 	bundles Bundles
 	notify  Notifier
-	api     *rest
+	api     ghrest.Client
 	web     string
 	owner   string // names the listener sessions on GitHub
 
@@ -102,8 +103,7 @@ func New(cfg Config) *Service {
 		sched:     cfg.Scheduler,
 		bundles:   cfg.Bundles,
 		notify:    cfg.Notifier,
-		api:       newREST("https://api.github.com"),
-		web:       "https://github.com",
+		web:       ghrest.Web,
 		owner:     cmp.Or(owner, "runplane"),
 		poke:      make(chan struct{}, 1),
 		base:      base,
@@ -220,3 +220,14 @@ func (q quiet) Enabled(ctx context.Context, l slog.Level) bool {
 
 func (q quiet) WithAttrs(a []slog.Attr) slog.Handler { return quiet{q.Handler.WithAttrs(a)} }
 func (q quiet) WithGroup(n string) slog.Handler      { return quiet{q.Handler.WithGroup(n)} }
+
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}

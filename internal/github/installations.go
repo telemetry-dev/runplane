@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -50,7 +51,7 @@ func (s *Service) Setup(ctx context.Context, _ string, installationID int64, set
 	}
 
 	var inst installation
-	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/app/installations/%d", installationID), auth: appAuth{s}}, &inst)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/app/installations/%d", installationID), Auth: appAuth{s}}, &inst)
 	if err != nil {
 		return "", fmt.Errorf("read the installation: %w", err)
 	}
@@ -87,7 +88,7 @@ func (s *Service) syncInstallations(ctx context.Context) error {
 	if _, err := s.creds(ctx); err != nil {
 		return err
 	}
-	remote, err := list[installation](ctx, s.api, appAuth{s}, "/app/installations?per_page=100", "")
+	remote, err := ghrest.List[installation](ctx, s.api, appAuth{s}, "/app/installations?per_page=100", "")
 	if err != nil {
 		return fmt.Errorf("list installations: %w", err)
 	}
@@ -138,7 +139,7 @@ func (s *Service) saveInstallation(ctx context.Context, inst installation) error
 // syncRepositories stores the repositories that the installation can use.
 // The GitHub repository object has the JSON names of store.Repository.
 func (s *Service) syncRepositories(ctx context.Context, installationID int64) error {
-	repos, err := list[store.Repository](ctx, s.api, installAuth{s, installationID}, "/installation/repositories?per_page=100", "repositories")
+	repos, err := ghrest.List[store.Repository](ctx, s.api, installAuth{s, installationID}, "/installation/repositories?per_page=100", "repositories")
 	if err != nil {
 		return fmt.Errorf("list repositories of installation %d: %w", installationID, err)
 	}

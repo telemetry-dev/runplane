@@ -113,7 +113,7 @@ func TestCheckJobErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := acmeEnv(t)
-			e.svc.api.retryWait = time.Millisecond
+			e.svc.api.RetryWait = time.Millisecond
 			e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
 				if tt.limited {
 					w.Header().Set("X-RateLimit-Remaining", "0")
