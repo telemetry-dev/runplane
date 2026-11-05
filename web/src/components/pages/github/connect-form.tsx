@@ -1,12 +1,13 @@
 import { Check } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { $api, errorMessage, useFieldErrors, type Schemas } from '~/api/client'
 import { Button } from '~/components/ui/button'
-import { Field, Input } from '~/components/ui/field'
+import { Field } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { GithubIcon } from '~/components/ui/icons'
 import { RadioCard, RadioGroup } from '~/components/ui/radio-group'
 import { cx } from '~/lib/cx'
+import { OrganizationSearch } from './organization-search'
 import { borderedList, borderedRow } from './parts'
 
 type AccountType = Schemas['ManifestRequest']['account_type']
@@ -33,6 +34,8 @@ const permissions: Record<AccountType, ReadonlyArray<[name: string, access: stri
  */
 export function ConnectForm() {
   const [accountType, setAccountType] = useState<AccountType>('organization')
+  const [organization, setOrganization] = useState<string | null>(null)
+  const [unselected, setUnselected] = useState(false)
   const manifest = $api.useMutation('post', '/api/github/manifest', { onSuccess: postToGitHub })
   const installOnId = useId()
   const permissionsId = useId()
@@ -45,20 +48,25 @@ export function ConnectForm() {
     return () => window.removeEventListener('pageshow', onPageShow)
   }, [reset])
 
-  const errors = useFieldErrors(manifest.error)
+  const serverErrors = useFieldErrors(manifest.error)
+  const errors = useMemo(
+    () => (unselected ? { ...serverErrors, organization: 'Select the organization in the list.' } : serverErrors),
+    [unselected, serverErrors],
+  )
   const busy = manifest.isPending || manifest.isSuccess
 
   return (
     <Form
       errors={errors}
-      onFormSubmit={(values) =>
-        manifest.mutate({
-          body:
-            accountType === 'organization'
-              ? { account_type: accountType, organization: String(values.organization).trim() }
-              : { account_type: accountType },
-        })
-      }
+      onFormSubmit={() => {
+        if (accountType === 'user') {
+          manifest.mutate({ body: { account_type: 'user' } })
+        } else if (organization) {
+          manifest.mutate({ body: { account_type: 'organization', organization } })
+        } else {
+          setUnselected(true)
+        }
+      }}
       className="gap-xl"
     >
       <div className="flex flex-col gap-xl rounded-m bg-neutral-2 p-xl">
@@ -79,8 +87,25 @@ export function ConnectForm() {
         </div>
 
         {accountType === 'organization' && (
-          <Field name="organization" label="Organization" validate={validateOrganization} disabled={busy}>
-            <Input required autoComplete="off" spellCheck={false} autoCapitalize="none" maxLength={39} />
+          <Field
+            name="organization"
+            label="Organization"
+            wide
+            description={
+              organization
+                ? `runplane makes the GitHub App in the organization ${organization}.`
+                : 'Type the name from the URL of the organization (acme for github.com/acme), then select the organization in the list.'
+            }
+            disabled={busy}
+          >
+            <OrganizationSearch
+              value={organization}
+              onValueChange={(login) => {
+                setOrganization(login)
+                setUnselected(false)
+              }}
+              disabled={busy}
+            />
           </Field>
         )}
 
@@ -118,13 +143,6 @@ export function ConnectForm() {
       </div>
     </Form>
   )
-}
-
-function validateOrganization(value: unknown): string | null {
-  const login = String(value ?? '').trim()
-  if (!login) return 'Enter the organization.'
-  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(login)) return 'Use the name from the organization URL: letters, digits, and hyphens.'
-  return null
 }
 
 function postToGitHub({ action_url, manifest }: Schemas['ManifestForm']) {
