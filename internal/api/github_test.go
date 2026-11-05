@@ -11,13 +11,13 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-func TestGitHubLinksFollowTheAppHost(t *testing.T) {
+func TestGitHubLinks(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	now := time.Now()
 	must(t, e.st.SaveGitHubApp(ctx, store.GitHubApp{
 		ID: "a", AppID: 5, Slug: "runplane-acme", Name: "runplane acme", OwnerLogin: "acme", OwnerType: "Organization",
-		HTMLURL: "https://ghe.example.com/apps/runplane-acme", PrivateKeyEnc: []byte{1}, CreatedAt: now,
+		HTMLURL: "https://github.com/apps/runplane-acme", PrivateKeyEnc: []byte{1}, CreatedAt: now,
 	}))
 	for _, inst := range []store.Installation{
 		{ID: 77, AppID: 5, AccountLogin: "acme", AccountType: "Organization", CreatedAt: now, UpdatedAt: now},
@@ -31,10 +31,10 @@ func TestGitHubLinksFollowTheAppHost(t *testing.T) {
 	var gh GitHubStatus
 	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/github", nil, &gh).want(t, 200)
 	for _, c := range []struct{ name, got, want string }{
-		{"app settings", gh.App.SettingsURL, "https://ghe.example.com/organizations/acme/settings/apps/runplane-acme"},
-		{"app install", gh.App.InstallURL, "https://ghe.example.com/apps/runplane-acme/installations/new"},
-		{"organization installation", gh.Installations[0].HTMLURL, "https://ghe.example.com/organizations/acme/settings/installations/77"},
-		{"personal installation", gh.Installations[1].HTMLURL, "https://ghe.example.com/settings/installations/78"},
+		{"app settings", gh.App.SettingsURL, "https://github.com/organizations/acme/settings/apps/runplane-acme"},
+		{"app install", gh.App.InstallURL, "https://github.com/apps/runplane-acme/installations/new"},
+		{"organization installation", gh.Installations[0].HTMLURL, "https://github.com/organizations/acme/settings/installations/77"},
+		{"personal installation", gh.Installations[1].HTMLURL, "https://github.com/settings/installations/78"},
 		{"runner group", gh.ScaleSets[0].RunnerGroup, "Default"},
 	} {
 		if c.got != c.want {

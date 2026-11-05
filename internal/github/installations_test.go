@@ -147,7 +147,7 @@ func TestSetupRecordsInstallation(t *testing.T) {
 		{"request", "/settings/github?requested=1"},
 	}
 	for _, tt := range tests {
-		if to, err := e.svc.Setup(ctx, "https://ci.example.com", 77, tt.action); err != nil || to != tt.want {
+		if to, err := e.svc.Setup(ctx, 77, tt.action); err != nil || to != tt.want {
 			t.Errorf("Setup(%s) = %q, %v; want %q", tt.action, to, err, tt.want)
 		}
 	}
@@ -161,7 +161,27 @@ func TestSetupRecordsInstallation(t *testing.T) {
 	}
 
 	appID = 99
-	if _, err := e.svc.Setup(ctx, "https://ci.example.com", 77, "install"); err == nil {
+	if _, err := e.svc.Setup(ctx, 77, "install"); err == nil {
 		t.Error("setup accepted an installation of a different app")
+	}
+}
+
+// runplane runs jobs only for organizations and personal accounts, so
+// Setup refuses an installation that Sync would delete.
+func TestSetupRefusesOtherAccountTypes(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	ctx := context.Background()
+	e.mux.HandleFunc("GET /api/v3/app/installations/78", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": 78, "app_id": testAppID, "repository_selection": "all", "suspended_at": nil,
+			"account": map[string]any{"login": "acme-corp", "id": 6, "type": "Enterprise"},
+		})
+	})
+	if _, err := e.svc.Setup(ctx, 78, "install"); err == nil || !strings.Contains(err.Error(), "Enterprise") {
+		t.Errorf("Setup of an enterprise installation: err = %v, want a refusal", err)
+	}
+	if _, err := e.st.GetInstallation(ctx, 78); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("installation row: err = %v, want none", err)
 	}
 }

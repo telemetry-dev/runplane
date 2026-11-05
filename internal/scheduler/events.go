@@ -76,7 +76,7 @@ func (s *Scheduler) onRunner(ctx context.Context, serverID string, ev sandbox.Ev
 		}
 		if job.State != store.JobCompleted && ev.Runner.Result != "" {
 			s.mu.Lock()
-			s.results[job.ID] = runnerResult{jobResult(ev.Runner.Result), s.now()}
+			s.results[job.ID] = runnerResult{store.ResultOf(ev.Runner.Result), s.now()}
 			s.mu.Unlock()
 		}
 		if job.Debug {

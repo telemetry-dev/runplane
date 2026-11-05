@@ -310,7 +310,7 @@ func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) 
 		return nil, notFound(err, "No server has this ID.")
 	}
 	// The delete can change the servers of pools, or disable them.
-	h.poolsChanged(ctx)
+	h.poolsChanged()
 	h.audit(ctx, "server.delete", v.ID, map[string]any{"name": v.Name})
 	return nil, nil
 }

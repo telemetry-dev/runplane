@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -79,17 +80,16 @@ type ScaleSetStats struct {
 func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 	st := h.d.Store
 	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}}
-	web := "https://github.com"
 	app, err := st.GetGitHubApp(ctx)
 	switch {
 	case err == nil:
-		web = gitHubWeb(app.HTMLURL)
 		slug := url.PathEscape(app.Slug)
+		owner := ghrest.Account{Type: app.OwnerType, Login: app.OwnerLogin}
 		out.App = &GitHubApp{
 			AppID: app.AppID, Slug: app.Slug, Name: app.Name, ClientID: app.ClientID, OwnerLogin: app.OwnerLogin,
 			OwnerType: app.OwnerType, HTMLURL: app.HTMLURL, CreatedAt: app.CreatedAt,
-			SettingsURL: accountSettings(web, app.OwnerType, app.OwnerLogin) + "/apps/" + slug,
-			InstallURL:  web + "/apps/" + slug + "/installations/new",
+			SettingsURL: owner.SettingsURL(ghrest.Web) + "/apps/" + slug,
+			InstallURL:  ghrest.Web + "/apps/" + slug + "/installations/new",
 		}
 	case !errors.Is(err, store.ErrNotFound):
 		return GitHubStatus{}, err
@@ -109,7 +109,8 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 			ID: inst.ID, AccountLogin: inst.AccountLogin, AccountType: inst.AccountType, AvatarURL: inst.AvatarURL,
 			RepositorySelection: inst.RepositorySelection, RepositoryCount: len(repos), Repositories: make([]Repository, len(repos)),
 			Suspended: inst.SuspendedAt != nil, SuspendedAt: inst.SuspendedAt,
-			HTMLURL: accountSettings(web, inst.AccountType, inst.AccountLogin) + "/installations/" + strconv.FormatInt(inst.ID, 10),
+			HTMLURL: ghrest.Account{Type: inst.AccountType, Login: inst.AccountLogin}.SettingsURL(ghrest.Web) +
+				"/installations/" + strconv.FormatInt(inst.ID, 10),
 		})
 		list := out.Installations[len(out.Installations)-1].Repositories
 		for i, r := range repos {
@@ -141,24 +142,6 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 		})
 	}
 	return out, nil
-}
-
-// gitHubWeb returns the scheme and host of the app URL, which differ from
-// https://github.com on GitHub Enterprise Server.
-func gitHubWeb(appURL string) string {
-	if u, err := url.Parse(appURL); err == nil && u.Host != "" {
-		return u.Scheme + "://" + u.Host
-	}
-	return "https://github.com"
-}
-
-// accountSettings is the settings page of a GitHub account. Its apps and
-// installations pages are below it.
-func accountSettings(web, accountType, login string) string {
-	if accountType == "Organization" {
-		return web + "/organizations/" + url.PathEscape(login) + "/settings"
-	}
-	return web + "/settings"
 }
 
 // runnerGroup names the runner group of a scale set. runplane makes its
@@ -240,11 +223,7 @@ func (h *Handler) githubCallback(ctx context.Context, in *githubCallbackInput) (
 	if h.d.GitHub == nil {
 		return redirect(h.githubErrorPage(ctx, "The GitHub connection is not available in this runplane process.")), nil
 	}
-	base, err := h.baseURL(ctx)
-	if err != nil {
-		return nil, err
-	}
-	to, err = h.d.GitHub.Callback(ctx, base, in.Code, in.State)
+	to, err := h.d.GitHub.Callback(ctx, in.Code, in.State)
 	if err != nil {
 		h.d.Log.Warn("github app manifest callback", "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
@@ -270,11 +249,7 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 	if h.d.GitHub == nil {
 		return redirect(h.githubErrorPage(ctx, "The GitHub connection is not available in this runplane process.")), nil
 	}
-	base, err := h.baseURL(ctx)
-	if err != nil {
-		return nil, err
-	}
-	to, err = h.d.GitHub.Setup(ctx, base, in.InstallationID, in.SetupAction)
+	to, err := h.d.GitHub.Setup(ctx, in.InstallationID, in.SetupAction)
 	if err != nil {
 		h.d.Log.Warn("github installation setup", "installation", in.InstallationID, "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil

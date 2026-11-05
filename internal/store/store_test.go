@@ -25,7 +25,7 @@ func must(t *testing.T, err error) {
 // addJob records a job message.
 func addJob(t *testing.T, s *Store, m JobMessage) Job {
 	t.Helper()
-	j, err := s.UpsertJob(t.Context(), m)
+	j, _, err := s.UpsertJob(t.Context(), m, time.Now())
 	must(t, err)
 	return j
 }

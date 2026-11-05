@@ -35,13 +35,13 @@ func insertSandbox(t *testing.T, st *store.Store, id string, state sandbox.State
 func TestLookupStore(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
-	job, err := st.UpsertJob(ctx, store.JobMessage{
+	job, _, err := st.UpsertJob(ctx, store.JobMessage{
 		RunnerRequestID: 7, State: store.JobRunning, Repository: "octo/api", JobName: "build",
-	})
+	}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{Actor: "octocat"}); err != nil {
+	if err := st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{Actor: "octocat"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	// The sandboxes of each group started in the same second, so their IDs

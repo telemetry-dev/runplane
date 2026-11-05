@@ -144,6 +144,7 @@ func (h *Handler) updateNotification(ctx context.Context, in *struct {
 	if b.URL != nil {
 		c.URLEnc = h.d.Box.Seal([]byte(rawURL))
 	}
+	c.UpdatedAt = time.Now()
 	if err := h.d.Store.UpdateNotificationChannel(ctx, c); err != nil {
 		return nil, notFound(err, "No notification channel has this ID.")
 	}

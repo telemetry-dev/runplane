@@ -134,13 +134,13 @@ func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
 
 	jobs := map[string]store.Job{}
 	for i, result := range []string{store.ResultFailed, store.ResultCancelled, store.ResultSucceeded} {
-		j, err := d.Store.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobCompleted,
-			Result: result, Repository: "acme/api", JobName: "test"})
+		j, _, err := d.Store.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobCompleted,
+			Result: result, Repository: "acme/api", JobName: "test"}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if result != store.ResultFailed {
-			if err := d.Store.SetJobEnrichment(ctx, j.ID, store.JobEnrichment{HeadBranch: "main"}); err != nil {
+			if err := d.Store.SetJobEnrichment(ctx, j.ID, store.JobEnrichment{HeadBranch: "main"}, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if j, err = d.Store.GetJob(ctx, j.ID); err != nil {
@@ -160,7 +160,7 @@ func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
 	if got := h.events(); len(got) != 0 {
 		t.Fatalf("alerts before the run data: %+v", got)
 	}
-	if err := d.Store.SetJobEnrichment(ctx, failed.ID, store.JobEnrichment{HeadBranch: "main", Actor: "octo"}); err != nil {
+	if err := d.Store.SetJobEnrichment(ctx, failed.ID, store.JobEnrichment{HeadBranch: "main", Actor: "octo"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	enriched, err := d.Store.GetJob(ctx, failed.ID)
@@ -189,8 +189,8 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 	subscribe(t, d, h, "hook", true, JobFailed)
 	bus := runDispatcher(t, d)
 
-	j, err := d.Store.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
-		Result: store.ResultFailed, Repository: "acme/api", JobName: "test"})
+	j, _, err := d.Store.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
+		Result: store.ResultFailed, Repository: "acme/api", JobName: "test"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

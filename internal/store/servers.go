@@ -215,6 +215,13 @@ func (s *Store) CreateServerToken(ctx context.Context, t ServerToken) error {
 	return exec(ctx, s.w, "create server token", insert("server_tokens", tokenCols), t.cols()...)
 }
 
+// DeleteExpiredServerTokens deletes the tokens that expired at now. It keeps
+// the used tokens as a record.
+func (s *Store) DeleteExpiredServerTokens(ctx context.Context, now time.Time) error {
+	return exec(ctx, s.w, "delete expired server tokens",
+		"DELETE FROM server_tokens WHERE used_at IS NULL AND expires_at <= ?", ms(now))
+}
+
 func (s *Store) GetServerToken(ctx context.Context, id string) (ServerToken, error) {
 	return queryOne(ctx, s.r, "get server token", scanRow[ServerToken], "SELECT "+tokenCols+" FROM server_tokens WHERE id = ?", id)
 }

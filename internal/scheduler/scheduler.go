@@ -40,15 +40,10 @@ const (
 	resultTTL = time.Hour
 	// A debug re-run waits this long for its next attempt.
 	rerunTTL = 6 * time.Hour
-	// Server and cache samples stay a little longer than the 30-day overview.
-	statsRetention = 31 * 24 * time.Hour
 )
 
 // runnerStates are the states of a sandbox that counts as a runner of its scale set.
 var runnerStates = []sandbox.State{sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy}
-
-// liveStates are the states of a sandbox that still operates.
-var liveStates = []sandbox.State{sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy, sandbox.StateStopping}
 
 type Config struct {
 	Store   *store.Store
@@ -99,6 +94,8 @@ type runnerResult struct {
 	at     time.Time
 }
 
+// The work bits of Run. Each work updates the max runners, so doMaxRunners
+// only wakes Run.
 const (
 	doMaxRunners uint32 = 1 << iota
 	doResize
@@ -196,7 +193,7 @@ func (s *Scheduler) wake(work uint32) {
 }
 
 // PoolsChanged resizes all scale sets for the new pool settings.
-func (s *Scheduler) PoolsChanged(context.Context) { s.wake(doResize) }
+func (s *Scheduler) PoolsChanged() { s.wake(doResize) }
 
 // CapacityChanged compares the sandboxes with the rows again and resizes all
 // scale sets. The fleet calls it when a server comes or goes.
@@ -308,31 +305,14 @@ func (s *Scheduler) goBg(fn func(ctx context.Context)) {
 }
 
 func (s *Scheduler) publishPoolStats(ctx context.Context, poolID string) {
-	counts, err := s.st.CountLiveSandboxes(ctx)
+	counts, err := s.st.PoolCounts(ctx, s.now())
 	if err != nil {
-		s.log.Warn("count sandboxes", "err", err)
+		s.log.Warn("count pool runners and jobs", "err", err)
 		return
 	}
-	p := events.PoolStats{PoolID: poolID}
-	p.Queued, p.Assigned, err = s.st.CountPoolJobs(ctx, poolID, s.now().Add(-24*time.Hour))
-	if err != nil {
-		s.log.Warn("count jobs", "err", err)
-		return
-	}
-	for _, c := range counts {
-		if c.PoolID != poolID {
-			continue
-		}
-		switch c.State {
-		case sandbox.StateIdle:
-			p.Idle += c.Count
-		case sandbox.StateBusy:
-			p.Busy += c.Count
-		case sandbox.StateStarting:
-			p.Starting += c.Count
-		}
-	}
-	s.bus.Publish(p)
+	p := counts[poolID]
+	p.PoolID = poolID
+	s.bus.Publish(events.PoolStats(p))
 }
 
 // timeLimit is the time limit of a job of the pool. A warm sandbox of the

@@ -73,7 +73,7 @@ func (s *Scheduler) syncServers(ctx context.Context) {
 				s.log.Warn("cleanup: stop sandbox", "sandbox", x.ID, "err", err)
 			}
 		}
-		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: v.ID, States: liveStates})
+		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: v.ID, States: sandbox.LiveStates()})
 		if err != nil {
 			s.log.Warn("cleanup: list rows", "server", v.ID, "err", err)
 			continue
@@ -142,7 +142,7 @@ func (s *Scheduler) removeStrayRunners(ctx context.Context) {
 			starting[name] = true
 		}
 		s.mu.Unlock()
-		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{PoolID: h.set.PoolID, States: liveStates})
+		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{PoolID: h.set.PoolID, States: sandbox.LiveStates()})
 		if err != nil {
 			s.log.Warn("cleanup: list rows", "err", err)
 			continue
@@ -223,10 +223,9 @@ func (s *Scheduler) stopOverdue(ctx context.Context) {
 }
 
 // cancelLostJobs completes the running jobs whose sandbox is gone for more
-// than lostJobAfter with no completion message. The result is the one that
-// the runner reported, or else cancelled; a late JobCompleted, or the
-// conclusion of the GitHub job that the finish step reads, replaces a
-// cancelled result.
+// than lostJobAfter with no completion message. The result is a guess: the
+// one that the runner reported, or else cancelled. A late JobCompleted, or
+// the conclusion of the GitHub job that the finish step reads, replaces it.
 func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 	jobs, err := s.st.ListStaleRunningJobs(ctx, s.now().Add(-lostJobAfter))
 	if err != nil {
@@ -246,9 +245,9 @@ func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 		}
 		s.mu.Unlock()
 		s.log.Info("cleanup: complete a job whose sandbox is gone", "job", j.ID, "sandbox", j.SandboxID, "result", result)
-		done, err := s.st.UpsertJob(ctx, store.JobMessage{
-			RunnerRequestID: j.RunnerRequestID, State: store.JobCompleted, Result: result, FinishedAt: finished,
-		})
+		done, _, err := s.st.UpsertJob(ctx, store.JobMessage{
+			RunnerRequestID: j.RunnerRequestID, State: store.JobCompleted, Result: result, Guessed: true, FinishedAt: finished,
+		}, s.now())
 		if err != nil {
 			s.log.Warn("cleanup: complete job", "job", j.ID, "err", err)
 			continue
@@ -303,9 +302,7 @@ func (s *Scheduler) dropExpired() {
 }
 
 // retention deletes the jobs and sandbox rows older than job_retention_days,
-// the stored logs older than log_retention_days, the expired sessions and
-// tokens, and the old server and cache samples. A retention of 0 days keeps
-// everything.
+// and the stored logs older than log_retention_days.
 func (s *Scheduler) retention(ctx context.Context) {
 	st, err := s.st.GetSettings(ctx)
 	if err != nil {
@@ -313,33 +310,20 @@ func (s *Scheduler) retention(ctx context.Context) {
 		return
 	}
 	now := s.now()
-	if st.JobRetentionDays > 0 {
-		before := now.AddDate(0, 0, -st.JobRetentionDays)
-		ids, err := s.st.DeleteJobsBefore(ctx, before)
-		if err != nil {
-			s.log.Warn("retention: delete jobs", "err", err)
-		}
-		s.removeLogs(ids)
-		if err := s.st.DeleteSandboxesBefore(ctx, before); err != nil {
-			s.log.Warn("retention: delete sandboxes", "err", err)
-		}
+	before := now.AddDate(0, 0, -st.JobRetentionDays)
+	ids, err := s.st.DeleteJobsBefore(ctx, before)
+	if err != nil {
+		s.log.Warn("retention: delete jobs", "err", err)
 	}
-	if st.LogRetentionDays > 0 {
-		ids, err := s.st.ExpireJobLogs(ctx, now.AddDate(0, 0, -st.LogRetentionDays))
-		if err != nil {
-			s.log.Warn("retention: expire logs", "err", err)
-		}
-		s.removeLogs(ids)
+	s.removeLogs(ids)
+	if err := s.st.DeleteSandboxesBefore(ctx, before); err != nil {
+		s.log.Warn("retention: delete sandboxes", "err", err)
 	}
-	if err := s.st.DeleteExpired(ctx, now); err != nil {
-		s.log.Warn("retention: delete expired rows", "err", err)
+	ids, err = s.st.ExpireJobLogs(ctx, now.AddDate(0, 0, -st.LogRetentionDays))
+	if err != nil {
+		s.log.Warn("retention: expire logs", "err", err)
 	}
-	if err := s.st.PruneServerStats(ctx, now.Add(-statsRetention)); err != nil {
-		s.log.Warn("retention: prune server stats", "err", err)
-	}
-	if err := s.st.PruneCacheStats(ctx, now.Add(-statsRetention)); err != nil {
-		s.log.Warn("retention: prune cache stats", "err", err)
-	}
+	s.removeLogs(ids)
 }
 
 func (s *Scheduler) removeLogs(jobIDs []string) {

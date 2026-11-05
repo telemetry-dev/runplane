@@ -29,6 +29,10 @@ type OverviewBucket struct {
 
 const recentJobs = 10
 
+// SampleRetention is how long the server and cache samples stay: a little
+// longer than the longest overview range of the dashboard, 30 days.
+const SampleRetention = 31 * 24 * time.Hour
+
 // Overview computes the dashboard numbers for [since, until). The buckets
 // start at since; the last bucket can end after until.
 func (s *Store) Overview(ctx context.Context, since, until time.Time, bucket time.Duration) (Overview, error) {

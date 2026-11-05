@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -17,7 +18,7 @@ type reservation struct {
 
 // placement is where a new sandbox goes.
 type placement struct {
-	host          sandbox.Host
+	host          Host
 	image         sandbox.ImageRef
 	runnerVersion string
 }
@@ -25,7 +26,7 @@ type placement struct {
 // hostCapacity is an online server and its capacity, with its reservations
 // counted as allocated.
 type hostCapacity struct {
-	sandbox.Host
+	Host
 	cap sandbox.Capacity
 }
 
@@ -102,12 +103,8 @@ func (s *Scheduler) hosts(ctx context.Context) []hostCapacity {
 // offer returns the image and the runner version for a sandbox of the pool
 // on the server, or false if the server cannot take sandboxes of the pool.
 // It does not check the CPU and memory.
-//
-// With allow_public_repos on, only VM servers get sandboxes: a runner is not
-// tied to a job, and GitHub can give any job of a scale set to any of its
-// runners.
 func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (sandbox.ImageRef, string, bool) {
-	if !canHost(h.Host, pool) || st.AllowPublicRepos && h.Driver.Mode() != sandbox.ModeVM ||
+	if !canHost(h.Host, pool) || !policy.RunnerAllowed(st, h.Driver.Mode()) ||
 		h.cap.FreeDiskPercent() <= st.MinFreeDiskPercent {
 		return sandbox.ImageRef{}, "", false
 	}
@@ -120,7 +117,7 @@ func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (s
 }
 
 // canHost tells if the pool allows sandboxes on the server.
-func canHost(h sandbox.Host, pool store.Pool) bool {
+func canHost(h Host, pool store.Pool) bool {
 	return h.Arch == pool.Arch && (len(pool.ServerIDs) == 0 || slices.Contains(pool.ServerIDs, h.ServerID))
 }
 

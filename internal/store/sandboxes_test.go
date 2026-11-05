@@ -2,6 +2,10 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,5 +53,96 @@ func TestAdvanceSandboxStateTimes(t *testing.T) {
 
 	if _, _, err := s.AdvanceSandboxState(ctx, "missing", sandbox.StateIdle, "", sec(0)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown sandbox: err = %v, want ErrNotFound", err)
+	}
+}
+
+// The cache server and the registry mirror find the sandbox of each request
+// by its address with the partial index sandboxes_live_ip. SQLite uses the
+// index only if the query has the WHERE clause of the index, so the live
+// states of package sandbox must agree with the index of the migrations.
+func TestLiveSandboxQueryUsesTheIndex(t *testing.T) {
+	s := openTest(t)
+	ctx := t.Context()
+	index, err := queryOne(ctx, s.r, "read index", scanValue[string],
+		"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'sandboxes_live_ip'")
+	must(t, err)
+	if !strings.HasSuffix(index, " WHERE "+liveState) {
+		t.Errorf("index %q, want the WHERE clause %q: add a migration that makes the index again", index, liveState)
+	}
+	plan, err := queryAll(ctx, s.r, "explain", func(sc scanner) (string, error) {
+		var id, parent, unused int
+		var detail string
+		err := sc.Scan(&id, &parent, &unused, &detail)
+		return detail, err
+	}, "EXPLAIN QUERY PLAN "+sandboxJobByIP, "10.200.0.2", "srv1")
+	must(t, err)
+	if !slices.ContainsFunc(plan, func(d string) bool { return strings.Contains(d, "sandboxes_live_ip") }) {
+		t.Errorf("query plan %q does not use sandboxes_live_ip", plan)
+	}
+}
+
+// The job and its sandbox name each other. A link to a job that does not
+// exist must not give the sandbox the job.
+func TestLinkJobSandbox(t *testing.T) {
+	s := openTest(t)
+	ctx := t.Context()
+	must(t, s.InsertSandbox(ctx, Sandbox{ID: "b1", PoolID: "p", ServerID: "v1", Mode: sandbox.ModeContainer,
+		State: sandbox.StateBusy, CreatedAt: sec(0)}))
+	j := addJob(t, s, JobMessage{RunnerRequestID: 1, State: JobRunning, QueuedAt: sec(0)})
+
+	if _, _, err := s.LinkJobSandbox(ctx, "missing", "b1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("link to a missing job: err = %v, want ErrNotFound", err)
+	}
+	if b, _ := s.GetSandbox(ctx, "b1"); b.JobID != "" {
+		t.Errorf("sandbox job %q after a failed link, want none", b.JobID)
+	}
+	job, b, err := s.LinkJobSandbox(ctx, j.ID, "b1")
+	must(t, err)
+	if job.SandboxID != "b1" || job.ServerID != "v1" || b.JobID != j.ID {
+		t.Errorf("job sandbox %q server %q, sandbox job %q; want b1, v1, %s", job.SandboxID, job.ServerID, b.JobID, j.ID)
+	}
+}
+
+// The runners page shows the runners of each pool and its jobs that wait
+// for a runner: queued or assigned in the last 24 hours, and not rejected.
+func TestPoolCounts(t *testing.T) {
+	s := openTest(t)
+	ctx := t.Context()
+	now := sec(48 * 3600)
+	for i, b := range []struct {
+		pool  string
+		state sandbox.State
+	}{
+		{"p1", sandbox.StateIdle}, {"p1", sandbox.StateIdle}, {"p1", sandbox.StateBusy}, {"p1", sandbox.StateStarting},
+		{"p1", sandbox.StateStopping}, {"p1", sandbox.StateGone}, {"p2", sandbox.StateBusy},
+	} {
+		must(t, s.InsertSandbox(ctx, Sandbox{ID: fmt.Sprintf("b%d", i), PoolID: b.pool, ServerID: "v1",
+			Mode: sandbox.ModeContainer, State: b.state, CreatedAt: sec(0)}))
+	}
+	for i, j := range []struct {
+		pool, state, reject string
+		queuedAgo           time.Duration
+	}{
+		{"p1", JobQueued, "", time.Hour},
+		{"p1", JobQueued, "Public repository: the setting allow_public_repos is off.", time.Hour},
+		{"p1", JobAssigned, "", time.Hour},
+		{"p1", JobRunning, "", time.Hour},
+		{"p1", JobQueued, "", 25 * time.Hour},
+		{"p2", JobQueued, "", time.Minute},
+	} {
+		job := addJob(t, s, JobMessage{RunnerRequestID: int64(i + 1), State: j.state, PoolID: j.pool, QueuedAt: now.Add(-j.queuedAgo)})
+		if j.reject != "" {
+			must(t, s.SetJobRejectReason(ctx, job.ID, j.reject))
+		}
+	}
+
+	got, err := s.PoolCounts(ctx, now)
+	must(t, err)
+	want := map[string]PoolCounts{
+		"p1": {PoolID: "p1", Idle: 2, Busy: 1, Starting: 1, Queued: 2, Assigned: 1},
+		"p2": {PoolID: "p2", Busy: 1, Queued: 1},
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("counts = %+v, want %+v", got, want)
 	}
 }

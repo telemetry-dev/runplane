@@ -20,9 +20,6 @@ import (
 	"github.com/runplane/runplane/internal/version"
 )
 
-// liveStates are the states of a sandbox that still operates.
-var liveStates = []sandbox.State{sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy, sandbox.StateStopping}
-
 // seedImages adds the builtin images at the first start, and reports if
 // this is the first start.
 func (f *Fleet) seedImages(ctx context.Context) (bool, error) {
@@ -372,7 +369,7 @@ func (f *Fleet) gcImages(ctx context.Context, n *node, skip string) {
 		f.log.Warn("list image builds", "err", err)
 		return
 	}
-	live, err := f.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: n.id, States: liveStates})
+	live, err := f.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: n.id, States: sandbox.LiveStates()})
 	if err != nil {
 		f.log.Warn("list sandboxes", "err", err)
 		return
@@ -397,7 +394,7 @@ func (f *Fleet) gcImages(ctx context.Context, n *node, skip string) {
 // versions of its live sandboxes. An agent of an older release has no prune
 // route; it keeps its bundles.
 func (f *Fleet) pruneRunners(ctx context.Context, n *node) {
-	live, err := f.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: n.id, States: liveStates})
+	live, err := f.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: n.id, States: sandbox.LiveStates()})
 	if err != nil {
 		f.log.Warn("list sandboxes", "err", err)
 		return

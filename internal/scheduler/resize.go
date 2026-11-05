@@ -9,12 +9,10 @@ import (
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
-
-// labelPool is the container or VM label with the pool ID of a sandbox.
-const labelPool = "dev.runplane.pool"
 
 func (s *Scheduler) resizeAll(ctx context.Context) {
 	for _, h := range s.attached() {
@@ -133,7 +131,6 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		TimeLimit:     timeLimit(pool, st),
 		JITConfig:     jit.Encoded,
 		Debug:         debug,
-		Labels:        map[string]string{sandbox.LabelSandbox: id, labelPool: pool.ID},
 	}
 	if err := s.launch(ctx, p, b, spec); err == nil {
 		return
@@ -224,7 +221,7 @@ func (s *Scheduler) staleReason(b store.Sandbox, pool store.Pool, st store.Setti
 	if s.now().Sub(b.CreatedAt) >= timeLimit(pool, st) {
 		return "it waited for a job for the whole time limit"
 	}
-	if st.AllowPublicRepos && b.Mode != sandbox.ModeVM {
+	if !policy.RunnerAllowed(st, b.Mode) {
 		return "public repositories need VM mode"
 	}
 	if b.VCPU != pool.VCPU || b.MemoryMB != pool.MemoryMB || b.DiskGB != pool.DiskGB {

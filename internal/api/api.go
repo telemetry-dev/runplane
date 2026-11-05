@@ -111,26 +111,27 @@ func OpenAPI() ([]byte, error) {
 
 type Scheduler interface {
 	// PoolsChanged tells the scheduler that a pool was made, changed, or deleted.
-	PoolsChanged(ctx context.Context)
+	PoolsChanged()
 	StopSandbox(ctx context.Context, id string) error
 	// RerunJob asks GitHub to run the job again. With debug, the new attempt
 	// keeps its sandbox after the job for a debug shell.
 	RerunJob(ctx context.Context, jobID string, debug bool) error
 }
 
-// GitHub has the GitHub App flows. base is the browser URL of runplane, for
-// example "https://ci.example.com", without a trailing slash.
+// GitHub has the GitHub App flows.
 type GitHub interface {
 	// Manifest returns the GitHub URL that the browser posts the form to and
-	// the manifest JSON for the form field "manifest".
+	// the manifest JSON for the form field "manifest". base is the browser
+	// URL of runplane, for example "https://ci.example.com", without a
+	// trailing slash.
 	Manifest(ctx context.Context, base, accountType, organization string) (actionURL, manifest string, err error)
 	// Callback converts the manifest code into the app and returns the URL
 	// for the browser, normally the app installation page on GitHub.
-	Callback(ctx context.Context, base, code, state string) (redirect string, err error)
+	Callback(ctx context.Context, code, state string) (redirect string, err error)
 	// Setup records an installation, syncs its repositories, and makes the
 	// scale sets. It returns the URL for the browser. installationID is 0
 	// when setupAction is "request".
-	Setup(ctx context.Context, base string, installationID int64, setupAction string) (redirect string, err error)
+	Setup(ctx context.Context, installationID int64, setupAction string) (redirect string, err error)
 	// Sync reads the installations, repositories, and suspensions now.
 	Sync(ctx context.Context) error
 	// Disconnect stops the listeners, deletes the scale sets, and removes the app.

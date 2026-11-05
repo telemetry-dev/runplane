@@ -4,16 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
-
-	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/listener"
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
@@ -47,10 +45,8 @@ func (r *recorder) index(call string) int {
 }
 
 // fakeDriver counts a sandbox in its capacity from the moment Start
-// returns, as the real drivers do. The scheduler calls no method of the nil
-// sandbox.Driver.
+// returns, as the real drivers do.
 type fakeDriver struct {
-	sandbox.Driver
 	rec  *recorder
 	base sandbox.Capacity
 
@@ -124,24 +120,32 @@ func (d *fakeDriver) Hold(ctx context.Context, id string, until time.Time) error
 	return nil
 }
 
+// fakeFleet has the servers of addServer. Like the fleet, it gives the
+// driver of each connected server, and only the online ones take new
+// sandboxes.
 type fakeFleet struct {
-	mu       sync.Mutex
-	hosts    []sandbox.Host
-	noImage  map[string]bool // server IDs without the image
-	offline  map[string]bool // server IDs that are not connected
-	imageRef sandbox.ImageRef
-	runner   string // the runner version for new sandboxes
+	mu           sync.Mutex
+	hosts        []Host
+	noImage      map[string]bool // server IDs without the image
+	disconnected map[string]bool // server IDs with no connection
+	notOnline    map[string]bool // connected server IDs that are draining or disabled
+	imageRef     sandbox.ImageRef
+	runner       string // the runner version for new sandboxes
 }
 
-func (f *fakeFleet) Online() []sandbox.Host {
+func (f *fakeFleet) Online() []Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return slices.DeleteFunc(slices.Clone(f.hosts), func(h sandbox.Host) bool { return f.offline[h.ServerID] })
+	return slices.DeleteFunc(slices.Clone(f.hosts), func(h Host) bool {
+		return f.disconnected[h.ServerID] || f.notOnline[h.ServerID]
+	})
 }
 
-func (f *fakeFleet) Driver(serverID string) sandbox.Driver {
-	for _, h := range f.Online() {
-		if h.ServerID == serverID {
+func (f *fakeFleet) Driver(serverID string) Driver {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, h := range f.hosts {
+		if h.ServerID == serverID && !f.disconnected[serverID] {
 			return h.Driver
 		}
 	}
@@ -175,11 +179,11 @@ type fakeClient struct {
 	jitEntered chan struct{}
 }
 
-func (c *fakeClient) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
+func (c *fakeClient) AcquireJobs(ctx context.Context, keys []int64) ([]int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.acquired = append(c.acquired, slices.Clone(requestIDs))
-	return requestIDs, nil
+	c.acquired = append(c.acquired, slices.Clone(keys))
+	return keys, nil
 }
 
 func (c *fakeClient) GenerateJITConfig(ctx context.Context, runnerName string) (JITConfig, error) {
@@ -231,7 +235,9 @@ type fakeGitHub struct {
 	checkErrs  map[string]error    // by repository
 	checkCalls int
 	noLog      bool // DownloadLog fails, as for a log that GitHub has not ready yet
+	brokenLog  bool // the log download fails before the end of the log
 	steps      []store.JobStep
+	results    map[int64]string // the result on GitHub of a completed job, by request ID; absent: not completed
 }
 
 func (g *fakeGitHub) CheckJob(ctx context.Context, repository string, runID int64) (JobCheck, error) {
@@ -248,9 +254,22 @@ func (g *fakeGitHub) CheckJob(ctx context.Context, repository string, runID int6
 	return c, nil
 }
 
-func (g *fakeGitHub) Enrich(ctx context.Context, job store.Job) error {
+// Enrich gives the run data of CheckJob, as GitHub has one run for both.
+func (g *fakeGitHub) Enrich(ctx context.Context, job store.Job) (Enrichment, error) {
 	g.rec.add("enrich %s", job.ID)
-	return nil
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ref := g.checks[job.Repository].Ref
+	e := Enrichment{JobEnrichment: store.JobEnrichment{
+		GitHubJobID: 9000 + job.RunnerRequestID, WorkflowName: "CI", RunNumber: 12, RunAttempt: 1,
+		HeadBranch: ref.HeadBranch, Event: ref.Event, PRNumber: ref.PRNumber, BaseRef: ref.BaseRef,
+		HTMLURL: fmt.Sprintf("https://github.com/%s/actions/runs/%d/job/%d", job.Repository, job.RunID, 9000+job.RunnerRequestID),
+		Steps:   g.steps,
+	}}
+	if r, ok := g.results[job.RunnerRequestID]; ok {
+		e.Result, e.FinishedAt = r, start.Add(4*time.Minute)
+	}
+	return e, nil
 }
 
 func (g *fakeGitHub) Steps(ctx context.Context, job store.Job) ([]store.JobStep, error) {
@@ -260,15 +279,20 @@ func (g *fakeGitHub) Steps(ctx context.Context, job store.Job) ([]store.JobStep,
 	return g.steps, nil
 }
 
-func (g *fakeGitHub) DownloadLog(ctx context.Context, job store.Job, path string) error {
+const fakeLog = "2026-11-04T12:00:00.0000000Z ##[group]Run actions/checkout@v5\n"
+
+func (g *fakeGitHub) DownloadLog(ctx context.Context, job store.Job) (io.ReadCloser, error) {
 	g.rec.add("download %s", job.ID)
 	g.mu.Lock()
-	noLog := g.noLog
+	noLog, broken := g.noLog, g.brokenLog
 	g.mu.Unlock()
 	if noLog {
-		return errors.New("GitHub API GET /repos/acme/api/actions/jobs/1/logs: 404 Not Found")
+		return nil, errors.New("GitHub GET /repos/acme/api/actions/jobs/1/logs: 404 Not Found")
 	}
-	return os.WriteFile(path, []byte("2026-11-04T12:00:00.0000000Z ##[group]Run actions/checkout@v5\n"), 0o600)
+	if broken {
+		return io.NopCloser(io.MultiReader(strings.NewReader(fakeLog[:20]), iotest.ErrReader(io.ErrUnexpectedEOF))), nil
+	}
+	return io.NopCloser(strings.NewReader(fakeLog)), nil
 }
 
 func (g *fakeGitHub) Rerun(ctx context.Context, job store.Job) error {
@@ -327,11 +351,11 @@ func newTestEnv(t *testing.T) *testEnv {
 		logs:  t.TempDir(),
 	}
 	e.fleet = &fakeFleet{
-		noImage: map[string]bool{}, offline: map[string]bool{},
+		noImage: map[string]bool{}, disconnected: map[string]bool{}, notOnline: map[string]bool{},
 		imageRef: sandbox.ImageRef{Ref: "ghcr.io/runplane/ubuntu-24.04:latest", Digest: "sha256:5f1c0e7c3d0b4a8e9f6a2b1c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e"},
 		runner:   "2.330.0",
 	}
-	e.gh = &fakeGitHub{rec: e.rec, checks: map[string]JobCheck{}}
+	e.gh = &fakeGitHub{rec: e.rec, checks: map[string]JobCheck{}, results: map[int64]string{}}
 	e.setSettings(func(s *store.Settings) { s.Mode = sandbox.ModeContainer })
 	e.s = New(Config{Store: st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, LogsDir: e.logs, Now: e.clock.now})
 	t.Cleanup(e.s.stopBg)
@@ -366,7 +390,7 @@ func (e *testEnv) addServer(name string, c sandbox.Capacity) (string, *fakeDrive
 	}
 	d := &fakeDriver{rec: e.rec, base: c, running: map[string]sandbox.Spec{}, holds: map[string]time.Time{}}
 	e.fleet.mu.Lock()
-	e.fleet.hosts = append(e.fleet.hosts, sandbox.Host{ServerID: id, Name: name, Arch: c.Arch, Driver: d})
+	e.fleet.hosts = append(e.fleet.hosts, Host{ServerID: id, Name: name, Arch: c.Arch, Driver: d})
 	e.fleet.mu.Unlock()
 	return id, d
 }
@@ -386,7 +410,7 @@ func (e *testEnv) addPool(label string, opts ...func(*store.Pool)) store.Pool {
 	return p
 }
 
-func (e *testEnv) attach(p store.Pool) (*fakeClient, listener.Scaler, store.ScaleSet) {
+func (e *testEnv) attach(p store.Pool) (*fakeClient, Scaler, store.ScaleSet) {
 	e.t.Helper()
 	set := store.ScaleSet{
 		ID: ids.New(), PoolID: p.ID, InstallationID: 41029384, GitHubID: 7, RunnerGroupID: 1,
@@ -399,9 +423,9 @@ func (e *testEnv) attach(p store.Pool) (*fakeClient, listener.Scaler, store.Scal
 	return c, e.s.Attach(set, c), set
 }
 
-func (e *testEnv) scale(sc listener.Scaler, msg *scaleset.RunnerScaleSetMessage) {
+func (e *testEnv) scale(sc Scaler, m Message) {
 	e.t.Helper()
-	if err := sc.Scale(e.ctx, msg); err != nil {
+	if err := sc.Scale(e.ctx, m); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -468,62 +492,53 @@ func (e *testEnv) insertSandbox(p store.Pool, set store.ScaleSet, serverID strin
 
 // msg makes a listener message with the job messages, and with
 // assignedJobs assigned and running jobs in its statistics.
-func msg(assignedJobs int, jobs ...any) *scaleset.RunnerScaleSetMessage {
-	m := &scaleset.RunnerScaleSetMessage{
-		Statistics: &scaleset.RunnerScaleSetStatistic{TotalAssignedJobs: assignedJobs, TotalRunningJobs: assignedJobs},
-	}
+func msg(assignedJobs int, jobs ...JobMessage) Message {
+	m := Message{Stats: &store.ScaleSetStats{AssignedJobs: assignedJobs, RunningJobs: assignedJobs}}
 	for _, j := range jobs {
-		switch j := j.(type) {
-		case *scaleset.JobAvailable:
-			m.JobAvailableMessages = append(m.JobAvailableMessages, j)
-		case *scaleset.JobAssigned:
-			m.JobAssignedMessages = append(m.JobAssignedMessages, j)
-		case *scaleset.JobStarted:
-			m.JobStartedMessages = append(m.JobStartedMessages, j)
-		case *scaleset.JobCompleted:
-			m.JobCompletedMessages = append(m.JobCompletedMessages, j)
-		default:
-			panic(fmt.Sprintf("msg: %T is no job message", j))
+		switch j.State {
+		case store.JobQueued:
+			m.Available = append(m.Available, j)
+		case store.JobAssigned:
+			m.Assigned = append(m.Assigned, j)
+		case store.JobRunning:
+			m.Started = append(m.Started, j)
+		case store.JobCompleted:
+			m.Completed = append(m.Completed, j)
 		}
 	}
 	return m
 }
 
-func base(requestID int64, repo string, runID int64, jobName string) scaleset.JobMessageBase {
-	owner, name, _ := strings.Cut(repo, "/")
-	return scaleset.JobMessageBase{
+// available makes the message of a job that GitHub offers, as the github
+// package gives it.
+func available(requestID int64, repo string, runID int64, jobName string) JobMessage {
+	return JobMessage{JobMessage: store.JobMessage{
 		RunnerRequestID: requestID,
-		RepositoryName:  name,
-		OwnerName:       owner,
-		JobID:           fmt.Sprintf("b6a1c2d3-%04d-4e5f-8a9b-0c1d2e3f4a5b", requestID%10000),
-		JobWorkflowRef:  repo + "/.github/workflows/ci.yml@refs/heads/main",
-		JobDisplayName:  jobName,
-		WorkflowRunID:   runID,
-		EventName:       "push",
-		RequestLabels:   []string{"runplane"},
-		QueueTime:       start,
-	}
+		State:           store.JobQueued,
+		Repository:      repo,
+		WorkflowRef:     repo + "/.github/workflows/ci.yml@refs/heads/main",
+		JobName:         jobName,
+		RunID:           runID,
+		Event:           "push",
+		Labels:          []string{"runplane"},
+		QueuedAt:        start,
+	}}
 }
 
-func available(requestID int64, repo string, runID int64, jobName string) *scaleset.JobAvailable {
-	return &scaleset.JobAvailable{JobMessageBase: base(requestID, repo, runID, jobName)}
+func assigned(requestID int64, repo string, runID int64, jobName string) JobMessage {
+	m := available(requestID, repo, runID, jobName)
+	m.State, m.AssignedAt = store.JobAssigned, start.Add(time.Second)
+	return m
 }
 
-func assigned(requestID int64, repo string, runID int64, jobName string) *scaleset.JobAssigned {
-	b := base(requestID, repo, runID, jobName)
-	b.ScaleSetAssignTime = start.Add(time.Second)
-	return &scaleset.JobAssigned{JobMessageBase: b}
+func started(requestID int64, repo string, runID int64, jobName string, runner store.Sandbox) JobMessage {
+	m := assigned(requestID, repo, runID, jobName)
+	m.State, m.StartedAt, m.RunnerName = store.JobRunning, start.Add(5*time.Second), runner.RunnerName
+	return m
 }
 
-func started(requestID int64, repo string, runID int64, jobName string, runner store.Sandbox) *scaleset.JobStarted {
-	b := base(requestID, repo, runID, jobName)
-	b.ScaleSetAssignTime = start.Add(time.Second)
-	b.RunnerAssignTime = start.Add(5 * time.Second)
-	return &scaleset.JobStarted{RunnerID: int(runner.RunnerID), RunnerName: runner.RunnerName, JobMessageBase: b}
-}
-
-func completed(requestID int64, repo string, runID int64, jobName string, runner store.Sandbox, result string) *scaleset.JobCompleted {
-	s := started(requestID, repo, runID, jobName, runner)
-	s.FinishTime = start.Add(3 * time.Minute)
-	return &scaleset.JobCompleted{Result: result, RunnerID: s.RunnerID, RunnerName: s.RunnerName, JobMessageBase: s.JobMessageBase}
+func completed(requestID int64, repo string, runID int64, jobName string, runner store.Sandbox, result string) JobMessage {
+	m := started(requestID, repo, runID, jobName, runner)
+	m.State, m.Result, m.FinishedAt = store.JobCompleted, result, start.Add(3*time.Minute)
+	return m
 }

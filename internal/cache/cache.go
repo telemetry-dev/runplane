@@ -52,6 +52,7 @@ type Store interface {
 	DeleteCacheEntry(ctx context.Context, id string) error
 	CacheSize(ctx context.Context) (store.CacheBytes, error)
 	AddCacheStats(ctx context.Context, hour time.Time, repository string, c store.CacheCounts) error
+	PruneCacheStats(ctx context.Context, before time.Time) error
 }
 
 type Config struct {

@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/listener"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/runplane/runplane/internal/events"
@@ -78,7 +77,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	e := &env{t: t, st: st, box: box, bus: &events.Bus{}, mux: http.NewServeMux(), tokenTTL: time.Hour,
-		sched: &fakeScheduler{got: make(chan *scaleset.RunnerScaleSetMessage, 16)}}
+		sched: &fakeScheduler{got: make(chan scheduler.Message, 16)}}
 	e.srv = httptest.NewServer(e.mux)
 	t.Cleanup(e.srv.Close)
 	e.mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -179,38 +178,45 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 // fakeScheduler acquires every available job, like the real scheduler does
-// for jobs that it accepts. It sends the messages from GitHub to got.
+// for jobs that it accepts. It sends the messages with jobs to got.
 type fakeScheduler struct {
 	last     scheduler.ScaleSetClient // of the last attached scale set
 	detached []string
 	max      int
-	got      chan *scaleset.RunnerScaleSetMessage
+	got      chan scheduler.Message
+
+	mu       sync.Mutex
+	acquired []int64 // the keys that AcquireJobs gave back
 }
 
-func (f *fakeScheduler) Attach(_ store.ScaleSet, c scheduler.ScaleSetClient) listener.Scaler {
+func (f *fakeScheduler) Attach(_ store.ScaleSet, c scheduler.ScaleSetClient) scheduler.Scaler {
 	f.last = c
 	c.SetMaxRunners(f.max)
-	return scalerFunc(func(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) error {
-		if msg == nil || msg.MessageID == listener.InitialMessageID {
+	return scalerFunc(func(ctx context.Context, m scheduler.Message) error {
+		if len(m.Available) == 0 {
 			return nil
 		}
-		var ids []int64
-		for _, j := range msg.JobAvailableMessages {
-			ids = append(ids, j.RunnerRequestID)
+		var keys []int64
+		for _, j := range m.Available {
+			keys = append(keys, j.RunnerRequestID)
 		}
-		if _, err := c.AcquireJobs(ctx, ids); err != nil {
+		acquired, err := c.AcquireJobs(ctx, keys)
+		if err != nil {
 			return err
 		}
-		f.got <- msg
+		f.mu.Lock()
+		f.acquired = append(f.acquired, acquired...)
+		f.mu.Unlock()
+		f.got <- m
 		return nil
 	})
 }
 
 func (f *fakeScheduler) Detach(id string) { f.detached = append(f.detached, id) }
 
-type scalerFunc func(context.Context, *scaleset.RunnerScaleSetMessage) error
+type scalerFunc func(context.Context, scheduler.Message) error
 
-func (f scalerFunc) Scale(ctx context.Context, m *scaleset.RunnerScaleSetMessage) error {
+func (f scalerFunc) Scale(ctx context.Context, m scheduler.Message) error {
 	return f(ctx, m)
 }
 
@@ -221,6 +227,7 @@ type fakeActions struct {
 	actionsState
 	nextID     int
 	conflict   bool             // the session endpoint answers 409
+	noUpdate   bool             // the update of a scale set fails
 	agents     map[int64]string // runner ID -> "busy", "gone", or "broken"; others are removable
 	revokeNext bool             // the next admin token is revoked at once
 	revoked    string
@@ -306,8 +313,12 @@ func (e *env) actions() *fakeActions {
 		json.NewDecoder(r.Body).Decode(&s)
 		s.ID, _ = strconv.Atoi(r.PathValue("id"))
 		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.noUpdate {
+			actionsError(w, http.StatusBadRequest, "InvalidRunnerScaleSetException")
+			return
+		}
 		f.sets[s.ID] = s
-		f.mu.Unlock()
 		writeJSON(w, http.StatusOK, s)
 	})
 	m.HandleFunc("DELETE "+sets+"/{id}", func(w http.ResponseWriter, r *http.Request) {

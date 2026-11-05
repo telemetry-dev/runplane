@@ -16,6 +16,7 @@ import (
 
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
@@ -25,7 +26,9 @@ import (
 // organization can only use this group, and a repository has only this one.
 const defaultRunnerGroup = 1
 
-// target is one scale set that runplane wants on GitHub.
+// target is one scale set that runplane wants on GitHub. An organization
+// has one for each pool, and a personal account one for each pool and
+// repository.
 type target struct {
 	pool store.Pool
 	inst store.Installation
@@ -84,7 +87,7 @@ func (s *Service) targets(ctx context.Context) (map[string]target, error) {
 	}
 	byInst := map[int64][]store.Repository{}
 	for _, inst := range insts {
-		if inst.AccountType != "User" {
+		if inst.AccountType != ghrest.User {
 			continue
 		}
 		repos, err := s.st.ListRepositories(ctx, inst.ID)
@@ -99,17 +102,15 @@ func (s *Service) targets(ctx context.Context) (map[string]target, error) {
 			continue
 		}
 		for _, inst := range insts {
-			if inst.AccountType == "Organization" {
+			if inst.AccountType == ghrest.Organization {
 				t := target{pool: pool, inst: inst}
 				out[rowKey(t.row())] = t
 				continue
 			}
+			// A repository whose jobs runplane refuses gets no scale set. The
+			// scheduler checks the modes of the runners for each job.
 			for _, r := range byInst[inst.ID] {
-				// The scheduler takes a public job only if each runner of its
-				// pool is in a VM. The setting mode does not tell that: each
-				// server runs its own mode, and a mode change applies after a
-				// restart.
-				if r.Archived || (!r.Private && !settings.AllowPublicRepos) {
+				if r.Archived || policy.Refusal(settings, policy.Job{Private: r.Private}, nil) != "" {
 					continue
 				}
 				t := target{pool: pool, inst: inst, repo: &r}
@@ -175,11 +176,8 @@ func (s *Service) reconcileSets(ctx context.Context) error {
 func (s *Service) keepSet(ctx context.Context, row store.ScaleSet, t target) {
 	if t.inst.SuspendedAt != nil {
 		s.stopListener(row.ID)
-		msg := "GitHub suspended the app installation on " + t.inst.AccountLogin +
-			". runplane listens again when the installation is active."
-		if row.Status != store.ScaleSetError || row.Error != msg {
-			s.setStatus(ctx, row.ID, store.ScaleSetError, msg)
-		}
+		s.setStatus(ctx, row.ID, store.ScaleSetError, "GitHub suspended the app installation on "+t.inst.AccountLogin+
+			". runplane listens again when the installation is active.")
 		return
 	}
 	s.lmu.Lock()
@@ -191,23 +189,8 @@ func (s *Service) keepSet(ctx context.Context, row store.ScaleSet, t target) {
 		}
 	}
 	if row.Name != t.pool.Label {
-		s.rename(ctx, l, row, t.pool.Label)
+		l.rename(ctx, row, t.pool.Label)
 	}
-}
-
-func (s *Service) rename(ctx context.Context, l *setListener, row store.ScaleSet, label string) {
-	if row.GitHubID != 0 {
-		_, err := l.client().UpdateRunnerScaleSet(ctx, int(row.GitHubID), scaleSetSpec(label, int(row.RunnerGroupID)))
-		if err != nil {
-			s.setStatus(ctx, row.ID, store.ScaleSetError, "rename the scale set to "+label+" on GitHub: "+err.Error())
-			return
-		}
-	}
-	if err := s.st.SetScaleSetRemote(ctx, row.ID, row.GitHubID, row.RunnerGroupID, label); err != nil {
-		s.log.Warn("rename scale set", "scale_set", row.ID, "err", err)
-		return
-	}
-	l.setLabel(label)
 }
 
 // removeSet stops the listener and deletes the scale set on GitHub, then
@@ -221,9 +204,7 @@ func (s *Service) removeSet(ctx context.Context, row store.ScaleSet) {
 		return
 	}
 	if err == nil && t.inst.SuspendedAt == nil && (t.repo == nil || !t.repo.Archived) {
-		if row.Status != store.ScaleSetDeleting {
-			s.setStatus(ctx, row.ID, store.ScaleSetDeleting, "")
-		}
+		s.setStatus(ctx, row.ID, store.ScaleSetDeleting, "")
 		if err := s.deleteRemote(ctx, row.ID); err != nil {
 			s.setStatus(ctx, row.ID, store.ScaleSetDeleting, "delete the scale set on GitHub: "+err.Error())
 			return
@@ -371,14 +352,19 @@ func removeRunnerErr(err error) error {
 	return fmt.Errorf("remove runner: %w", err)
 }
 
-func (s *Service) setStatus(ctx context.Context, id, status, msg string) {
-	if err := s.st.SetScaleSetStatus(ctx, id, status, truncate(msg, 1000)); err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			s.log.Warn("set scale set status", "scale_set", id, "err", err)
-		}
-		return
+// setStatus writes the status and the error of a scale set row, and tells
+// if they changed. The listener of the row calls it through report; the
+// service calls it only for a row without a listener.
+func (s *Service) setStatus(ctx context.Context, id, status, msg string) bool {
+	changed, err := s.st.SetScaleSetStatus(ctx, id, status, truncate(msg, 1000), time.Now())
+	if err != nil {
+		s.log.Warn("set scale set status", "scale_set", id, "err", err)
+		return false
 	}
-	s.changed()
+	if changed {
+		s.changed()
+	}
+	return changed
 }
 
 func truncate(s string, n int) string {

@@ -102,7 +102,7 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 	u, _ := url.Parse(action)
 	state := u.Query().Get("state")
 
-	to, err := e.svc.Callback(ctx, "https://ci.example.com", "code123", state)
+	to, err := e.svc.Callback(ctx, "code123", state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,19 +116,16 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 	if app.AppID != 4242 || app.ClientID != "Iv23.abc" || app.OwnerLogin != "acme" || app.OwnerType != "Organization" {
 		t.Errorf("app = %+v", app)
 	}
-	if strings.Contains(string(app.PrivateKeyEnc), "PRIVATE KEY") || strings.Contains(string(app.ClientSecretEnc), "secret-1") {
-		t.Error("the store has the key or the client secret in clear text")
+	if strings.Contains(string(app.PrivateKeyEnc), "PRIVATE KEY") {
+		t.Error("the store has the key in clear text")
 	}
 	if key, err := e.box.Open(app.PrivateKeyEnc); err != nil || string(key) != string(testPEM()) {
 		t.Errorf("sealed key does not open to the PEM: %v", err)
 	}
-	if secret, err := e.box.Open(app.ClientSecretEnc); err != nil || string(secret) != "secret-1" {
-		t.Errorf("sealed client secret = %q, %v", secret, err)
-	}
 
 	// A state works one time, and a bad state does not reach GitHub.
 	for _, s := range []string{state, "bad-state"} {
-		if _, err := e.svc.Callback(ctx, "https://ci.example.com", "code123", s); err == nil {
+		if _, err := e.svc.Callback(ctx, "code123", s); err == nil {
 			t.Errorf("callback with the state %q succeeded", s)
 		}
 	}
@@ -157,9 +154,9 @@ func TestCallbackRejectsAppOfAnotherAccount(t *testing.T) {
 	}
 	u, _ := url.Parse(action)
 
-	_, err = e.svc.Callback(ctx, "https://ci.example.com", "code123", u.Query().Get("state"))
+	_, err = e.svc.Callback(ctx, "code123", u.Query().Get("state"))
 	if err == nil || !strings.Contains(err.Error(), "ada") || !strings.Contains(err.Error(), "Telemetry") ||
-		!strings.Contains(err.Error(), "https://github.com/settings/apps/runplane-ab12cd/advanced") {
+		!strings.Contains(err.Error(), e.srv.URL+"/settings/apps/runplane-ab12cd/advanced") {
 		t.Fatalf("err = %v, want the two accounts and the delete page of the app", err)
 	}
 	app, err := e.st.GetGitHubApp(ctx)
@@ -206,17 +203,16 @@ func TestDisconnectNamesScaleSetsLeftOnGitHub(t *testing.T) {
 
 func TestAppDeleteURL(t *testing.T) {
 	tests := []struct {
-		ownerType, htmlURL, want string
+		ownerType, want string
 	}{
-		{"Organization", "", "https://github.com/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
-		{"User", "", "https://github.com/settings/apps/runplane-ab12cd/advanced"},
-		{"Organization", "https://git.example.com/apps/runplane-ab12cd",
-			"https://git.example.com/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
+		{"Organization", "/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
+		{"User", "/settings/apps/runplane-ab12cd/advanced"},
 	}
+	e := newEnv(t)
 	for _, tt := range tests {
-		got := appDeleteURL(store.GitHubApp{Slug: "runplane-ab12cd", OwnerLogin: "acme", OwnerType: tt.ownerType, HTMLURL: tt.htmlURL})
-		if got != tt.want {
-			t.Errorf("appDeleteURL(%s, %q) = %q, want %q", tt.ownerType, tt.htmlURL, got, tt.want)
+		got := e.svc.appDeleteURL(store.GitHubApp{Slug: "runplane-ab12cd", OwnerLogin: "acme", OwnerType: tt.ownerType})
+		if got != e.srv.URL+tt.want {
+			t.Errorf("appDeleteURL(%s) = %q, want %q", tt.ownerType, got, tt.want)
 		}
 	}
 }

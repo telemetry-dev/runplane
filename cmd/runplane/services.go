@@ -15,6 +15,7 @@ import (
 	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/github"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/mirror"
@@ -34,15 +35,34 @@ type pools struct {
 	gh *github.Service
 }
 
-func (p pools) PoolsChanged(ctx context.Context) {
-	p.gh.PoolsChanged(ctx)
-	p.Scheduler.PoolsChanged(ctx)
+func (p pools) PoolsChanged() {
+	p.gh.PoolsChanged()
+	p.Scheduler.PoolsChanged()
 }
 
 // githubRef breaks the construction cycle of the github service: the
 // scheduler and the runner versions service get it first, and the github
 // service fills it.
 type githubRef struct{ *github.Service }
+
+// schedulerFleet gives the fleet to the scheduler, whose drivers have only
+// the methods that the scheduler uses.
+type schedulerFleet struct{ *fleet.Fleet }
+
+func (f schedulerFleet) Online() []scheduler.Host {
+	var hosts []scheduler.Host
+	for _, h := range f.Fleet.Online() {
+		hosts = append(hosts, scheduler.Host{ServerID: h.ServerID, Name: h.Name, Arch: h.Arch, Driver: h.Driver})
+	}
+	return hosts
+}
+
+func (f schedulerFleet) Driver(serverID string) scheduler.Driver {
+	if d := f.Fleet.Driver(serverID); d != nil {
+		return d
+	}
+	return nil
+}
 
 // caches is the api Caches service: the cache server, and the mirror stats
 // of all servers.
