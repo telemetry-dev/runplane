@@ -68,10 +68,10 @@ func TestDebugRerunHoldsSandbox(t *testing.T) {
 	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane")
 	_, sc, _ := e.attach(pool)
-	first, err := e.st.UpsertJob(e.ctx, store.JobMessage{
+	first, _, err := e.st.UpsertJob(e.ctx, store.JobMessage{
 		RunnerRequestID: 300, State: store.JobCompleted, Result: store.ResultFailed, PoolID: pool.ID,
 		Repository: "acme/api", JobName: "integration", RunID: 5150, QueuedAt: start,
-	})
+	}, start)
 	if err != nil {
 		t.Fatal(err)
 	}

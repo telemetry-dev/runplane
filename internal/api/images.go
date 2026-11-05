@@ -139,16 +139,16 @@ func (h *Handler) updateImage(ctx context.Context, in *struct {
 	}
 	refChanged := ref != img.Ref
 	if newName != img.Name || refChanged {
-		img.Name, img.Ref = newName, ref
+		img.Name, img.Ref, img.UpdatedAt = newName, ref, time.Now()
 		if err := h.d.Store.UpdateImage(ctx, img); err != nil {
 			return nil, imageErr(err)
 		}
 	}
 	if b.IsDefault != nil && *b.IsDefault && !img.IsDefault {
-		if err := h.d.Store.SetDefaultImage(ctx, img.ID); err != nil {
+		if err := h.d.Store.SetDefaultImage(ctx, img.ID, time.Now()); err != nil {
 			return nil, imageErr(err)
 		}
-		h.poolsChanged(ctx)
+		h.poolsChanged()
 	}
 	h.audit(ctx, "image.update", img.ID, map[string]any{"name": img.Name, "ref": img.Ref, "is_default": b.IsDefault})
 	h.d.Bus.Publish(events.ImageState(img))
@@ -176,7 +176,7 @@ func (h *Handler) deleteImage(ctx context.Context, in *PathID) (*empty, error) {
 	if err := h.d.Store.DeleteImage(ctx, img.ID); err != nil {
 		return nil, notFound(err, "No image has this ID.")
 	}
-	h.poolsChanged(ctx)
+	h.poolsChanged()
 	h.audit(ctx, "image.delete", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
 	return nil, nil
 }

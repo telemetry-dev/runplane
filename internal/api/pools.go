@@ -68,43 +68,20 @@ func (h *Handler) pools(ctx context.Context, list []store.Pool) ([]Pool, error) 
 			defaultImage = img.Name
 		}
 	}
-	counts, err := h.d.Store.CountLiveSandboxes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	queued, _, err := h.d.Store.ListJobs(ctx, store.JobFilter{Status: "queued", Since: time.Now().Add(-24 * time.Hour), Limit: 200})
+	counts, err := h.d.Store.PoolCounts(ctx, time.Now())
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Pool, len(list))
-	byID := map[string]*Pool{}
 	for i, p := range list {
+		c := counts[p.ID]
 		out[i] = Pool{
 			ID: p.ID, Name: p.Name, Label: p.Label, Arch: p.Arch, VCPU: p.VCPU, MemoryMB: p.MemoryMB, DiskGB: p.DiskGB,
 			ImageID: p.ImageID, ImageName: cmp.Or(imageNames[p.ImageID], defaultImage), MinIdle: p.MinIdle,
 			MaxRunners: p.MaxRunners, TimeLimitMinutes: p.TimeLimitMinutes, ServerIDs: orEmpty(p.ServerIDs),
 			Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+			Idle: c.Idle, Busy: c.Busy, Starting: c.Starting, Queued: c.Queued,
 			PoolPlacement: placer.place(p.Arch, p.VCPU, p.MemoryMB, p.ServerIDs),
-		}
-		byID[p.ID] = &out[i]
-	}
-	for _, c := range counts {
-		p := byID[c.PoolID]
-		if p == nil {
-			continue
-		}
-		switch c.State {
-		case sandbox.StateIdle:
-			p.Idle += c.Count
-		case sandbox.StateBusy:
-			p.Busy += c.Count
-		case sandbox.StateStarting:
-			p.Starting += c.Count
-		}
-	}
-	for _, j := range queued {
-		if p := byID[j.PoolID]; p != nil && j.RejectReason == "" {
-			p.Queued++
 		}
 	}
 	return out, nil
@@ -163,7 +140,7 @@ func (h *Handler) createPool(ctx context.Context, in *body[CreatePoolRequest]) (
 	if err := h.d.Store.CreatePool(ctx, p); err != nil {
 		return nil, poolErr(err)
 	}
-	h.poolsChanged(ctx)
+	h.poolsChanged()
 	h.audit(ctx, "pool.create", p.ID, map[string]any{"label": p.Label})
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
@@ -209,10 +186,11 @@ func (h *Handler) updatePool(ctx context.Context, in *struct {
 	if err := h.checkPool(ctx, p, old.ServerIDs); err != nil {
 		return nil, err
 	}
+	p.UpdatedAt = time.Now()
 	if err := h.d.Store.UpdatePool(ctx, p); err != nil {
 		return nil, poolErr(err)
 	}
-	h.poolsChanged(ctx)
+	h.poolsChanged()
 	if changes := h.poolChanges(ctx, old, p); len(changes) > 0 {
 		h.audit(ctx, "pool.update", p.ID, map[string]any{"label": p.Label, "changes": changes})
 	}
@@ -266,7 +244,7 @@ func (h *Handler) deletePool(ctx context.Context, in *PathID) (*empty, error) {
 	if err := h.d.Store.DeletePool(ctx, p.ID); err != nil {
 		return nil, notFound(err, "No pool has this ID.")
 	}
-	h.poolsChanged(ctx)
+	h.poolsChanged()
 	h.audit(ctx, "pool.delete", p.ID, map[string]any{"label": p.Label})
 	return nil, nil
 }
@@ -368,9 +346,9 @@ func poolErr(err error) error {
 	return notFound(err, "No pool has this ID.")
 }
 
-func (h *Handler) poolsChanged(ctx context.Context) {
+func (h *Handler) poolsChanged() {
 	if h.d.Scheduler != nil {
-		h.d.Scheduler.PoolsChanged(context.WithoutCancel(ctx))
+		h.d.Scheduler.PoolsChanged()
 	}
 }
 

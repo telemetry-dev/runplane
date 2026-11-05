@@ -12,9 +12,8 @@ import (
 )
 
 type account struct {
-	Login     string `json:"login"`
+	ghrest.Account
 	ID        int64  `json:"id"`
-	Type      string `json:"type"` // Organization | User
 	AvatarURL string `json:"avatar_url"`
 }
 
@@ -30,7 +29,7 @@ type installation struct {
 // Setup records the installation that GitHub sends the browser back with,
 // reads its repositories, and makes its scale sets. It returns the first job
 // page the first time GitHub connects, and the GitHub settings page after.
-func (s *Service) Setup(ctx context.Context, _ string, installationID int64, setupAction string) (string, error) {
+func (s *Service) Setup(ctx context.Context, installationID int64, setupAction string) (string, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	c, err := s.creds(ctx)
@@ -57,6 +56,10 @@ func (s *Service) Setup(ctx context.Context, _ string, installationID int64, set
 	}
 	if inst.AppID != c.app.AppID {
 		return "", fmt.Errorf("installation %d belongs to a different GitHub App", installationID)
+	}
+	if !inst.Account.Supported() {
+		return "", fmt.Errorf("installation %d is on the %s account %s: runplane runs jobs only for organizations "+
+			"and personal accounts", installationID, inst.Account.Type, inst.Account.Login)
 	}
 	if err := s.saveInstallation(ctx, inst); err != nil {
 		return "", err
@@ -99,7 +102,7 @@ func (s *Service) syncInstallations(ctx context.Context) error {
 	seen := map[int64]bool{}
 	var errs []error
 	for _, inst := range remote {
-		if inst.Account.Type != "Organization" && inst.Account.Type != "User" {
+		if !inst.Account.Supported() {
 			continue
 		}
 		seen[inst.ID] = true

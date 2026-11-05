@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -60,12 +61,14 @@ func (s *Scheduler) finishJob(ctx context.Context, jobID string) {
 			s.flushSandbox(ctx, b.ID)
 		}
 	}
-	if err := s.gh.Enrich(ctx, job); err != nil {
+	if enriched, err := s.readRunData(ctx, job); err != nil {
 		s.log.Warn("enrich job", "job", job.ID, "err", err)
+	} else {
+		job = enriched
 	}
 	// A job that never ran has no log, for example when GitHub cancelled
 	// an assignment that no runner took in time.
-	if job.LogState != store.LogStored && (job.StartedAt != nil || job.SandboxID != "") {
+	if job.LogState != store.LogStored && job.Ran() {
 		s.storeLog(ctx, job)
 	}
 	wctx := context.WithoutCancel(ctx)
@@ -81,10 +84,30 @@ func (s *Scheduler) finishJob(ctx context.Context, jobID string) {
 	}
 }
 
+// readRunData reads the run data of the job from GitHub and records it. A
+// result from GitHub replaces a result that runplane guessed. It returns
+// the job after the change.
+func (s *Scheduler) readRunData(ctx context.Context, job store.Job) (store.Job, error) {
+	e, err := s.gh.Enrich(ctx, job)
+	if err != nil {
+		return job, err
+	}
+	if err := s.st.SetJobEnrichment(ctx, job.ID, e.JobEnrichment, s.now()); err != nil {
+		return job, err
+	}
+	if job.ResultGuessed && e.Result != "" {
+		m := store.JobMessage{RunnerRequestID: job.RunnerRequestID, State: store.JobCompleted, Result: e.Result, FinishedAt: e.FinishedAt}
+		if _, _, err := s.st.UpsertJob(ctx, m, s.now()); err != nil {
+			return job, err
+		}
+	}
+	return s.st.GetJob(ctx, job.ID)
+}
+
 // storeLog downloads the job log from GitHub to the logs folder. It writes
-// no log state when ctx ends first.
+// the file in one step, so that the file is never a partial log, and it
+// writes no log state when ctx ends first.
 func (s *Scheduler) storeLog(ctx context.Context, job store.Job) {
-	path := filepath.Join(s.logsDir, job.ID+".log")
 	var err error
 	for _, wait := range logWaits {
 		select {
@@ -92,7 +115,7 @@ func (s *Scheduler) storeLog(ctx context.Context, job store.Job) {
 			return
 		case <-time.After(wait):
 		}
-		if err = s.gh.DownloadLog(ctx, job, path); err == nil {
+		if err = s.downloadLog(ctx, job); err == nil {
 			break
 		}
 	}
@@ -106,16 +129,24 @@ func (s *Scheduler) storeLog(ctx context.Context, job store.Job) {
 	}
 }
 
+func (s *Scheduler) downloadLog(ctx context.Context, job store.Job) error {
+	log, err := s.gh.DownloadLog(ctx, job)
+	if err != nil {
+		return err
+	}
+	defer log.Close()
+	return atomicfile.Write(filepath.Join(s.logsDir, job.ID+".log"), log, 0o600)
+}
+
 // enrich reads the run data of a started job from GitHub in the background.
 func (s *Scheduler) enrich(job store.Job) {
 	s.goBg(func(ctx context.Context) {
-		if err := s.gh.Enrich(ctx, job); err != nil {
+		job, err := s.readRunData(ctx, job)
+		if err != nil {
 			s.log.Warn("enrich job", "job", job.ID, "err", err)
 			return
 		}
-		if job, err := s.st.GetJob(ctx, job.ID); err == nil {
-			s.bus.Publish(events.JobState(job))
-		}
+		s.bus.Publish(events.JobState(job))
 	})
 }
 
@@ -191,7 +222,7 @@ func (s *Scheduler) takeDebugJob(ctx context.Context, scaleSetID string) bool {
 		s.debugJobs[scaleSetID] = list[1:]
 		s.mu.Unlock()
 		job, err := s.st.GetJob(ctx, jobID)
-		if err == nil && job.SandboxID == "" && job.State != store.JobCompleted {
+		if err == nil && !job.Ran() && job.State != store.JobCompleted {
 			return true
 		}
 	}

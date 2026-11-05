@@ -91,7 +91,7 @@ func TestJobLog(t *testing.T) {
 	}
 	newJob := func(id int64, state, logState, sandboxID string) store.Job {
 		t.Helper()
-		j, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: state, Repository: "acme/api"})
+		j, _, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: state, Repository: "acme/api"}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,14 +99,14 @@ func TestJobLog(t *testing.T) {
 			t.Fatal(err)
 		}
 		if sandboxID != "" {
-			if err := st.SetJobSandbox(ctx, j.ID, sandboxID, "s1"); err != nil {
+			if j, _, err = st.LinkJobSandbox(ctx, j.ID, sandboxID); err != nil {
 				t.Fatal(err)
 			}
 		}
 		return j
 	}
 	stored := newJob(1, store.JobCompleted, store.LogStored, "")
-	if err := st.SetJobEnrichment(ctx, stored.ID, store.JobEnrichment{Steps: jobSteps()}); err != nil {
+	if err := st.SetJobEnrichment(ctx, stored.ID, store.JobEnrichment{Steps: jobSteps()}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(cfg.JobLogPath(stored.ID), []byte(jobLog), 0o600); err != nil {

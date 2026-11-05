@@ -30,11 +30,11 @@ func TestSetDefaultImage(t *testing.T) {
 		}
 		return strings.Join(ids, ",")
 	}
-	must(t, s.SetDefaultImage(ctx, "i2"))
+	must(t, s.SetDefaultImage(ctx, "i2", now))
 	if id := defaultImage(); id != "i2" {
 		t.Fatalf("default = %q", id)
 	}
-	if err := s.SetDefaultImage(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+	if err := s.SetDefaultImage(ctx, "missing", now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown image: err = %v", err)
 	}
 	if id := defaultImage(); id != "i2" {

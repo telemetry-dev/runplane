@@ -20,7 +20,8 @@ func TestPlacement(t *testing.T) {
 			p.ServerIDs = []string{ids["x64-small"]}
 		}, "x64-small"},
 		{"image not ready", func(e *testEnv, _ *store.Pool, ids map[string]string) { e.fleet.noImage[ids["x64-large"]] = true }, "x64-small"},
-		{"server offline", func(e *testEnv, _ *store.Pool, ids map[string]string) { e.fleet.offline[ids["x64-large"]] = true }, "x64-small"},
+		{"server offline", func(e *testEnv, _ *store.Pool, ids map[string]string) { e.fleet.disconnected[ids["x64-large"]] = true }, "x64-small"},
+		{"server draining", func(e *testEnv, _ *store.Pool, ids map[string]string) { e.fleet.notOnline[ids["x64-large"]] = true }, "x64-small"},
 		{"free disk at the minimum", func(e *testEnv, _ *store.Pool, _ map[string]string) {
 			e.setSettings(func(s *store.Settings) { s.MinFreeDiskPercent = 60 }) // the servers have 60% free
 		}, ""},

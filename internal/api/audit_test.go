@@ -15,7 +15,7 @@ import (
 
 type okScheduler struct{}
 
-func (okScheduler) PoolsChanged(context.Context)                 {}
+func (okScheduler) PoolsChanged()                                {}
 func (okScheduler) StopSandbox(context.Context, string) error    { return nil }
 func (okScheduler) RerunJob(context.Context, string, bool) error { return nil }
 
@@ -50,12 +50,12 @@ func TestAuditDetails(t *testing.T) {
 	b.do("POST", "/api/invites", map[string]any{"email": "eve@example.com", "role": "member"}, &invite).want(t, 200)
 	b.do("DELETE", "/api/invites/"+invite.Invite.ID, nil, nil).want(t, 204)
 
-	job, err := e.st.UpsertJob(ctx, store.JobMessage{
+	job, _, err := e.st.UpsertJob(ctx, store.JobMessage{
 		RunnerRequestID: 7, State: store.JobCompleted, Result: store.ResultFailed, Repository: "acme/api", JobName: "build",
 		WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", QueuedAt: now,
-	})
+	}, now)
 	must(t, err)
-	must(t, e.st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{RunNumber: 2290}))
+	must(t, e.st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{RunNumber: 2290}, now))
 	b.do("POST", "/api/jobs/"+job.ID+"/rerun", map[string]any{"debug": true}, nil).want(t, 204)
 	must(t, e.st.InsertSandbox(ctx, store.Sandbox{
 		ID: "sb1", PoolID: pool.ID, ServerID: "s2", RunnerName: "runplane-8cpu-7q2m", Mode: sandbox.ModeContainer,

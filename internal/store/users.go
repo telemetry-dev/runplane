@@ -141,6 +141,24 @@ func (s *Store) CreateSetupCode(ctx context.Context, c SetupCode) error {
 	})
 }
 
+// DeleteExpiredAuth deletes the sessions, setup codes, and invites that
+// expired at now. It keeps the used setup codes and the accepted invites as
+// a record.
+func (s *Store) DeleteExpiredAuth(ctx context.Context, now time.Time) error {
+	return s.tx(ctx, "delete expired sessions, setup codes, and invites", func(tx *sql.Tx) error {
+		for _, q := range []string{
+			"DELETE FROM sessions WHERE expires_at <= ?",
+			"DELETE FROM setup_codes WHERE used_at IS NULL AND expires_at <= ?",
+			"DELETE FROM invites WHERE accepted_at IS NULL AND expires_at <= ?",
+		} {
+			if _, err := tx.ExecContext(ctx, q, ms(now)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // HasOpenSetupCode reports if a setup code exists that is not used and not expired.
 func (s *Store) HasOpenSetupCode(ctx context.Context, now time.Time) (bool, error) {
 	return queryOne(ctx, s.r, "find setup code", scanValue[bool],

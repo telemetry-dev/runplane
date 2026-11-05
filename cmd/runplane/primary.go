@@ -229,7 +229,8 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	})
 	ghRef := &githubRef{}
 	p.sched = scheduler.New(scheduler.Config{
-		Store: st, Bus: d.Bus, Fleet: p.fleet, GitHub: ghRef, Log: log.With("component", "scheduler"), LogsDir: cfg.LogsDir(),
+		Store: st, Bus: d.Bus, Fleet: schedulerFleet{p.fleet}, GitHub: ghRef, Log: log.With("component", "scheduler"),
+		LogsDir: cfg.LogsDir(),
 	})
 	p.gh = github.New(github.Config{
 		Store: st, Box: d.Box, Bus: d.Bus, Log: log.With("component", "github"), Scheduler: p.sched,
@@ -245,6 +246,8 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 		}
 	})
 	p.run(p.gh.Run)
+	p.pruneDaily("sessions, setup codes, and invites", d.Auth.Prune)
+	p.pruneDaily("server tokens and host samples", p.fleet.Prune)
 
 	c, err := p.serveCaches(key, mode, local.driver)
 	if err != nil {
@@ -304,6 +307,25 @@ func (p *primary) run(fn func(ctx context.Context)) {
 	p.stops = append(p.stops, func() { cancel(); <-done })
 }
 
+// pruneDaily runs prune at once and then each day, until stop. Each owner
+// of rows that expire prunes them itself.
+func (p *primary) pruneDaily(what string, prune func(ctx context.Context, now time.Time) error) {
+	p.run(func(ctx context.Context) {
+		tick := time.NewTicker(24 * time.Hour)
+		defer tick.Stop()
+		for {
+			if err := prune(ctx, time.Now()); err != nil && ctx.Err() == nil {
+				p.log.Warn("delete expired rows", "rows", what, "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+		}
+	})
+}
+
 // stop ends the services in the reverse order of their start.
 func (p *primary) stop() {
 	for i := len(p.stops) - 1; i >= 0; i-- {
@@ -328,6 +350,7 @@ func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver)
 		return caches{}, fmt.Errorf("start the cache server: %w", err)
 	}
 	p.run(stats.Run)
+	p.pruneDaily("cache stats", stats.Prune)
 	p.run(func(ctx context.Context) { srv.Run(ctx) })
 	mir, stopPort, err := serveServicePort(p.cfg, mode, resolver.Allow, srv, p.log)
 	if err != nil {
@@ -413,8 +436,8 @@ func (p *primary) recordIP(ctx context.Context, serverID, sandboxID string, list
 func (p *primary) SettingsChanged(ctx context.Context, prev, next store.Settings) {
 	p.settings.Store(&next)
 	p.fleet.SettingsChanged(ctx, prev, next)
-	p.gh.PoolsChanged(ctx)
-	p.sched.PoolsChanged(ctx)
+	p.gh.PoolsChanged()
+	p.sched.PoolsChanged()
 	if prev.Domain != next.Domain || prev.ACMEEmail != next.ACMEEmail {
 		p.serveHTTPS(next)
 	}

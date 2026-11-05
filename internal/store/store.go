@@ -124,26 +124,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	})
 }
 
-// DeleteExpired deletes the sessions, manifest states, setup codes, invites,
-// and server tokens that expired at now. It keeps the used setup codes,
-// accepted invites, and used server tokens as a record.
-func (s *Store) DeleteExpired(ctx context.Context, now time.Time) error {
-	return s.tx(ctx, "delete expired rows", func(tx *sql.Tx) error {
-		for _, q := range []string{
-			"DELETE FROM sessions WHERE expires_at <= ?",
-			"DELETE FROM manifest_states WHERE expires_at <= ?",
-			"DELETE FROM setup_codes WHERE used_at IS NULL AND expires_at <= ?",
-			"DELETE FROM invites WHERE accepted_at IS NULL AND expires_at <= ?",
-			"DELETE FROM server_tokens WHERE used_at IS NULL AND expires_at <= ?",
-		} {
-			if _, err := tx.ExecContext(ctx, q, ms(now)); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 type querier interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)

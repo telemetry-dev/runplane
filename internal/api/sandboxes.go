@@ -84,7 +84,7 @@ func (h *Handler) listSandboxes(ctx context.Context, in *listSandboxesInput) (*b
 	if in.State != "" {
 		f.States = []sandbox.State{sandbox.State(in.State)}
 	} else {
-		f.States = []sandbox.State{sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy, sandbox.StateStopping}
+		f.States = sandbox.LiveStates()
 	}
 	list, err := h.d.Store.ListSandboxes(ctx, f)
 	if err != nil {

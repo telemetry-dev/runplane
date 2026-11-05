@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -117,11 +118,13 @@ func TestScaleSetListens(t *testing.T) {
 		t.Errorf("row = %+v", row)
 	}
 
-	// A job message goes to the scheduler, which acquires it through the session.
+	// A job message goes to the scheduler in runplane types, and the
+	// scheduler acquires the job through the session.
 	f.send(1, 101)
 	select {
 	case msg := <-e.sched.got:
-		if msg.MessageID != 1 || len(msg.JobAvailableMessages) != 1 || msg.JobAvailableMessages[0].RunnerRequestID != 101 {
+		if len(msg.Available) != 1 || msg.Available[0].RunnerRequestID != 101 || msg.Available[0].Repository != "acme/web" ||
+			msg.Available[0].State != store.JobQueued || msg.Stats == nil || msg.Stats.AvailableJobs != 1 {
 			t.Errorf("message = %+v", msg)
 		}
 	case <-time.After(10 * time.Second):
@@ -155,6 +158,70 @@ func TestScaleSetListens(t *testing.T) {
 	e.svc.reconcileNow(ctx)
 	if st := f.state(); len(st.sets) != 1 || st.closed != 0 {
 		t.Errorf("a second reconcile made %d scale sets and closed %d sessions", len(st.sets), st.closed)
+	}
+}
+
+// GitHub sends runnerRequestId 0 in scale set messages and names each job by
+// its jobId. Two such jobs must get two job keys, and an acquisition by
+// request ID must give each key back.
+func TestJobsWithoutRequestIDs(t *testing.T) {
+	e, f, _ := listeningEnv(t)
+	job := func(id, name string) map[string]any {
+		return map[string]any{"messageType": "JobAvailable", "runnerRequestId": 0, "jobId": id, "repositoryName": "api",
+			"ownerName": "acme", "jobDisplayName": name, "workflowRunId": 900, "requestLabels": []string{"runplane"}}
+	}
+	jobs, _ := json.Marshal([]map[string]any{job("e8c96f8d-1f58-5afe-b930-91e0f3f291fe", "lint"), job("eb596b22-9a5a-56b8-bf07-7b3f1be34661", "test")})
+	body, _ := json.Marshal(map[string]any{"messageId": 1, "messageType": "RunnerScaleSetJobMessages", "body": string(jobs)})
+	f.queue <- string(body)
+
+	var msg scheduler.Message
+	select {
+	case msg = <-e.sched.got:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the scheduler got no message")
+	}
+	if len(msg.Available) != 2 {
+		t.Fatalf("message = %+v, want two jobs", msg)
+	}
+	lint, test := msg.Available[0].RunnerRequestID, msg.Available[1].RunnerRequestID
+	if lint == test || lint >= 0 || test >= 0 {
+		t.Errorf("job keys %d and %d, want two different negative keys", lint, test)
+	}
+	if got := f.state().acquired; !slices.Equal(got, []int64{0, 0}) {
+		t.Errorf("acquired request IDs %v on GitHub, want [0 0]", got)
+	}
+	e.sched.mu.Lock()
+	defer e.sched.mu.Unlock()
+	if !slices.Equal(e.sched.acquired, []int64{lint, test}) {
+		t.Errorf("acquired keys %v, want %v", e.sched.acquired, []int64{lint, test})
+	}
+}
+
+// A failed rename is the error of the scale set until a rename works. The
+// polls of the listener do not hide it.
+func TestRenameErrorStaysUntilARenameWorks(t *testing.T) {
+	e, f, row := listeningEnv(t)
+	ctx := context.Background()
+	f.mu.Lock()
+	f.noUpdate = true
+	f.mu.Unlock()
+	pool, _ := e.st.GetPool(ctx, "p1")
+	pool.Label = "runplane-new"
+	e.st.UpdatePool(ctx, pool)
+	e.svc.reconcileNow(ctx)
+
+	polls := len(f.state().polls)
+	eventually(t, "more polls", func() bool { return len(f.state().polls) > polls+2 })
+	if got, _ := e.st.GetScaleSet(ctx, row.ID); got.Status != store.ScaleSetError || !strings.Contains(got.Error, "rename") {
+		t.Errorf("scale set after a failed rename = %s %q, want the rename error", got.Status, got.Error)
+	}
+
+	f.mu.Lock()
+	f.noUpdate = false
+	f.mu.Unlock()
+	e.svc.reconcileNow(ctx)
+	if got, _ := e.st.GetScaleSet(ctx, row.ID); got.Status != store.ScaleSetListening || got.Error != "" || got.Name != "runplane-new" {
+		t.Errorf("scale set after the rename = %s %q %s, want listening with no error as runplane-new", got.Status, got.Error, got.Name)
 	}
 }
 

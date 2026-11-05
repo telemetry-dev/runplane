@@ -70,8 +70,8 @@ func TestJobShowsItsDebugSandbox(t *testing.T) {
 	j := e.addJob(1, "acme/api", time.Now())
 	const id = "01jbz00000000000000000debg"
 	e.addSandbox(id, sandbox.StateBusy)
-	must(t, e.st.SetJobSandbox(ctx, j.ID, id, "s"))
-	must(t, e.st.SetSandboxJob(ctx, id, j.ID))
+	_, _, err = e.st.LinkJobSandbox(ctx, j.ID, id)
+	must(t, err)
 
 	var got Job
 	b.do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)
@@ -121,11 +121,11 @@ func TestJobLinksToItsRunBeforeGitHubGivesTheJob(t *testing.T) {
 	b := e.login("ada@example.com", auth.RoleMember)
 	ctx := context.Background()
 	job := func(id, runID int64, enrich *store.JobEnrichment) string {
-		j, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: store.JobQueued, Repository: "acme/api", JobName: "test",
-			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", RunID: runID, QueuedAt: time.Now()})
+		j, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: store.JobQueued, Repository: "acme/api", JobName: "test",
+			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", RunID: runID, QueuedAt: time.Now()}, time.Now())
 		must(t, err)
 		if enrich != nil {
-			must(t, e.st.SetJobEnrichment(ctx, j.ID, *enrich))
+			must(t, e.st.SetJobEnrichment(ctx, j.ID, *enrich, time.Now()))
 		}
 		return j.ID
 	}
@@ -191,7 +191,7 @@ func TestOverviewHasNoRatesWithoutData(t *testing.T) {
 		}
 	}
 
-	_, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now})
+	_, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now}, now)
 	must(t, err)
 	must(t, e.st.AddCacheStats(ctx, now, "acme/api", store.CacheCounts{Misses: 4}))
 	var o Overview

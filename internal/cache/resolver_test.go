@@ -21,7 +21,7 @@ func TestResolver(t *testing.T) {
 		Status: store.ServerOnline, CreatedAt: t0, UpdatedAt: t0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveGitHubApp(ctx, store.GitHubApp{ID: "app", AppID: 9, Slug: "rp", PrivateKeyEnc: []byte("k"), ClientSecretEnc: []byte("s"), WebhookSecretEnc: []byte("w"), CreatedAt: t0}); err != nil {
+	if err := st.SaveGitHubApp(ctx, store.GitHubApp{ID: "app", AppID: 9, Slug: "rp", PrivateKeyEnc: []byte("k"), CreatedAt: t0}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertInstallation(ctx, store.Installation{ID: 1, AppID: 9, AccountLogin: "acme",
@@ -35,7 +35,7 @@ func TestResolver(t *testing.T) {
 	}
 	var jobs []string
 	for i, repo := range []string{"acme/api", "acme/web"} {
-		j, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobRunning, Repository: repo})
+		j, _, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobRunning, Repository: repo}, t0)
 		if err != nil {
 			t.Fatal(err)
 		}

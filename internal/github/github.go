@@ -13,8 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/actions/scaleset/listener"
-
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/notify"
@@ -27,7 +25,7 @@ import (
 type Scheduler interface {
 	// Attach gives the scheduler the client of a scale set whose listener
 	// starts. The listener sends each message to the returned Scaler.
-	Attach(set store.ScaleSet, c scheduler.ScaleSetClient) listener.Scaler
+	Attach(set store.ScaleSet, c scheduler.ScaleSetClient) scheduler.Scaler
 	// Detach tells the scheduler that the scale set has no listener now.
 	// The scheduler must not use its client after this call.
 	Detach(scaleSetID string)
@@ -68,8 +66,12 @@ type Service struct {
 	// ops serializes the changes of installations and scale sets.
 	ops  sync.Mutex
 	poke chan struct{}
+	// settings gets each settings change from New on, so that Run misses
+	// no change that comes before it starts.
+	settings <-chan events.SettingsChanged
 
-	// base is the parent context of the listeners. Run cancels it.
+	// base is the parent context of the listeners and of the subscription.
+	// Run cancels it.
 	base context.Context
 	stop context.CancelFunc
 
@@ -81,9 +83,6 @@ type Service struct {
 
 	lmu       sync.Mutex
 	listeners map[string]*setListener
-
-	checkMu sync.Mutex
-	checks  map[int64]runCheck // CheckJob results by run ID
 
 	// warned has the runner versions with a sent end date warning. Only
 	// releaseLoop uses it.
@@ -106,11 +105,11 @@ func New(cfg Config) *Service {
 		web:       ghrest.Web,
 		owner:     cmp.Or(owner, "runplane"),
 		poke:      make(chan struct{}, 1),
+		settings:  events.Subscribe[events.SettingsChanged](base, cfg.Bus),
 		base:      base,
 		stop:      stop,
 		tokens:    map[int64]token{},
 		listeners: map[string]*setListener{},
-		checks:    map[int64]runCheck{},
 		warned:    map[string]bool{},
 	}
 }
@@ -120,8 +119,6 @@ func New(cfg Config) *Service {
 // 5 minutes and checks the runner releases each hour. It returns after ctx
 // ends and all listeners have stopped.
 func (s *Service) Run(ctx context.Context) {
-	settings := events.Subscribe[events.SettingsChanged](ctx, s.bus)
-
 	var wg sync.WaitGroup
 	wg.Go(func() { s.releaseLoop(ctx) })
 
@@ -139,7 +136,7 @@ func (s *Service) Run(ctx context.Context) {
 			s.syncAll(ctx)
 		case <-s.poke:
 			s.reconcileNow(ctx)
-		case <-settings:
+		case <-s.settings:
 			s.reconcileNow(ctx)
 		}
 	}
@@ -147,7 +144,7 @@ func (s *Service) Run(ctx context.Context) {
 
 // PoolsChanged makes the scale sets agree with the pools soon, without
 // blocking.
-func (s *Service) PoolsChanged(context.Context) {
+func (s *Service) PoolsChanged() {
 	select {
 	case s.poke <- struct{}{}:
 	default:

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,19 +76,12 @@ func TestCheckJob(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := acmeEnv(t)
-			calls := 0
 			e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
-				calls++
 				writeJSON(w, http.StatusOK, runJSON(tt.event, tt.private, tt.headRepoID))
 			})
-			for range 2 {
-				got, err := e.svc.CheckJob(context.Background(), "acme/web", 555)
-				if err != nil || got != tt.want {
-					t.Errorf("CheckJob = %+v, %v; want %+v", got, err, tt.want)
-				}
-			}
-			if calls != 1 {
-				t.Errorf("run read %d times, want 1 (cached by run ID)", calls)
+			got, err := e.svc.CheckJob(context.Background(), "acme/web", 555)
+			if err != nil || got != tt.want {
+				t.Errorf("CheckJob = %+v, %v; want %+v", got, err, tt.want)
 			}
 		})
 	}
@@ -137,47 +128,48 @@ func TestEnrich(t *testing.T) {
 		State: sandbox.StateBusy, RunnerName: "runplane-01abc", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobRunning, Repository: "acme/web",
-		JobName: "build", RunID: 555, QueuedAt: time.Now()})
+	job, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobRunning, Repository: "acme/web",
+		JobName: "build", RunID: 555, QueuedAt: time.Now()}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	job.SandboxID = "sb1"
-	if err := e.svc.Enrich(ctx, job); err != nil {
+	got, err := e.svc.Enrich(ctx, job)
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := e.st.GetJob(ctx, job.ID)
 	if got.GitHubJobID != 902 || got.RunAttempt != 2 || got.HTMLURL != "https://x/902" {
 		t.Errorf("matched job %d attempt %d %s, want 902 by runner name", got.GitHubJobID, got.RunAttempt, got.HTMLURL)
 	}
 	if got.WorkflowName != "CI" || got.RunNumber != 81 || got.HeadBranch != "fix-cache" || got.HeadSHA != "3f2a9c1e" ||
-		got.CommitMessage != "Fix the cache key" || got.Actor != "bob" || got.PRNumber != 17 || got.EnrichedAt == nil {
+		got.CommitMessage != "Fix the cache key" || got.Actor != "bob" || got.PRNumber != 17 || got.Result != "" {
 		t.Errorf("enrichment = %+v", got)
 	}
 	if len(got.Steps) != 2 || got.Steps[1].Name != "Run tests" || got.Steps[1].Conclusion != "failure" || got.Steps[1].StartedAt == nil {
 		t.Errorf("steps = %+v", got.Steps)
 	}
+	// The scheduler records the data: Enrich does not change the job.
+	if stored, _ := e.st.GetJob(ctx, job.ID); stored.GitHubJobID != 0 || stored.EnrichedAt != nil {
+		t.Errorf("stored job = GitHub job %d, enriched at %v; want no change", stored.GitHubJobID, stored.EnrichedAt)
+	}
 }
 
-// The scheduler guesses "cancelled" for a job whose sandbox it lost; the
-// finish step then takes the result from GitHub.
-func TestEnrichReplacesTheResultOfALostJob(t *testing.T) {
+// Enrich gives the result of a job that GitHub completed, so that the
+// scheduler can replace a result that it guessed.
+func TestEnrichGivesTheGitHubResult(t *testing.T) {
 	e := acmeEnv(t)
 	ctx := context.Background()
 	e.serveRun([]map[string]any{{"id": 905, "run_attempt": 2, "name": "build", "status": "completed",
 		"conclusion": "failure", "completed_at": "2026-11-04T10:07:00Z"}})
-	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted, Result: store.ResultCancelled,
-		Repository: "acme/web", JobName: "build", RunID: 555, QueuedAt: time.Now(), FinishedAt: time.Now()})
+	job := store.Job{ID: "j1", RunnerRequestID: 1, State: store.JobCompleted, Result: store.ResultCancelled, ResultGuessed: true,
+		Repository: "acme/web", JobName: "build", RunID: 555}
+	got, err := e.svc.Enrich(ctx, job)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.svc.Enrich(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := e.st.GetJob(ctx, job.ID)
 	finished := time.Date(2026, 11, 4, 10, 7, 0, 0, time.UTC)
-	if got.Result != store.ResultFailed || got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
-		t.Errorf("job = result %q, finished %v; want failed from GitHub at %v", got.Result, got.FinishedAt, finished)
+	if got.Result != store.ResultFailed || !got.FinishedAt.Equal(finished) {
+		t.Errorf("result %q, finished %v; want failed from GitHub at %v", got.Result, got.FinishedAt, finished)
 	}
 }
 
@@ -223,31 +215,24 @@ func TestDownloadLogFollowsRedirectWithoutToken(t *testing.T) {
 		}
 		io.WriteString(w, "2026-11-04T10:00:00Z Run tests\nok\n")
 	})
-	dir := t.TempDir()
-	path := filepath.Join(dir, "job1.log")
-	if err := e.svc.DownloadLog(context.Background(), store.Job{ID: "job1", Repository: "acme/web", GitHubJobID: 902}, path); err != nil {
+	log, err := e.svc.DownloadLog(context.Background(), store.Job{ID: "job1", Repository: "acme/web", GitHubJobID: 902})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(path); err != nil || string(b) != "2026-11-04T10:00:00Z Run tests\nok\n" {
+	defer log.Close()
+	if b, err := io.ReadAll(log); err != nil || string(b) != "2026-11-04T10:00:00Z Run tests\nok\n" {
 		t.Errorf("log = %q, %v", b, err)
-	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
-		t.Errorf("folder has %d files, want only the log", len(entries))
 	}
 }
 
-func TestDownloadLogKeepsOldFileOnFailure(t *testing.T) {
+func TestDownloadLogOfAnExpiredLog(t *testing.T) {
 	e := acmeEnv(t)
 	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/jobs/902/logs", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, map[string]any{"message": "Log has expired"})
 	})
-	path := filepath.Join(t.TempDir(), "job1.log")
-	os.WriteFile(path, []byte("live log"), 0o600)
-	if err := e.svc.DownloadLog(context.Background(), store.Job{ID: "job1", Repository: "acme/web", GitHubJobID: 902}, path); err == nil {
+	if log, err := e.svc.DownloadLog(context.Background(), store.Job{ID: "job1", Repository: "acme/web", GitHubJobID: 902}); err == nil {
+		log.Close()
 		t.Fatal("DownloadLog succeeded for an expired log")
-	}
-	if b, _ := os.ReadFile(path); string(b) != "live log" {
-		t.Errorf("log = %q, want the earlier file", b)
 	}
 }
 
@@ -260,8 +245,8 @@ func TestRerunFindsJobIDFirst(t *testing.T) {
 		rerun = append(rerun, r.PathValue("id"))
 		writeJSON(w, http.StatusCreated, map[string]any{})
 	})
-	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 2, State: store.JobCompleted, Result: store.ResultFailed,
-		Repository: "acme/web", JobName: "lint", RunID: 555, QueuedAt: time.Now()})
+	job, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 2, State: store.JobCompleted, Result: store.ResultFailed,
+		Repository: "acme/web", JobName: "lint", RunID: 555, QueuedAt: time.Now()}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,6 +255,9 @@ func TestRerunFindsJobIDFirst(t *testing.T) {
 	}
 	if len(rerun) != 1 || rerun[0] != "903" {
 		t.Errorf("re-run jobs = %v, want [903]", rerun)
+	}
+	if got, _ := e.st.GetJob(ctx, job.ID); got.GitHubJobID != 0 || got.Result != store.ResultFailed {
+		t.Errorf("job after the re-run = GitHub job %d, result %q; want no change", got.GitHubJobID, got.Result)
 	}
 }
 

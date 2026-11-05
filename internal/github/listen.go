@@ -20,7 +20,8 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// setListener runs the listener of one scale set. It is also the
+// setListener runs the listener of one scale set. It is the listener.Scaler
+// of the scale set, which gives each message to the scheduler, and the
 // scheduler.ScaleSetClient of the scale set.
 type setListener struct {
 	s      *Service
@@ -30,16 +31,18 @@ type setListener struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	max    atomic.Int64
+	scaler scheduler.Scaler
 
-	mu       sync.Mutex
-	cl       *scaleset.Client
-	label    string
-	githubID int64
-	session  *scaleset.MessageSessionClient
-	running  *listener.Listener
-	status   string // the last written status and error, to skip equal writes
-	errText  string
-	answered bool // GitHub answered a poll since the last restart
+	mu        sync.Mutex
+	cl        *scaleset.Client
+	label     string
+	githubID  int64
+	session   *scaleset.MessageSessionClient
+	running   *listener.Listener
+	offered   map[int64]int64 // request IDs by job key, of the jobs that the last message offered
+	answered  bool            // GitHub answered a poll since the last restart
+	listenErr string          // the last error of the listener, "" while it listens
+	renameErr string          // the error of the last rename, "" if it worked
 }
 
 // startListener attaches the scale set to the scheduler and starts its
@@ -54,13 +57,13 @@ func (s *Service) startListener(ctx context.Context, row store.ScaleSet, t targe
 	l := &setListener{
 		s: s, id: row.ID, target: t, cl: cl, cancel: cancel, done: make(chan struct{}),
 		log:   s.log.With("scale_set", t.pool.Label, "owner", t.owner()),
-		label: t.pool.Label, githubID: row.GitHubID, status: row.Status, errText: row.Error,
+		label: t.pool.Label, githubID: row.GitHubID,
 	}
-	scaler := s.sched.Attach(row, l)
+	l.scaler = s.sched.Attach(row, l)
 	s.lmu.Lock()
 	s.listeners[row.ID] = l
 	s.lmu.Unlock()
-	go l.run(lctx, scaler)
+	go l.run(lctx)
 	return l
 }
 
@@ -96,15 +99,15 @@ func (s *Service) stopListeners() {
 
 // run listens until ctx ends. After a failure it waits 1 second, then
 // twice as long after each further failure, up to 1 minute.
-func (l *setListener) run(ctx context.Context, scaler listener.Scaler) {
+func (l *setListener) run(ctx context.Context) {
 	defer close(l.done)
 	wait := time.Second
 	for {
-		err := l.listen(ctx, scaler)
+		err := l.listen(ctx)
 		if ctx.Err() != nil {
 			return
 		}
-		if l.setStatus(ctx, store.ScaleSetError, err.Error()) {
+		if l.setListenErr(ctx, err.Error()) {
 			l.log.Warn("scale set listener stopped", "err", err)
 		}
 		if errors.Is(err, scaleset.UnauthorizedError) {
@@ -145,7 +148,7 @@ func (l *setListener) client() *scaleset.Client {
 
 // listen makes the scale set on GitHub if necessary, opens a session, and
 // runs the listener on it.
-func (l *setListener) listen(ctx context.Context, scaler listener.Scaler) error {
+func (l *setListener) listen(ctx context.Context) error {
 	id, err := l.ensureRemote(ctx)
 	if err != nil {
 		return fmt.Errorf("make the scale set on GitHub: %w", err)
@@ -190,11 +193,70 @@ func (l *setListener) listen(ctx context.Context, scaler listener.Scaler) error 
 		l.mu.Unlock()
 	}()
 
-	l.setStatus(ctx, store.ScaleSetListening, "")
+	l.setListenErr(ctx, "")
 	if st := session.Session().Statistics; st != nil {
 		l.record(ctx, st, time.Now())
 	}
-	return run.Run(ctx, scaler)
+	return run.Run(ctx, l)
+}
+
+// setListenErr records the error of the listener, "" while it listens, and
+// writes the status. It tells if the status changed.
+func (l *setListener) setListenErr(ctx context.Context, msg string) bool {
+	l.mu.Lock()
+	l.listenErr = msg
+	l.mu.Unlock()
+	return l.report(ctx)
+}
+
+// report writes the status of the scale set: an error if the last rename
+// or the listener failed, listening while the listener has a session, and
+// else nothing. It tells if the status changed. While a listener runs, only
+// the listener writes the status of its row.
+func (l *setListener) report(ctx context.Context) bool {
+	l.mu.Lock()
+	msg, listening := cmp.Or(l.renameErr, l.listenErr), l.session != nil
+	l.mu.Unlock()
+	switch {
+	case msg != "":
+		return l.s.setStatus(ctx, l.id, store.ScaleSetError, msg)
+	case listening:
+		return l.s.setStatus(ctx, l.id, store.ScaleSetListening, "")
+	}
+	return false
+}
+
+// rename gives the scale set the label of its pool, on GitHub and in its
+// row. A failed rename stays the error of the scale set until a rename
+// works.
+func (l *setListener) rename(ctx context.Context, row store.ScaleSet, label string) {
+	renameErr := ""
+	if row.GitHubID != 0 {
+		_, err := l.client().UpdateRunnerScaleSet(ctx, int(row.GitHubID), scaleSetSpec(label, int(row.RunnerGroupID)))
+		if err != nil {
+			renameErr = "rename the scale set to " + label + " on GitHub: " + err.Error()
+		}
+	}
+	if renameErr == "" {
+		if err := l.s.st.SetScaleSetRemote(ctx, row.ID, row.GitHubID, row.RunnerGroupID, label, time.Now()); err != nil {
+			l.log.Warn("rename scale set", "err", err)
+			return
+		}
+		l.setLabel(label)
+	}
+	l.mu.Lock()
+	l.renameErr = renameErr
+	l.mu.Unlock()
+	l.report(ctx)
+}
+
+// Scale gives the message to the scheduler in runplane types.
+func (l *setListener) Scale(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) error {
+	m, offered := message(l.log, msg)
+	l.mu.Lock()
+	l.offered = offered
+	l.mu.Unlock()
+	return l.scaler.Scale(ctx, m)
 }
 
 // ensureRemote returns the GitHub ID of the scale set. It finds the scale
@@ -223,7 +285,7 @@ func (l *setListener) ensureRemote(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	group := int64(cmp.Or(set.RunnerGroupID, defaultRunnerGroup))
-	if err := l.s.st.SetScaleSetRemote(ctx, l.id, int64(set.ID), group, label); err != nil {
+	if err := l.s.st.SetScaleSetRemote(ctx, l.id, int64(set.ID), group, label, time.Now()); err != nil {
 		return 0, err
 	}
 	l.mu.Lock()
@@ -237,31 +299,13 @@ func (l *setListener) clearRemote(ctx context.Context) {
 	l.githubID = 0
 	label := l.label
 	l.mu.Unlock()
-	if err := l.s.st.SetScaleSetRemote(ctx, l.id, 0, defaultRunnerGroup, label); err != nil {
+	if err := l.s.st.SetScaleSetRemote(ctx, l.id, 0, defaultRunnerGroup, label, time.Now()); err != nil {
 		l.log.Warn("clear scale set ID", "err", err)
 	}
 }
 
-// setStatus writes the status if it changed and tells if it did.
-func (l *setListener) setStatus(ctx context.Context, status, msg string) bool {
-	msg = truncate(msg, 1000)
-	l.mu.Lock()
-	same := l.status == status && l.errText == msg
-	l.status, l.errText = status, msg
-	l.mu.Unlock()
-	if !same {
-		l.s.setStatus(ctx, l.id, status, msg)
-	}
-	return !same
-}
-
 func (l *setListener) record(ctx context.Context, st *scaleset.RunnerScaleSetStatistic, at time.Time) {
-	err := l.s.st.SetScaleSetStats(ctx, l.id, store.ScaleSetStats{
-		AvailableJobs: st.TotalAvailableJobs, AcquiredJobs: st.TotalAcquiredJobs, AssignedJobs: st.TotalAssignedJobs,
-		RunningJobs: st.TotalRunningJobs, RegisteredRunners: st.TotalRegisteredRunners,
-		BusyRunners: st.TotalBusyRunners, IdleRunners: st.TotalIdleRunners,
-	}, at)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err := l.s.st.SetScaleSetStats(ctx, l.id, statsOf(*st), at); err != nil && !errors.Is(err, store.ErrNotFound) {
 		l.log.Warn("record scale set statistics", "err", err)
 	}
 }
@@ -286,7 +330,7 @@ func (p pollRecorder) GetMessage(ctx context.Context, lastMessageID, maxCapacity
 	} else if err := l.s.st.TouchScaleSetPoll(ctx, l.id, now); err != nil && !errors.Is(err, store.ErrNotFound) {
 		l.log.Warn("record scale set poll", "err", err)
 	}
-	if !l.setStatus(ctx, store.ScaleSetListening, "") {
+	if !l.setListenErr(ctx, "") {
 		l.s.polledChanged(now)
 	}
 	return msg, nil
@@ -304,14 +348,40 @@ func (l *setListener) labelNow() string {
 	return l.label
 }
 
-func (l *setListener) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
+// AcquireJobs acquires the jobs of the last message with these keys. GitHub
+// acquires a job by its request ID, and it can send the request ID 0 for
+// more than one job (see jobKey). The acquired zeros then go to the keys in
+// their order.
+func (l *setListener) AcquireJobs(ctx context.Context, keys []int64) ([]int64, error) {
 	l.mu.Lock()
-	session := l.session
+	session, offered := l.session, l.offered
 	l.mu.Unlock()
 	if session == nil {
 		return nil, fmt.Errorf("acquire jobs: the listener of scale set %s has no session", l.labelNow())
 	}
-	return session.AcquireJobs(ctx, requestIDs)
+	var ids []int64
+	byID := map[int64][]int64{}
+	for _, k := range keys {
+		if id, ok := offered[k]; ok {
+			ids = append(ids, id)
+			byID[id] = append(byID[id], k)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	acquired, err := session.AcquireJobs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	var out []int64
+	for _, id := range acquired {
+		if k := byID[id]; len(k) > 0 {
+			out = append(out, k[0])
+			byID[id] = k[1:]
+		}
+	}
+	return out, nil
 }
 
 func (l *setListener) GenerateJITConfig(ctx context.Context, runnerName string) (scheduler.JITConfig, error) {

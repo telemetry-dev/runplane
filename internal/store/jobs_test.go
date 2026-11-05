@@ -53,7 +53,7 @@ func TestUpsertJobIdempotentAndMonotonic(t *testing.T) {
 	}
 
 	// Enrichment still changes a completed job.
-	must(t, s.SetJobEnrichment(ctx, j.ID, JobEnrichment{HeadBranch: "main", HeadSHA: "abc123", RunNumber: 4}))
+	must(t, s.SetJobEnrichment(ctx, j.ID, JobEnrichment{HeadBranch: "main", HeadSHA: "abc123", RunNumber: 4}, sec(100)))
 	got, err := s.GetJob(ctx, j.ID)
 	must(t, err)
 	if got.HeadBranch != "main" || got.RunNumber != 4 || got.Event != "push" || got.EnrichedAt == nil {
@@ -64,6 +64,72 @@ func TestUpsertJobIdempotentAndMonotonic(t *testing.T) {
 	}
 	if n, err := s.CountJobs(ctx, JobFilter{}); err != nil || n != 1 {
 		t.Fatalf("jobs = %d, %v; want 1", n, err)
+	}
+}
+
+// runplane guesses a result when GitHub does not report the job as
+// completed. The result from GitHub replaces a guess, but a guess never
+// replaces a result from GitHub.
+func TestGitHubResultReplacesAGuess(t *testing.T) {
+	tests := []struct {
+		name       string
+		first      JobMessage
+		then       JobMessage
+		wantResult string
+		wantGuess  bool
+		wantFinish int
+	}{
+		{"GitHub after a guess",
+			JobMessage{Result: ResultSucceeded, Guessed: true, FinishedAt: sec(10)},
+			JobMessage{Result: ResultFailed, FinishedAt: sec(12)},
+			ResultFailed, false, 12},
+		{"GitHub cancel after a guessed cancel",
+			JobMessage{Result: ResultCancelled, Guessed: true, FinishedAt: sec(10)},
+			JobMessage{Result: ResultCancelled, FinishedAt: sec(12)},
+			ResultCancelled, false, 12},
+		{"guess after GitHub",
+			JobMessage{Result: ResultFailed, FinishedAt: sec(10)},
+			JobMessage{Result: ResultCancelled, Guessed: true, FinishedAt: sec(12)},
+			ResultFailed, false, 10},
+		{"second guess",
+			JobMessage{Result: ResultSucceeded, Guessed: true, FinishedAt: sec(10)},
+			JobMessage{Result: ResultCancelled, Guessed: true, FinishedAt: sec(12)},
+			ResultSucceeded, true, 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := openTest(t)
+			ran := JobMessage{RunnerRequestID: 1, State: JobRunning, QueuedAt: sec(0), StartedAt: sec(1)}
+			addJob(t, s, ran)
+			for _, m := range []JobMessage{tt.first, tt.then} {
+				m.RunnerRequestID, m.State = 1, JobCompleted
+				addJob(t, s, m)
+			}
+			j, err := s.GetJobByRunnerRequestID(t.Context(), 1)
+			must(t, err)
+			if j.Result != tt.wantResult || j.ResultGuessed != tt.wantGuess || !j.FinishedAt.Equal(sec(tt.wantFinish)) {
+				t.Errorf("job = %s (guessed %v) at %v, want %s (guessed %v) at t0+%ds",
+					j.Result, j.ResultGuessed, j.FinishedAt, tt.wantResult, tt.wantGuess, tt.wantFinish)
+			}
+		})
+	}
+}
+
+// UpsertJob gives the state of the job before the message, so that a
+// caller knows if the message is new.
+func TestUpsertJobGivesThePreviousState(t *testing.T) {
+	s := openTest(t)
+	for _, step := range []struct{ state, wantPrev string }{
+		{JobQueued, ""},
+		{JobRunning, JobQueued},
+		{JobCompleted, JobRunning},
+		{JobCompleted, JobCompleted},
+	} {
+		_, prev, err := s.UpsertJob(t.Context(), JobMessage{RunnerRequestID: 1, State: step.state, Result: ResultSucceeded}, sec(0))
+		must(t, err)
+		if prev != step.wantPrev {
+			t.Errorf("message %s: previous state %q, want %q", step.state, prev, step.wantPrev)
+		}
 	}
 }
 
@@ -114,8 +180,13 @@ func TestListAndCountJobsFilters(t *testing.T) {
 	} {
 		job := addJob(t, s, JobMessage{RunnerRequestID: j.id, State: j.state, Result: j.result,
 			Repository: j.repo, PoolID: j.pool, JobName: j.name, QueuedAt: sec(int(j.id))})
-		must(t, s.SetJobEnrichment(ctx, job.ID, JobEnrichment{HeadBranch: j.branch, HeadSHA: j.sha}))
-		must(t, s.SetJobSandbox(ctx, job.ID, "sb", "srv-"+j.repo))
+		must(t, s.SetJobEnrichment(ctx, job.ID, JobEnrichment{HeadBranch: j.branch, HeadSHA: j.sha}, sec(100)))
+		sb := fmt.Sprintf("sb%d", j.id)
+		must(t, s.InsertSandbox(ctx, Sandbox{ID: sb, PoolID: j.pool, ServerID: "srv-" + j.repo, Mode: sandbox.ModeContainer,
+			State: sandbox.StateGone, CreatedAt: sec(0)}))
+		if _, _, err := s.LinkJobSandbox(ctx, job.ID, sb); err != nil {
+			t.Fatal(err)
+		}
 	}
 	tests := []struct {
 		f    JobFilter
@@ -295,7 +366,7 @@ func TestUpsertJobConcurrentMessages(t *testing.T) {
 	errs := make(chan error, 40)
 	for i := range 40 {
 		go func() {
-			_, err := s.UpsertJob(ctx, JobMessage{RunnerRequestID: 5, State: states[i%4], Result: ResultSucceeded, QueuedAt: sec(0)})
+			_, _, err := s.UpsertJob(ctx, JobMessage{RunnerRequestID: 5, State: states[i%4], Result: ResultSucceeded, QueuedAt: sec(0)}, sec(0))
 			errs <- err
 		}()
 	}
@@ -338,9 +409,10 @@ func TestExpireQueuedJobs(t *testing.T) {
 	}
 	for id, want := range map[string]string{waiting.ID: NotRunReason, rejected.ID: fork} {
 		j, _ := s.GetJob(ctx, id)
-		if j.State != JobCompleted || j.Result != ResultCancelled || j.FinishedAt == nil || !j.FinishedAt.Equal(sec(4000)) || j.RejectReason != want {
-			t.Errorf("job %d = %s %s finished %v reason %q, want completed cancelled at 4000 with %q",
-				j.RunnerRequestID, j.State, j.Result, j.FinishedAt, j.RejectReason, want)
+		if j.State != JobCompleted || j.Result != ResultCancelled || !j.ResultGuessed || j.FinishedAt == nil ||
+			!j.FinishedAt.Equal(sec(4000)) || j.RejectReason != want {
+			t.Errorf("job %d = %s %s (guessed %v) finished %v reason %q, want completed cancelled (guessed) at 4000 with %q",
+				j.RunnerRequestID, j.State, j.Result, j.ResultGuessed, j.FinishedAt, j.RejectReason, want)
 		}
 	}
 	for _, id := range []string{recent.ID, assigned.ID} {
@@ -385,7 +457,9 @@ func TestListRunUsage(t *testing.T) {
 			must(t, s.SetJobMetricsSummary(ctx, j.ID, *m))
 		}
 		if sandboxID != "" {
-			must(t, s.SetJobSandbox(ctx, j.ID, sandboxID, "s1"))
+			if _, _, err := s.LinkJobSandbox(ctx, j.ID, sandboxID); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	for i := range 11 { // the oldest falls out of the last 10
@@ -423,7 +497,7 @@ func TestEnrichmentQueuedAtMovesOnlyEarlier(t *testing.T) {
 		{"later time", msg.Add(time.Minute), msg},
 		{"earlier time", earlier, earlier},
 	} {
-		must(t, s.SetJobEnrichment(t.Context(), j.ID, JobEnrichment{QueuedAt: tt.queued}))
+		must(t, s.SetJobEnrichment(t.Context(), j.ID, JobEnrichment{QueuedAt: tt.queued}, msg))
 		if got, err := s.GetJob(t.Context(), j.ID); err != nil || !got.QueuedAt.Equal(tt.want) {
 			t.Errorf("%s: queued_at %v, %v; want %v", tt.name, got.QueuedAt, err, tt.want)
 		}

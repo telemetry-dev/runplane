@@ -1,6 +1,7 @@
 // Package ghrest calls the GitHub REST API and downloads files from GitHub.
 // It sends the headers that GitHub asks for, tries again after network
-// errors and rate limits, and reads all pages of a list.
+// errors and rate limits, and reads all pages of a list. It also gives the
+// GitHub account types and the web pages of an account.
 package ghrest
 
 import (

@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/actions/scaleset"
-
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -43,7 +41,7 @@ func TestAcquisitionsStopAtCapacity(t *testing.T) {
 				available(14, "acme/api", 900, "lint"),
 			)
 			for i, offset := range []int{3, 1, 2, 0} {
-				m.JobAvailableMessages[i].QueueTime = start.Add(time.Duration(offset) * time.Second)
+				m.Available[i].QueuedAt = start.Add(time.Duration(offset) * time.Second)
 			}
 			e.scale(sc, m)
 
@@ -76,7 +74,7 @@ func TestRedeliveredMessagesChangeNothing(t *testing.T) {
 
 	offer := msg(0, available(101, "acme/api", 900, "build"))
 	assign := msg(1, assigned(101, "acme/api", 900, "build"))
-	for _, m := range []*scaleset.RunnerScaleSetMessage{offer, assign, assign, offer} {
+	for _, m := range []Message{offer, assign, assign, offer} {
 		e.scale(sc, m)
 	}
 	if n := len(driver.specs); n != 1 {
@@ -130,8 +128,8 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 	if b.State != sandbox.StateStarting || b.ScaleSetID != set.ID || b.RunnerID == 0 || b.RunnerName != "runplane-"+spec.ID[len(spec.ID)-8:] {
 		t.Errorf("row = %+v", b)
 	}
-	if spec.TimeLimit != 360*time.Minute || spec.JITConfig == "" || spec.Labels[sandbox.LabelSandbox] != spec.ID ||
-		spec.Labels["dev.runplane.pool"] != pool.ID || spec.Image.Digest != b.ImageDigest || spec.RunnerVersion != "2.330.0" {
+	if spec.TimeLimit != 360*time.Minute || spec.JITConfig == "" || spec.PoolID != pool.ID ||
+		spec.Image.Digest != b.ImageDigest || spec.RunnerVersion != "2.330.0" {
 		t.Errorf("spec = %+v", spec)
 	}
 
@@ -144,7 +142,7 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 
 	// A warm sandbox that goes away gets a replacement at the next poll.
 	e.event(serverID, specs[1].ID, stateEvent(sandbox.StateGone, "exited"))
-	e.scale(sc, nil)
+	e.scale(sc, Message{})
 	if n := len(driver.specs); n != 3 {
 		t.Fatalf("%d starts after a warm sandbox went away, want 3", n)
 	}
@@ -204,7 +202,7 @@ func TestScaleDownRemovesRunnerBeforeStop(t *testing.T) {
 	if err := e.st.UpdatePool(e.ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	e.scale(sc, nil)
+	e.scale(sc, Message{})
 
 	removeFree := e.rec.index("remove-runner " + strconv.FormatInt(free.RunnerID, 10))
 	stopFree := e.rec.index("stop " + free.ID)
@@ -384,14 +382,15 @@ func TestPoolStatsEvent(t *testing.T) {
 		available(32, "acme/api", 801, "build"),  // acquired
 		available(33, "acme/api", 801, "test"),   // waits: no room
 	)
-	m.JobAvailableMessages[2].QueueTime = start.Add(time.Second)
+	m.Available[2].QueuedAt = start.Add(time.Second)
 	e.scale(sc, m)
-	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Queued: 1, Assigned: 1}); got != want {
+	// The acquired job and the job with no room wait for a runner.
+	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Queued: 2, Assigned: 1}); got != want {
 		t.Errorf("after the offer: %+v, want %+v", got, want)
 	}
 
 	e.scale(sc, msg(1))
-	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Starting: 1, Queued: 1, Assigned: 1}); got != want {
+	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Starting: 1, Queued: 2, Assigned: 1}); got != want {
 		t.Errorf("after the start: %+v, want %+v", got, want)
 	}
 }
@@ -467,7 +466,7 @@ func TestReplacesStaleWarmSandboxes(t *testing.T) {
 			if err := e.st.UpdatePool(e.ctx, pool); err != nil {
 				t.Fatal(err)
 			}
-			e.scale(sc, nil)
+			e.scale(sc, Message{})
 
 			stop := e.rec.index("stop " + warm.ID)
 			if (stop >= 0) != tt.wantStop {
@@ -548,7 +547,7 @@ func TestPublicJobsNeverReachContainerServers(t *testing.T) {
 
 	// Without the container server, the VM servers take the job.
 	e.fleet.mu.Lock()
-	e.fleet.offline[agentID] = true
+	e.fleet.disconnected[agentID] = true
 	e.fleet.mu.Unlock()
 	e.s.cleanup(e.ctx)
 	e.scale(sc, msg(0, available(51, "acme/site", 4300, "test")))
@@ -572,9 +571,9 @@ func TestRequeuedJobIsAcquiredAgain(t *testing.T) {
 	offer := msg(0, available(31, "acme/api", 960, "build"))
 	e.scale(sc, offer)
 	e.scale(sc, msg(1, assigned(31, "acme/api", 960, "build")))
-	cancel := base(31, "acme/api", 960, "build")
-	cancel.ScaleSetAssignTime = start.Add(time.Second)
-	e.scale(sc, msg(0, &scaleset.JobCompleted{Result: "Canceled", JobMessageBase: cancel}))
+	cancel := assigned(31, "acme/api", 960, "build")
+	cancel.State, cancel.Result = store.JobCompleted, store.ResultCancelled
+	e.scale(sc, msg(0, cancel))
 	e.settle()
 
 	e.scale(sc, offer)
@@ -600,7 +599,7 @@ func TestCancelledJobThatRanStaysCompleted(t *testing.T) {
 	offer := msg(0, available(32, "acme/api", 961, "build"))
 	e.scale(sc, offer)
 	e.scale(sc, msg(1, started(32, "acme/api", 961, "build", b)))
-	e.scale(sc, msg(0, completed(32, "acme/api", 961, "build", b, "Canceled")))
+	e.scale(sc, msg(0, completed(32, "acme/api", 961, "build", b, store.ResultCancelled)))
 	e.settle()
 
 	e.scale(sc, offer)
@@ -681,40 +680,11 @@ func TestStepsRefreshWhileTheJobRuns(t *testing.T) {
 		t.Errorf("step 2 = %+v, want Run tests in progress", got)
 	}
 
-	e.scale(sc, msg(0, completed(81, "acme/api", 980, "build", b, "Succeeded")))
+	e.scale(sc, msg(0, completed(81, "acme/api", 980, "build", b, store.ResultSucceeded)))
 	time.Sleep(50 * time.Millisecond)
 	reads := len(e.rec.matching("steps "))
 	time.Sleep(50 * time.Millisecond)
 	if n := len(e.rec.matching("steps ")); n != reads {
 		t.Errorf("%d step reads after the job completed, want none", n-reads)
-	}
-}
-
-// GitHub sends runnerRequestId 0 in scale set messages and names each job by
-// its jobId. Two such jobs must stay two job rows, each with its own sandbox.
-func TestJobsWithoutRequestIDsStayApart(t *testing.T) {
-	e := newTestEnv(t)
-	serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	pool := e.addPool("runplane")
-	_, sc, set := e.attach(pool)
-	first := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	second := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start.Add(time.Second))
-
-	lint := started(0, "acme/api", 900, "lint", first)
-	lint.JobID = "e8c96f8d-1f58-5afe-b930-91e0f3f291fe"
-	test := started(0, "acme/api", 900, "test", second)
-	test.JobID = "eb596b22-9a5a-56b8-bf07-7b3f1be34661"
-	e.scale(sc, msg(2, lint, test))
-
-	jobs, _, err := e.st.ListJobs(e.ctx, store.JobFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := map[string]string{}
-	for _, j := range jobs {
-		names[j.JobName] = j.SandboxID
-	}
-	if len(jobs) != 2 || names["lint"] != first.ID || names["test"] != second.ID {
-		t.Errorf("jobs %v (name -> sandbox), want lint on %s and test on %s", names, first.ID, second.ID)
 	}
 }

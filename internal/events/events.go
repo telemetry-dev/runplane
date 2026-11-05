@@ -40,14 +40,7 @@ type ImageBuildState store.ImageBuild
 
 // PoolStats counts the runners and the waiting jobs of a pool. The browser
 // gets it as it is.
-type PoolStats struct {
-	PoolID   string `json:"pool_id"`
-	Idle     int    `json:"idle"`
-	Busy     int    `json:"busy"`
-	Starting int    `json:"starting"`
-	Queued   int    `json:"queued"`
-	Assigned int    `json:"assigned"`
-}
+type PoolStats store.PoolCounts
 
 // GitHubState says that the GitHub status changed: the app, the
 // installations, or the scale set listeners.
