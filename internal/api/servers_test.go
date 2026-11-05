@@ -39,18 +39,6 @@ func (f *fakeServers) NewToken(_ context.Context, _, name, _ string) (ServerToke
 
 func (f *fakeServers) Doctor(context.Context, string) ([]Check, error) { return f.checks, nil }
 
-func (e *env) addServer(id, arch, status string, vcpu, memoryMB int) {
-	e.t.Helper()
-	now := time.Now()
-	err := e.st.CreateServer(context.Background(), store.Server{
-		ID: id, Name: id, Kind: store.ServerAgent, Status: status, CreatedAt: now, UpdatedAt: now,
-		ServerFacts: store.ServerFacts{Arch: arch, VCPU: vcpu, MemoryMB: memoryMB, Mode: sandbox.ModeContainer},
-	})
-	if err != nil {
-		e.t.Fatal(err)
-	}
-}
-
 func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	servers := &fakeServers{}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })
@@ -66,20 +54,16 @@ func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	// An SSH install makes its token with the server row, before any use.
 	e.addServer("srv1", "x64", store.ServerInstalling, 0, 0)
 	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Millisecond)
-	err := e.st.CreateServerToken(ctx, store.ServerToken{
+	must(t, e.st.CreateServerToken(ctx, store.ServerToken{
 		ID: "t1", TokenHash: "h1", CreatedAt: time.Now(), ExpiresAt: expires, ServerID: "srv1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	}))
 	var st ServerTokenStatus
 	b.do("GET", "/api/servers/tokens/t1/status", nil, &st).want(t, 200)
 	if st.Used || st.ServerID != "" || !st.ExpiresAt.Equal(expires) {
 		t.Fatalf("unused token status = %+v, want not used and no server", st)
 	}
-	if _, err := e.st.ConsumeServerToken(ctx, "h1", time.Now(), store.Server{Status: store.ServerOnline}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := e.st.ConsumeServerToken(ctx, "h1", time.Now(), store.Server{Status: store.ServerOnline})
+	must(t, err)
 	b.do("GET", "/api/servers/tokens/t1/status", nil, &st).want(t, 200)
 	if !st.Used || st.ServerID != "srv1" {
 		t.Fatalf("used token status = %+v, want used by srv1", st)
@@ -181,21 +165,17 @@ func TestPublicReposNeedVMOnEachServer(t *testing.T) {
 		{ID: "new", Name: "new", Kind: store.ServerAgent, Status: store.ServerInstalling}, // no facts yet
 	} {
 		v.CreatedAt, v.UpdatedAt = now, now
-		if err := e.st.CreateServer(ctx, v); err != nil {
-			t.Fatal(err)
-		}
+		must(t, e.st.CreateServer(ctx, v))
 	}
 	on := map[string]any{"allow_public_repos": true}
 
 	res := b.do("PATCH", "/api/settings", on, nil)
-	res.want(t, 422)
-	if p := res.problem(t); !slices.Contains(p.locations(), "body.allow_public_repos") || !strings.Contains(p.Errors[0].Message, "hel1-agent") {
-		t.Fatalf("problem %+v, want one on allow_public_repos that names hel1-agent", p)
+	res.wantField(t, 422, "body.allow_public_repos")
+	if !strings.Contains(string(res.body), "hel1-agent") {
+		t.Fatalf("problem %s does not name hel1-agent", res.body)
 	}
 
-	if err := e.st.DeleteServer(ctx, "agent"); err != nil {
-		t.Fatal(err)
-	}
+	must(t, e.st.DeleteServer(ctx, "agent"))
 	var out Settings
 	b.do("PATCH", "/api/settings", on, &out).want(t, 200)
 	if !out.AllowPublicRepos {
@@ -239,20 +219,13 @@ func TestPoolWithAGoneServerStillChanges(t *testing.T) {
 	b := e.login("ada@example.com", auth.RoleAdmin)
 	e.addServer("s1", "x64", store.ServerOnline, 8, 16384)
 	now := time.Now()
-	err := e.st.CreatePool(context.Background(), store.Pool{
+	must(t, e.st.CreatePool(context.Background(), store.Pool{
 		ID: "p1", Name: "big", Label: "big", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 64, MaxRunners: 2,
 		ServerIDs: []string{"s1", "gone"}, Enabled: true, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	}))
 	b.do("PATCH", "/api/pools/p1", map[string]any{"max_runners": 3}, nil).want(t, 200)
 	b.do("PATCH", "/api/pools/p1", map[string]any{"server_ids": []string{"s1", "gone"}}, nil).want(t, 200)
-	res := b.do("PATCH", "/api/pools/p1", map[string]any{"server_ids": []string{"s1", "other"}}, nil)
-	res.want(t, 422)
-	if locs := res.problem(t).locations(); !slices.Contains(locs, "body.server_ids[1]") {
-		t.Fatalf("error locations %v, want body.server_ids[1]", locs)
-	}
+	b.do("PATCH", "/api/pools/p1", map[string]any{"server_ids": []string{"s1", "other"}}, nil).wantField(t, 422, "body.server_ids[1]")
 }
 
 // The fleet publishes the stored server row. The browser must get the
@@ -265,40 +238,20 @@ func TestServerStateEventIsTheServerObject(t *testing.T) {
 	ctx := context.Background()
 	e.addServer("s1", "x64", store.ServerOnline, 16, 65536)
 	now := time.Now()
-	if err := e.st.AppendServerStats(ctx, []store.ServerStat{{ServerID: "s1", At: now, CPUPercent: 42, MemoryPercent: 30, DiskPercent: 12}}); err != nil {
-		t.Fatal(err)
-	}
+	must(t, e.st.AppendServerStats(ctx, []store.ServerStat{{ServerID: "s1", At: now, CPUPercent: 42, MemoryPercent: 30, DiskPercent: 12}}))
 	for _, b := range []store.Sandbox{
 		{ID: "sb1", PoolID: "p", ServerID: "s1", Mode: sandbox.ModeContainer, State: sandbox.StateBusy, VCPU: 4, MemoryMB: 8192, CreatedAt: now},
 		{ID: "sb2", PoolID: "p", ServerID: "s1", Mode: sandbox.ModeContainer, State: sandbox.StateIdle, VCPU: 2, MemoryMB: 4096, CreatedAt: now},
 	} {
-		if err := e.st.InsertSandbox(ctx, b); err != nil {
-			t.Fatal(err)
-		}
+		must(t, e.st.InsertSandbox(ctx, b))
 	}
 	v, err := e.st.GetServer(ctx, "s1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 
-	// The handler subscribes after the headers, so publish until the event comes.
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		for {
-			e.d.Bus.Publish(events.Event{Type: events.ServerState, Data: v})
-			select {
-			case <-stop:
-				return
-			case <-time.After(20 * time.Millisecond):
-			}
-		}
-	}()
+	e.publish(events.Event{Type: events.ServerState, Data: v})
 	ev := recv(t, ch)
 	var got Server
-	if err := json.Unmarshal([]byte(ev.data), &got); err != nil {
-		t.Fatal(err)
-	}
+	must(t, json.Unmarshal([]byte(ev.data), &got))
 	if ev.name != "server.state" || got.ID != "s1" || got.UpdateState != UpdateAvailable || got.Sandboxes != 2 ||
 		got.RunningJobs != 1 || got.VCPUInUse != 6 || got.MemoryInUseMB != 12288 || got.CPUPercent == nil || *got.CPUPercent != 42 {
 		t.Errorf("%s data %s: want s1 with update_state available, 2 sandboxes, 1 running job, 6 vCPUs and 12288 MB in use, and 42%% CPU", ev.name, ev.data)

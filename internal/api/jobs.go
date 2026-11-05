@@ -90,7 +90,7 @@ func jobSummary(j store.Job, r refs, now time.Time) JobSummary {
 	return JobSummary{
 		ID: j.ID, JobName: j.JobName, WorkflowName: j.WorkflowName, WorkflowFile: j.WorkflowFile,
 		Repository: j.Repository, RunNumber: j.RunNumber, HeadBranch: j.HeadBranch, HeadSHA: j.HeadSHA,
-		PoolID: j.PoolID, PoolLabel: r.poolLabel(j.PoolID), ServerID: j.ServerID, ServerName: r.serverName(j.ServerID),
+		PoolID: j.PoolID, PoolLabel: r.pools[j.PoolID].Label, ServerID: j.ServerID, ServerName: r.servers[j.ServerID].Name,
 		State: j.State, Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
 		QueueMS: queueMS(j, now), DurationMS: durationMS(j, now),
 		QueuedAt: j.QueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
@@ -123,7 +123,11 @@ func durationMS(j store.Job, now time.Time) int64 {
 
 // jobSummaries converts jobs and sets the expected duration of the jobs
 // that did not complete.
-func (h *Handler) jobSummaries(ctx context.Context, jobs []store.Job, r refs) ([]JobSummary, error) {
+func (h *Handler) jobSummaries(ctx context.Context, jobs []store.Job) ([]JobSummary, error) {
+	r, err := h.loadRefs(ctx)
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	type key struct{ repo, file, name string }
 	expected := map[key]int64{}
@@ -136,7 +140,6 @@ func (h *Handler) jobSummaries(ctx context.Context, jobs []store.Job, r refs) ([
 		k := key{j.Repository, j.WorkflowFile, j.JobName}
 		ms, ok := expected[k]
 		if !ok {
-			var err error
 			if ms, err = h.d.Store.ExpectedDurationMS(ctx, k.repo, k.file, k.name); err != nil {
 				return nil, err
 			}
@@ -158,36 +161,41 @@ type listJobsInput struct {
 	Limit      int    `query:"limit" minimum:"1" maximum:"200" default:"50"`
 }
 
-var ranges = map[string]time.Duration{"24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour}
+// ranges are the time ranges of the job list and the overview, in buckets
+// of the overview chart.
+var ranges = map[string]struct {
+	bucket time.Duration
+	count  int
+}{
+	"24h": {time.Hour, 24},
+	"7d":  {6 * time.Hour, 28},
+	"30d": {24 * time.Hour, 30},
+}
 
-func (h *Handler) listJobs(ctx context.Context, in *listJobsInput) (*struct{ Body JobPage }, error) {
+func (h *Handler) listJobs(ctx context.Context, in *listJobsInput) (*body[JobPage], error) {
 	f := store.JobFilter{
 		Status: in.Status, Repository: in.Repository, PoolID: in.PoolID, ServerID: in.ServerID,
 		Q: in.Q, Cursor: in.Cursor, Limit: in.Limit,
 	}
-	if d, ok := ranges[in.Range]; ok {
-		f.Since = time.Now().Add(-d)
+	if rg, ok := ranges[in.Range]; ok {
+		f.Since = time.Now().Add(-time.Duration(rg.count) * rg.bucket)
 	}
 	jobs, next, err := h.d.Store.ListJobs(ctx, f)
 	if errors.Is(err, store.ErrBadCursor) {
 		return nil, invalid("query.cursor", "The cursor is not valid.", in.Cursor)
 	}
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	total, err := h.d.Store.CountJobs(ctx, f)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	r, err := h.loadRefs(ctx)
+	items, err := h.jobSummaries(ctx, jobs)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	items, err := h.jobSummaries(ctx, jobs, r)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body JobPage }{JobPage{Items: items, NextCursor: next, Total: total}}, nil
+	return &body[JobPage]{JobPage{Items: items, NextCursor: next, Total: total}}, nil
 }
 
 type Facet struct {
@@ -201,36 +209,36 @@ type JobFacets struct {
 	Servers      []Facet  `json:"servers"`
 }
 
-func (h *Handler) getJobFacets(ctx context.Context, _ *struct{}) (*struct{ Body JobFacets }, error) {
+func (h *Handler) getJobFacets(ctx context.Context, _ *struct{}) (*body[JobFacets], error) {
 	f, err := h.d.Store.JobFacets(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	facets := func(list []store.Facet) []Facet {
 		out := make([]Facet, len(list))
 		for i, x := range list {
-			out[i] = Facet{ID: x.ID, Name: x.Name}
+			out[i] = Facet(x)
 		}
 		return out
 	}
-	return &struct{ Body JobFacets }{JobFacets{
+	return &body[JobFacets]{JobFacets{
 		Repositories: orEmpty(f.Repositories), Pools: facets(f.Pools), Servers: facets(f.Servers),
 	}}, nil
 }
 
-func (h *Handler) getJob(ctx context.Context, in *PathID) (*struct{ Body Job }, error) {
+func (h *Handler) getJob(ctx context.Context, in *PathID) (*body[Job], error) {
 	j, err := h.d.Store.GetJob(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No job has this ID.")
+		return nil, notFound(err, "No job has this ID.")
 	}
 	r, err := h.loadRefs(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	out := Job{
 		JobSummary:  jobSummary(j, r, time.Now()),
 		WorkflowRef: j.WorkflowRef, RunID: j.RunID, RunAttempt: j.RunAttempt, CommitMessage: j.CommitMessage,
-		Event: j.Event, Actor: j.Actor, PRNumber: j.PRNumber, HTMLURL: h.jobURL(j),
+		Event: j.Event, Actor: j.Actor, PRNumber: j.PRNumber, HTMLURL: jobURL(j),
 		Steps: make([]JobStep, len(j.Steps)), Labels: orEmpty(j.Labels), SandboxID: j.SandboxID,
 		LogState: j.LogState, CPUPeak: j.CPUPeak, CPUAvg: j.CPUAvg, MemPeakMB: j.MemPeakMB, AssignedAt: j.AssignedAt,
 	}
@@ -238,11 +246,11 @@ func (h *Handler) getJob(ctx context.Context, in *PathID) (*struct{ Body Job }, 
 		out.Steps[i] = JobStep(st)
 	}
 	if out.ExpectedDurationMS, err = h.d.Store.ExpectedDurationMS(ctx, j.Repository, j.WorkflowFile, j.JobName); err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	runs, err := h.d.Store.ListRunUsage(ctx, j.Repository, j.WorkflowFile, j.JobName, adviceRuns)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	var pool *store.Pool
 	if p, ok := r.pools[j.PoolID]; ok {
@@ -251,23 +259,23 @@ func (h *Handler) getJob(ctx context.Context, in *PathID) (*struct{ Body Job }, 
 	out.SizeAdvice = sizeAdvice(runs, pool, slices.Collect(maps.Values(r.pools)))
 	b, err := h.jobSandbox(ctx, j)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	out.VCPU, out.MemoryMB = jobSize(j, b, r)
 	if b != nil {
 		out.SandboxState, out.HoldUntil = string(b.State), b.HoldUntil
 		if b.Debug && !b.State.Done() {
 			if out.SSHCommand, err = h.sshCommand(ctx, b.ID); err != nil {
-				return nil, h.internal(err)
+				return nil, err
 			}
 		}
 	}
-	return &struct{ Body Job }{out}, nil
+	return &body[Job]{out}, nil
 }
 
 // jobURL is the page of the job on GitHub. Before the enrichment reads the
 // job, it is the page of the run.
-func (h *Handler) jobURL(j store.Job) string {
+func jobURL(j store.Job) string {
 	if j.HTMLURL != "" || j.RunID == 0 || j.Repository == "" {
 		return j.HTMLURL
 	}
@@ -293,7 +301,6 @@ func (h *Handler) jobSandbox(ctx context.Context, j store.Job) (*store.Sandbox, 
 	return &b, nil
 }
 
-// jobSize is the size of the sandbox b of the job, or of its pool.
 func jobSize(j store.Job, b *store.Sandbox, r refs) (vcpu, memoryMB int) {
 	if b != nil {
 		return b.VCPU, b.MemoryMB
@@ -314,29 +321,29 @@ type MetricSample struct {
 	MemoryMB   int     `json:"memory_mb"`
 }
 
-func (h *Handler) getJobMetrics(ctx context.Context, in *PathID) (*struct{ Body JobMetrics }, error) {
+func (h *Handler) getJobMetrics(ctx context.Context, in *PathID) (*body[JobMetrics], error) {
 	j, err := h.d.Store.GetJob(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No job has this ID.")
+		return nil, notFound(err, "No job has this ID.")
 	}
 	samples, err := h.d.Store.ListJobMetrics(ctx, j.ID)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	r, err := h.loadRefs(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	b, err := h.jobSandbox(ctx, j)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	out := JobMetrics{Samples: make([]MetricSample, len(samples))}
 	out.VCPU, out.MemoryMB = jobSize(j, b, r)
 	for i, m := range samples {
 		out.Samples[i] = MetricSample{TMS: m.At.UnixMilli(), CPUPercent: m.CPUPercent, MemoryMB: m.MemoryMB}
 	}
-	return &struct{ Body JobMetrics }{out}, nil
+	return &body[JobMetrics]{out}, nil
 }
 
 type RerunRequest struct {
@@ -352,7 +359,7 @@ func (h *Handler) rerunJob(ctx context.Context, in *struct {
 	}
 	j, err := h.d.Store.GetJob(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No job has this ID.")
+		return nil, notFound(err, "No job has this ID.")
 	}
 	if j.State != store.JobCompleted {
 		return nil, huma.Error409Conflict("Only a completed job can run again.")
@@ -375,7 +382,7 @@ func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamRespons
 		return nil, unavailable("The job log")
 	}
 	if _, err := h.d.Store.GetJob(ctx, in.ID); err != nil {
-		return nil, h.storeErr(err, "No job has this ID.")
+		return nil, notFound(err, "No job has this ID.")
 	}
 	rc, live, err := h.d.Logs.JobLog(ctx, in.ID, in.Step, in.Follow)
 	if err != nil {
@@ -383,10 +390,10 @@ func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamRespons
 	}
 	resp := h.stream(rc, "text/plain; charset=utf-8", in.Follow)
 	if live && in.Step > 0 {
-		body := resp.Body
+		send := resp.Body
 		resp.Body = func(hctx huma.Context) {
 			hctx.SetHeader(stepFilterHeader, "ignored")
-			body(hctx)
+			send(hctx)
 		}
 	}
 	return resp, nil
@@ -396,11 +403,88 @@ func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamRespons
 // request asked for one: the live log of a running job has no step marks.
 const stepFilterHeader = "X-Runplane-Step-Filter"
 
-// jobLogResponse documents the job log and its step filter header.
-func jobLogResponse(op *huma.Operation) {
-	textResponse(op)
-	op.Responses["200"].Headers = map[string]*huma.Param{stepFilterHeader: {
-		Description: "ignored: the log has all steps, because the job runs and its live log has no step marks.",
-		Schema:      &huma.Schema{Type: huma.TypeString, Enum: []any{"ignored"}},
-	}}
+type Overview struct {
+	Range   string           `json:"range" enum:"24h,7d,30d"`
+	Stats   OverviewStats    `json:"stats"`
+	Running []JobSummary     `json:"running" doc:"All running jobs, newest first."`
+	Servers []ServerSummary  `json:"servers" doc:"The primary first."`
+	Buckets []OverviewBucket `json:"buckets" doc:"Completed jobs by queue time, oldest first, in UTC: 24 buckets of 1 hour for 24h, 28 of 6 hours for 7d, 30 of 1 day for 30d. The last bucket ends after now."`
+	Recent  []JobSummary     `json:"recent" doc:"The last 10 completed jobs, newest first."`
+}
+
+// OverviewStats cover the jobs queued in the time of the buckets.
+type OverviewStats struct {
+	Jobs          int      `json:"jobs"`
+	VCPUInUse     int      `json:"vcpu_in_use" doc:"vCPUs of the live sandboxes on the online and draining servers."`
+	VCPUTotal     int      `json:"vcpu_total" doc:"vCPUs of the online and draining servers."`
+	MedianQueueMS *int64   `json:"median_queue_ms" doc:"Median time from queued to assigned. Null when no job of the range has a runner yet."`
+	FailureRate   float64  `json:"failure_rate" doc:"failed / (succeeded + failed), 0 to 1."`
+	CacheHitRate  *float64 `json:"cache_hit_rate" doc:"Actions cache hits / (hits + misses), 0 to 1. Null when the range has no cache lookups."`
+	DurationMS    int64    `json:"duration_ms" doc:"Sum of the run times of the completed jobs."`
+}
+
+type OverviewBucket struct {
+	Start     time.Time `json:"start"`
+	Succeeded int       `json:"succeeded"`
+	Failed    int       `json:"failed"`
+	Cancelled int       `json:"cancelled"`
+}
+
+type overviewInput struct {
+	Range string `query:"range" enum:"24h,7d,30d" default:"24h"`
+}
+
+func (h *Handler) getOverview(ctx context.Context, in *overviewInput) (*body[Overview], error) {
+	rg := ranges[in.Range]
+	// The buckets start on whole hours, quarter days, or days in UTC, and
+	// the last bucket has now.
+	since := time.Now().UTC().Truncate(rg.bucket).Add(-time.Duration(rg.count-1) * rg.bucket)
+	until := since.Add(time.Duration(rg.count) * rg.bucket)
+	o, err := h.d.Store.Overview(ctx, since, until, rg.bucket)
+	if err != nil {
+		return nil, err
+	}
+	queueTimes, cacheLookups, err := h.d.Store.OverviewSamples(ctx, since, until)
+	if err != nil {
+		return nil, err
+	}
+	out := Overview{
+		Range:   in.Range,
+		Stats:   OverviewStats{Jobs: o.Jobs, FailureRate: o.FailureRate, DurationMS: o.DurationMS},
+		Buckets: make([]OverviewBucket, len(o.Buckets)),
+	}
+	if queueTimes > 0 {
+		out.Stats.MedianQueueMS = &o.MedianQueueMS
+	}
+	if cacheLookups > 0 {
+		out.Stats.CacheHitRate = &o.CacheHitRate
+	}
+	for i, x := range o.Buckets {
+		out.Buckets[i] = OverviewBucket(x)
+	}
+	if out.Running, err = h.jobSummaries(ctx, o.Running); err != nil {
+		return nil, err
+	}
+	if out.Recent, err = h.jobSummaries(ctx, o.Recent); err != nil {
+		return nil, err
+	}
+	list, err := h.d.Store.ListServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	servers, err := h.servers(ctx, list)
+	if err != nil {
+		return nil, err
+	}
+	out.Servers = make([]ServerSummary, len(servers))
+	for i, v := range servers {
+		out.Servers[i] = v.ServerSummary
+		// An unreachable server keeps its sandbox rows until it connects
+		// again, so its sandboxes count only with its vCPUs.
+		if v.Status == store.ServerOnline || v.Status == store.ServerDraining {
+			out.Stats.VCPUInUse += v.VCPUInUse
+			out.Stats.VCPUTotal += v.VCPU
+		}
+	}
+	return &body[Overview]{out}, nil
 }

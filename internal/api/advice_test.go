@@ -1,6 +1,7 @@
 package api
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/runplane/runplane/internal/store"
@@ -19,10 +20,8 @@ func TestSizeAdvice(t *testing.T) {
 		pool("off", "x64", 1, 2048, false),
 	}
 	byLabel := func(label string) *store.Pool {
-		for i := range pools {
-			if pools[i].Label == label {
-				return &pools[i]
-			}
+		if i := slices.IndexFunc(pools, func(p store.Pool) bool { return p.Label == label }); i >= 0 {
+			return &pools[i]
 		}
 		return nil
 	}

@@ -3,7 +3,6 @@ package api
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -13,8 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-
-	"github.com/danielgtaylor/huma/v2"
+	"time"
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -52,6 +50,12 @@ type Settings struct {
 	HTTPS   *HTTPSStatus `json:"https,omitempty" doc:"Certificate of the domain. Read-only. Absent when this runplane process cannot report it."`
 }
 
+type HTTPSStatus struct {
+	State    string     `json:"state" enum:"none,requesting,valid,error" doc:"none: no domain is set. requesting: runplane waits for the first certificate. error: port 443 or 80 does not open (runplane tries again each minute), or the last request failed and no valid certificate exists."`
+	NotAfter *time.Time `json:"not_after" doc:"End of the current certificate. Null without a certificate."`
+	Error    string     `json:"error" doc:"Why a port does not open, or why the last certificate request failed."`
+}
+
 type BackupS3 struct {
 	Endpoint     string `json:"endpoint" doc:"Empty: AWS S3 in the region."`
 	Region       string `json:"region"`
@@ -62,7 +66,7 @@ type BackupS3 struct {
 }
 
 func (h *Handler) settingsOut(ctx context.Context, st store.Settings) Settings {
-	return Settings{
+	out := Settings{
 		InstanceName: st.InstanceName, PublicURL: st.PublicURL, Domain: st.Domain, ACMEEmail: st.ACMEEmail,
 		Mode: string(st.Mode), ReserveVCPU: st.ReserveVCPU, ReserveMemoryMB: st.ReserveMemoryMB,
 		CPUOvercommit: st.CPUOvercommit, MinFreeDiskPercent: st.MinFreeDiskPercent,
@@ -71,10 +75,13 @@ func (h *Handler) settingsOut(ctx context.Context, st store.Settings) Settings {
 		DNSServers: orEmpty(st.DNSServers), RegistryMirror: st.RegistryMirror, ActionsCache: st.ActionsCache,
 		CacheMaxGB: st.CacheMaxGB, JobRetentionDays: st.JobRetentionDays, LogRetentionDays: st.LogRetentionDays,
 		DebugHoldMinutes: st.DebugHoldMinutes, AutoUpdate: st.AutoUpdate, BackupEnabled: st.BackupEnabled,
-		BackupKeep: st.BackupKeep, BackupS3: backupS3Out(st.BackupS3),
-		SSHPort: h.sshPort(),
-		HTTPS:   h.httpsStatus(ctx),
+		BackupKeep: st.BackupKeep, BackupS3: backupS3Out(st.BackupS3), SSHPort: h.sshPort(),
 	}
+	if h.d.HTTPS != nil {
+		s := h.d.HTTPS.CertificateStatus(ctx)
+		out.HTTPS = &s
+	}
+	return out
 }
 
 func backupS3Out(b store.BackupS3) BackupS3 {
@@ -84,15 +91,14 @@ func backupS3Out(b store.BackupS3) BackupS3 {
 	}
 }
 
-func (h *Handler) getSettings(ctx context.Context, _ *struct{}) (*struct{ Body Settings }, error) {
+func (h *Handler) getSettings(ctx context.Context, _ *struct{}) (*body[Settings], error) {
 	st, err := h.d.Store.GetSettings(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	return &struct{ Body Settings }{h.settingsOut(ctx, st)}, nil
+	return &body[Settings]{h.settingsOut(ctx, st)}, nil
 }
 
-// SettingsPatch changes the keys that it has.
 type SettingsPatch struct {
 	InstanceName            *string        `json:"instance_name,omitempty" minLength:"1" maxLength:"64"`
 	PublicURL               *string        `json:"public_url,omitempty" maxLength:"2048"`
@@ -130,14 +136,14 @@ type BackupS3Patch struct {
 	SecretKey *string `json:"secret_key,omitempty" maxLength:"256" doc:"Write-only. An empty string removes the key."`
 }
 
-func (h *Handler) updateSettings(ctx context.Context, in *struct{ Body SettingsPatch }) (*struct{ Body Settings }, error) {
+func (h *Handler) updateSettings(ctx context.Context, in *body[SettingsPatch]) (*body[Settings], error) {
 	p := in.Body
 	if err := p.check(); err != nil {
 		return nil, err
 	}
 	servers, err := h.d.Store.ListServers(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	var old store.Settings
 	next, err := h.d.Store.UpdateSettings(ctx, func(st *store.Settings) error {
@@ -145,12 +151,8 @@ func (h *Handler) updateSettings(ctx context.Context, in *struct{ Body SettingsP
 		p.apply(st, h)
 		return h.checkSettings(*st, old, servers)
 	})
-	var se huma.StatusError
-	if errors.As(err, &se) {
-		return nil, se
-	}
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	if changes := fieldChanges(old, next); len(changes) > 0 {
 		h.audit(ctx, "settings.update", "", settingsDetail(old, next, changes))
@@ -159,22 +161,21 @@ func (h *Handler) updateSettings(ctx context.Context, in *struct{ Body SettingsP
 			h.d.SettingsHook.SettingsChanged(context.WithoutCancel(ctx), old, next)
 		}
 	}
-	return &struct{ Body Settings }{h.settingsOut(ctx, next)}, nil
+	return &body[Settings]{h.settingsOut(ctx, next)}, nil
 }
 
 // check validates the values that do not depend on other settings, and
 // trims them.
 func (p *SettingsPatch) check() error {
 	var errs problems
-	trim := func(v *string) {
-		if v != nil {
-			*v = strings.TrimSpace(*v)
+	trim := func(list ...*string) {
+		for _, v := range list {
+			if v != nil {
+				*v = strings.TrimSpace(*v)
+			}
 		}
 	}
-	trim(p.InstanceName)
-	trim(p.PublicURL)
-	trim(p.Domain)
-	trim(p.ACMEEmail)
+	trim(p.InstanceName, p.PublicURL, p.Domain, p.ACMEEmail)
 	if p.InstanceName != nil && *p.InstanceName == "" {
 		errs.add("body.instance_name", "Enter a name.", *p.InstanceName)
 	}
@@ -203,7 +204,7 @@ func (p *SettingsPatch) check() error {
 			v = strings.ToLower(strings.TrimSpace(v))
 			(*p.EgressAllowlist)[i] = v
 			if !validEgress(v) {
-				errs.add(locIndex("body.egress_allowlist", i), "Enter a host name, *.domain, IP address, or CIDR.", v)
+				errs.add(fmt.Sprintf("body.egress_allowlist[%d]", i), "Enter a host name, *.domain, IP address, or CIDR.", v)
 			}
 		}
 	}
@@ -212,16 +213,12 @@ func (p *SettingsPatch) check() error {
 			v = strings.TrimSpace(v)
 			(*p.DNSServers)[i] = v
 			if a, err := netip.ParseAddr(v); err != nil || !a.Is4() {
-				errs.add(locIndex("body.dns_servers", i), "Enter an IPv4 address.", v)
+				errs.add(fmt.Sprintf("body.dns_servers[%d]", i), "Enter an IPv4 address.", v)
 			}
 		}
 	}
 	if b := p.BackupS3; b != nil {
-		trim(b.Endpoint)
-		trim(b.Region)
-		trim(b.Bucket)
-		trim(b.Prefix)
-		trim(b.AccessKey)
+		trim(b.Endpoint, b.Region, b.Bucket, b.Prefix, b.AccessKey)
 		if b.Endpoint != nil && *b.Endpoint != "" {
 			u, err := url.Parse(*b.Endpoint)
 			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

@@ -116,32 +116,20 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 	return out, nil
 }
 
-func (h *Handler) listServers(ctx context.Context, _ *struct{}) (*struct{ Body []Server }, error) {
+func (h *Handler) listServers(ctx context.Context, _ *struct{}) (*body[[]Server], error) {
 	list, err := h.d.Store.ListServers(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
-	out, err := h.servers(ctx, list)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body []Server }{out}, nil
+	return reply(h.servers(ctx, list))
 }
 
-func (h *Handler) getServer(ctx context.Context, in *PathID) (*struct{ Body Server }, error) {
+func (h *Handler) getServer(ctx context.Context, in *PathID) (*body[Server], error) {
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
-	return h.serverOutput(ctx, v)
-}
-
-func (h *Handler) serverOutput(ctx context.Context, v store.Server) (*struct{ Body Server }, error) {
-	out, err := h.servers(ctx, []store.Server{v})
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body Server }{out[0]}, nil
+	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
 type ServerTokenRequest struct {
@@ -155,7 +143,7 @@ type ServerToken struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func (h *Handler) createServerToken(ctx context.Context, in *struct{ Body *ServerTokenRequest }) (*struct{ Body ServerToken }, error) {
+func (h *Handler) createServerToken(ctx context.Context, in *body[*ServerTokenRequest]) (*body[ServerToken], error) {
 	if h.d.Servers == nil {
 		return nil, unavailable("Adding servers")
 	}
@@ -165,14 +153,14 @@ func (h *Handler) createServerToken(ctx context.Context, in *struct{ Body *Serve
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	t, err := h.d.Servers.NewToken(ctx, base, name, currentUser(ctx).ID)
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "server.token", t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
-	return &struct{ Body ServerToken }{t}, nil
+	return &body[ServerToken]{t}, nil
 }
 
 type ServerTokenStatus struct {
@@ -181,16 +169,16 @@ type ServerTokenStatus struct {
 	ExpiresAt time.Time `json:"expires_at" doc:"An unused token stops working at this time."`
 }
 
-func (h *Handler) getServerTokenStatus(ctx context.Context, in *PathID) (*struct{ Body ServerTokenStatus }, error) {
+func (h *Handler) getServerTokenStatus(ctx context.Context, in *PathID) (*body[ServerTokenStatus], error) {
 	t, err := h.d.Store.GetServerToken(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No install token has this ID.")
+		return nil, notFound(err, "No install token has this ID.")
 	}
 	out := ServerTokenStatus{Used: t.UsedAt != nil, ExpiresAt: t.ExpiresAt}
 	if out.Used {
 		out.ServerID = t.ServerID
 	}
-	return &struct{ Body ServerTokenStatus }{out}, nil
+	return &body[ServerTokenStatus]{out}, nil
 }
 
 type SSHInstall struct {
@@ -200,7 +188,7 @@ type SSHInstall struct {
 	User string `json:"user,omitempty" maxLength:"32" default:"root" doc:"A user with root or sudo without a password."`
 }
 
-func (h *Handler) installServerSSH(ctx context.Context, in *struct{ Body SSHInstall }) (*struct{ Body Server }, error) {
+func (h *Handler) installServerSSH(ctx context.Context, in *body[SSHInstall]) (*body[Server], error) {
 	if h.d.Servers == nil {
 		return nil, unavailable("Adding servers")
 	}
@@ -218,7 +206,7 @@ func (h *Handler) installServerSSH(ctx context.Context, in *struct{ Body SSHInst
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
-		return nil, h.internal(err)
+		return nil, err
 	}
 	id, err := h.d.Servers.InstallSSH(ctx, base, req)
 	if err != nil {
@@ -227,16 +215,16 @@ func (h *Handler) installServerSSH(ctx context.Context, in *struct{ Body SSHInst
 	h.audit(ctx, "server.install", id, map[string]any{"name": req.Name, "host": req.Host, "port": req.Port, "user": req.User})
 	v, err := h.d.Store.GetServer(ctx, id)
 	if err != nil {
-		return nil, h.storeErr(err, "The new server is gone.")
+		return nil, notFound(err, "The new server is gone.")
 	}
-	return h.serverOutput(ctx, v)
+	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
 type SSHKey struct {
 	PublicKey string `json:"public_key" doc:"Line for ~/.ssh/authorized_keys."`
 }
 
-func (h *Handler) getSSHKey(ctx context.Context, _ *struct{}) (*struct{ Body SSHKey }, error) {
+func (h *Handler) getSSHKey(ctx context.Context, _ *struct{}) (*body[SSHKey], error) {
 	if h.d.Servers == nil {
 		return nil, unavailable("Adding servers")
 	}
@@ -244,7 +232,7 @@ func (h *Handler) getSSHKey(ctx context.Context, _ *struct{}) (*struct{ Body SSH
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	return &struct{ Body SSHKey }{SSHKey{PublicKey: key}}, nil
+	return &body[SSHKey]{SSHKey{PublicKey: key}}, nil
 }
 
 type UpdateServerRequest struct {
@@ -255,10 +243,10 @@ type UpdateServerRequest struct {
 func (h *Handler) updateServer(ctx context.Context, in *struct {
 	PathID
 	Body UpdateServerRequest
-}) (*struct{ Body Server }, error) {
+}) (*body[Server], error) {
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	b := in.Body
 	var name string
@@ -278,17 +266,17 @@ func (h *Handler) updateServer(ctx context.Context, in *struct {
 	}
 	if name != "" {
 		if err := h.d.Store.SetServerName(ctx, v.ID, name); err != nil {
-			return nil, h.storeErr(err, "No server has this ID.")
+			return nil, notFound(err, "No server has this ID.")
 		}
 	}
 	if changeStatus {
 		if err := h.d.Store.SetServerStatus(ctx, v.ID, *b.Status, ""); err != nil {
-			return nil, h.storeErr(err, "No server has this ID.")
+			return nil, notFound(err, "No server has this ID.")
 		}
 	}
 	old := v
 	if v, err = h.d.Store.GetServer(ctx, v.ID); err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	h.d.Bus.Publish(events.Event{Type: events.ServerState, Data: v})
 	changes := map[string][2]any{}
@@ -301,13 +289,13 @@ func (h *Handler) updateServer(ctx context.Context, in *struct {
 	if len(changes) > 0 {
 		h.audit(ctx, "server.update", v.ID, map[string]any{"name": v.Name, "status": v.Status, "changes": changes})
 	}
-	return h.serverOutput(ctx, v)
+	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
 func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) {
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	if v.Kind == store.ServerLocal {
 		return nil, huma.Error409Conflict("The primary server cannot be removed.")
@@ -319,7 +307,7 @@ func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) 
 		return nil, h.serviceErr(err)
 	}
 	if err := h.d.Store.DeleteServer(ctx, v.ID); err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	// The delete can change the servers of pools, or disable them.
 	h.poolsChanged(ctx)
@@ -327,13 +315,13 @@ func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) 
 	return nil, nil
 }
 
-func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*struct{ Body Server }, error) {
+func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], error) {
 	if h.d.Servers == nil {
 		return nil, unavailable("Agent updates")
 	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	switch h.d.Servers.UpdateState(v) {
 	case UpdateCurrent:
@@ -347,7 +335,7 @@ func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*struct{ Body Se
 		return nil, h.serviceErr(err)
 	}
 	h.audit(ctx, "server.update_agent", v.ID, map[string]any{"name": v.Name, "from": v.Version, "to": version.Version})
-	return h.serverOutput(ctx, v)
+	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
 type DoctorResult struct {
@@ -356,46 +344,41 @@ type DoctorResult struct {
 	Checks    []Check    `json:"checks"`
 }
 
-func (h *Handler) getDoctor(ctx context.Context, in *PathID) (*struct{ Body DoctorResult }, error) {
+func (h *Handler) getDoctor(ctx context.Context, in *PathID) (*body[DoctorResult], error) {
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	out := DoctorResult{ServerID: v.ID, Checks: []Check{}}
 	r, err := h.d.Store.GetDoctorResult(ctx, v.ID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return &struct{ Body DoctorResult }{out}, nil
+		return &body[DoctorResult]{out}, nil
 	case err != nil:
-		return nil, h.internal(err)
+		return nil, err
 	}
 	out.CheckedAt = &r.CheckedAt
 	for _, c := range r.Checks {
 		out.Checks = append(out.Checks, Check(c))
 	}
-	return &struct{ Body DoctorResult }{out}, nil
+	return &body[DoctorResult]{out}, nil
 }
 
-func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*struct{ Body DoctorResult }, error) {
+func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult], error) {
 	if h.d.Servers == nil {
 		return nil, unavailable("The doctor")
 	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
-		return nil, h.storeErr(err, "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	checks, err := h.d.Servers.Doctor(ctx, v.ID)
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	out, err := h.saveDoctor(ctx, v.ID, checks)
-	if err != nil {
-		return nil, h.internal(err)
-	}
-	return &struct{ Body DoctorResult }{out}, nil
+	return reply(h.saveDoctor(ctx, v.ID, checks))
 }
 
-// saveDoctor stores checks as the last doctor result of the server.
 func (h *Handler) saveDoctor(ctx context.Context, serverID string, checks []Check) (DoctorResult, error) {
 	r := store.DoctorResult{ServerID: serverID, CheckedAt: time.Now().UTC().Truncate(time.Millisecond)}
 	for _, c := range checks {

@@ -88,39 +88,19 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 	switch e.Type {
 	case events.SandboxState:
 		if b, ok := events.As[store.Sandbox](e.Data); ok {
-			r, err := h.loadRefs(ctx)
-			if err != nil {
-				return nil, err
-			}
-			list, err := h.sandboxes(ctx, []store.Sandbox{b}, r)
-			if err != nil {
-				return nil, err
-			}
-			return list[0], nil
+			return first(h.sandboxes(ctx, []store.Sandbox{b}))
 		}
 		return convert[Sandbox](e.Data)
 	case events.JobState:
 		if j, ok := events.As[store.Job](e.Data); ok {
-			r, err := h.loadRefs(ctx)
-			if err != nil {
-				return nil, err
-			}
-			list, err := h.jobSummaries(ctx, []store.Job{j}, r)
-			if err != nil {
-				return nil, err
-			}
-			return list[0], nil
+			return first(h.jobSummaries(ctx, []store.Job{j}))
 		}
 		return convert[JobSummary](e.Data)
 	case events.PoolStats:
 		return convert[PoolStats](e.Data)
 	case events.ServerState:
 		if v, ok := events.As[store.Server](e.Data); ok {
-			list, err := h.servers(ctx, []store.Server{v})
-			if err != nil {
-				return nil, err
-			}
-			return list[0], nil
+			return first(h.servers(ctx, []store.Server{v}))
 		}
 		return convert[Server](e.Data)
 	case events.HostStats:
@@ -150,11 +130,7 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		list, err := h.images(ctx, []store.Image{img})
-		if err != nil {
-			return nil, err
-		}
-		return list[0], nil
+		return first(h.images(ctx, []store.Image{img}))
 	case events.GitHubState:
 		return h.gitHubStatus(ctx)
 	case events.BackupState:
