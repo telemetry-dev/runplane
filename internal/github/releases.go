@@ -14,15 +14,12 @@ import (
 	"github.com/runplane/runplane/internal/notify"
 )
 
-// endWarning is how long before an end date runplane warns.
-const endWarning = 14 * 24 * time.Hour
-
 func (s *Service) releaseLoop(ctx context.Context) {
 	for {
 		if err := s.checkReleases(ctx); err != nil && ctx.Err() == nil {
 			s.log.Warn("check runner releases", "err", err)
 		}
-		if sleep(ctx, releaseInterval) != nil {
+		if sleep(ctx, time.Hour) != nil {
 			return
 		}
 	}
@@ -55,10 +52,8 @@ func (s *Service) checkReleases(ctx context.Context) error {
 	for _, arch := range arches {
 		s.setBundleDates(ctx, latest, arch, rel.PublishedAt, nil)
 	}
-	if s.bundles != nil {
-		if err := s.bundles.EnsureLatest(ctx, latest); err != nil {
-			s.log.Warn("make runner bundles", "version", latest, "err", err)
-		}
+	if err := s.bundles.EnsureLatest(ctx, latest); err != nil {
+		s.log.Warn("make runner bundles", "version", latest, "err", err)
 	}
 	if err := s.readEndDates(ctx); err != nil {
 		s.log.Warn("read runner end dates", "err", err)
@@ -92,7 +87,8 @@ func (s *Service) readEndDates(ctx context.Context) error {
 		err := s.api.json(ctx, call{
 			method: http.MethodGet, path: scope + "/actions/runners/deprecations/" + url.PathEscape(b.Version), auth: a,
 		}, &d)
-		if isStatus(err, http.StatusNotFound) {
+		var apiErr *apiError
+		if errors.As(err, &apiErr) && apiErr.status == http.StatusNotFound {
 			continue
 		}
 		if err != nil {
@@ -176,24 +172,14 @@ func (s *Service) warnEnds(ctx context.Context, arches []string) error {
 	}
 	for _, arch := range arches {
 		b, err := s.st.LatestReadyBundle(ctx, arch)
-		if err != nil || b.EndDate == nil || time.Until(*b.EndDate) > endWarning {
-			continue
-		}
-		s.warnMu.Lock()
-		sent := s.warned[b.Version]
-		s.warnMu.Unlock()
-		if sent {
+		if err != nil || b.EndDate == nil || time.Until(*b.EndDate) > 14*24*time.Hour || s.warned[b.Version] {
 			continue
 		}
 		s.log.Warn("runner version ends soon", "version", b.Version, "end_date", b.EndDate)
-		if s.notify != nil {
-			if err := s.notify.Notify(ctx, notify.RunnerDeprecationEvent(settings.DashboardURL(), b.Version, *b.EndDate)); err != nil {
-				return fmt.Errorf("send runner end date warning: %w", err)
-			}
+		if err := s.notify.Notify(ctx, notify.RunnerDeprecationEvent(settings.DashboardURL(), b.Version, *b.EndDate)); err != nil {
+			return fmt.Errorf("send runner end date warning: %w", err)
 		}
-		s.warnMu.Lock()
 		s.warned[b.Version] = true
-		s.warnMu.Unlock()
 	}
 	return nil
 }

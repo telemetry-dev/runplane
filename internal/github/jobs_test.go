@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,71 +17,76 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// runJSON is a workflow run as GitHub sends it, with the fields runplane reads.
-func runJSON(headRepoID int64, event string) map[string]any {
-	return map[string]any{
+// runJSON is run 555 of acme/web as GitHub sends it. headRepoID 0 means a
+// run without a head repository.
+func runJSON(event string, private bool, headRepoID int64) map[string]any {
+	run := map[string]any{
 		"id": 555, "name": "CI", "run_number": 81, "run_attempt": 2, "event": event,
-		"head_branch": "fix-cache", "head_sha": "3f2a9c1e", "html_url": "https://github.com/acme/web/actions/runs/555",
-		"actor":            map[string]any{"login": "alice"},
-		"triggering_actor": map[string]any{"login": "bob"},
-		"head_commit":      map[string]any{"message": "Fix the cache key"},
-		"pull_requests":    []map[string]any{{"number": 17, "base": map[string]any{"ref": "main"}}},
-		"repository":       map[string]any{"id": 100, "full_name": "acme/web", "private": true},
-		"head_repository":  map[string]any{"id": headRepoID, "full_name": "someone/web", "private": false},
+		"head_branch": "fix-cache", "head_sha": "3f2a9c1e", "head_repository": nil,
+		"actor": map[string]any{"login": "alice"}, "triggering_actor": map[string]any{"login": "bob"},
+		"head_commit":   map[string]any{"message": "Fix the cache key"},
+		"pull_requests": []map[string]any{{"number": 17, "base": map[string]any{"ref": "main"}}},
+		"repository":    map[string]any{"id": 100, "full_name": "acme/web", "private": private},
 	}
+	if headRepoID != 0 {
+		run["head_repository"] = map[string]any{"id": headRepoID, "full_name": "someone/web", "private": false}
+	}
+	return run
 }
 
-func jobsJSON() map[string]any {
-	step := func(n int, name, conclusion string) map[string]any {
-		return map[string]any{"number": n, "name": name, "status": "completed", "conclusion": conclusion,
-			"started_at": "2026-11-04T10:00:00Z", "completed_at": "2026-11-04T10:01:00Z"}
-	}
-	return map[string]any{"total_count": 4, "jobs": []map[string]any{
-		{"id": 901, "run_id": 555, "run_attempt": 1, "name": "build", "runner_name": "runplane-old", "html_url": "https://x/901",
-			"steps": []any{step(1, "Set up job", "success")}},
-		{"id": 902, "run_id": 555, "run_attempt": 2, "name": "build", "runner_name": "runplane-01abc", "html_url": "https://x/902",
-			"steps": []any{step(1, "Set up job", "success"), step(2, "Run tests", "failure")}},
-		{"id": 903, "run_id": 555, "run_attempt": 2, "name": "lint", "runner_name": "runplane-01def", "html_url": "https://x/903"},
-		{"id": 904, "run_id": 555, "run_attempt": 2, "name": "deploy", "runner_name": nil, "html_url": "https://x/904"},
-	}}
+var testJobs = []map[string]any{
+	{"id": 901, "run_attempt": 1, "name": "build", "runner_name": "runplane-old", "html_url": "https://x/901"},
+	{"id": 902, "run_attempt": 2, "name": "build", "runner_name": "runplane-01abc", "html_url": "https://x/902", "steps": []any{
+		map[string]any{"number": 1, "name": "Set up job", "status": "completed", "conclusion": "success",
+			"started_at": "2026-11-04T10:00:00Z", "completed_at": "2026-11-04T10:01:00Z"},
+		map[string]any{"number": 2, "name": "Run tests", "status": "completed", "conclusion": "failure",
+			"started_at": "2026-11-04T10:01:00Z", "completed_at": "2026-11-04T10:02:00Z"},
+	}},
+	{"id": 903, "run_attempt": 2, "name": "lint", "runner_name": "runplane-01def", "html_url": "https://x/903"},
 }
 
-func jobsEnv(t *testing.T) *env {
-	e := newEnv(t)
-	e.connect()
-	e.installOrg(10, "acme")
-	return e
+// serveRun serves run 555 of acme/web with the jobs.
+func (e *env) serveRun(jobs []map[string]any) {
+	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, runJSON("push", true, 100))
+	})
+	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("filter") != "all" {
+			e.t.Errorf("filter = %q, want all attempts", r.URL.Query().Get("filter"))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"total_count": len(jobs), "jobs": jobs})
+	})
 }
 
 func TestCheckJob(t *testing.T) {
+	ref := func(event string) store.RunRef {
+		return store.RunRef{Event: event, HeadBranch: "fix-cache", PRNumber: 17, BaseRef: "main"}
+	}
 	tests := []struct {
 		name       string
-		headRepoID int64
 		event      string
+		private    bool
+		headRepoID int64
 		want       scheduler.JobCheck
 	}{
-		{"push in the repository", 100, "push", scheduler.JobCheck{Private: true,
-			Ref: store.RunRef{Event: "push", HeadBranch: "fix-cache", PRNumber: 17, BaseRef: "main"}}},
-		{"pull request from a fork", 777, "pull_request", scheduler.JobCheck{Private: true, Fork: true,
-			Ref: store.RunRef{Event: "pull_request", HeadBranch: "fix-cache", PRNumber: 17, BaseRef: "main"}}},
-		{"workflow_run started by a fork", 777, "workflow_run", scheduler.JobCheck{Private: true, Fork: true,
-			Ref: store.RunRef{Event: "workflow_run", HeadBranch: "fix-cache", PRNumber: 17, BaseRef: "main"}}},
+		{"push in the repository", "push", true, 100, scheduler.JobCheck{Private: true, Ref: ref("push")}},
+		{"push without head repository", "push", true, 0, scheduler.JobCheck{Private: true, Ref: ref("push")}},
+		{"pull request from a fork", "pull_request", true, 777, scheduler.JobCheck{Private: true, Fork: true, Ref: ref("pull_request")}},
+		{"pull request from a deleted fork", "pull_request", false, 0, scheduler.JobCheck{Fork: true, Ref: ref("pull_request")}},
+		{"workflow_run started by a fork", "workflow_run", true, 777, scheduler.JobCheck{Private: true, Fork: true, Ref: ref("workflow_run")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := jobsEnv(t)
+			e := acmeEnv(t)
 			calls := 0
 			e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
 				calls++
-				writeJSON(w, http.StatusOK, runJSON(tt.headRepoID, tt.event))
+				writeJSON(w, http.StatusOK, runJSON(tt.event, tt.private, tt.headRepoID))
 			})
 			for range 2 {
 				got, err := e.svc.CheckJob(context.Background(), "acme/web", 555)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got != tt.want {
-					t.Errorf("CheckJob = %+v, want %+v", got, tt.want)
+				if err != nil || got != tt.want {
+					t.Errorf("CheckJob = %+v, %v; want %+v", got, err, tt.want)
 				}
 			}
 			if calls != 1 {
@@ -90,50 +96,53 @@ func TestCheckJob(t *testing.T) {
 	}
 }
 
-func TestCheckJobPullRequestWithoutHeadRepository(t *testing.T) {
-	e := jobsEnv(t)
-	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
-		run := runJSON(0, "pull_request")
-		run["head_repository"] = nil
-		run["repository"] = map[string]any{"id": 100, "full_name": "acme/web", "private": false}
-		writeJSON(w, http.StatusOK, run)
-	})
-	got, err := e.svc.CheckJob(context.Background(), "acme/web", 555)
-	if err != nil {
-		t.Fatal(err)
+func TestCheckJobErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		repository string
+		status     int
+		limited    bool
+		unreadable bool
+	}{
+		{"no installation for the repository", "stranger/web", 0, false, true},
+		{"run hidden from the app", "acme/web", http.StatusNotFound, false, true},
+		{"app may not read the repository", "acme/web", http.StatusForbidden, false, true},
+		{"rate limit", "acme/web", http.StatusForbidden, true, false},
+		{"GitHub fails", "acme/web", http.StatusBadGateway, false, false},
 	}
-	want := scheduler.JobCheck{Private: false, Fork: true, Ref: store.RunRef{Event: "pull_request", HeadBranch: "fix-cache", PRNumber: 17, BaseRef: "main"}}
-	if got != want {
-		t.Errorf("CheckJob = %+v, want a public fork run", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := acmeEnv(t)
+			e.svc.api.retryWait = time.Millisecond
+			e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
+				if tt.limited {
+					w.Header().Set("X-RateLimit-Remaining", "0")
+					w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+				}
+				writeJSON(w, tt.status, map[string]any{"message": "Not Found"})
+			})
+			_, err := e.svc.CheckJob(context.Background(), tt.repository, 555)
+			if err == nil || errors.Is(err, scheduler.ErrRunUnreadable) != tt.unreadable {
+				t.Errorf("CheckJob error = %v, want ErrRunUnreadable %v", err, tt.unreadable)
+			}
+		})
 	}
 }
 
 func TestEnrich(t *testing.T) {
-	e := jobsEnv(t)
+	e := acmeEnv(t)
 	ctx := context.Background()
-	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, runJSON(100, "pull_request"))
-	})
-	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555/jobs", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("filter") != "all" {
-			t.Errorf("filter = %q, want all attempts", r.URL.Query().Get("filter"))
-		}
-		writeJSON(w, http.StatusOK, jobsJSON())
-	})
+	e.serveRun(testJobs)
 	if err := e.st.InsertSandbox(ctx, store.Sandbox{ID: "sb1", PoolID: "p1", ServerID: "s1", Mode: sandbox.ModeContainer,
 		State: sandbox.StateBusy, RunnerName: "runplane-01abc", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobRunning, Repository: "acme/web",
-		JobName: "build", RunID: 555, Event: "pull_request", QueuedAt: time.Now()})
+		JobName: "build", RunID: 555, QueuedAt: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.st.SetJobSandbox(ctx, job.ID, "sb1", "s1"); err != nil {
-		t.Fatal(err)
-	}
 	job.SandboxID = "sb1"
-
 	if err := e.svc.Enrich(ctx, job); err != nil {
 		t.Fatal(err)
 	}
@@ -150,11 +159,34 @@ func TestEnrich(t *testing.T) {
 	}
 }
 
+// The scheduler guesses "cancelled" for a job whose sandbox it lost; the
+// finish step then takes the result from GitHub.
+func TestEnrichReplacesTheResultOfALostJob(t *testing.T) {
+	e := acmeEnv(t)
+	ctx := context.Background()
+	e.serveRun([]map[string]any{{"id": 905, "run_attempt": 2, "name": "build", "status": "completed",
+		"conclusion": "failure", "completed_at": "2026-11-04T10:07:00Z"}})
+	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted, Result: store.ResultCancelled,
+		Repository: "acme/web", JobName: "build", RunID: 555, QueuedAt: time.Now(), FinishedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.Enrich(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.st.GetJob(ctx, job.ID)
+	finished := time.Date(2026, 11, 4, 10, 7, 0, 0, time.UTC)
+	if got.Result != store.ResultFailed || got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
+		t.Errorf("job = result %q, finished %v; want failed from GitHub at %v", got.Result, got.FinishedAt, finished)
+	}
+}
+
 func TestMatchJob(t *testing.T) {
-	var jobs []workflowJob
-	for _, j := range jobsJSON()["jobs"].([]map[string]any) {
-		name, _ := j["runner_name"].(string)
-		jobs = append(jobs, workflowJob{ID: int64(j["id"].(int)), RunAttempt: j["run_attempt"].(int), Name: j["name"].(string), RunnerName: name})
+	jobs := []workflowJob{
+		{ID: 901, RunAttempt: 1, Name: "build", RunnerName: "runplane-old"},
+		{ID: 902, RunAttempt: 2, Name: "build", RunnerName: "runplane-01abc"},
+		{ID: 903, RunAttempt: 2, Name: "lint", RunnerName: "runplane-01def"},
+		{ID: 904, RunAttempt: 2, Name: "deploy"},
 	}
 	tests := []struct {
 		name, job, runner string
@@ -170,17 +202,15 @@ func TestMatchJob(t *testing.T) {
 		{"no job of the name", "test", "", 0, 0},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := matchJob(jobs, tt.job, tt.runner, tt.attempt)
-			if ok != (tt.want != 0) || got.ID != tt.want {
-				t.Errorf("matchJob = %d, %v; want %d", got.ID, ok, tt.want)
-			}
-		})
+		got, ok := matchJob(jobs, tt.job, tt.runner, tt.attempt)
+		if ok != (tt.want != 0) || got.ID != tt.want {
+			t.Errorf("%s: matchJob = %d, %v; want %d", tt.name, got.ID, ok, tt.want)
+		}
 	}
 }
 
 func TestDownloadLogFollowsRedirectWithoutToken(t *testing.T) {
-	e := jobsEnv(t)
+	e := acmeEnv(t)
 	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/jobs/902/logs", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ghs_10_") {
 			t.Errorf("log request without the installation token")
@@ -188,22 +218,17 @@ func TestDownloadLogFollowsRedirectWithoutToken(t *testing.T) {
 		http.Redirect(w, r, e.srv.URL+"/blob/job-902.txt?sig=abc", http.StatusFound)
 	})
 	e.mux.HandleFunc("GET /blob/job-902.txt", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" {
-			t.Errorf("the blob store got the GitHub token")
-		}
-		if r.URL.Query().Get("sig") != "abc" {
-			t.Errorf("the redirect lost its query")
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("sig") != "abc" {
+			t.Errorf("blob request with Authorization %q and sig %q, want none and abc", r.Header.Get("Authorization"), r.URL.Query().Get("sig"))
 		}
 		io.WriteString(w, "2026-11-04T10:00:00Z Run tests\nok\n")
 	})
 	dir := t.TempDir()
 	path := filepath.Join(dir, "job1.log")
-	job := store.Job{ID: "job1", Repository: "acme/web", GitHubJobID: 902}
-	if err := e.svc.DownloadLog(context.Background(), job, path); err != nil {
+	if err := e.svc.DownloadLog(context.Background(), store.Job{ID: "job1", Repository: "acme/web", GitHubJobID: 902}, path); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(path)
-	if err != nil || string(b) != "2026-11-04T10:00:00Z Run tests\nok\n" {
+	if b, err := os.ReadFile(path); err != nil || string(b) != "2026-11-04T10:00:00Z Run tests\nok\n" {
 		t.Errorf("log = %q, %v", b, err)
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
@@ -212,7 +237,7 @@ func TestDownloadLogFollowsRedirectWithoutToken(t *testing.T) {
 }
 
 func TestDownloadLogKeepsOldFileOnFailure(t *testing.T) {
-	e := jobsEnv(t)
+	e := acmeEnv(t)
 	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/jobs/902/logs", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, map[string]any{"message": "Log has expired"})
 	})
@@ -227,14 +252,9 @@ func TestDownloadLogKeepsOldFileOnFailure(t *testing.T) {
 }
 
 func TestRerunFindsJobIDFirst(t *testing.T) {
-	e := jobsEnv(t)
+	e := acmeEnv(t)
 	ctx := context.Background()
-	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, runJSON(100, "push"))
-	})
-	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555/jobs", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, jobsJSON())
-	})
+	e.serveRun(testJobs)
 	var rerun []string
 	e.mux.HandleFunc("POST /api/v3/repos/acme/web/actions/jobs/{id}/rerun", func(w http.ResponseWriter, r *http.Request) {
 		rerun = append(rerun, r.PathValue("id"))
@@ -253,83 +273,15 @@ func TestRerunFindsJobIDFirst(t *testing.T) {
 	}
 }
 
-func TestRepositoryWithoutInstallation(t *testing.T) {
-	e := jobsEnv(t)
-	_, err := e.svc.CheckJob(context.Background(), "stranger/web", 1)
-	if !errors.Is(err, scheduler.ErrRunUnreadable) || !strings.Contains(err.Error(), "no installation") {
-		t.Errorf("err = %v, want ErrRunUnreadable for no installation", err)
-	}
-}
-
-func TestCheckJobErrors(t *testing.T) {
-	tests := []struct {
-		name       string
-		status     int
-		unreadable bool
-	}{
-		{"run hidden from the app", http.StatusNotFound, true},
-		{"app may not read the repository", http.StatusForbidden, true},
-		{"GitHub fails", http.StatusBadGateway, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			e := jobsEnv(t)
-			e.svc.api.retryWait = time.Millisecond
-			e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(w, tt.status, map[string]any{"message": "Not Found"})
-			})
-			_, err := e.svc.CheckJob(context.Background(), "acme/web", 555)
-			if err == nil {
-				t.Fatal("CheckJob returned no error")
-			}
-			if got := errors.Is(err, scheduler.ErrRunUnreadable); got != tt.unreadable {
-				t.Errorf("errors.Is(%v, ErrRunUnreadable) = %v, want %v", err, got, tt.unreadable)
-			}
-		})
-	}
-}
-
-// The scheduler guesses "cancelled" for a job whose sandbox it lost; the
-// finish step then takes the result from GitHub.
-func TestEnrichReplacesTheResultOfALostJob(t *testing.T) {
-	e := jobsEnv(t)
-	ctx := context.Background()
-	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, runJSON(100, "push"))
-	})
-	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555/jobs", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"total_count": 1, "jobs": []map[string]any{
-			{"id": 905, "run_id": 555, "run_attempt": 2, "name": "build", "status": "completed", "conclusion": "failure",
-				"completed_at": "2026-11-04T10:07:00Z"},
-		}})
-	})
-	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted, Result: store.ResultCancelled,
-		Repository: "acme/web", JobName: "build", RunID: 555, QueuedAt: time.Now(), FinishedAt: time.Now()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := e.svc.Enrich(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := e.st.GetJob(ctx, job.ID)
-	finished := time.Date(2026, 11, 4, 10, 7, 0, 0, time.UTC)
-	if got.Result != store.ResultFailed || got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
-		t.Errorf("job = result %q, finished %v; want failed from GitHub at %v", got.Result, got.FinishedAt, finished)
-	}
-}
-
 func TestSteps(t *testing.T) {
-	e := jobsEnv(t)
+	e := acmeEnv(t)
 	ctx := context.Background()
 	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/jobs/902", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, jobsJSON()["jobs"].([]map[string]any)[1])
+		writeJSON(w, http.StatusOK, testJobs[1])
 	})
 	got, err := e.svc.Steps(ctx, store.Job{Repository: "acme/web", GitHubJobID: 902})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[1].Name != "Run tests" || got[1].Conclusion != "failure" {
-		t.Errorf("steps = %+v, want Set up job and Run tests", got)
+	if err != nil || len(got) != 2 || got[1].Name != "Run tests" || got[1].Conclusion != "failure" {
+		t.Errorf("steps = %+v, %v; want Set up job and Run tests", got, err)
 	}
 	if got, err := e.svc.Steps(ctx, store.Job{Repository: "acme/web"}); got != nil || err != nil {
 		t.Errorf("Steps of a job with no GitHub job ID = %v, %v; want nil, nil", got, err)

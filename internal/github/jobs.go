@@ -6,30 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
 
-var _ scheduler.GitHub = (*Service)(nil)
-
 type workflowRun struct {
-	ID              int64    `json:"id"`
-	Name            string   `json:"name"`
-	RunNumber       int64    `json:"run_number"`
-	RunAttempt      int      `json:"run_attempt"`
-	Event           string   `json:"event"`
-	HeadBranch      string   `json:"head_branch"`
-	HeadSHA         string   `json:"head_sha"`
-	Actor           *account `json:"actor"`
-	TriggeringActor *account `json:"triggering_actor"`
-	HeadCommit      *struct {
+	Name            string  `json:"name"`
+	RunNumber       int64   `json:"run_number"`
+	RunAttempt      int     `json:"run_attempt"`
+	Event           string  `json:"event"`
+	HeadBranch      string  `json:"head_branch"`
+	HeadSHA         string  `json:"head_sha"`
+	Actor           account `json:"actor"`
+	TriggeringActor account `json:"triggering_actor"`
+	HeadCommit      struct {
 		Message string `json:"message"`
 	} `json:"head_commit"`
 	PullRequests []struct {
@@ -38,41 +36,35 @@ type workflowRun struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
 	} `json:"pull_requests"`
-	Repository     repository  `json:"repository"`
-	HeadRepository *repository `json:"head_repository"`
+	Repository     store.Repository  `json:"repository"`
+	HeadRepository *store.Repository `json:"head_repository"`
 }
 
 type workflowJob struct {
 	ID          int64      `json:"id"`
-	RunID       int64      `json:"run_id"`
 	RunAttempt  int        `json:"run_attempt"`
 	Name        string     `json:"name"`
 	HTMLURL     string     `json:"html_url"`
 	RunnerName  string     `json:"runner_name"`
-	Status      string     `json:"status"`     // queued | in_progress | completed
-	Conclusion  string     `json:"conclusion"` // success | failure | cancelled | skipped | ...
-	CreatedAt   time.Time  `json:"created_at"`
-	CompletedAt *time.Time `json:"completed_at"`
-	Steps       []jobStep  `json:"steps"`
-}
-
-type jobStep struct {
-	Number      int        `json:"number"`
-	Name        string     `json:"name"`
 	Status      string     `json:"status"`
 	Conclusion  string     `json:"conclusion"`
-	StartedAt   *time.Time `json:"started_at"`
+	CreatedAt   time.Time  `json:"created_at"`
 	CompletedAt *time.Time `json:"completed_at"`
+	// The GitHub step object has the JSON names of store.JobStep.
+	Steps []store.JobStep `json:"steps"`
 }
 
 // CheckJob tells if the repository is private and if the run comes from a
 // fork, and gives the run data for the cache refs. It reads the run,
 // because the scale set message has no head repository; the run also has
-// the current private flag. The result is cached by run ID, so the jobs of
-// one run cost one request.
+// the current private flag. The result is cached by run ID for one hour, so
+// the jobs of one run cost one request.
 func (s *Service) CheckJob(ctx context.Context, repository string, runID int64) (scheduler.JobCheck, error) {
-	if c, ok := s.checks.get(runID); ok {
-		return c, nil
+	s.checkMu.Lock()
+	cached, ok := s.checks[runID]
+	s.checkMu.Unlock()
+	if ok && time.Since(cached.at) <= time.Hour {
+		return cached.JobCheck, nil
 	}
 	run, err := s.run(ctx, repository, runID)
 	if err != nil {
@@ -81,18 +73,27 @@ func (s *Service) CheckJob(ctx context.Context, repository string, runID int64) 
 		}
 		return scheduler.JobCheck{}, err
 	}
-	c := scheduler.JobCheck{Private: run.Repository.Private, Fork: isFork(run), Ref: run.ref()}
-	s.checks.put(runID, c)
+	c := scheduler.JobCheck{Private: run.Repository.Private, Fork: run.fork(), Ref: run.ref()}
+	now := time.Now()
+	s.checkMu.Lock()
+	maps.DeleteFunc(s.checks, func(_ int64, old runCheck) bool { return now.Sub(old.at) > time.Hour })
+	s.checks[runID] = runCheck{c, now}
+	s.checkMu.Unlock()
 	return c, nil
+}
+
+type runCheck struct {
+	scheduler.JobCheck
+	at time.Time
 }
 
 // unreadable tells if an error stays when runplane reads the run again: the
 // app has no installation for the repository, or GitHub hides the run (404)
 // or refuses it for a reason other than a rate limit (403).
 func unreadable(err error) bool {
-	var e *APIError
+	var e *apiError
 	if errors.As(err, &e) {
-		return e.Status == http.StatusNotFound || e.Status == http.StatusForbidden && e.RetryAt.IsZero()
+		return e.status == http.StatusNotFound || e.status == http.StatusForbidden && e.retryAt.IsZero()
 	}
 	return errors.Is(err, errNoInstallation)
 }
@@ -107,11 +108,11 @@ func (run workflowRun) ref() store.RunRef {
 	return r
 }
 
-// isFork tells if the code of the run comes from a different repository.
+// fork tells if the code of the run comes from a different repository.
 // That is the case for pull requests from forks, and for workflow_run runs
 // that such a pull request starts. A pull request run without a head
 // repository (a deleted fork) counts as a fork.
-func isFork(run workflowRun) bool {
+func (run workflowRun) fork() bool {
 	if run.HeadRepository == nil {
 		return strings.HasPrefix(run.Event, "pull_request")
 	}
@@ -126,8 +127,7 @@ func (s *Service) Enrich(ctx context.Context, job store.Job) error {
 	return err
 }
 
-// enrich finds the GitHub job of a runplane job and stores its data. It
-// returns the GitHub job ID.
+// enrich is Enrich that returns the GitHub job ID.
 func (s *Service) enrich(ctx context.Context, job store.Job) (int64, error) {
 	if job.RunID == 0 {
 		return 0, fmt.Errorf("enrich job %s: the job has no run ID", job.ID)
@@ -156,24 +156,16 @@ func (s *Service) enrich(ctx context.Context, job store.Job) (int64, error) {
 		return 0, fmt.Errorf("enrich job %s: run %d has no job %q", job.ID, job.RunID, job.JobName)
 	}
 
-	e := store.JobEnrichment{
+	ref := run.ref()
+	err = s.st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{
 		GitHubJobID: gj.ID, WorkflowName: run.Name, RunNumber: run.RunNumber,
 		RunAttempt: cmp.Or(gj.RunAttempt, run.RunAttempt), HeadBranch: run.HeadBranch, HeadSHA: run.HeadSHA,
-		Event: run.Event, HTMLURL: gj.HTMLURL, QueuedAt: gj.CreatedAt,
-	}
-	if run.HeadCommit != nil {
-		e.CommitMessage = run.HeadCommit.Message
-	}
-	// The triggering actor started this attempt; the actor started the first.
-	if run.TriggeringActor != nil {
-		e.Actor = run.TriggeringActor.Login
-	} else if run.Actor != nil {
-		e.Actor = run.Actor.Login
-	}
-	ref := run.ref()
-	e.PRNumber, e.BaseRef = ref.PRNumber, ref.BaseRef
-	e.Steps = steps(gj)
-	if err := s.st.SetJobEnrichment(ctx, job.ID, e); err != nil {
+		CommitMessage: run.HeadCommit.Message, Event: run.Event,
+		// The triggering actor started this attempt; the actor started the first.
+		Actor:    cmp.Or(run.TriggeringActor.Login, run.Actor.Login),
+		PRNumber: ref.PRNumber, BaseRef: ref.BaseRef, HTMLURL: gj.HTMLURL, Steps: gj.Steps, QueuedAt: gj.CreatedAt,
+	})
+	if err != nil {
 		return 0, err
 	}
 	if r := conclusionResult(gj.Conclusion); job.Result == store.ResultCancelled && gj.Status == "completed" && r != "" && r != store.ResultCancelled {
@@ -202,15 +194,11 @@ func (s *Service) Steps(ctx context.Context, job store.Job) ([]store.JobStep, er
 	if err != nil {
 		return nil, fmt.Errorf("read job %d: %w", job.GitHubJobID, err)
 	}
-	return steps(gj), nil
-}
-
-func steps(gj workflowJob) []store.JobStep {
-	list := make([]store.JobStep, len(gj.Steps))
-	for i, st := range gj.Steps {
-		list[i] = store.JobStep(st)
+	// nil steps tell the scheduler that the job is not on GitHub yet.
+	if gj.Steps == nil {
+		return []store.JobStep{}, nil
 	}
-	return list
+	return gj.Steps, nil
 }
 
 // conclusionResult maps the conclusion of a GitHub job to a job result, or
@@ -230,14 +218,12 @@ func conclusionResult(c string) string {
 }
 
 // matchJob finds the GitHub job of a runplane job. The runner name is
-// unique, so it wins. Without it, the job name decides, in the given run
-// attempt or else in the newest attempt.
+// unique, so it wins. Without it, the job name decides: in the given run
+// attempt, or in the newest attempt when the attempt is 0 (unknown).
 func matchJob(jobs []workflowJob, name, runnerName string, attempt int) (workflowJob, bool) {
 	if runnerName != "" {
-		for _, j := range jobs {
-			if strings.EqualFold(j.RunnerName, runnerName) {
-				return j, true
-			}
+		if i := slices.IndexFunc(jobs, func(j workflowJob) bool { return strings.EqualFold(j.RunnerName, runnerName) }); i >= 0 {
+			return jobs[i], true
 		}
 	}
 	var best workflowJob
@@ -249,12 +235,9 @@ func matchJob(jobs []workflowJob, name, runnerName string, attempt int) (workflo
 		if attempt > 0 && j.RunAttempt == attempt {
 			return j, true
 		}
-		if !found || j.RunAttempt > best.RunAttempt {
+		if attempt == 0 && (!found || j.RunAttempt > best.RunAttempt) {
 			best, found = j, true
 		}
-	}
-	if attempt > 0 && found && best.RunAttempt != attempt {
-		return workflowJob{}, false
 	}
 	return best, found
 }
@@ -315,7 +298,6 @@ func writeFile(path string, r io.Reader) error {
 	return nil
 }
 
-// Rerun asks GitHub to run the job again.
 func (s *Service) Rerun(ctx context.Context, job store.Job) error {
 	id, err := s.githubJobID(ctx, job)
 	if err != nil {
@@ -354,6 +336,8 @@ func (s *Service) run(ctx context.Context, repository string, runID int64) (work
 	return run, nil
 }
 
+var errNoInstallation = errors.New("no installation of the GitHub App can read")
+
 // repoAuth returns the installation that can read the repository: the one
 // that lists it, or else the one of the repository owner.
 func (s *Service) repoAuth(ctx context.Context, repository string) (auth, error) {
@@ -376,50 +360,4 @@ func (s *Service) repoAuth(ctx context.Context, repository string) (auth, error)
 		}
 	}
 	return nil, fmt.Errorf("%w %s", errNoInstallation, repository)
-}
-
-var errNoInstallation = errors.New("no installation of the GitHub App can read")
-
-// runChecks caches CheckJob results for one hour.
-type runChecks struct {
-	mu   sync.Mutex
-	list map[int64]runCheck
-}
-
-type runCheck struct {
-	scheduler.JobCheck
-	at time.Time
-}
-
-const checkTTL = time.Hour
-
-func (c *runChecks) get(runID int64) (scheduler.JobCheck, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	v, ok := c.list[runID]
-	if !ok || time.Since(v.at) > checkTTL {
-		return scheduler.JobCheck{}, false
-	}
-	return v.JobCheck, true
-}
-
-func (c *runChecks) put(runID int64, v scheduler.JobCheck) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.list == nil {
-		c.list = map[int64]runCheck{}
-	}
-	now := time.Now()
-	for id, old := range c.list {
-		if now.Sub(old.at) > checkTTL {
-			delete(c.list, id)
-		}
-	}
-	c.list[runID] = runCheck{v, now}
-}
-
-func (c *runChecks) clear() {
-	c.mu.Lock()
-	c.list = nil
-	c.mu.Unlock()
 }

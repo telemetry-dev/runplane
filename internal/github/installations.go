@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/runplane/runplane/internal/store"
@@ -25,12 +26,58 @@ type installation struct {
 	CreatedAt           time.Time  `json:"created_at"`
 }
 
-type repository struct {
-	ID            int64  `json:"id"`
-	FullName      string `json:"full_name"`
-	Private       bool   `json:"private"`
-	Archived      bool   `json:"archived"`
-	DefaultBranch string `json:"default_branch"`
+// Setup records the installation that GitHub sends the browser back with,
+// reads its repositories, and makes its scale sets. It returns the first job
+// page the first time GitHub connects, and the GitHub settings page after.
+func (s *Service) Setup(ctx context.Context, _ string, installationID int64, setupAction string) (string, error) {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	c, err := s.creds(ctx)
+	if err != nil {
+		return "", err
+	}
+	known, err := s.st.ListInstallations(ctx)
+	if err != nil {
+		return "", err
+	}
+	connected := len(known) > 0
+	if setupAction == "request" || installationID == 0 {
+		// An organization owner must approve the request on GitHub first.
+		if connected {
+			return "/settings/github?requested=1", nil
+		}
+		return "/setup/github?requested=1", nil
+	}
+
+	var inst installation
+	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/app/installations/%d", installationID), auth: appAuth{s}}, &inst)
+	if err != nil {
+		return "", fmt.Errorf("read the installation: %w", err)
+	}
+	if inst.AppID != c.app.AppID {
+		return "", fmt.Errorf("installation %d belongs to a different GitHub App", installationID)
+	}
+	if err := s.saveInstallation(ctx, inst); err != nil {
+		return "", err
+	}
+	if err := s.syncRepositories(ctx, inst.ID); err != nil {
+		return "", err
+	}
+	s.reconcile(ctx)
+	if connected {
+		return "/settings/github", nil
+	}
+	return "/setup/first-job", nil
+}
+
+// Sync reads the installations, their repositories, and suspensions now,
+// then makes the scale sets agree.
+func (s *Service) Sync(ctx context.Context) error {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	err := s.syncInstallations(ctx)
+	s.reconcile(ctx)
+	return err
 }
 
 // syncInstallations makes the installations and repositories in the store
@@ -80,12 +127,8 @@ func (s *Service) syncInstallations(ctx context.Context) error {
 }
 
 func (s *Service) saveInstallation(ctx context.Context, inst installation) error {
-	c, err := s.creds(ctx)
-	if err != nil {
-		return err
-	}
 	return s.st.UpsertInstallation(ctx, store.Installation{
-		ID: inst.ID, AppID: c.app.AppID, AccountLogin: inst.Account.Login, AccountID: inst.Account.ID,
+		ID: inst.ID, AppID: inst.AppID, AccountLogin: inst.Account.Login, AccountID: inst.Account.ID,
 		AccountType: inst.Account.Type, AvatarURL: inst.Account.AvatarURL,
 		RepositorySelection: inst.RepositorySelection, SuspendedAt: inst.SuspendedAt,
 		CreatedAt: inst.CreatedAt, UpdatedAt: time.Now(),
@@ -93,18 +136,15 @@ func (s *Service) saveInstallation(ctx context.Context, inst installation) error
 }
 
 // syncRepositories stores the repositories that the installation can use.
+// The GitHub repository object has the JSON names of store.Repository.
 func (s *Service) syncRepositories(ctx context.Context, installationID int64) error {
-	remote, err := list[repository](ctx, s.api, installAuth{s, installationID}, "/installation/repositories?per_page=100", "repositories")
+	repos, err := list[store.Repository](ctx, s.api, installAuth{s, installationID}, "/installation/repositories?per_page=100", "repositories")
 	if err != nil {
 		return fmt.Errorf("list repositories of installation %d: %w", installationID, err)
 	}
 	now := time.Now()
-	repos := make([]store.Repository, len(remote))
-	for i, r := range remote {
-		repos[i] = store.Repository{
-			ID: r.ID, InstallationID: installationID, FullName: r.FullName, Private: r.Private,
-			Archived: r.Archived, DefaultBranch: r.DefaultBranch, UpdatedAt: now,
-		}
+	for i := range repos {
+		repos[i].UpdatedAt = now
 	}
 	return s.st.ReplaceRepositories(ctx, installationID, repos)
 }

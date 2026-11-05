@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -30,24 +31,23 @@ type target struct {
 	repo *store.Repository // nil for an organization
 }
 
-func (t target) key() string {
-	var repo int64
+// row returns the scale set row of the target, without ID and status.
+func (t target) row() store.ScaleSet {
+	x := store.ScaleSet{PoolID: t.pool.ID, InstallationID: t.inst.ID, Name: t.pool.Label}
 	if t.repo != nil {
-		repo = t.repo.ID
+		x.RepositoryID = &t.repo.ID
 	}
-	return setKey(t.pool.ID, t.inst.ID, repo)
+	return x
 }
 
-func setKey(poolID string, installationID, repositoryID int64) string {
-	return poolID + "/" + strconv.FormatInt(installationID, 10) + "/" + strconv.FormatInt(repositoryID, 10)
-}
-
+// rowKey identifies a scale set by pool, installation, and repository, like
+// the unique index of the rows.
 func rowKey(x store.ScaleSet) string {
 	var repo int64
 	if x.RepositoryID != nil {
 		repo = *x.RepositoryID
 	}
-	return setKey(x.PoolID, x.InstallationID, repo)
+	return fmt.Sprintf("%s/%d/%d", x.PoolID, x.InstallationID, repo)
 }
 
 // owner is the GitHub path of the runner owner: the organization login or
@@ -59,7 +59,6 @@ func (t target) owner() string {
 	return t.inst.AccountLogin
 }
 
-// runnersPath is the REST path of the self-hosted runners of the target.
 func (t target) runnersPath() string {
 	if t.repo != nil {
 		return "/repos/" + t.repo.FullName + "/actions/runners"
@@ -67,59 +66,31 @@ func (t target) runnersPath() string {
 	return "/orgs/" + url.PathEscape(t.inst.AccountLogin) + "/actions/runners"
 }
 
-// world is the GitHub state in the store that decides the scale sets.
-type world struct {
-	insts map[int64]store.Installation
-	repos map[int64]store.Repository // repositories of personal accounts
-}
-
-// reachable tells if runplane can still change the scale set on GitHub.
-func (w world) reachable(x store.ScaleSet) bool {
-	inst, ok := w.insts[x.InstallationID]
-	if !ok || inst.SuspendedAt != nil {
-		return false
-	}
-	if x.RepositoryID == nil {
-		return true
-	}
-	repo, ok := w.repos[*x.RepositoryID]
-	return ok && !repo.Archived
-}
-
 // targets returns the scale sets that the pools, installations, and
 // settings ask for, by key.
-func (s *Service) targets(ctx context.Context) (map[string]target, world, error) {
-	w := world{insts: map[int64]store.Installation{}, repos: map[int64]store.Repository{}}
+func (s *Service) targets(ctx context.Context) (map[string]target, error) {
 	pools, err := s.st.ListPools(ctx)
 	if err != nil {
-		return nil, w, err
+		return nil, err
 	}
 	insts, err := s.st.ListInstallations(ctx)
 	if err != nil {
-		return nil, w, err
+		return nil, err
 	}
 	settings, err := s.st.GetSettings(ctx)
 	if err != nil {
-		return nil, w, err
+		return nil, err
 	}
-	// The scheduler takes a public job only if each runner of its pool is in
-	// a VM. The setting mode does not tell that: each server runs its own
-	// mode, and a mode change applies after a restart.
-	public := settings.AllowPublicRepos
 	byInst := map[int64][]store.Repository{}
 	for _, inst := range insts {
-		w.insts[inst.ID] = inst
 		if inst.AccountType != "User" {
 			continue
 		}
 		repos, err := s.st.ListRepositories(ctx, inst.ID)
 		if err != nil {
-			return nil, w, err
+			return nil, err
 		}
 		byInst[inst.ID] = repos
-		for _, r := range repos {
-			w.repos[r.ID] = r
-		}
 	}
 	out := map[string]target{}
 	for _, pool := range pools {
@@ -129,19 +100,23 @@ func (s *Service) targets(ctx context.Context) (map[string]target, world, error)
 		for _, inst := range insts {
 			if inst.AccountType == "Organization" {
 				t := target{pool: pool, inst: inst}
-				out[t.key()] = t
+				out[rowKey(t.row())] = t
 				continue
 			}
 			for _, r := range byInst[inst.ID] {
-				if r.Archived || (!r.Private && !public) {
+				// The scheduler takes a public job only if each runner of its
+				// pool is in a VM. The setting mode does not tell that: each
+				// server runs its own mode, and a mode change applies after a
+				// restart.
+				if r.Archived || (!r.Private && !settings.AllowPublicRepos) {
 					continue
 				}
 				t := target{pool: pool, inst: inst, repo: &r}
-				out[t.key()] = t
+				out[rowKey(t.row())] = t
 			}
 		}
 	}
-	return out, w, nil
+	return out, nil
 }
 
 // reconcile makes the scale sets and their listeners agree with the
@@ -158,7 +133,7 @@ func (s *Service) reconcileSets(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.creds(ctx); errors.Is(err, ErrNotConnected) {
+	if _, err := s.creds(ctx); errors.Is(err, errNotConnected) {
 		for _, row := range rows {
 			s.stopListener(row.ID)
 			if err := s.st.DeleteScaleSet(ctx, row.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -169,36 +144,23 @@ func (s *Service) reconcileSets(ctx context.Context) error {
 	} else if err != nil {
 		return err
 	}
-	want, w, err := s.targets(ctx)
+	want, err := s.targets(ctx)
 	if err != nil {
 		return err
 	}
-	have := map[string]bool{}
 	for _, row := range rows {
 		t, ok := want[rowKey(row)]
 		if !ok {
-			s.removeSet(ctx, row, w.reachable(row))
+			s.removeSet(ctx, row)
 			continue
 		}
-		have[rowKey(row)] = true
+		delete(want, rowKey(row))
 		s.keepSet(ctx, row, t)
 	}
-	keys := make([]string, 0, len(want))
-	for k := range want {
-		if !have[k] {
-			keys = append(keys, k)
-		}
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
+	for _, k := range slices.Sorted(maps.Keys(want)) {
 		t := want[k]
-		row := store.ScaleSet{
-			ID: ids.New(), PoolID: t.pool.ID, InstallationID: t.inst.ID, Name: t.pool.Label,
-			Status: store.ScaleSetCreating, UpdatedAt: time.Now(),
-		}
-		if t.repo != nil {
-			row.RepositoryID = &t.repo.ID
-		}
+		row := t.row()
+		row.ID, row.Status, row.UpdatedAt = ids.New(), store.ScaleSetCreating, time.Now()
 		if err := s.st.UpsertScaleSet(ctx, row); err != nil {
 			return err
 		}
@@ -219,7 +181,9 @@ func (s *Service) keepSet(ctx context.Context, row store.ScaleSet, t target) {
 		}
 		return
 	}
-	l := s.listener(row.ID)
+	s.lmu.Lock()
+	l := s.listeners[row.ID]
+	s.lmu.Unlock()
 	if l == nil {
 		if l = s.startListener(ctx, row, t); l == nil {
 			return
@@ -247,10 +211,15 @@ func (s *Service) rename(ctx context.Context, l *setListener, row store.ScaleSet
 
 // removeSet stops the listener and deletes the scale set on GitHub, then
 // the row. When runplane can no longer reach the scale set (installation or
-// repository gone), it only deletes the row.
-func (s *Service) removeSet(ctx context.Context, row store.ScaleSet, reachable bool) {
+// repository gone, suspended, or archived), it only deletes the row.
+func (s *Service) removeSet(ctx context.Context, row store.ScaleSet) {
 	s.stopListener(row.ID)
-	if reachable {
+	t, err := s.rowTarget(ctx, row)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("delete scale set", "scale_set", row.ID, "err", err)
+		return
+	}
+	if err == nil && t.inst.SuspendedAt == nil && (t.repo == nil || !t.repo.Archived) {
 		if row.Status != store.ScaleSetDeleting {
 			s.setStatus(ctx, row.ID, store.ScaleSetDeleting, "")
 		}
@@ -308,7 +277,6 @@ func (s *Service) deleteRemote(ctx context.Context, id string) error {
 	return err
 }
 
-// rowTarget reads the installation and repository of a scale set row.
 func (s *Service) rowTarget(ctx context.Context, row store.ScaleSet) (target, error) {
 	inst, err := s.st.GetInstallation(ctx, row.InstallationID)
 	if err != nil {
@@ -342,7 +310,9 @@ func (s *Service) scalesetClient(ctx context.Context, t target) (*scaleset.Clien
 			System: "runplane", Version: version.Version, CommitSHA: version.Commit, Subsystem: "listener",
 		},
 	},
-		scaleset.WithHTTPClient(s.http),
+		// The scaleset library has no timeout of its own except for the
+		// long poll, so its client gets one.
+		scaleset.WithHTTPClient(&http.Client{Timeout: 2 * time.Minute}),
 		scaleset.WithLogger(slog.New(quiet{s.log.Handler()}).With("scale_set", t.pool.Label, "owner", t.owner())),
 	)
 }
@@ -377,20 +347,14 @@ func (s *Service) listRunners(ctx context.Context, t target, label string) ([]sc
 	if err != nil {
 		return nil, err
 	}
+	hasLabel := func(l runnerLabel) bool { return strings.EqualFold(l.Name, label) }
 	var out []scheduler.Runner
 	for _, r := range all {
-		if inScaleSet(r, label) {
+		if strings.HasPrefix(strings.ToLower(r.Name), strings.ToLower(label)+"-") && slices.ContainsFunc(r.Labels, hasLabel) {
 			out = append(out, scheduler.Runner{ID: r.ID, Name: r.Name, Busy: r.Busy})
 		}
 	}
 	return out, nil
-}
-
-func inScaleSet(r runner, label string) bool {
-	if !strings.HasPrefix(strings.ToLower(r.Name), strings.ToLower(label)+"-") {
-		return false
-	}
-	return slices.ContainsFunc(r.Labels, func(l runnerLabel) bool { return strings.EqualFold(l.Name, label) })
 }
 
 // removeRunnerErr maps the errors of RemoveRunner to the scheduler contract.
@@ -398,11 +362,9 @@ func removeRunnerErr(err error) error {
 	if err == nil || errors.Is(err, scaleset.RunnerNotFoundError) || errors.Is(err, scaleset.NotFoundError) {
 		return nil
 	}
-	if errors.Is(err, scaleset.JobStillRunningError) {
-		return fmt.Errorf("%w: %v", scheduler.ErrRunnerBusy, err)
-	}
 	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "is busy") || strings.Contains(msg, "job in progress") || strings.Contains(msg, "currently running a job") {
+	if errors.Is(err, scaleset.JobStillRunningError) ||
+		strings.Contains(msg, "is busy") || strings.Contains(msg, "job in progress") || strings.Contains(msg, "currently running a job") {
 		return fmt.Errorf("%w: %v", scheduler.ErrRunnerBusy, err)
 	}
 	return fmt.Errorf("remove runner: %w", err)
