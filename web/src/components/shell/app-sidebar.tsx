@@ -21,10 +21,6 @@ export function prefetchSidebar(client: QueryClient) {
   void client.prefetchQuery({ ...runningJobsQuery, staleTime: Infinity })
 }
 
-/**
- * The 232px sidebar of the app designs: instance menu, navigation, GitHub account,
- * user menu. Below the md breakpoint it moves into a drawer behind a top bar.
- */
 export function AppSidebar() {
   return (
     <>
@@ -73,7 +69,6 @@ function MobileBar() {
   const pathname = useLocation({ select: (location) => location.pathname })
   const name = useQuery({ ...statusQuery, subscribed: useFrameSubscribed() }).data?.instance_name || 'runplane'
 
-  // Close the drawer after a navigation link opens a page.
   useEffect(() => setOpen(false), [pathname])
 
   return (

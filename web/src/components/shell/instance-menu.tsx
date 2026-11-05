@@ -7,7 +7,6 @@ import { LogoMark } from '~/components/ui/brand'
 import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { useFrameSubscribed } from './pending'
 
-/** Instance name and address at the top of the sidebar; opens instance actions. */
 export function InstanceMenu() {
   const subscribed = useFrameSubscribed()
   const name = useQuery({ ...statusQuery, subscribed }).data?.instance_name || 'runplane'
