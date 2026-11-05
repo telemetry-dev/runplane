@@ -2,6 +2,7 @@ import { Field as BaseField } from '@base-ui/react/field'
 import { useId, type ReactNode } from 'react'
 import { SectionHeader } from '~/components/app/section-header'
 import { Button } from '~/components/ui/button'
+import { Skeleton } from '~/components/ui/skeleton'
 import { Tooltip } from '~/components/ui/tooltip'
 import { cx } from '~/lib/cx'
 
@@ -183,11 +184,6 @@ export function ErrorHint({ error, children }: { error: string; children: ReactN
   )
 }
 
-/** A loading placeholder; give it the size and corners of the text or control it stands for. */
-export function Bar({ className }: { className: string }) {
-  return <span aria-hidden className={cx('block animate-pulse bg-neutral-3', className)} />
-}
-
 /**
  * Placeholder rows with the height of real rows: a label line, a description
  * line, and a block in the shape of the control.
@@ -198,10 +194,10 @@ export function SettingRowsSkeleton({ count = 2, control = 'input' }: { count?: 
       {Array.from({ length: count }, (_, index) => (
         <div key={index} className={rowLayout()}>
           <div className="flex flex-col gap-xxs">
-            <Bar className="my-[3px] h-[12px] w-[120px] rounded-xs" />
-            <Bar className="my-[3px] h-[12px] w-[260px] max-w-full rounded-xs" />
+            <Skeleton className="my-[3px] h-[12px] w-[120px]" />
+            <Skeleton className="my-[3px] h-[12px] w-[260px] max-w-full" />
           </div>
-          <Bar className={cx('shrink-0', skeletonControls[control])} />
+          <Skeleton className={cx('shrink-0', skeletonControls[control])} />
         </div>
       ))}
     </SettingRows>

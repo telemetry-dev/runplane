@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { sessionQuery } from '~/api/queries'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
+import { None } from '~/components/app/none'
 import { SectionHeader } from '~/components/app/section-header'
 import { Stat } from '~/components/app/stat'
 import { PageHeader } from '~/components/ui/page-header'
@@ -95,8 +96,4 @@ function RegistryMirror({ cache }: { cache: CacheOverview }) {
       )}
     </section>
   )
-}
-
-function None() {
-  return <span className="text-neutral-6">—</span>
 }

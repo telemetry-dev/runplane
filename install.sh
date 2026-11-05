@@ -379,10 +379,6 @@ ensure_docker() {
 		return
 	fi
 
-	case $OS_ID in
-	ubuntu | debian) ;;
-	*) die "the Docker Engine install supports Ubuntu and Debian only" ;;
-	esac
 	[ -n "$OS_CODENAME" ] || die "/etc/os-release gives no release code name"
 	say "Install Docker Engine from download.docker.com"
 	run install -m 0755 -d /etc/apt/keyrings
@@ -661,7 +657,7 @@ EOF
 	# secret, so a second run of the same command, or a run without --token,
 	# does not break it.
 	if [ -z "$TOKEN" ] || { [ -f "$AGENT_FILE" ] && grep -q '"server_id": *"[^"]' "$AGENT_FILE" &&
-		grep -q "\"primary\": *\"$PRIMARY\"" "$AGENT_FILE"; }; then
+		grep -qF "\"primary\": \"$PRIMARY\"" "$AGENT_FILE"; }; then
 		say "Keep the registration in $AGENT_FILE"
 		return 0
 	fi
@@ -912,8 +908,6 @@ remove_docker_rules() {
 		done
 	done
 }
-
-# Helpers.
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }

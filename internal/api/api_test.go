@@ -11,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -399,7 +400,7 @@ func TestSettingsValidation(t *testing.T) {
 			t.Errorf("%s: status %d, want 422: %s", tc.name, res.StatusCode, res.body)
 			continue
 		}
-		if locs := res.problem(t).locations(); !contains(locs, tc.loc) {
+		if locs := res.problem(t).locations(); !slices.Contains(locs, tc.loc) {
 			t.Errorf("%s: error locations %v, want %s", tc.name, locs, tc.loc)
 		}
 	}
@@ -426,15 +427,6 @@ func TestSettingsValidation(t *testing.T) {
 	if plain, err := e.d.Box.Open(st.BackupS3.SecretKeyEnc); err != nil || string(plain) != "s3cret" {
 		t.Fatalf("stored S3 secret opens to %q, %v; want s3cret", plain, err)
 	}
-}
-
-func contains(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 func TestPools(t *testing.T) {
@@ -469,7 +461,7 @@ func TestPools(t *testing.T) {
 			t.Errorf("%s: status %d, want 422: %s", tc.name, res.StatusCode, res.body)
 			continue
 		}
-		if locs := res.problem(t).locations(); !contains(locs, tc.loc) {
+		if locs := res.problem(t).locations(); !slices.Contains(locs, tc.loc) {
 			t.Errorf("%s: error locations %v, want %s", tc.name, locs, tc.loc)
 		}
 	}
@@ -481,7 +473,7 @@ func TestPools(t *testing.T) {
 	}
 	dup := b.do("POST", "/api/pools", valid(map[string]any{"name": "other"}), nil)
 	dup.want(t, 409)
-	if locs := dup.problem(t).locations(); !contains(locs, "body.label") {
+	if locs := dup.problem(t).locations(); !slices.Contains(locs, "body.label") {
 		t.Fatalf("duplicate label: locations %v", locs)
 	}
 
@@ -635,7 +627,7 @@ func TestPasswordChangeEndsOtherSessions(t *testing.T) {
 		"name": "Ada L", "current_password": "wrong password", "new_password": "a new long password",
 	}, nil)
 	wrong.want(t, 422)
-	if locs := wrong.problem(t).locations(); !contains(locs, "body.current_password") {
+	if locs := wrong.problem(t).locations(); !slices.Contains(locs, "body.current_password") {
 		t.Fatalf("wrong current password: locations %v", locs)
 	}
 	var me User

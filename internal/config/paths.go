@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 )
 
-func (c Config) EnvPath() string         { return filepath.Join(c.ConfigDir, "runplane.env") }
 func (c Config) SecretKeyPath() string   { return filepath.Join(c.ConfigDir, "secret.key") }
 func (c Config) AgentConfigPath() string { return filepath.Join(c.ConfigDir, "agent.json") }
 
@@ -23,10 +22,6 @@ func (c Config) SandboxDir(id string) string {
 func (c Config) ImagesDir() string  { return filepath.Join(c.DataDir, "images") }
 func (c Config) RunnersDir() string { return filepath.Join(c.DataDir, "runners") }
 
-// RunnerDir is the folder of one patched runner bundle.
-func (c Config) RunnerDir(version, arch string) string {
-	return filepath.Join(c.RunnersDir(), version+"-"+arch)
-}
 func (c Config) CacheDir() string  { return filepath.Join(c.DataDir, "cache") }
 func (c Config) MirrorDir() string { return filepath.Join(c.DataDir, "mirror") }
 func (c Config) LogsDir() string   { return filepath.Join(c.DataDir, "logs") }

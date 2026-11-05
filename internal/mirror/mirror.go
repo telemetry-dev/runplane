@@ -28,18 +28,11 @@ type Config struct {
 	MaxBytes int64  // size limit of the cache; 0 = no limit
 	Upstream string // registry URL; default https://registry-1.docker.io
 
-	// Optional Docker Hub credentials (user name and personal access token)
-	// for a higher pull limit. The mirror uses them for each pull, so that
-	// sandboxes can also pull the private repositories of the account.
-	Username string
-	Token    string
-
 	TagTTL time.Duration // how long a tag is trusted before a check with upstream; default 10 minutes
 
 	// Allow reports if a client address can use the mirror. nil allows all.
 	Allow func(ip netip.Addr) bool
 
-	Client *http.Client // for upstream requests; default has a 1-minute response header timeout
 	Logger *slog.Logger
 }
 
@@ -97,18 +90,12 @@ func New(cfg Config) (*Mirror, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open mirror cache: %w", err)
 	}
-	client := cfg.Client
-	if client == nil {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		t.ResponseHeaderTimeout = time.Minute
-		client = &http.Client{Transport: t}
-	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = time.Minute
 	m := &Mirror{
 		up: &upstream{
 			base:   strings.TrimSuffix(cmp.Or(cfg.Upstream, dockerHub), "/"),
-			client: client,
-			user:   cfg.Username,
-			pass:   cfg.Token,
+			client: &http.Client{Transport: t},
 		},
 		store:     s,
 		tags:      tags,

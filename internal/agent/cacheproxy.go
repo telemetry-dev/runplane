@@ -17,8 +17,8 @@ import (
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
-// CacheProxy serves the Actions cache on the service port of an agent
-// (section 5.1). It sends each request through the connection to the
+// CacheProxy serves the Actions cache on the service port of an agent. It
+// sends each request through the connection to the
 // primary, where the cache server runs. It finds the sandbox from the
 // source address of the request and refuses requests from other addresses.
 // Run connects it to the primary.

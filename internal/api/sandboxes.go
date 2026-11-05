@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/danielgtaylor/huma/v2"
@@ -301,10 +302,15 @@ func bridge(ctx context.Context, conn *websocket.Conn, term sandbox.Terminal) {
 	}
 }
 
-// closeReason fits a WebSocket close reason, which has at most 123 bytes.
+// closeReason fits a WebSocket close reason, which has at most 123 bytes of
+// valid UTF-8.
 func closeReason(msg string) string {
 	if len(msg) <= 120 {
 		return msg
 	}
-	return msg[:120] + "..."
+	cut := 120
+	for !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "..."
 }

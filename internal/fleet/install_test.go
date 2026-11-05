@@ -117,6 +117,38 @@ func TestInstallScriptValues(t *testing.T) {
 	}
 }
 
+// TestInstallKeepsRegisteredAgent runs write_config of install.sh again with
+// the token that the agent used. The agent.json of the registered agent must
+// stay, also when the primary has an IPv6 address.
+func TestInstallKeepsRegisteredAgent(t *testing.T) {
+	script, err := replaceMain(runplane.InstallScript, `CONFIG_DIR=$1 DATA_DIR=$1/data ENV_FILE=$1/runplane.env AGENT_FILE=$1/agent.json
+DRY_RUN=0 ROLE=agent MODE=container TOKEN=rp_srv_TEST PRIMARY=$2 FINGERPRINT=sha256:aa
+write_config
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, primary := range []string{"203.0.113.7:8485", "[2001:db8::5]:8485"} {
+		t.Run(primary, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "agent.json")
+			registered := "{\n  \"primary\": \"" + primary + "\",\n  \"fingerprint\": \"sha256:aa\",\n" +
+				"  \"server_id\": \"01jbd5x7k2m4n6p8q9r0s1t2v3\",\n  \"secret\": \"s3cret\"\n}\n"
+			if err := os.WriteFile(path, []byte(registered), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("sh", "-s", "--", dir, primary)
+			cmd.Stdin = bytes.NewReader(script)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("install.sh: %v\n%s", err, out)
+			}
+			if raw, _ := os.ReadFile(path); string(raw) != registered {
+				t.Errorf("agent.json after a second install with the same token:\n%s\nwant it unchanged", raw)
+			}
+		})
+	}
+}
+
 func TestInstallCommand(t *testing.T) {
 	h := newHarness(t, newFakeNode("arm64"))
 	h.run()

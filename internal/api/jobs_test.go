@@ -96,7 +96,7 @@ func TestJobShowsItsDebugSandbox(t *testing.T) {
 		t.Fatalf("sandbox job fields = %q, %q, %q", sb.JobRepository, sb.JobWorkflowFile, sb.JobName)
 	}
 
-	if _, err := e.st.SetSandboxState(ctx, id, sandbox.StateGone, "", time.Now()); err != nil {
+	if _, _, err := e.st.AdvanceSandboxState(ctx, id, sandbox.StateGone, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	b.do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)

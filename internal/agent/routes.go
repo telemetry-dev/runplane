@@ -12,8 +12,7 @@ import (
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
-// newRoutes returns the routes that the agent serves to the primary
-// (section 5).
+// newRoutes returns the routes that the agent serves to the primary.
 func (a *agent) newRoutes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/sandboxes", a.startSandbox)
@@ -121,7 +120,7 @@ func (a *agent) sandboxShell(w http.ResponseWriter, r *http.Request) {
 		io.Copy(conn, term)
 		conn.Close()
 	}()
-	if err := readFrames(brw.Reader, term); err != nil && !errors.Is(err, io.EOF) {
+	if err := readFrames(brw.Reader, term); !errors.Is(err, io.EOF) {
 		a.log.Debug("shell stream ended", "err", err)
 	}
 }

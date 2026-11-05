@@ -55,7 +55,6 @@ type Updater struct {
 	// Kernel is the guest kernel of VM mode. If the file exists, Apply also
 	// replaces it with vmlinux-<arch> of the release.
 	Kernel string
-	Client *http.Client
 }
 
 // New returns an Updater for this build.
@@ -90,7 +89,7 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "runplane/"+u.Current)
-	resp, err := u.client().Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return Status{}, fmt.Errorf("check update: %w", err)
 	}
@@ -232,13 +231,6 @@ func (u *Updater) fetch(ctx context.Context, url, want, dir, pattern string) (st
 	return f.Name(), nil
 }
 
-func (u *Updater) client() *http.Client {
-	if u.Client != nil {
-		return u.Client
-	}
-	return http.DefaultClient
-}
-
 func (u *Updater) publicKey() (ed25519.PublicKey, error) {
 	if u.PublicKey == "" {
 		return nil, errors.New("update: this build has no release signing key, so it cannot verify releases; install the new version with the install script")
@@ -272,7 +264,7 @@ func (u *Updater) download(ctx context.Context, url string, w io.Writer, limit i
 		return fmt.Errorf("update: %w", err)
 	}
 	req.Header.Set("User-Agent", "runplane/"+u.Current)
-	resp, err := u.client().Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("update: download %s: %w", path.Base(url), err)
 	}

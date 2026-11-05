@@ -13,13 +13,14 @@ import {
   useFittingColumns,
   type DataTableColumn,
 } from '~/components/app/data-table'
+import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { SectionHeader, SectionLink } from '~/components/app/section-header'
 import { jobStatus, StatusIcon } from '~/components/app/status-icon'
 import { UsageBar } from '~/components/app/usage-bar'
 import { formatDuration, formatRelativeTime } from '~/lib/format'
+import { useNow } from '~/lib/use-now'
 import { jobProgress } from './data'
-import { useNow } from './use-now'
 
 type Job = Schemas['JobSummary']
 
@@ -71,7 +72,7 @@ function JobTable({ columns, jobs, empty, ...props }: JobTableProps) {
   // Only the status column has no head.
   const fit = useFittingColumns(Object.fromEntries(columns.map((column) => [column.head ?? '', column])))
   const shown = columns.filter((column) => fit.shown[column.head ?? ''])
-  const now = useNow()
+  const now = useNow(1000)
   return (
     <div ref={fit.ref}>
       <DataTable {...props} columns={fit.columns}>
@@ -146,8 +147,4 @@ const recentColumns: Column[] = [
 
 function elapsed(job: Job, now: number): number {
   return now - Date.parse(job.started_at ?? job.queued_at)
-}
-
-function None() {
-  return <span className="text-neutral-6">—</span>
 }

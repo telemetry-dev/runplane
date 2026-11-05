@@ -3,11 +3,11 @@ import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import type { Schemas } from '~/api/client'
 import { LineChart } from '~/components/app/line-chart'
+import { TextButton } from '~/components/app/text-button'
 import { formatMegabytes, formatPercent } from '~/lib/format'
 import { clock } from './job-format'
 import { metricsQuery } from './job-queries'
 import { longestStep } from './job-steps'
-import { TextButton } from './text-button'
 
 /**
  * The CPU and Memory cards of Job detail: peak and average over the samples,

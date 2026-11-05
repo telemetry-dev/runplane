@@ -156,6 +156,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// countEvents counts the events of type typ on ch so far.
+func countEvents(ch <-chan events.Event, typ string) int {
+	n := 0
+	for {
+		select {
+		case e := <-ch:
+			if e.Type == typ {
+				n++
+			}
+		default:
+			return n
+		}
+	}
+}
+
 // eventually waits up to 10 seconds for cond.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -225,7 +240,6 @@ func (f scalerFunc) Scale(ctx context.Context, m *scaleset.RunnerScaleSetMessage
 // fakeActions serves the scale set endpoints that the scaleset library
 // calls: the registration token, the Actions service, and the message queue.
 type fakeActions struct {
-	e  *env
 	mu sync.Mutex
 
 	sets        map[int]*scaleset.RunnerScaleSet
@@ -246,7 +260,7 @@ type fakeActions struct {
 }
 
 func (e *env) actions() *fakeActions {
-	f := &fakeActions{e: e, sets: map[int]*scaleset.RunnerScaleSet{}, scopes: map[int]string{}, nextID: 7, sessions: map[int]string{},
+	f := &fakeActions{sets: map[int]*scaleset.RunnerScaleSet{}, scopes: map[int]string{}, nextID: 7, sessions: map[int]string{},
 		queue: make(chan string, 8), agents: map[int64]string{}, revoked: map[string]bool{}}
 	m := e.mux
 	regToken := func(w http.ResponseWriter, r *http.Request) {

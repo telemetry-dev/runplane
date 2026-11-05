@@ -188,7 +188,7 @@ func (b *backups) dropRows(ctx context.Context, removed []string) {
 
 func (b *backups) failed(st store.Settings, err error) {
 	b.log.Error("backup failed", "err", err)
-	b.notify(notify.BackupFailedEvent(st.PublicURL, err))
+	b.notify(notify.BackupFailedEvent(st.DashboardURL(), err))
 }
 
 // daily makes a backup each day at 03:00 UTC while backup_enabled is on.
@@ -322,7 +322,7 @@ func (u *updater) checkDaily(ctx context.Context, st *store.Store, send func(not
 		}
 		if told != s.Latest {
 			told = s.Latest
-			send(notify.UpdateAvailableEvent(settings.PublicURL, s.Current, s.Latest, s.URL))
+			send(notify.UpdateAvailableEvent(settings.DashboardURL(), s.Current, s.Latest, s.URL))
 		}
 	}
 }

@@ -1996,7 +1996,7 @@ export interface components {
             created_at: string;
             /** Format: int64 */
             disk_bytes: number;
-            /** @description For example nvme, ssd, or hdd. */
+            /** @description NVMe, SSD, HDD, or empty if unknown. */
             disk_kind: string;
             /** Format: double */
             disk_percent: number | null;

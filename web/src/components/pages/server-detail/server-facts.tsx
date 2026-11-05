@@ -1,13 +1,14 @@
 import type { ReactNode } from 'react'
 import { useHostStats } from '~/api/events'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
+import { None } from '~/components/app/none'
 import { Stat } from '~/components/app/stat'
 import { UsageBar } from '~/components/app/usage-bar'
-import { useNow } from '~/components/pages/jobs/use-now'
-import { agentUpdateNote, serverLocation } from '~/components/pages/servers/server-info'
+import { agentUpdateNote, currentUsage, serverLocation, statusNames } from '~/components/pages/servers/server-info'
 import { Tooltip } from '~/components/ui/tooltip'
 import { formatPercent } from '~/lib/format'
-import { currentUsage, diskDetail, lastSeen, memoryDetail, sandboxMode, statusDetail, type Server } from './server-format'
+import { useNow } from '~/lib/use-now'
+import { diskDetail, lastSeen, memoryDetail, sandboxMode, statusDetail, type Server } from './server-format'
 
 /** The facts row under the title: status, address, provider, system, mode, KVM, and version. */
 export function ServerFacts({ server }: { server: Server }) {
@@ -73,14 +74,6 @@ function Usage({ label, value, detail }: { label: string; value: number | null; 
   )
 }
 
-const statusNames: Record<Server['status'], string> = {
-  online: 'Online',
-  installing: 'Installing',
-  unreachable: 'Unreachable',
-  draining: 'Draining',
-  disabled: 'Disabled',
-}
-
 /** Text with a dotted underline that shows `why` in a tooltip. It takes keyboard focus, and screen readers read `why` with it. */
 function WhyHint({ why, children }: { why: string; children: ReactNode }) {
   return (
@@ -91,8 +84,4 @@ function WhyHint({ why, children }: { why: string; children: ReactNode }) {
       </span>
     </Tooltip>
   )
-}
-
-function None() {
-  return <span className="text-neutral-6">—</span>
 }

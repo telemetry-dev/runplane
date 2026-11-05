@@ -53,7 +53,7 @@ func (h *hostRequests) shuttingDown() bool {
 }
 
 // waitHold returns at the hold time or at a shutdown. The host can move the
-// hold while init waits. With debug and no hold, it waits holdGrace for one.
+// hold while init waits. With debug and no hold, it waits grace for one.
 func (h *hostRequests) waitHold(debug bool, grace time.Duration) {
 	var graceEnd time.Time
 	if debug {
@@ -82,7 +82,7 @@ func (h *hostRequests) waitHold(debug bool, grace time.Duration) {
 	}
 }
 
-// guestMux serves the host requests of section 4.1.
+// guestMux serves the requests that the host sends to the guest.
 func guestMux(req *hostRequests, shells *shellServer) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/hold", func(w http.ResponseWriter, r *http.Request) {

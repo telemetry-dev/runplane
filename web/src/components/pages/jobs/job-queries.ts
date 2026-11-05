@@ -25,6 +25,3 @@ export function logQuery(id: string, step: number) {
     staleTime: Infinity,
   })
 }
-
-/** Instance settings, for the debug hold time. */
-export const settingsQuery = $api.queryOptions('get', '/api/settings')

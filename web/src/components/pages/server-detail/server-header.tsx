@@ -6,6 +6,7 @@ import { $api, errorMessage, useFieldErrors } from '~/api/client'
 import { BreadcrumbLink, BreadcrumbPage, Breadcrumbs } from '~/components/app/breadcrumbs'
 import { StatusDot } from '~/components/app/status-dot'
 import { dropServer } from '~/components/pages/servers/queries'
+import { removeDescription } from '~/components/pages/servers/server-info'
 import { UpdateAgentItem } from '~/components/pages/servers/update-agent-item'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
@@ -191,12 +192,6 @@ function RemoveDialog({ server, open, onOpenChange }: DialogProps) {
       </AlertDialogPopup>
     </AlertDialog>
   )
-}
-
-function removeDescription(runningJobs: number): string {
-  if (runningJobs === 0) return 'runplane stops its sandboxes and disconnects the agent.'
-  const jobs = runningJobs === 1 ? 'Its running job is' : `Its ${runningJobs} running jobs are`
-  return `${jobs} cancelled, and runplane disconnects the agent.`
 }
 
 function ErrorText({ error }: { error: unknown }) {

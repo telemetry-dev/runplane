@@ -49,28 +49,29 @@ func (f *Fleet) UpdateAgent(_ context.Context, serverID string) error {
 	if n == nil || n.sess == nil {
 		return huma.Error409Conflict("The server is not connected, so it cannot update.")
 	}
-	if !f.beginUpdate(n, true) {
+	if !f.beginUpdate(n.id, n.version, true) {
 		return huma.Error409Conflict("The server runs the release of the primary, or an update runs.")
 	}
 	f.goBg(func(ctx context.Context) { f.runUpdate(ctx, n) })
 	return nil
 }
 
-// beginUpdate marks an update of the agent n as running. It reports false if
-// the primary is not a release, the agent runs its version, or an update
-// runs. Without again, it also reports false for a version that the fleet
-// tried before on this agent, so that each connection does not try again.
-func (f *Fleet) beginUpdate(n *node, again bool) bool {
+// beginUpdate marks an update of the agent id, which runs version from, as
+// running. It reports false if the primary is not a release, the agent runs
+// its version, or an update runs. Without again, it also reports false for a
+// version that the fleet tried before on this agent, so that each connection
+// does not try again.
+func (f *Fleet) beginUpdate(id, from string, again bool) bool {
 	to := version.Version
-	if !releaseVersion.MatchString(to) || n.version == to {
+	if !releaseVersion.MatchString(to) || from == to {
 		return false
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if u := f.updates[n.id]; u.running || u.to == to && !again {
+	if u := f.updates[id]; u.running || u.to == to && !again {
 		return false
 	}
-	f.updates[n.id] = agentUpdate{to: to, running: true}
+	f.updates[id] = agentUpdate{to: to, running: true}
 	return true
 }
 

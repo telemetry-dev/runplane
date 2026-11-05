@@ -7,20 +7,14 @@ import { Spinner } from './spinner'
 // Toasts of gui/components/runplane/toast.md. Mount <Toaster /> once near the
 // root, then show a toast from anywhere:
 //
-//   toastManager.add({ title: 'Server removed' })                 // outside React
-//   const toast = useToast(); toast.add({ title, description })    // in a component
-//   toast.promise(save(), { loading: 'Saving…', success: 'Saved', error: errorMessage })
+//   toastManager.add({ title: 'Server removed' })
+//   toastManager.promise(save(), { loading: 'Saving…', success: 'Saved', error: errorMessage })
 //
 // `type: 'loading'` shows a spinner. An `actionProps` ({ children, onClick })
 // adds an action button, for example Undo.
 
 /** The app's one toast queue. Toaster renders it. */
 export const toastManager = Toast.createToastManager()
-
-/** The toast queue with add, close, update, and promise. Needs a mounted Toaster. */
-export function useToast() {
-  return Toast.useToastManager()
-}
 
 /** Bottom-right stack of toasts. Toasts close after 5 seconds, and pause while hovered or focused. */
 export function Toaster() {

@@ -16,7 +16,7 @@ type Sandbox struct {
 	ScaleSetID    string        `json:"scale_set_id"`
 	Mode          sandbox.Mode  `json:"mode"`
 	State         sandbox.State `json:"state"`
-	RunnerID      int64         `json:"runner_id"` // 0 until GitHub registers the runner
+	RunnerID      int64         `json:"runner_id"`
 	RunnerName    string        `json:"runner_name"`
 	IP            string        `json:"ip"`
 	ImageDigest   string        `json:"image_digest"`
@@ -60,35 +60,6 @@ func (s *Store) InsertSandbox(ctx context.Context, b Sandbox) error {
 		msPtr(b.IdleAt), msPtr(b.BusyAt), msPtr(b.StoppedAt), b.ExitReason, b.Error)
 	if err != nil {
 		return fmt.Errorf("insert sandbox: %w", dbErr(err))
-	}
-	return nil
-}
-
-// SetSandboxState records a state change at t and returns the row. The first
-// change to idle, busy, or a done state sets idle_at, busy_at, or stopped_at.
-// For failed, reason goes to error; for stopping and gone, to exit_reason.
-// The first reason stays, and a done sandbox keeps its state.
-func (s *Store) SetSandboxState(ctx context.Context, id string, state sandbox.State, reason string, t time.Time) (Sandbox, error) {
-	b, err := scanSandbox(s.w.QueryRowContext(ctx, `UPDATE sandboxes SET
-			state = CASE WHEN state IN ('gone', 'failed') THEN state ELSE ?1 END,
-			idle_at = CASE WHEN ?1 = 'idle' THEN coalesce(idle_at, ?2) ELSE idle_at END,
-			busy_at = CASE WHEN ?1 = 'busy' THEN coalesce(busy_at, ?2) ELSE busy_at END,
-			stopped_at = CASE WHEN ?1 IN ('gone', 'failed') THEN coalesce(stopped_at, ?2) ELSE stopped_at END,
-			error = CASE WHEN ?1 = 'failed' AND error = '' THEN ?3 ELSE error END,
-			exit_reason = CASE WHEN ?1 IN ('stopping', 'gone') AND exit_reason = '' THEN ?3 ELSE exit_reason END
-		WHERE id = ?4
-		RETURNING `+sandboxCols, state, ms(t), reason, id))
-	if err != nil {
-		return Sandbox{}, fmt.Errorf("set sandbox state: %w", dbErr(err))
-	}
-	return b, nil
-}
-
-// SetSandboxRunner records the runner that GitHub registered for the sandbox.
-func (s *Store) SetSandboxRunner(ctx context.Context, id string, runnerID int64, runnerName string) error {
-	err := exec1(ctx, s.w, "UPDATE sandboxes SET runner_id = ?, runner_name = ? WHERE id = ?", runnerID, runnerName, id)
-	if err != nil {
-		return fmt.Errorf("set sandbox runner: %w", err)
 	}
 	return nil
 }

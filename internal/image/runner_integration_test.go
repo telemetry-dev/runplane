@@ -37,7 +37,7 @@ func TestRealRunnerInBaseImage(t *testing.T) {
 		t.Skipf("no image %s: %v", baseImage, err)
 	}
 	b := NewBundles(BundleConfig{Mode: sandbox.ModeContainer, Dir: t.TempDir(), Logger: testLogger(t)})
-	rel, err := b.Latest(ctx)
+	rel, err := b.release(ctx, "/releases/latest")
 	if err != nil {
 		t.Fatal(err)
 	}

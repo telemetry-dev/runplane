@@ -33,13 +33,13 @@ func (s *Store) ExpireJobLogs(ctx context.Context, before time.Time) ([]string, 
 }
 
 // DeleteSandboxesBefore deletes the gone and failed sandboxes that stopped before before.
-func (s *Store) DeleteSandboxesBefore(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.w.ExecContext(ctx,
+func (s *Store) DeleteSandboxesBefore(ctx context.Context, before time.Time) error {
+	_, err := s.w.ExecContext(ctx,
 		"DELETE FROM sandboxes WHERE state IN ('gone', 'failed') AND stopped_at < ?", ms(before))
 	if err != nil {
-		return 0, fmt.Errorf("delete old sandboxes: %w", err)
+		return fmt.Errorf("delete old sandboxes: %w", err)
 	}
-	return res.RowsAffected()
+	return nil
 }
 
 // DeleteExpired deletes the sessions, manifest states, setup codes, invites,

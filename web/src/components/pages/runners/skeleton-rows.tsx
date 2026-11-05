@@ -1,4 +1,5 @@
 import { DataTableCell, DataTableRow } from '~/components/app/data-table'
+import { Skeleton } from '~/components/ui/skeleton'
 import { cx } from '~/lib/cx'
 
 type SkeletonRowsProps = {
@@ -21,12 +22,11 @@ export function SkeletonRows({ lines = 1, label }: SkeletonRowsProps) {
           aria-hidden
           className={cx('flex w-full flex-col justify-center gap-xs', lines === 2 ? 'h-[calc(var(--line-s)+var(--line-xs))]' : 'h-(--line-s)')}
         >
-          <span className={cx(bar, 'h-[8px]')} style={{ width: `${32 - index * 6}%` }} />
-          {lines === 2 && <span className={cx(bar, 'h-[6px]')} style={{ width: `${18 - index * 3}%` }} />}
+          <Skeleton className="h-[8px]" style={{ width: `${32 - index * 6}%` }} />
+          {lines === 2 && <Skeleton className="h-[6px]" style={{ width: `${18 - index * 3}%` }} />}
         </span>
       </DataTableCell>
     </DataTableRow>
   ))
 }
 
-const bar = 'block animate-pulse rounded-xs bg-neutral-3'

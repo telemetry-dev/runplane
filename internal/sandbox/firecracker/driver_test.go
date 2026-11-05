@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -102,7 +103,7 @@ func TestGuestConfig(t *testing.T) {
 	all := sandbox.Settings{ActionsCache: true, RegistryMirror: true, DNS: []string{"1.1.1.1", "2606:4700::1111", "9.9.9.9"}}
 	cfg := d.guestConfig(spec, lease, all)
 	// The services listen on the host end of the TAP, the gateway of the guest.
-	if want := map[string]string{"A": "1", "ACTIONS_RESULTS_URL": "http://10.214.0.13:8486/"}; !mapsEqual(cfg.Env, want) {
+	if want := map[string]string{"A": "1", "ACTIONS_RESULTS_URL": "http://10.214.0.13:8486/"}; !maps.Equal(cfg.Env, want) {
 		t.Errorf("env %v, want %v", cfg.Env, want)
 	}
 	if cfg.RegistryMirror != "http://10.214.0.13:8486" {
@@ -121,21 +122,15 @@ func TestGuestConfig(t *testing.T) {
 	}
 
 	none := d.guestConfig(spec, lease, sandbox.Settings{})
-	if !mapsEqual(none.Env, map[string]string{"A": "1"}) || none.RegistryMirror != "" {
+	if !maps.Equal(none.Env, map[string]string{"A": "1"}) || none.RegistryMirror != "" {
 		t.Errorf("with the cache and mirror off: env %v, mirror %q", none.Env, none.RegistryMirror)
 	}
-}
 
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
+	// As in container mode, the spec env wins over the cache env.
+	spec.Env = map[string]string{"ACTIONS_RESULTS_URL": "http://other/"}
+	if got := d.guestConfig(spec, lease, all).Env["ACTIONS_RESULTS_URL"]; got != "http://other/" {
+		t.Errorf("ACTIONS_RESULTS_URL %q, want the spec value http://other/", got)
 	}
-	for k, v := range a {
-		if bv, ok := b[k]; !ok || bv != v {
-			return false
-		}
-	}
-	return true
 }
 
 func TestDeadline(t *testing.T) {

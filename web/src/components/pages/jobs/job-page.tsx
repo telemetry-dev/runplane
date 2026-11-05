@@ -4,7 +4,9 @@ import { errorMessage, isApiError, type Schemas } from '~/api/client'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { Button, buttonClassName } from '~/components/ui/button'
+import { Skeleton } from '~/components/ui/skeleton'
 import { formatDuration } from '~/lib/format'
+import { useNow } from '~/lib/use-now'
 import { DebugSandbox } from './debug-sandbox'
 import { JobCharts } from './job-charts'
 import { queueTime, runTime, trigger } from './job-format'
@@ -13,7 +15,6 @@ import { JobLog } from './job-log'
 import { jobQuery } from './job-queries'
 import { shownStep } from './job-steps'
 import { JobStepsList } from './job-steps-list'
-import { useNow } from './use-now'
 
 /**
  * The "Job detail" design: header with re-run actions, facts of the run, the
@@ -106,20 +107,19 @@ function JobError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
 
 /** The page while the job loads: the shapes of the header, steps, charts, and log. */
 export function JobPageSkeleton() {
-  const bar = 'block animate-pulse rounded-xs bg-neutral-3'
   return (
     <div aria-busy className="flex flex-col gap-xxl">
       <p className="sr-only" role="status">
         Loading the job
       </p>
       <div className="flex flex-col gap-s" aria-hidden>
-        <span className={`${bar} my-[3px] h-[12px] w-[220px]`} />
-        <span className={`${bar} my-[3px] h-[24px] w-[200px]`} />
+        <Skeleton className="my-[3px] h-[12px] w-[220px]" />
+        <Skeleton className="my-[3px] h-[24px] w-[200px]" />
       </div>
       <div className="flex flex-col gap-xl xl:flex-row xl:items-start" aria-hidden>
         <div className="flex w-full shrink-0 flex-col gap-s xl:w-[280px]">
           {Array.from({ length: 6 }, (_, index) => (
-            <span key={index} className={`${bar} h-[18px] my-xs`} />
+            <Skeleton key={index} className="h-[18px] my-xs" />
           ))}
         </div>
         <div className="flex min-w-0 grow basis-0 flex-col gap-xl">

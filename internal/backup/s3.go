@@ -29,10 +29,6 @@ type S3 struct {
 	Prefix    string // key prefix, for example "runplane/"
 	AccessKey string
 	SecretKey string
-	// VirtualHost puts the bucket in the host name (bucket.endpoint) on a
-	// custom endpoint. AWS endpoints always use that style when the bucket
-	// name allows it; other endpoints use path style by default.
-	VirtualHost bool
 }
 
 // Upload stores the file at Prefix/<file name> with one signed PUT and
@@ -103,7 +99,7 @@ func (s S3) objectURL(key string) (*url.URL, error) {
 	}
 	base := strings.TrimRight(u.Path, "/")
 	isAWS := strings.HasSuffix(u.Hostname(), ".amazonaws.com")
-	if s.VirtualHost || (isAWS && dnsBucket(s.Bucket)) {
+	if isAWS && dnsBucket(s.Bucket) {
 		u.Host = s.Bucket + "." + u.Host
 		u.Path = base + "/" + key
 	} else {

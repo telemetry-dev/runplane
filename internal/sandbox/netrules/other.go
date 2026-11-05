@@ -28,7 +28,6 @@ func (m *Manager) AddPort(string, net.HardwareAddr, netip.Addr) error {
 func (m *Manager) RemovePort(string) error           { return errLinuxOnly }
 func HostPeer(string, string) (string, error)        { return "", errLinuxOnly }
 func (m *Manager) Close() error                      { return nil }
-func (m *Manager) Teardown() error                   { return errLinuxOnly }
 func CreateTap(string, int, int, netip.Prefix) error { return errLinuxOnly }
 func DeleteTap(string) error                         { return errLinuxOnly }
 func (a *Allocator) Recover() error                  { return errLinuxOnly }

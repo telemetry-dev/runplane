@@ -115,10 +115,6 @@ func (s *Store) GetLocalServer(ctx context.Context) (Server, error) {
 	return s.getServer(ctx, "kind = ?", ServerLocal)
 }
 
-func (s *Store) GetServerBySecretHash(ctx context.Context, hash string) (Server, error) {
-	return s.getServer(ctx, "secret_hash = ?", hash)
-}
-
 func (s *Store) getServer(ctx context.Context, where string, arg any) (Server, error) {
 	v, err := scanServer(s.r.QueryRowContext(ctx, "SELECT "+serverCols+" FROM servers WHERE "+where, arg))
 	if err != nil {
@@ -287,17 +283,6 @@ func (s *Store) AppendServerStats(ctx context.Context, stats []ServerStat) error
 	return nil
 }
 
-// ListServerStats returns the samples of a server from since, oldest first.
-func (s *Store) ListServerStats(ctx context.Context, serverID string, since time.Time) ([]ServerStat, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT server_id, t_ms, cpu_percent, memory_percent, disk_percent
-		FROM server_stats WHERE server_id = ? AND t_ms >= ? ORDER BY t_ms`, serverID, ms(since))
-	list, err := scanAll(rows, err, scanServerStat)
-	if err != nil {
-		return nil, fmt.Errorf("list server stats: %w", err)
-	}
-	return list, nil
-}
-
 // LatestServerStats returns the newest sample of each server.
 func (s *Store) LatestServerStats(ctx context.Context) (map[string]ServerStat, error) {
 	rows, err := s.r.QueryContext(ctx, `SELECT server_id, max(t_ms), cpu_percent, memory_percent, disk_percent
@@ -320,10 +305,9 @@ func scanServerStat(sc scanner) (ServerStat, error) {
 }
 
 // PruneServerStats deletes the samples older than before.
-func (s *Store) PruneServerStats(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.w.ExecContext(ctx, "DELETE FROM server_stats WHERE t_ms < ?", ms(before))
-	if err != nil {
-		return 0, fmt.Errorf("prune server stats: %w", err)
+func (s *Store) PruneServerStats(ctx context.Context, before time.Time) error {
+	if _, err := s.w.ExecContext(ctx, "DELETE FROM server_stats WHERE t_ms < ?", ms(before)); err != nil {
+		return fmt.Errorf("prune server stats: %w", err)
 	}
-	return res.RowsAffected()
+	return nil
 }

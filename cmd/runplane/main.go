@@ -133,7 +133,7 @@ func serve(ctx context.Context, args []string) error {
 
 	handler := api.New(deps)
 	p.handler = handler
-	if settings, err := st.GetSettings(ctx); err == nil && settings.Domain != "" {
+	if settings := *p.settings.Load(); settings.Domain != "" {
 		p.serveHTTPS(settings)
 	}
 	srv := &http.Server{

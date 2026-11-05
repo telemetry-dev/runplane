@@ -112,7 +112,7 @@ func (r *Resolver) byIP(ctx context.Context, remoteIP string) (store.SandboxJob,
 		return store.SandboxJob{}, err
 	}
 	b, err := r.st.LiveSandboxJobByIP(ctx, serverID, ip)
-	if !errors.Is(err, store.ErrNotFound) || r.local == nil {
+	if !errors.Is(err, store.ErrNotFound) {
 		return b, err
 	}
 	list, err := r.local(ctx)

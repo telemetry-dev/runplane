@@ -57,8 +57,6 @@ func healthy(t *testing.T, mode sandbox.Mode) scan {
 		s.DockerVersion, s.DockerFirewall, s.SysboxVersion, s.SysboxRuntime = "", "", "", false
 		s.iptables = iptablesFixture(t, "plain")
 		s.sysboxUnit = ""
-	}
-	if mode == sandbox.ModeVM {
 		s.KVM, s.CPUVirt = true, true
 		s.FirecrackerVersion, s.JailerVersion = "1.13.1", "1.13.1"
 	}

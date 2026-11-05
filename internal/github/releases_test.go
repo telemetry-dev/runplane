@@ -106,7 +106,7 @@ func TestCheckReleases(t *testing.T) {
 					t.Errorf("2.330.0 %s end date = %v, want the runtime end %v", arch, old.EndDate, runtimeEnd)
 				}
 			}
-			if n := countEvents(published); n != 4 {
+			if n := countEvents(published, events.RunnerVersion); n != 4 {
 				t.Errorf("published %d runner.version events, want 4", n)
 			}
 			if len(notifier.sent) != tt.wantWarns {
@@ -123,23 +123,9 @@ func TestCheckReleases(t *testing.T) {
 			if len(notifier.sent) != tt.wantWarns {
 				t.Errorf("warnings after the second check = %d, want %d", len(notifier.sent), tt.wantWarns)
 			}
-			if n := countEvents(published); n != 0 {
+			if n := countEvents(published, events.RunnerVersion); n != 0 {
 				t.Errorf("the second check published %d events, want 0", n)
 			}
 		})
-	}
-}
-
-func countEvents(ch <-chan events.Event) int {
-	n := 0
-	for {
-		select {
-		case e := <-ch:
-			if e.Type == events.RunnerVersion {
-				n++
-			}
-		default:
-			return n
-		}
 	}
 }

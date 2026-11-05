@@ -14,22 +14,21 @@ import {
   useFittingColumns,
 } from '~/components/app/data-table'
 import { StatusIcon } from '~/components/app/status-icon'
+import { imagesQuery } from '~/components/pages/runners/queries'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
+import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { formatBytes } from '~/lib/format'
 import { cx } from '~/lib/cx'
-import { Badge, Bar, CardTitle, ErrorHint, LoadError, SettingsCard, SettingsSection } from './parts'
+import { Badge, CardTitle, ErrorHint, LoadError, SettingsCard, SettingsSection } from './parts'
 import { buildLabel, buildStatus, buildSummary, usedBy } from './runner-info'
 import { useFormErrors } from './settings-api'
 
 type Image = Schemas['Image']
-
-/** GET /api/images. image.state events refetch it. */
-const imagesQuery = $api.queryOptions('get', '/api/images')
 
 /** The Images section: every image with its state on each server, and the form to add one. */
 export function Images({ admin }: { admin: boolean }) {
@@ -312,17 +311,17 @@ function SkeletonRows({ shown }: { shown: Shown }) {
     <DataTableRow key={index}>
       <DataTableCell />
       <DataTableCell className="flex-col items-start gap-0">
-        <Bar className="my-[3px] h-[12px] w-[96px] rounded-xs" />
-        <Bar className="my-[2px] h-[10px] w-[140px] max-w-full rounded-xs" />
+        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
+        <Skeleton className="my-[2px] h-[10px] w-[140px] max-w-full" />
       </DataTableCell>
       {shown.usedBy && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[56px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[56px]" />
         </DataTableCell>
       )}
       {shown.servers && (
         <DataTableCell>
-          <Bar className="my-[3px] h-[12px] w-[112px] rounded-xs" />
+          <Skeleton className="my-[3px] h-[12px] w-[112px]" />
         </DataTableCell>
       )}
       <DataTableCell />

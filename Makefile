@@ -20,13 +20,14 @@ SHELLSCRIPTS := install.sh kernel/build.sh $(wildcard deploy/*.sh)
 
 # The init binary has one path for all architectures, so builds must not overlap.
 .NOTPARALLEL:
-.PHONY: help web init build binary build-linux-amd64 build-linux-arm64 dist sums test lint openapi dev fake e2e runner-smoke clean
+.PHONY: help web init build binary build-linux-amd64 build-linux-arm64 size-check dist sums test lint openapi dev fake e2e runner-smoke clean
 
 help:
 	@echo 'make build              web, init, and bin/runplane for this OS and arch'
 	@echo 'make build-linux-amd64  bin/runplane-linux-amd64'
 	@echo 'make build-linux-arm64  bin/runplane-linux-arm64'
 	@echo 'make dist               release archives, install.sh, and SHA256SUMS in dist/'
+	@echo 'make size-check         stop if bin/runplane-linux-<arch> has 30,000,000 bytes or more'
 	@echo 'make web                frontend build into internal/webui/dist'
 	@echo 'make init               runplane-init for GOARCH into internal/initbin/bin'
 	@echo 'make test               go test, also of the dev seed (tag devseed)'
@@ -64,7 +65,6 @@ build-linux-arm64: web
 	$(MAKE) binary GOOS=linux GOARCH=arm64 OUT=bin/runplane-linux-arm64
 
 # size-check fails when a Linux binary has 30,000,000 bytes or more.
-.PHONY: size-check
 size-check:
 	@status=0; for bin in bin/runplane-linux-amd64 bin/runplane-linux-arm64; do \
 		size=$$(wc -c <$$bin) || exit 1; \

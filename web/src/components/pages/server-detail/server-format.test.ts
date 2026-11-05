@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { currentUsage, diskDetail, lastSeen, shortDigest, sortChecks, statusDetail, type Check, type Server } from './server-format'
+import { diskDetail, lastSeen, shortDigest, sortChecks, statusDetail, type Check, type Server } from './server-format'
 
 // A server as GET /api/servers/{id} returns it (the seeded fsn1-ax52-b).
 const agent: Server = {
@@ -68,19 +68,6 @@ describe('lastSeen', () => {
   })
 })
 
-describe('currentUsage', () => {
-  const stats = { server_id: agent.id, cpu_percent: 40, memory_percent: 25, disk_percent: 39, at: '2026-11-04T04:49:49.447Z' }
-
-  test('uses the host.stats event when it is newer than the sample', () => {
-    expect(currentUsage(agent, stats)).toEqual({ cpu: 40, memory: 25, disk: 39 })
-    expect(currentUsage(agent, { ...stats, at: '2026-11-04T04:40:00Z' })).toEqual({ cpu: 31, memory: 22, disk: 38 })
-  })
-
-  test('an unreachable server has no current usage', () => {
-    expect(currentUsage({ ...agent, status: 'unreachable' }, stats)).toEqual({ cpu: null, memory: null, disk: null })
-  })
-})
-
 describe('diskDetail', () => {
   test('one unit when both sizes share it', () => {
     expect(diskDetail({ ...agent, disk_bytes: 1030792151040 }, 27)).toBe('259 of 960 GB used · NVMe')
@@ -91,7 +78,7 @@ describe('diskDetail', () => {
   })
 
   test('the size alone without a sample', () => {
-    expect(diskDetail({ ...agent, disk_kind: 'ssd' }, null)).toBe('1 TB · SSD')
+    expect(diskDetail({ ...agent, disk_kind: 'SSD' }, null)).toBe('1 TB · SSD')
   })
 })
 

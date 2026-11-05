@@ -169,7 +169,7 @@ func (d *Driver) create(ctx context.Context, b *box, spec sandbox.Spec, s sandbo
 
 // bindPort lets the bridge port of the container pass only the frames with
 // the MAC and IPv4 address that Docker gave the container
-// (netrules.Manager.AddPort). The port passes nothing before.
+// (netrules.Manager.AddPort).
 func (d *Driver) bindPort(b *box, c container.InspectResponse) error {
 	if d.opts.NetRules == nil {
 		return nil

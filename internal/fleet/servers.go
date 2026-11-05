@@ -116,7 +116,7 @@ func (f *Fleet) AddSession(s *agent.Session) {
 		// The scheduler compares the sandboxes of the server with its rows.
 		f.capacityChanged()
 		f.kick()
-		if f.beginUpdate(n, false) {
+		if f.beginUpdate(id, h.Version, false) {
 			f.runUpdate(ctx, n)
 		}
 	})

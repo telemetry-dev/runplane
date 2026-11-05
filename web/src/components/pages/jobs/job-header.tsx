@@ -3,11 +3,11 @@ import { RotateCcw, TerminalIcon } from 'lucide-react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
 import { BreadcrumbLink, BreadcrumbPage, Breadcrumbs } from '~/components/app/breadcrumbs'
 import { jobStatus, StatusIcon } from '~/components/app/status-icon'
+import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { Button, buttonClassName } from '~/components/ui/button'
 import { GithubIcon } from '~/components/ui/icons'
 import { toastManager } from '~/components/ui/toast'
 import { runNumber, workflowFile } from './job-format'
-import { settingsQuery } from './job-queries'
 
 /** Breadcrumbs, the job name with its status, and the GitHub and re-run actions. */
 export function JobHeader({ job }: { job: Schemas['Job'] }) {
