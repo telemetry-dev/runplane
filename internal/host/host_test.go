@@ -29,14 +29,11 @@ func TestParseOSRelease(t *testing.T) {
 		{"custom", "Example OS 1.0 (Server)", "example", "1.0", `Say "hi"`},
 	}
 	for _, tt := range tests {
-		t.Run(tt.file, func(t *testing.T) {
-			r := parseOSRelease(open(t, "testdata/os-release/"+tt.file))
-			got := []string{r["PRETTY_NAME"], r["ID"], r["VERSION_ID"], r["NAME"]}
-			want := []string{tt.pretty, tt.id, tt.versionID, tt.name}
-			if !slices.Equal(got, want) {
-				t.Errorf("got %q, want %q", got, want)
-			}
-		})
+		r := parseOSRelease(open(t, "testdata/os-release/"+tt.file))
+		got := []string{r["PRETTY_NAME"], r["ID"], r["VERSION_ID"], r["NAME"]}
+		if want := []string{tt.pretty, tt.id, tt.versionID, tt.name}; !slices.Equal(got, want) {
+			t.Errorf("%s: got %q, want %q", tt.file, got, want)
+		}
 	}
 }
 
@@ -70,24 +67,15 @@ func TestDefaultInterface(t *testing.T) {
 	}
 }
 
-func TestListenInodes(t *testing.T) {
-	// Port 8484 (0x2124) has a listening socket and an established one.
-	got := listenInodes(open(t, "testdata/proc/net-tcp"), 8484)
-	if !slices.Equal(got, []string{"44817"}) {
-		t.Errorf("got %v, want [44817]", got)
-	}
-}
-
 func TestBlockKind(t *testing.T) {
 	sys := t.TempDir()
 	devices := filepath.Join(sys, "devices")
-	mkdir := func(path string) {
-		if err := os.MkdirAll(filepath.Join(devices, path), 0o755); err != nil {
+	write := func(path, value string) {
+		path = filepath.Join(devices, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-	}
-	write := func(path, value string) {
-		if err := os.WriteFile(filepath.Join(devices, path), []byte(value+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(value+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -101,21 +89,19 @@ func TestBlockKind(t *testing.T) {
 	}
 
 	// An NVMe partition.
-	mkdir("nvme0n1/nvme0n1p1")
 	write("nvme0n1/nvme0n1p1/partition", "1")
 	link("dev/block", "259:1", "nvme0n1/nvme0n1p1")
 
 	// LVM on a partition of a SATA SSD.
-	mkdir("sda/sda2")
-	mkdir("sda/queue")
 	write("sda/queue/rotational", "0")
 	write("sda/sda2/partition", "2")
 	link("class/block", "sda2", "sda/sda2")
-	mkdir("dm-0/slaves/sda2")
+	if err := os.MkdirAll(filepath.Join(devices, "dm-0/slaves/sda2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	link("dev/block", "253:0", "dm-0")
 
 	// A rotational disk.
-	mkdir("sdb/queue")
 	write("sdb/queue/rotational", "1")
 	link("dev/block", "8:16", "sdb")
 
@@ -137,24 +123,46 @@ func TestBlockKind(t *testing.T) {
 	}
 }
 
-func TestParseIptables(t *testing.T) {
+func TestAtLeast(t *testing.T) {
 	tests := []struct {
-		file       string
-		policy     string
-		dockerUser bool
+		have, want string
+		ok         bool
 	}{
-		{"docker", "DROP", true},
-		{"ufw", "DROP", false},
-		{"plain", "ACCEPT", false},
+		{"29.5.0", "29.5", true},
+		{"29.10.1", "29.5", true}, // numbers, not text
+		{"28.5.2", "29.5", false},
+		{"30.0.0", "29.5", true},
+		{"0.7.0", "0.7.1", false},
+		{"0.7.1", "0.7.1", true},
+		{"0.7.1-0.linux", "0.7.1", true},
+		{"0.10.0", "0.7.1", true},
+		{"0.6.7+dev", "0.7.1", false},
+		{"v1.13.1", "1.13", true},
+		{"6.8.0-48-generic", "5.12", true},
+		{"5.4.0-200-generic", "5.12", false},
+		{"", "0.7.1", false},
+		{"unknown", "0.7.1", false},
+		{"29", "29.5", false}, // a major number alone is not a version
 	}
 	for _, tt := range tests {
-		b, err := os.ReadFile("testdata/iptables/" + tt.file)
+		if got := atLeast(tt.have, tt.want); got != tt.ok {
+			t.Errorf("atLeast(%q, %q) = %v, want %v", tt.have, tt.want, got, tt.ok)
+		}
+	}
+}
+
+func TestFirstVersion(t *testing.T) {
+	for file, want := range map[string]string{
+		"firecracker": "1.13.1",
+		"jailer":      "1.13.1",
+		"sysbox-runc": "0.7.1",
+	} {
+		b, err := os.ReadFile("testdata/tools/" + file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		policy, dockerUser := parseIptables(string(b))
-		if policy != tt.policy || dockerUser != tt.dockerUser {
-			t.Errorf("%s: got %q %v, want %q %v", tt.file, policy, dockerUser, tt.policy, tt.dockerUser)
+		if got := firstVersion(string(b)); got != want {
+			t.Errorf("%s: got %q, want %q", file, got, want)
 		}
 	}
 }

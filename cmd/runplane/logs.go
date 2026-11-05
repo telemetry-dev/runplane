@@ -55,7 +55,8 @@ func (l logs) JobLog(ctx context.Context, jobID string, step int, follow bool) (
 		return f, false, nil
 	}
 	if job.SandboxID != "" {
-		if b, err := l.st.GetSandbox(ctx, job.SandboxID); err == nil && !b.State.Done() {
+		// sandboxLog fails for a sandbox that stopped.
+		if b, err := l.st.GetSandbox(ctx, job.SandboxID); err == nil {
 			if rc, err := l.sandboxLog(ctx, b, follow); err == nil {
 				return filterLines(rc, diagLines), true, nil
 			}

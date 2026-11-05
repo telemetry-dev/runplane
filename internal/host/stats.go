@@ -2,6 +2,7 @@ package host
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -29,15 +30,11 @@ type Sampler struct {
 // sample comes after one interval, because CPU use is the difference of two
 // readings. Run returns nil when ctx ends and an error if a reading fails.
 func (s Sampler) Run(ctx context.Context, fn func(Stats)) error {
-	interval := s.Interval
-	if interval <= 0 {
-		interval = 10 * time.Second
-	}
 	prev, err := readCPU()
 	if err != nil {
 		return err
 	}
-	t := time.NewTicker(interval)
+	t := time.NewTicker(cmp.Or(s.Interval, 10*time.Second))
 	defer t.Stop()
 	for {
 		select {

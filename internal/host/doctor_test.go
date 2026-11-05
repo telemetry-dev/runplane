@@ -28,11 +28,6 @@ func iptablesFixture(t *testing.T, name string) string {
 	return string(b)
 }
 
-// forwardAccept is the iptables of a Docker host with the FORWARD policy ACCEPT.
-func forwardAccept(t *testing.T) string {
-	return strings.Replace(iptablesFixture(t, "docker"), "-P FORWARD DROP", "-P FORWARD ACCEPT", 1)
-}
-
 // healthy returns the scan of a good host for mode.
 func healthy(t *testing.T, mode sandbox.Mode) scan {
 	s := scan{
@@ -44,6 +39,8 @@ func healthy(t *testing.T, mode sandbox.Mode) scan {
 			DockerVersion: "29.5.1", DockerFirewall: "iptables",
 			SysboxVersion: "0.7.1", SysboxRuntime: true,
 		},
+		mode:        mode,
+		opts:        Options{Unit: "runplane", GuestKernel: "/var/lib/runplane/kernel/vmlinux"},
 		root:        true,
 		clockSynced: true,
 		skew:        300 * time.Millisecond,
@@ -63,28 +60,9 @@ func healthy(t *testing.T, mode sandbox.Mode) scan {
 	return s
 }
 
-func find(checks []Check, id string) (Check, bool) {
-	for _, c := range checks {
-		if c.ID == id {
-			return c, true
-		}
-	}
-	return Check{}, false
-}
-
-func TestHealthyHostPasses(t *testing.T) {
-	for _, mode := range []sandbox.Mode{sandbox.ModeContainer, sandbox.ModeVM, sandbox.ModeDev} {
-		checks := healthy(t, mode).checks(mode, Options{Unit: "runplane", GuestKernel: "/var/lib/runplane/kernel/vmlinux"})
-		for _, c := range checks {
-			if c.Status != StatusOK {
-				t.Errorf("%s: %s is %s: %s", mode, c.ID, c.Status, c.Detail)
-			}
-		}
-	}
-}
-
-// The dashboard and the command show the checks in this order.
-func TestChecksForMode(t *testing.T) {
+// A healthy host passes all checks. The dashboard and the command show the
+// checks in this order.
+func TestHealthyHost(t *testing.T) {
 	tests := []struct {
 		mode sandbox.Mode
 		ids  []string
@@ -95,8 +73,11 @@ func TestChecksForMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		var ids []string
-		for _, c := range healthy(t, tt.mode).checks(tt.mode, Options{}) {
+		for _, c := range healthy(t, tt.mode).checks() {
 			ids = append(ids, c.ID)
+			if c.Status != StatusOK {
+				t.Errorf("%s: %s is %s: %s", tt.mode, c.ID, c.Status, c.Detail)
+			}
 		}
 		if !slices.Equal(ids, tt.ids) {
 			t.Errorf("%s: checks %v, want %v", tt.mode, ids, tt.ids)
@@ -111,97 +92,100 @@ func TestDoctorStatus(t *testing.T) {
 		dev       = sandbox.ModeDev
 	)
 	inUse := &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("bind", syscall.EADDRINUSE)}
+	// forwardAccept is the iptables of a Docker host with the FORWARD policy ACCEPT.
+	forwardAccept := strings.Replace(iptablesFixture(t, "docker"), "-P FORWARD DROP", "-P FORWARD ACCEPT", 1)
 	tests := []struct {
 		name   string
 		mode   sandbox.Mode
 		change func(*scan)
-		opts   Options
 		id     string
 		want   Status
 	}{
-		{"debian", container, func(s *scan) { s.OSID, s.OSVersion = "debian", "12" }, Options{}, "os", StatusWarn},
-		{"debian in vm mode", vm, func(s *scan) { s.OSID, s.OSVersion = "debian", "12" }, Options{}, "os", StatusOK},
-		{"kernel 5.4", container, func(s *scan) { s.Kernel = "5.4.0-200-generic" }, Options{}, "kernel", StatusFail},
-		{"kernel 5.10 needs shiftfs", container, func(s *scan) { s.Kernel = "5.10.0-30-amd64" }, Options{}, "kernel", StatusWarn},
-		{"kernel 5.15", container, func(s *scan) { s.Kernel = "5.15.0-1060-azure" }, Options{}, "kernel", StatusOK},
-		{"kernel 5.4 for firecracker", vm, func(s *scan) { s.Kernel = "5.4.0-200-generic" }, Options{}, "kernel", StatusFail},
-		{"kernel 5.10 for firecracker", vm, func(s *scan) { s.Kernel = "5.10.0-30-amd64" }, Options{}, "kernel", StatusOK},
-		{"cgroup v1", container, func(s *scan) { s.CgroupV2 = false }, Options{}, "cgroup", StatusFail},
-		{"cgroup v1 in vm mode", vm, func(s *scan) { s.CgroupV2 = false }, Options{}, "cgroup", StatusFail},
+		{"debian", container, func(s *scan) { s.OSID, s.OSVersion = "debian", "12" }, "os", StatusWarn},
+		{"debian in vm mode", vm, func(s *scan) { s.OSID, s.OSVersion = "debian", "12" }, "os", StatusOK},
+		{"kernel 5.4", container, func(s *scan) { s.Kernel = "5.4.0-200-generic" }, "kernel", StatusFail},
+		{"kernel 5.10 needs shiftfs", container, func(s *scan) { s.Kernel = "5.10.0-30-amd64" }, "kernel", StatusWarn},
+		{"kernel 5.15", container, func(s *scan) { s.Kernel = "5.15.0-1060-azure" }, "kernel", StatusOK},
+		{"kernel 5.4 for firecracker", vm, func(s *scan) { s.Kernel = "5.4.0-200-generic" }, "kernel", StatusFail},
+		{"kernel 5.10 for firecracker", vm, func(s *scan) { s.Kernel = "5.10.0-30-amd64" }, "kernel", StatusOK},
+		{"cgroup v1", container, func(s *scan) { s.CgroupV2 = false }, "cgroup", StatusFail},
+		{"cgroup v1 in vm mode", vm, func(s *scan) { s.CgroupV2 = false }, "cgroup", StatusFail},
 
-		{"no kvm in container mode", container, func(s *scan) { s.kvmErr = fs.ErrNotExist }, Options{}, "kvm", StatusOK},
-		{"no kvm device", vm, func(s *scan) { s.KVM, s.CPUVirt, s.kvmErr = false, false, fs.ErrNotExist }, Options{}, "kvm", StatusFail},
-		{"kvm module not loaded", vm, func(s *scan) { s.KVM, s.kvmErr = false, fs.ErrNotExist }, Options{}, "kvm", StatusFail},
-		{"kvm without root", vm, func(s *scan) { s.KVM, s.kvmErr, s.root = false, fs.ErrPermission, false }, Options{}, "kvm", StatusWarn},
-		{"kvm denied to root", vm, func(s *scan) { s.KVM, s.kvmErr = false, fs.ErrPermission }, Options{}, "kvm", StatusFail},
-		{"nested kvm", vm, func(s *scan) { s.Virtual = true }, Options{}, "kvm", StatusOK},
-		{"nested kvm on ovhcloud", vm, func(s *scan) { s.Virtual, s.Provider = true, providerOVH }, Options{}, "kvm", StatusWarn},
+		{"no kvm in container mode", container, func(s *scan) { s.kvmErr = fs.ErrNotExist }, "kvm", StatusOK},
+		{"no kvm device", vm, func(s *scan) { s.KVM, s.CPUVirt, s.kvmErr = false, false, fs.ErrNotExist }, "kvm", StatusFail},
+		{"kvm module not loaded", vm, func(s *scan) { s.KVM, s.kvmErr = false, fs.ErrNotExist }, "kvm", StatusFail},
+		{"kvm without root", vm, func(s *scan) { s.KVM, s.kvmErr, s.root = false, fs.ErrPermission, false }, "kvm", StatusWarn},
+		{"kvm denied to root", vm, func(s *scan) { s.KVM, s.kvmErr = false, fs.ErrPermission }, "kvm", StatusFail},
+		{"nested kvm", vm, func(s *scan) { s.Virtual = true }, "kvm", StatusOK},
+		{"nested kvm on ovhcloud", vm, func(s *scan) { s.Virtual, s.Provider = true, providerOVH }, "kvm", StatusWarn},
 
-		{"no nftables as root", container, func(s *scan) { s.NFTables = false }, Options{}, "nftables", StatusFail},
-		{"no nftables without root", container, func(s *scan) { s.NFTables, s.root = false, false }, Options{}, "nftables", StatusWarn},
-		{"no ip forwarding", vm, func(s *scan) { s.IPForward = false }, Options{}, "ip_forward", StatusFail},
+		{"no nftables as root", container, func(s *scan) { s.NFTables = false }, "nftables", StatusFail},
+		{"no nftables without root", container, func(s *scan) { s.NFTables, s.root = false, false }, "nftables", StatusWarn},
+		{"no ip forwarding", vm, func(s *scan) { s.IPForward = false }, "ip_forward", StatusFail},
 
-		{"disk below 15%", container, func(s *scan) { s.FreeDiskBytes = 28e9 }, Options{}, "disk", StatusFail},
-		{"disk below the setting", container, func(s *scan) { s.FreeDiskBytes = 50e9 }, Options{MinFreeDiskPercent: 30}, "disk", StatusFail},
-		{"disk above the setting but small", container, func(s *scan) { s.DiskBytes, s.FreeDiskBytes = 80e9, 18e9 }, Options{}, "disk", StatusWarn},
-		{"disk unreadable", dev, func(s *scan) { s.DiskBytes, s.resourcesErr = 0, errors.New("statfs: no such file") }, Options{}, "disk", StatusFail},
+		{"disk below 15%", container, func(s *scan) { s.FreeDiskBytes = 28e9 }, "disk", StatusFail},
+		{"disk below the setting", container, func(s *scan) { s.FreeDiskBytes, s.opts.MinFreeDiskPercent = 50e9, 30 }, "disk", StatusFail},
+		{"disk above the setting but small", container, func(s *scan) { s.DiskBytes, s.FreeDiskBytes = 80e9, 18e9 }, "disk", StatusWarn},
+		{"disk unreadable", dev, func(s *scan) { s.DiskBytes, s.resourcesErr = 0, errors.New("statfs: no such file") }, "disk", StatusFail},
 
-		{"docker snap", container, func(s *scan) { s.DockerSnap = true }, Options{}, "docker", StatusFail},
-		{"docker snap in dev mode", dev, func(s *scan) { s.DockerSnap = true }, Options{}, "docker", StatusFail},
-		{"docker down", container, func(s *scan) { s.DockerVersion, s.dockerErr = "", errors.New("connection refused") }, Options{}, "docker", StatusFail},
-		{"docker socket without root", container, func(s *scan) { s.DockerVersion, s.root = "", false }, Options{}, "docker", StatusWarn},
-		{"no docker in vm mode", vm, func(s *scan) { s.DockerVersion = "" }, Options{}, "docker", StatusOK},
+		{"docker snap", container, func(s *scan) { s.DockerSnap = true }, "docker", StatusFail},
+		{"docker snap in dev mode", dev, func(s *scan) { s.DockerSnap = true }, "docker", StatusFail},
+		{"docker down", container, func(s *scan) { s.DockerVersion, s.dockerErr = "", errors.New("connection refused") }, "docker", StatusFail},
+		{"docker socket without root", container, func(s *scan) { s.DockerVersion, s.root = "", false }, "docker", StatusWarn},
+		{"no docker in vm mode", vm, func(s *scan) { s.DockerVersion = "" }, "docker", StatusOK},
 
-		{"no sysbox", container, func(s *scan) { s.SysboxVersion = "" }, Options{}, "sysbox", StatusFail},
-		{"sysbox 0.7.0 with docker 29.5", container, func(s *scan) { s.SysboxVersion = "0.7.0" }, Options{}, "sysbox", StatusFail},
-		{"sysbox 0.7.0 with docker 29.4", container, func(s *scan) { s.SysboxVersion, s.DockerVersion = "0.7.0", "29.4.2" }, Options{}, "sysbox", StatusWarn},
-		{"sysbox 0.10.0", container, func(s *scan) { s.SysboxVersion = "0.10.0" }, Options{}, "sysbox", StatusOK},
-		{"sysbox runtime missing", container, func(s *scan) { s.SysboxRuntime = false }, Options{}, "sysbox", StatusFail},
-		{"sysbox service stopped", container, func(s *scan) { s.sysboxUnit = "inactive" }, Options{}, "sysbox", StatusFail},
+		{"no sysbox", container, func(s *scan) { s.SysboxVersion = "" }, "sysbox", StatusFail},
+		{"sysbox 0.7.0 with docker 29.5", container, func(s *scan) { s.SysboxVersion = "0.7.0" }, "sysbox", StatusFail},
+		{"sysbox 0.7.0 with docker 29.4", container, func(s *scan) { s.SysboxVersion, s.DockerVersion = "0.7.0", "29.4.2" }, "sysbox", StatusWarn},
+		{"sysbox 0.10.0", container, func(s *scan) { s.SysboxVersion = "0.10.0" }, "sysbox", StatusOK},
+		{"sysbox runtime missing", container, func(s *scan) { s.SysboxRuntime = false }, "sysbox", StatusFail},
+		{"sysbox service stopped", container, func(s *scan) { s.sysboxUnit = "inactive" }, "sysbox", StatusFail},
 
-		{"firecracker missing", vm, func(s *scan) { s.FirecrackerVersion = "" }, Options{}, "firecracker", StatusFail},
-		{"jailer missing", vm, func(s *scan) { s.JailerVersion = "" }, Options{}, "firecracker", StatusFail},
-		{"jailer from another release", vm, func(s *scan) { s.JailerVersion = "1.12.0" }, Options{}, "firecracker", StatusFail},
-		{"guest kernel missing", vm, func(s *scan) { s.guestKernelErr = fs.ErrNotExist }, Options{}, "guest_kernel", StatusFail},
+		{"firecracker missing", vm, func(s *scan) { s.FirecrackerVersion = "" }, "firecracker", StatusFail},
+		{"jailer missing", vm, func(s *scan) { s.JailerVersion = "" }, "firecracker", StatusFail},
+		{"jailer from another release", vm, func(s *scan) { s.JailerVersion = "1.12.0" }, "firecracker", StatusFail},
+		{"guest kernel missing", vm, func(s *scan) { s.guestKernelErr = fs.ErrNotExist }, "guest_kernel", StatusFail},
 
-		{"docker nftables backend", container, func(s *scan) { s.DockerFirewall = "nftables" }, Options{}, "firewall", StatusFail},
-		{"no DOCKER-USER chain", container, func(s *scan) { s.iptables = iptablesFixture(t, "plain") }, Options{}, "firewall", StatusFail},
-		{"firewall without root", container, func(s *scan) { s.iptables, s.iptablesErr = "", errNeedRoot }, Options{}, "firewall", StatusWarn},
-		{"ufw drops by default, runplane accepts its VMs", vm, func(s *scan) { s.iptables = iptablesFixture(t, "ufw") }, Options{}, "firewall", StatusOK},
-		{"nftables input chain drops in vm mode", vm, func(s *scan) { s.nftDrops = []string{"inet filter input"} }, Options{}, "firewall", StatusFail},
-		{"nftables forward chain drops in container mode", container, func(s *scan) { s.nftDrops = []string{"inet filter forward"} }, Options{}, "firewall", StatusFail},
-		{"docker drops forwarded VM traffic", vm, func(s *scan) { s.iptables = iptablesFixture(t, "docker") }, Options{}, "firewall", StatusOK},
+		{"docker nftables backend", container, func(s *scan) { s.DockerFirewall = "nftables" }, "firewall", StatusFail},
+		{"no DOCKER-USER chain", container, func(s *scan) { s.iptables = iptablesFixture(t, "plain") }, "firewall", StatusFail},
+		{"firewall without root", container, func(s *scan) { s.iptables, s.iptablesErr = "", errNeedRoot }, "firewall", StatusWarn},
+		{"ufw drops by default, runplane accepts its VMs", vm, func(s *scan) { s.iptables = iptablesFixture(t, "ufw") }, "firewall", StatusOK},
+		{"nftables input chain drops in vm mode", vm, func(s *scan) { s.nftDrops = []string{"inet filter input"} }, "firewall", StatusFail},
+		{"nftables forward chain drops in container mode", container, func(s *scan) { s.nftDrops = []string{"inet filter forward"} }, "firewall", StatusFail},
+		{"docker drops forwarded VM traffic", vm, func(s *scan) { s.iptables = iptablesFixture(t, "docker") }, "firewall", StatusOK},
 		// Forwarding came on before Docker started, as from a sysctl file.
-		{"docker kept the FORWARD policy ACCEPT", container, func(s *scan) { s.iptables = forwardAccept(t) }, Options{}, "firewall", StatusWarn},
-		{"docker kept the FORWARD policy ACCEPT in vm mode", vm, func(s *scan) { s.iptables, s.DockerVersion = forwardAccept(t), "29.5.1" }, Options{}, "firewall", StatusWarn},
-		{"FORWARD policy ACCEPT without forwarding", container, func(s *scan) { s.iptables, s.IPForward = forwardAccept(t), false }, Options{}, "firewall", StatusOK},
-		{"no iptables in vm mode", vm, func(s *scan) { s.iptables, s.iptablesErr = "", fmt.Errorf("list: %w", exec.ErrNotFound) }, Options{}, "firewall", StatusOK},
+		{"docker kept the FORWARD policy ACCEPT", container, func(s *scan) { s.iptables = forwardAccept }, "firewall", StatusWarn},
+		{"docker kept the FORWARD policy ACCEPT in vm mode", vm, func(s *scan) { s.iptables, s.DockerVersion = forwardAccept, "29.5.1" }, "firewall", StatusWarn},
+		{"FORWARD policy ACCEPT without forwarding", container, func(s *scan) { s.iptables, s.IPForward = forwardAccept, false }, "firewall", StatusOK},
+		{"no iptables in vm mode", vm, func(s *scan) { s.iptables, s.iptablesErr = "", fmt.Errorf("list: %w", exec.ErrNotFound) }, "firewall", StatusOK},
 
-		{"clock 2 minutes ahead", container, func(s *scan) { s.skew = 2 * time.Minute }, Options{}, "clock", StatusFail},
-		{"clock 90 s behind", container, func(s *scan) { s.skew = -90 * time.Second }, Options{}, "clock", StatusFail},
-		{"clock 10 s ahead", container, func(s *scan) { s.skew = 10 * time.Second }, Options{}, "clock", StatusWarn},
-		{"clock not synchronized", container, func(s *scan) { s.clockSynced = false }, Options{}, "clock", StatusWarn},
-		{"clock state unknown, skew small", dev, func(s *scan) { s.clockErr = errors.New("no adjtimex") }, Options{}, "clock", StatusOK},
-		{"clock unknown", dev, func(s *scan) { s.clockErr, s.skewErr = errors.New("no adjtimex"), errors.New("offline") }, Options{}, "clock", StatusWarn},
+		{"clock 2 minutes ahead", container, func(s *scan) { s.skew = 2 * time.Minute }, "clock", StatusFail},
+		{"clock 90 s behind", container, func(s *scan) { s.skew = -90 * time.Second }, "clock", StatusFail},
+		{"clock 10 s ahead", container, func(s *scan) { s.skew = 10 * time.Second }, "clock", StatusWarn},
+		{"clock not synchronized", container, func(s *scan) { s.clockSynced = false }, "clock", StatusWarn},
+		{"clock state unknown, skew small", dev, func(s *scan) { s.clockErr = errors.New("no adjtimex") }, "clock", StatusOK},
+		{"clock unknown", dev, func(s *scan) { s.clockErr, s.skewErr = errors.New("no adjtimex"), errors.New("offline") }, "clock", StatusWarn},
 
-		{"no systemd in vm mode", vm, func(s *scan) { s.systemd = false }, Options{}, "systemd", StatusFail},
-		{"no systemd in container mode", container, func(s *scan) { s.systemd = false }, Options{}, "systemd", StatusWarn},
-		{"unit stopped", container, func(s *scan) { s.unitState = "inactive" }, Options{Unit: "runplane"}, "systemd", StatusWarn},
+		{"no systemd in vm mode", vm, func(s *scan) { s.systemd = false }, "systemd", StatusFail},
+		{"no systemd in container mode", container, func(s *scan) { s.systemd = false }, "systemd", StatusWarn},
+		{"unit stopped", container, func(s *scan) { s.unitState = "inactive" }, "systemd", StatusWarn},
 
-		{"port used by nginx", container, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse, pid: 812, name: "nginx"} }, Options{}, "port_8484", StatusFail},
-		{"port used by runplane", container, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse, pid: 900, name: "runplane"} }, Options{}, "port_8484", StatusOK},
-		{"port used by this process", dev, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse, pid: 901, name: "main", self: true} }, Options{}, "port_8484", StatusOK},
-		{"port used, owner hidden", container, func(s *scan) { s.ports[0], s.root = portScan{addr: ":8484", err: inUse}, false }, Options{}, "port_8484", StatusWarn},
-		{"port used, owner unknown as root", container, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse} }, Options{}, "port_8484", StatusFail},
+		{"port used by nginx", container, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse, pid: 812, name: "nginx"} }, "port_8484", StatusFail},
+		{"port used by runplane", container, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse, pid: 900, name: "runplane"} }, "port_8484", StatusOK},
+		{"port used by this process", dev, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse, pid: 901, name: "main", self: true} }, "port_8484", StatusOK},
+		{"port used, owner hidden", container, func(s *scan) { s.ports[0], s.root = portScan{addr: ":8484", err: inUse}, false }, "port_8484", StatusWarn},
+		{"port used, owner unknown as root", container, func(s *scan) { s.ports[0] = portScan{addr: ":8484", err: inUse} }, "port_8484", StatusFail},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := healthy(t, tt.mode)
 			tt.change(&s)
-			c, ok := find(s.checks(tt.mode, tt.opts), tt.id)
-			if !ok {
+			checks := s.checks()
+			i := slices.IndexFunc(checks, func(c Check) bool { return c.ID == tt.id })
+			if i < 0 {
 				t.Fatalf("no %s check", tt.id)
 			}
+			c := checks[i]
 			if c.Status != tt.want {
 				t.Errorf("%s is %s (%s), want %s", tt.id, c.Status, c.Detail, tt.want)
 			}
@@ -275,6 +259,19 @@ func TestDoctorOfARunningServerKnowsItsPorts(t *testing.T) {
 	}
 }
 
+func TestNTPOffset(t *testing.T) {
+	for _, serverAhead := range []time.Duration{30 * time.Second, -90 * time.Second, 0} {
+		skew, err := ntpOffset(t.Context(), fakeNTP(t, serverAhead))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// This clock is ahead when the server is behind.
+		if d := skew + serverAhead; d.Abs() > 50*time.Millisecond {
+			t.Errorf("server ahead %s: got skew %s", serverAhead, skew)
+		}
+	}
+}
+
 // fakeNTP answers each request with a clock that is offset from this one.
 func fakeNTP(t *testing.T, offset time.Duration) string {
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -304,19 +301,6 @@ func fakeNTP(t *testing.T, offset time.Duration) string {
 	return conn.LocalAddr().String()
 }
 
-func TestNTPOffset(t *testing.T) {
-	for _, serverAhead := range []time.Duration{30 * time.Second, -90 * time.Second, 0} {
-		skew, err := ntpOffset(t.Context(), fakeNTP(t, serverAhead))
-		if err != nil {
-			t.Fatal(err)
-		}
-		// This clock is ahead when the server is behind.
-		if d := skew + serverAhead; d.Abs() > 50*time.Millisecond {
-			t.Errorf("server ahead %s: got skew %s", serverAhead, skew)
-		}
-	}
-}
-
 func TestBaseImageSource(t *testing.T) {
 	const ref = "ghcr.io/acme/runplane/runner-ubuntu-24.04:latest"
 	denied := errors.New("GET https://ghcr.io/v2/acme/runplane/runner-ubuntu-24.04/manifests/latest: DENIED")
@@ -339,7 +323,7 @@ func TestBaseImageSource(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := healthy(t, tt.mode)
 			tt.change(&s)
-			c := s.baseImageCheck(tt.mode, ref, tt.pullErr)
+			c := s.baseImageCheck(ref, tt.pullErr)
 			if c.Status != tt.want || !strings.Contains(c.Detail, tt.detail) {
 				t.Errorf("%s: %q, want %s with %q", c.Status, c.Detail, tt.want, tt.detail)
 			}
@@ -347,5 +331,63 @@ func TestBaseImageSource(t *testing.T) {
 				t.Errorf("%s without a fix", c.Status)
 			}
 		})
+	}
+}
+
+func TestFormatDoctor(t *testing.T) {
+	tests := []struct {
+		checks []Check
+		want   string
+	}{
+		{[]Check{
+			{ID: "kvm", Name: "KVM", Status: StatusOK, Detail: "/dev/kvm opens read-write", Fix: "not shown", Command: "not shown"},
+			{ID: "clock", Name: "Time synchronization", Status: StatusWarn, Detail: "The kernel clock is not synchronized",
+				Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"},
+			{ID: "sysbox", Name: "Sysbox", Status: StatusFail, Detail: "Sysbox is not installed", Fix: "Install Sysbox"},
+		}, `✓ KVM                   /dev/kvm opens read-write
+! Time synchronization  The kernel clock is not synchronized
+                        Fix: Turn on time sync.
+                        Run: sudo timedatectl set-ntp true
+✗ Sysbox                Sysbox is not installed
+                        Fix: Install Sysbox
+
+1 failure, 1 warning.
+`},
+		{[]Check{{Name: "KVM", Status: StatusOK, Detail: "ok"}}, "✓ KVM  ok\n\nAll checks passed.\n"},
+	}
+	for _, tt := range tests {
+		var b strings.Builder
+		if err := FormatDoctor(&b, tt.checks); err != nil {
+			t.Fatal(err)
+		}
+		if b.String() != tt.want {
+			t.Errorf("got\n%s\nwant\n%s", b.String(), tt.want)
+		}
+	}
+}
+
+func TestParseIptables(t *testing.T) {
+	tests := []struct {
+		file       string
+		policy     string
+		dockerUser bool
+	}{
+		{"docker", "DROP", true},
+		{"ufw", "DROP", false},
+		{"plain", "ACCEPT", false},
+	}
+	for _, tt := range tests {
+		policy, dockerUser := parseIptables(iptablesFixture(t, tt.file))
+		if policy != tt.policy || dockerUser != tt.dockerUser {
+			t.Errorf("%s: got %q %v, want %q %v", tt.file, policy, dockerUser, tt.policy, tt.dockerUser)
+		}
+	}
+}
+
+func TestListenInodes(t *testing.T) {
+	// Port 8484 (0x2124) has a listening socket and an established one.
+	got := listenInodes(open(t, "testdata/proc/net-tcp"), 8484)
+	if !slices.Equal(got, []string{"44817"}) {
+		t.Errorf("got %v, want [44817]", got)
 	}
 }

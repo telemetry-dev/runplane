@@ -37,34 +37,25 @@ func TestParseEnvAndFlags(t *testing.T) {
 	}
 }
 
-func TestParseModes(t *testing.T) {
-	for _, mode := range []string{"container", "vm", "dev"} {
-		t.Run(mode, func(t *testing.T) {
-			t.Setenv("RUNPLANE_MODE", mode)
-			c, err := Parse(flag.NewFlagSet("serve", flag.ContinueOnError), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(c.Mode) != mode {
-				t.Errorf("mode %q, want %q", c.Mode, mode)
-			}
-		})
-	}
-}
-
-func TestParseErrors(t *testing.T) {
-	for _, env := range [][2]string{
-		{"RUNPLANE_DEV", "yes please"},
-		{"RUNPLANE_SERVICE_PORT", "http"},
-		{"RUNPLANE_SERVICE_PORT", "70000"},
-		{"RUNPLANE_MODE", "kvm"},
+func TestParseValues(t *testing.T) {
+	for _, tt := range []struct {
+		name, value string
+		ok          bool
+	}{
+		{"RUNPLANE_MODE", "container", true},
+		{"RUNPLANE_MODE", "vm", true},
+		{"RUNPLANE_MODE", "dev", true},
+		{"RUNPLANE_MODE", "kvm", false},
+		{"RUNPLANE_DEV", "yes please", false},
+		{"RUNPLANE_SERVICE_PORT", "http", false},
+		{"RUNPLANE_SERVICE_PORT", "70000", false},
 	} {
-		t.Run(env[0]+"="+env[1], func(t *testing.T) {
-			t.Setenv(env[0], env[1])
+		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
+			t.Setenv(tt.name, tt.value)
 			fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 			fs.SetOutput(io.Discard)
-			if _, err := Parse(fs, nil); err == nil {
-				t.Fatal("no error")
+			if _, err := Parse(fs, nil); (err == nil) != tt.ok {
+				t.Errorf("err = %v, want ok %v", err, tt.ok)
 			}
 		})
 	}

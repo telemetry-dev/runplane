@@ -57,9 +57,10 @@ type Updater struct {
 	Kernel string
 }
 
-// New returns an Updater for this build.
-func New() *Updater {
-	return &Updater{Repo: version.Repo, Current: version.Version, PublicKey: PublicKey}
+// New returns an Updater for this build. kernel is the path of the guest
+// kernel of VM mode.
+func New(kernel string) *Updater {
+	return &Updater{Repo: version.Repo, Current: version.Version, PublicKey: PublicKey, Kernel: kernel}
 }
 
 // Status is the result of Check.
@@ -103,12 +104,13 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetaSize)).Decode(&rel); err != nil {
 		return Status{}, fmt.Errorf("check update: decode release: %w", err)
 	}
-	_, curOK := parse(u.Current)
-	_, relOK := parse(rel.TagName)
+	// Compare sorts a version that does not parse first, so it would give
+	// a development build an update.
+	_, release := parse(u.Current)
 	return Status{
 		Current:     u.Current,
 		Latest:      rel.TagName,
-		Available:   curOK && relOK && Compare(rel.TagName, u.Current) > 0,
+		Available:   release && Compare(rel.TagName, u.Current) > 0,
 		URL:         rel.HTMLURL,
 		Notes:       rel.Body,
 		PublishedAt: rel.PublishedAt,
@@ -147,8 +149,15 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 	if err != nil {
 		return err
 	}
-	kernelName := "vmlinux-" + kernelArch(runtime.GOARCH)
-	kernel := u.kernel()
+	// kernel/build.sh and install.sh name the kernel with the arch of uname -m.
+	kernelName := "vmlinux-" + runtime.GOARCH
+	if runtime.GOARCH == "amd64" {
+		kernelName = "vmlinux-x86_64"
+	}
+	var kernel string // empty when this server has no guest kernel
+	if _, err := os.Stat(u.Kernel); err == nil {
+		kernel = u.Kernel
+	}
 	if kernel != "" && hashes[kernelName] == "" {
 		return fmt.Errorf("update: SHA256SUMS has no entry for %s, the guest kernel of this server", kernelName)
 	}
@@ -184,26 +193,6 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 		return fmt.Errorf("update: replace binary: %w", err)
 	}
 	return nil
-}
-
-// kernel returns the guest kernel to replace, or "" if the server has none.
-func (u *Updater) kernel() string {
-	if u.Kernel == "" {
-		return ""
-	}
-	if _, err := os.Stat(u.Kernel); err != nil {
-		return ""
-	}
-	return u.Kernel
-}
-
-// kernelArch is the arch in the name of a guest kernel, as kernel/build.sh
-// and install.sh write it.
-func kernelArch(goarch string) string {
-	if goarch == "amd64" {
-		return "x86_64"
-	}
-	return goarch
 }
 
 // fetch downloads url to a new file in dir and checks its SHA-256 against

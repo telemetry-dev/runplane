@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -61,11 +62,11 @@ type Resources struct {
 	FreeDiskBytes int64 `json:"free_disk_bytes"` // space available to programs, as df shows it
 }
 
-// Facts reads the facts of this server. dataDir selects the data disk. It
-// does not need to exist yet: Facts then measures its nearest parent.
-// Facts asks Docker, the Sysbox and Firecracker binaries, and the cloud
-// metadata service, so it takes some milliseconds. The only error is a
-// failed reading of the memory or the disk; the other facts are then still set.
+// Facts reads the facts of this server. dataDir selects the data disk; if
+// it does not exist yet, Facts measures its nearest parent. Facts asks
+// Docker, the Sysbox and Firecracker binaries, and the cloud metadata
+// service, so it takes some milliseconds. It returns an error only when it
+// cannot read the memory or the disk, and then still sets the other facts.
 func Facts(ctx context.Context, dataDir string) (Info, error) {
 	info, n := gather(ctx, dataDir)
 	return info, n.resourcesErr
@@ -78,7 +79,7 @@ func ReadResources(dataDir string) (Resources, error) {
 }
 
 func readResources(dataDir string) (Resources, memInfo, error) {
-	total, free, err := diskSpace(existingParent(dataDir))
+	total, free, err := DiskSpace(dataDir)
 	if err != nil {
 		return Resources{}, memInfo{}, err
 	}
@@ -86,13 +87,14 @@ func readResources(dataDir string) (Resources, memInfo, error) {
 	if err != nil {
 		return Resources{}, memInfo{}, err
 	}
-	res := Resources{
-		VCPU:          runtime.NumCPU(),
-		MemoryMB:      int(mem.totalKB / 1024),
-		DiskBytes:     total,
-		FreeDiskBytes: free,
-	}
+	res := Resources{VCPU: runtime.NumCPU(), MemoryMB: int(mem.totalKB / 1024), DiskBytes: total, FreeDiskBytes: free}
 	return res, mem, nil
+}
+
+// DiskSpace returns the size and the free bytes of the file system that
+// holds path, or its nearest parent that exists.
+func DiskSpace(path string) (total, free int64, err error) {
+	return diskSpace(existingParent(path))
 }
 
 // Arch returns the runner name of the CPU architecture: "x64" or "arm64".
@@ -129,14 +131,11 @@ func gather(ctx context.Context, dataDir string) (Info, notes) {
 	info.IPForward = readTrimmed("/proc/sys/net/ipv4/ip_forward") == "1"
 	info.IPv4 = primaryIPv4()
 
-	d, err := readDocker(ctx)
-	n.dockerErr = err
-	info.DockerVersion = d.version
-	info.DockerFirewall = d.firewall
-	info.SysboxRuntime = d.sysbox
+	var sysboxPath string
+	sysboxPath, n.dockerErr = readDocker(ctx, &info)
 	// A snap install conflicts with Docker Engine even when it does not answer.
-	info.DockerSnap = d.snap || exists("/snap/docker")
-	info.SysboxVersion = toolVersion(ctx, cmp.Or(d.sysboxPath, "sysbox-runc"))
+	info.DockerSnap = info.DockerSnap || exists("/snap/docker")
+	info.SysboxVersion = toolVersion(ctx, cmp.Or(sysboxPath, "sysbox-runc"))
 	info.FirecrackerVersion = toolVersion(ctx, "firecracker")
 	info.JailerVersion = toolVersion(ctx, "jailer")
 
@@ -144,38 +143,29 @@ func gather(ctx context.Context, dataDir string) (Info, notes) {
 	return info, n
 }
 
-type dockerFacts struct {
-	version    string
-	firewall   string
-	snap       bool
-	sysbox     bool // Docker lists the sysbox-runc runtime
-	sysboxPath string
-}
-
-// readDocker asks the Docker Engine API at DOCKER_HOST or the default socket.
-func readDocker(ctx context.Context) (dockerFacts, error) {
+// readDocker sets the Docker facts of info from the Docker Engine API at
+// DOCKER_HOST or the default socket. It returns the path of the sysbox-runc
+// runtime that Docker lists.
+func readDocker(ctx context.Context, info *Info) (sysboxPath string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	c, err := client.New(client.FromEnv)
 	if err != nil {
-		return dockerFacts{}, fmt.Errorf("make docker client: %w", err)
+		return "", fmt.Errorf("make docker client: %w", err)
 	}
 	defer c.Close()
 	res, err := c.Info(ctx, client.InfoOptions{})
 	if err != nil {
-		return dockerFacts{}, fmt.Errorf("read docker info: %w", err)
+		return "", fmt.Errorf("read docker info: %w", err)
 	}
-	d := dockerFacts{
-		version: res.Info.ServerVersion,
-		snap:    strings.HasPrefix(res.Info.DockerRootDir, "/var/snap/"),
-	}
+	info.DockerVersion = res.Info.ServerVersion
+	info.DockerSnap = strings.HasPrefix(res.Info.DockerRootDir, "/var/snap/")
 	if fw := res.Info.FirewallBackend; fw != nil {
-		d.firewall = fw.Driver
+		info.DockerFirewall = fw.Driver
 	}
-	if rt, ok := res.Info.Runtimes["sysbox-runc"]; ok {
-		d.sysbox, d.sysboxPath = true, rt.Path
-	}
-	return d, nil
+	rt, ok := res.Info.Runtimes["sysbox-runc"]
+	info.SysboxRuntime = ok
+	return rt.Path, nil
 }
 
 // toolVersion runs "name --version" and returns the first version number in
@@ -210,10 +200,7 @@ func openKVM() (bool, error) {
 // cpuFlags returns the flags of the first CPU in /proc/cpuinfo. Only x86
 // kernels write a "flags" line.
 func cpuFlags() map[string]bool {
-	b, err := os.ReadFile("/proc/cpuinfo")
-	if err != nil {
-		return nil
-	}
+	b, _ := os.ReadFile("/proc/cpuinfo")
 	for line := range strings.Lines(string(b)) {
 		key, value, ok := strings.Cut(line, ":")
 		if !ok || strings.TrimSpace(key) != "flags" {
@@ -264,10 +251,7 @@ func parseMeminfo(r io.Reader) (memInfo, error) {
 	values := map[string]uint64{}
 	s := bufio.NewScanner(r)
 	for s.Scan() {
-		key, rest, ok := strings.Cut(s.Text(), ":")
-		if !ok {
-			continue
-		}
+		key, rest, _ := strings.Cut(s.Text(), ":")
 		fields := strings.Fields(rest)
 		if len(fields) == 0 {
 			continue
@@ -339,10 +323,7 @@ func primaryIPv4() string {
 	if err != nil {
 		return ""
 	}
-	addrs, err := ifi.Addrs()
-	if err != nil {
-		return ""
-	}
+	addrs, _ := ifi.Addrs()
 	for _, a := range addrs {
 		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && ipn.IP.IsGlobalUnicast() {
 			return ipn.IP.String()
@@ -374,21 +355,13 @@ func defaultInterface(r io.Reader) string {
 	return best
 }
 
-// DiskSpace returns the size and the free bytes of the file system that
-// holds path, or its nearest parent that exists.
-func DiskSpace(path string) (total, free int64, err error) {
-	return diskSpace(existingParent(path))
-}
-
 // existingParent returns path or its nearest parent that exists, so that a
 // check before the install still finds the disk.
 func existingParent(path string) string {
-	for {
-		if _, err := os.Stat(path); err == nil || path == filepath.Dir(path) {
-			return path
-		}
+	for !exists(path) && path != filepath.Dir(path) {
 		path = filepath.Dir(path)
 	}
+	return path
 }
 
 func exists(path string) bool {
@@ -397,9 +370,51 @@ func exists(path string) bool {
 }
 
 func readTrimmed(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
+	b, _ := os.ReadFile(path)
 	return strings.TrimSpace(string(b))
+}
+
+// version is a major.minor.patch number. Missing parts are 0.
+type version [3]int
+
+// parseVersion reads the leading numbers of "v1.13.1", "29.5.0-rc.1", or
+// "6.8.0-48-generic". It needs at least a major and a minor number.
+func parseVersion(s string) (version, bool) {
+	s = strings.TrimPrefix(s, "v")
+	if i := strings.IndexFunc(s, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(strings.TrimSuffix(s, "."), ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return version{}, false
+	}
+	var v version
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return version{}, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
+func (v version) less(w version) bool { return slices.Compare(v[:], w[:]) < 0 }
+
+// atLeast reports if have is a version and not older than want.
+func atLeast(have, want string) bool {
+	h, ok := parseVersion(have)
+	w, _ := parseVersion(want)
+	return ok && !h.less(w)
+}
+
+// firstVersion returns the first version number in the output of a
+// "--version" flag, without a leading "v".
+func firstVersion(out string) string {
+	for _, word := range strings.Fields(out) {
+		if _, ok := parseVersion(word); ok {
+			return strings.TrimPrefix(word, "v")
+		}
+	}
+	return ""
 }

@@ -14,24 +14,19 @@ func (c Config) AgentConfigPath() string { return filepath.Join(c.ConfigDir, "ag
 // the debug shell of every sandbox through the SSH gateway.
 func (c Config) AdminKeysPath() string { return filepath.Join(c.ConfigDir, "authorized_keys") }
 
-func (c Config) DBPath() string       { return filepath.Join(c.DataDir, "runplane.db") }
-func (c Config) SandboxesDir() string { return filepath.Join(c.DataDir, "sandboxes") }
-func (c Config) SandboxDir(id string) string {
-	return filepath.Join(c.SandboxesDir(), id)
-}
-func (c Config) ImagesDir() string  { return filepath.Join(c.DataDir, "images") }
-func (c Config) RunnersDir() string { return filepath.Join(c.DataDir, "runners") }
-
-func (c Config) CacheDir() string  { return filepath.Join(c.DataDir, "cache") }
-func (c Config) MirrorDir() string { return filepath.Join(c.DataDir, "mirror") }
-func (c Config) LogsDir() string   { return filepath.Join(c.DataDir, "logs") }
+func (c Config) DBPath() string              { return filepath.Join(c.DataDir, "runplane.db") }
+func (c Config) SandboxesDir() string        { return filepath.Join(c.DataDir, "sandboxes") }
+func (c Config) SandboxDir(id string) string { return filepath.Join(c.SandboxesDir(), id) }
+func (c Config) ImagesDir() string           { return filepath.Join(c.DataDir, "images") }
+func (c Config) RunnersDir() string          { return filepath.Join(c.DataDir, "runners") }
+func (c Config) CacheDir() string            { return filepath.Join(c.DataDir, "cache") }
+func (c Config) MirrorDir() string           { return filepath.Join(c.DataDir, "mirror") }
+func (c Config) LogsDir() string             { return filepath.Join(c.DataDir, "logs") }
+func (c Config) BackupsDir() string          { return filepath.Join(c.DataDir, "backups") }
+func (c Config) TLSDir() string              { return filepath.Join(c.DataDir, "tls") }
 
 // JobLogPath is the stored GitHub log of a completed job.
-func (c Config) JobLogPath(jobID string) string {
-	return filepath.Join(c.LogsDir(), jobID+".log")
-}
-func (c Config) BackupsDir() string { return filepath.Join(c.DataDir, "backups") }
-func (c Config) TLSDir() string     { return filepath.Join(c.DataDir, "tls") }
+func (c Config) JobLogPath(jobID string) string { return filepath.Join(c.LogsDir(), jobID+".log") }
 
 // ScratchTemplatesDir holds the empty ext4 templates of the scratch disks.
 func (c Config) ScratchTemplatesDir() string { return filepath.Join(c.DataDir, "scratch-templates") }

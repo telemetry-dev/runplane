@@ -2,7 +2,6 @@ package host
 
 import (
 	"context"
-	"math"
 	"runtime"
 	"strings"
 	"testing"
@@ -32,22 +31,8 @@ func TestCPUPercent(t *testing.T) {
 	if got := cpuPercent(after, after); got != 0 {
 		t.Errorf("no time passed: got %v, want 0", got)
 	}
-}
-
-func TestParseStatRejectsOtherFirstLine(t *testing.T) {
 	if _, err := parseStat(strings.NewReader("intr 1 2 3\n")); err == nil {
-		t.Error("want an error")
-	}
-}
-
-func TestMemoryPercent(t *testing.T) {
-	m, err := parseMeminfo(open(t, "testdata/proc/meminfo"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// (16422380 - 13449000) / 16422380 = 18.106 %
-	if got := percent(m.totalKB-m.availableKB, m.totalKB); math.Abs(got-18.106) > 0.001 {
-		t.Errorf("got %v, want 18.106", got)
+		t.Error("/proc/stat without a cpu line: want an error")
 	}
 }
 

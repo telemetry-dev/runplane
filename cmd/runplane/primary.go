@@ -6,34 +6,167 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/api"
+	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/cachestore"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/github"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/scheduler"
+	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/shell"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/tlsutil"
+	"github.com/runplane/runplane/internal/update"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // errRestart ends serve after an update, so that systemd starts the new binary.
 var errRestart = errors.New("restart")
+
+func serve(ctx context.Context, args []string) error {
+	cfg, err := config.Parse(flag.NewFlagSet("serve", flag.ContinueOnError), args)
+	if err != nil {
+		return err
+	}
+	// The services end serve with a cause: errRestart after an update, or the
+	// error of a failed service.
+	ctx, end := context.WithCancelCause(ctx)
+	defer end(nil)
+	log := newLogger(ctx, cfg)
+	if err := cfg.EnsureDirs(); err != nil {
+		return err
+	}
+	st, err := store.Open(cfg.DBPath())
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	key, err := secret.LoadOrCreate(cfg.SecretKeyPath())
+	if err != nil {
+		return err
+	}
+	box, err := secret.NewBox(key)
+	if err != nil {
+		return err
+	}
+	mode, err := initMode(ctx, st, cfg)
+	if err != nil {
+		return err
+	}
+	if err := checkMode(mode, cfg.DevInsecure); err != nil {
+		return err
+	}
+	if cfg.Mode != "" && cfg.Mode != mode {
+		log.Warn("the mode in the dashboard settings overrides RUNPLANE_MODE", "settings", mode, "env", cfg.Mode)
+	}
+
+	deps := api.Deps{Store: st, Auth: auth.NewService(st, subkey(key, "runplane device tokens")), Bus: &events.Bus{}, Box: box, Log: log, Config: cfg}
+	p, err := startPrimary(&deps, key, mode, end)
+	if err != nil {
+		return fmt.Errorf("start services: %w", err)
+	}
+	defer p.stop()
+	if err := logSetupCode(ctx, st, deps.Auth, log); err != nil {
+		return err
+	}
+
+	handler := api.New(deps)
+	p.handler = handler
+	if settings := *p.settings.Load(); settings.Domain != "" {
+		p.serveHTTPS(settings)
+	}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+	srv.RegisterOnShutdown(handler.Close)
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("listen for the dashboard: %w", err)
+	}
+	log.Info("runplane started", "version", version.String(), "listen", ln.Addr().String(), "mode", mode, "data", cfg.DataDir)
+
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	select {
+	case err := <-errc:
+		return fmt.Errorf("serve http: %w", err)
+	case <-ctx.Done():
+	}
+	log.Info("runplane stops")
+	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdown); err != nil {
+		log.Warn("stop http server", "err", err)
+	}
+	if err := context.Cause(ctx); !errors.Is(err, context.Canceled) && !errors.Is(err, errRestart) {
+		return err
+	}
+	return nil
+}
+
+// initMode returns the sandbox mode. The settings keep the mode after the
+// first start, so a change in the dashboard outlives the environment of the
+// install. At the first start, the mode comes from the configuration.
+func initMode(ctx context.Context, st *store.Store, cfg config.Config) (sandbox.Mode, error) {
+	settings, err := st.GetSettings(ctx)
+	if err != nil {
+		return "", err
+	}
+	if settings.Mode != "" || cfg.Mode == "" {
+		return settings.Mode, nil
+	}
+	settings, err = st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.Mode = cfg.Mode
+		return nil
+	})
+	return settings.Mode, err
+}
+
+// logSetupCode logs a new setup code while no admin exists, so the admin
+// can find it in the service log. It keeps a code that is still valid,
+// because install.sh printed it.
+func logSetupCode(ctx context.Context, st *store.Store, a *auth.Service, log *slog.Logger) error {
+	n, err := st.CountUsers(ctx)
+	if err != nil || n > 0 {
+		return err
+	}
+	open, err := st.HasOpenSetupCode(ctx, time.Now())
+	if err != nil {
+		return err
+	}
+	if open {
+		log.Info("no admin exists: open the dashboard and enter the setup code. Run 'runplane setup-code' for a new setup code.")
+		return nil
+	}
+	code, err := a.NewSetupCode(ctx)
+	if errors.Is(err, auth.ErrSetupDone) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	log.Info("no admin exists: open the dashboard and enter the setup code", "code", code, "valid", auth.SetupCodeTTL)
+	return nil
+}
 
 // primary holds the services of runplane serve.
 type primary struct {
@@ -54,9 +187,9 @@ type primary struct {
 
 // startPrimary starts the services of the primary and sets them in d. They
 // run until stop, which serve calls after the HTTP server stopped. key is
-// the secret key. restart ends serve so that systemd starts runplane again,
-// and fail ends serve with an error.
-func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, restart func(), fail func(error)) (_ *primary, err error) {
+// the secret key. end ends serve: with errRestart after an update, so that
+// systemd starts runplane again, or with the error of a failed service.
+func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (_ *primary, err error) {
 	cfg, log, st := d.Config, d.Log, d.Store
 	p := &primary{cfg: cfg, log: log, st: st, acme: tlsutil.NewACME(cfg.TLSDir(), log.With("component", "https"))}
 	defer func() {
@@ -109,7 +242,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, restart func(), fa
 	p.run(p.sched.Run)
 	p.run(func(ctx context.Context) {
 		if err := p.fleet.Run(ctx); err != nil {
-			fail(fmt.Errorf("run the fleet: %w", err))
+			end(fmt.Errorf("run the fleet: %w", err))
 		}
 	})
 	p.run(p.gh.Run)
@@ -136,7 +269,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, restart func(), fa
 	}
 	bk := &backups{st: st, box: d.Box, bus: d.Bus, dir: cfg.BackupsDir(), notify: notifyBg, log: log.With("component", "backup")}
 	p.run(bk.daily)
-	up := &updater{u: newUpdater(cfg), restart: restart, log: log.With("component", "update")}
+	up := &updater{u: update.New(cfg.KernelPath()), restart: func() { end(errRestart) }, log: log.With("component", "update")}
 	p.run(func(ctx context.Context) { up.checkDaily(ctx, st, notifyBg) })
 	p.stops = append(p.stops, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -197,20 +330,7 @@ func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver)
 	}
 	p.run(stats.Run)
 	p.run(func(ctx context.Context) { srv.Run(ctx) })
-
-	allow := resolver.Allow
-	if mode == sandbox.ModeDev {
-		// Docker sends the requests of dev sandboxes from the loopback address.
-		allow = func(ip netip.Addr) bool { return ip.IsLoopback() || resolver.Allow(ip) }
-	}
-	mir, err := mirror.New(mirror.Config{
-		Dir: p.cfg.MirrorDir(), MaxBytes: mirrorLimit(p.cfg.DataDir), Allow: allow, Logger: p.log.With("component", "mirror"),
-	})
-	if err != nil {
-		return caches{}, fmt.Errorf("start the registry mirror: %w", err)
-	}
-	p.stops = append(p.stops, func() { mir.Close() })
-	stopPort, err := serveServicePort(p.cfg, mir, srv, p.log)
+	mir, stopPort, err := serveServicePort(p.cfg, mode, resolver.Allow, srv, p.log)
 	if err != nil {
 		return caches{}, err
 	}
@@ -218,7 +338,6 @@ func (p *primary) serveCaches(key []byte, mode sandbox.Mode, drv sandbox.Driver)
 	return caches{srv: srv, mirror: mir, agents: p.fleet.AgentMirrorStats}, nil
 }
 
-// listenAgents serves the TLS listener for agents.
 func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) error {
 	ln, err := net.Listen("tcp", p.cfg.AgentListen)
 	if err != nil {
@@ -236,7 +355,6 @@ func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) 
 	return nil
 }
 
-// serveSSH serves the SSH gateway to the debug shells.
 func (p *primary) serveSSH(opener shell.Opener) error {
 	gw, err := shell.New(shell.Config{
 		Addr: p.cfg.SSHListen, HostKeyPath: p.cfg.SSHHostKeyPath(), Opener: opener, Lookup: shell.LookupStore(p.st),

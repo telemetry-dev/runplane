@@ -23,7 +23,7 @@ func parse(v string) (semver, bool) {
 	var s semver
 	for i, p := range parts {
 		n, err := strconv.Atoi(p)
-		if err != nil || p[0] == '+' {
+		if err != nil {
 			return semver{}, false
 		}
 		s.core[i] = n
