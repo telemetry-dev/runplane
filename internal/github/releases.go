@@ -187,7 +187,7 @@ func (s *Service) warnEnds(ctx context.Context, arches []string) error {
 		}
 		s.log.Warn("runner version ends soon", "version", b.Version, "end_date", b.EndDate)
 		if s.notify != nil {
-			if err := s.notify.Notify(ctx, notify.RunnerDeprecationEvent(settings.PublicURL, b.Version, *b.EndDate)); err != nil {
+			if err := s.notify.Notify(ctx, notify.RunnerDeprecationEvent(settings.DashboardURL(), b.Version, *b.EndDate)); err != nil {
 				return fmt.Errorf("send runner end date warning: %w", err)
 			}
 		}

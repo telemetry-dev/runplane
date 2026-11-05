@@ -236,10 +236,10 @@ func linkFile(src, dst string) error {
 func (d *Driver) guestConfig(spec sandbox.Spec, lease netrules.Lease, s sandbox.Settings) control.GuestConfig {
 	service := fmt.Sprintf("http://%s:%d", lease.Host, d.opts.ServicePort)
 	env := map[string]string{}
-	maps.Copy(env, spec.Env)
 	if s.ActionsCache && d.opts.CacheEnv != nil {
 		maps.Copy(env, d.opts.CacheEnv(service))
 	}
+	maps.Copy(env, spec.Env)
 	var mirror string
 	if s.RegistryMirror {
 		mirror = service

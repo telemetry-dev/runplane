@@ -442,7 +442,7 @@ func (f *Fleet) notify(build func(dashboard string) notify.Event) {
 		if err != nil {
 			f.log.Warn("read settings for a notification", "err", err)
 		}
-		e := build(st.PublicURL)
+		e := build(st.DashboardURL())
 		if err := f.notifier.Notify(ctx, e); err != nil {
 			f.log.Warn("send notification", "type", e.Type, "err", err)
 		}

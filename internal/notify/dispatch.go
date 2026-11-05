@@ -281,7 +281,7 @@ func (d *Dispatcher) goNotify(ctx context.Context, build func(dashboard string) 
 		if err != nil {
 			d.log().Warn("read settings for a notification", "err", err)
 		}
-		e := build(dashboard(st))
+		e := build(st.DashboardURL())
 		if err := d.Notify(ctx, e); err != nil {
 			d.log().Warn("send notification", "type", e.Type, "err", err)
 		}
@@ -310,15 +310,4 @@ func (d *Dispatcher) log() *slog.Logger {
 		return d.Log
 	}
 	return slog.New(slog.DiscardHandler)
-}
-
-// dashboard is the browser URL of runplane, or "" if runplane cannot know it.
-func dashboard(st store.Settings) string {
-	switch {
-	case st.PublicURL != "":
-		return st.PublicURL
-	case st.Domain != "":
-		return "https://" + st.Domain
-	}
-	return ""
 }

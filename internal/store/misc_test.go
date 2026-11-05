@@ -60,6 +60,23 @@ func TestReplaceRepositories(t *testing.T) {
 	}
 }
 
+func TestDashboardURL(t *testing.T) {
+	tests := []struct {
+		name string
+		s    Settings
+		want string
+	}{
+		{"the public URL wins", Settings{PublicURL: "https://ci.example.com", Domain: "runplane.example.com"}, "https://ci.example.com"},
+		{"the domain gets HTTPS", Settings{Domain: "runplane.example.com"}, "https://runplane.example.com"},
+		{"no URL", Settings{}, ""},
+	}
+	for _, tt := range tests {
+		if got := tt.s.DashboardURL(); got != tt.want {
+			t.Errorf("%s: DashboardURL() = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestSetDefaultImage(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()

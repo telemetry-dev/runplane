@@ -657,7 +657,7 @@ EOF
 	# secret, so a second run of the same command, or a run without --token,
 	# does not break it.
 	if [ -z "$TOKEN" ] || { [ -f "$AGENT_FILE" ] && grep -q '"server_id": *"[^"]' "$AGENT_FILE" &&
-		grep -q "\"primary\": *\"$PRIMARY\"" "$AGENT_FILE"; }; then
+		grep -qF "\"primary\": \"$PRIMARY\"" "$AGENT_FILE"; }; then
 		say "Keep the registration in $AGENT_FILE"
 		return 0
 	fi

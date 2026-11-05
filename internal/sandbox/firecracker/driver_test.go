@@ -125,6 +125,12 @@ func TestGuestConfig(t *testing.T) {
 	if !maps.Equal(none.Env, map[string]string{"A": "1"}) || none.RegistryMirror != "" {
 		t.Errorf("with the cache and mirror off: env %v, mirror %q", none.Env, none.RegistryMirror)
 	}
+
+	// As in container mode, the spec env wins over the cache env.
+	spec.Env = map[string]string{"ACTIONS_RESULTS_URL": "http://other/"}
+	if got := d.guestConfig(spec, lease, all).Env["ACTIONS_RESULTS_URL"]; got != "http://other/" {
+		t.Errorf("ACTIONS_RESULTS_URL %q, want the spec value http://other/", got)
+	}
 }
 
 func TestDeadline(t *testing.T) {
