@@ -16,7 +16,6 @@ type reservation struct {
 	vcpu, memoryMB, count int
 }
 
-// placement is where a new sandbox goes.
 type placement struct {
 	host          Host
 	image         sandbox.ImageRef
@@ -79,7 +78,6 @@ func (s *Scheduler) reserve(serverID string, pool store.Pool, n int) {
 	s.reserved[serverID] = r
 }
 
-// hosts reads the capacity of each online server.
 func (s *Scheduler) hosts(ctx context.Context) []hostCapacity {
 	s.mu.Lock()
 	reserved := maps.Clone(s.reserved)
@@ -117,7 +115,6 @@ func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (s
 	return img, version, ok
 }
 
-// canHost tells if the pool allows sandboxes on the server.
 func canHost(h Host, pool store.Pool) bool {
 	return h.Arch == pool.Arch && (len(pool.ServerIDs) == 0 || slices.Contains(pool.ServerIDs, h.ServerID))
 }
