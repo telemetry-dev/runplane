@@ -1,14 +1,15 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { $api, errorMessage, isApiError, type Schemas } from '~/api/client'
+import { api, isApiError, type Schemas } from '~/api/client'
 import { statusQuery } from '~/api/session'
 import { updateQuery } from '~/api/update'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup, AlertDialogTrigger } from '~/components/ui/alert-dialog'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
+import { LoadError } from '~/components/app/load-error'
 import { Button } from '~/components/ui/button'
 import { Spinner } from '~/components/ui/spinner'
 import { formatDate } from '~/lib/format'
-import { LoadError, quietAction, SettingRow, SettingRows, SettingsSection, SettingRowsSkeleton } from './parts'
+import { quietAction, SettingRow, SettingRows, SettingsSection, SettingRowsSkeleton } from './parts'
 import { SwitchSetting } from './setting-controls'
 
 /** The Updates section: the running version, the newest release, and the auto update switch. */
@@ -32,7 +33,7 @@ export function Updates({ autoUpdate }: { autoUpdate: boolean }) {
           ) : unavailable ? (
             <NoUpdater />
           ) : (
-            <LoadError what="the update status" onRetry={() => void update.refetch()} retrying={update.isFetching} />
+            <LoadError what="the update status" error={update.error} onRetry={() => void update.refetch()} retrying={update.isFetching} />
           )}
           <SwitchSetting
             name="auto_update"
@@ -96,33 +97,24 @@ function useReloadOnNewVersion(update: Schemas['UpdateStatus']) {
 function UpdateNow({ latest }: { latest: string }) {
   const client = useQueryClient()
   const [open, setOpen] = useState(false)
-  const apply = $api.useMutation('post', '/api/update', {
-    onSuccess: () => {
-      setOpen(false)
-      return client.invalidateQueries({ queryKey: updateQuery.queryKey })
-    },
-  })
-
   return (
-    <AlertDialog open={open} onOpenChange={setOpen} onOpenChangeComplete={(isOpen) => !isOpen && apply.reset()}>
-      <AlertDialogTrigger render={<Button variant="primary" />}>Update now</AlertDialogTrigger>
-      <AlertDialogPopup
+    <>
+      <Button variant="primary" onClick={() => setOpen(true)}>
+        Update now
+      </Button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
         title={`Update to ${latest}?`}
         description="runplane downloads the signed release and restarts. This page reconnects when it is back."
-      >
-        {apply.error && (
-          <p role="alert" className="text-s text-error">
-            {errorMessage(apply.error)}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="primary" loading={apply.isPending} onClick={() => apply.mutate({})}>
-            Update
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+        action="Update"
+        variant="primary"
+        onConfirm={async () => {
+          await api.POST('/api/update')
+          void client.invalidateQueries({ queryKey: updateQuery.queryKey })
+        }}
+      />
+    </>
   )
 }
 

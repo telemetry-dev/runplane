@@ -14,8 +14,8 @@ import {
 } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { jobStatus, StatusIcon } from '~/components/app/status-icon'
-import { Skeleton } from '~/components/ui/skeleton'
 import { cx } from '~/lib/cx'
 import { formatDuration, formatRelativeTime } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
@@ -64,7 +64,16 @@ export function JobsTable({ jobs, empty, stale = false }: JobsTableProps) {
           {shown.started && <DataTableHead align="end">Started</DataTableHead>}
         </DataTableHeader>
         {jobs === null ? (
-          <SkeletonRows shown={shown} />
+          <SkeletonRows count={8}>
+            <SkeletonCell shape="icon" />
+            <SkeletonCell lines={[140, 200]} />
+            {shown.branch && <SkeletonCell lines={[120, 56]} />}
+            {shown.runner && <SkeletonCell lines={[96]} />}
+            {shown.server && <SkeletonCell lines={[80]} />}
+            {shown.queued && <SkeletonCell lines={[24]} align="end" />}
+            <SkeletonCell lines={[40]} align="end" />
+            {shown.started && <SkeletonCell lines={[48]} align="end" />}
+          </SkeletonRows>
         ) : jobs.length === 0 ? (
           <DataTableEmpty>{empty}</DataTableEmpty>
         ) : (
@@ -111,48 +120,4 @@ function JobRow({ job, now, shown }: { job: Schemas['JobSummary']; now: number; 
       )}
     </DataTableRow>
   )
-}
-
-function SkeletonRows({ shown }: { shown: Shown }) {
-  // Each bar sits on the line height of the text it stands for, so rows keep their height when the jobs arrive.
-  return Array.from({ length: 8 }, (_, index) => (
-    <DataTableRow key={index}>
-      <DataTableCell>
-        <span aria-hidden className="block size-[16px] animate-pulse rounded-full bg-neutral-3" />
-      </DataTableCell>
-      <DataTableCell className="flex-col items-start gap-0">
-        <Skeleton className="my-[3px] h-[12px] w-[140px]" />
-        <Skeleton className="my-[2px] h-[10px] w-[200px]" />
-      </DataTableCell>
-      {shown.branch && (
-        <DataTableCell className="flex-col items-start gap-0">
-          <Skeleton className="my-[3px] h-[12px] w-[120px]" />
-          <Skeleton className="my-[2px] h-[10px] w-[56px]" />
-        </DataTableCell>
-      )}
-      {shown.runner && (
-        <DataTableCell>
-          <Skeleton className="h-[10px] w-[96px]" />
-        </DataTableCell>
-      )}
-      {shown.server && (
-        <DataTableCell>
-          <Skeleton className="h-[12px] w-[80px]" />
-        </DataTableCell>
-      )}
-      {shown.queued && (
-        <DataTableCell align="end">
-          <Skeleton className="h-[12px] w-[24px]" />
-        </DataTableCell>
-      )}
-      <DataTableCell align="end">
-        <Skeleton className="h-[12px] w-[40px]" />
-      </DataTableCell>
-      {shown.started && (
-        <DataTableCell align="end">
-          <Skeleton className="h-[12px] w-[48px]" />
-        </DataTableCell>
-      )}
-    </DataTableRow>
-  ))
 }

@@ -34,14 +34,14 @@ describe('defaultStep', () => {
 
 describe('shownStep', () => {
   test('a stored log shows the step in the URL, or else the first failed step', () => {
-    expect(shownStep({ log_state: 'stored', steps }, { step: 1 })).toBe(1)
-    expect(shownStep({ log_state: 'stored', steps }, { step: 0 })).toBe(0)
-    expect(shownStep({ log_state: 'stored', steps }, {})).toBe(3)
+    expect(shownStep({ log_state: 'stored', steps }, 1)).toBe(1)
+    expect(shownStep({ log_state: 'stored', steps }, 0)).toBe(0)
+    expect(shownStep({ log_state: 'stored', steps }, undefined)).toBe(3)
   })
 
   test('a live log shows whole, because the stream has every step', () => {
-    expect(shownStep({ log_state: 'live', steps }, { step: 1 })).toBe(0)
-    expect(shownStep({ log_state: 'live', steps }, {})).toBe(0)
+    expect(shownStep({ log_state: 'live', steps }, 1)).toBe(0)
+    expect(shownStep({ log_state: 'live', steps }, undefined)).toBe(0)
   })
 })
 

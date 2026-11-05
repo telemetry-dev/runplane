@@ -1,14 +1,12 @@
 import { Field as BaseField } from '@base-ui/react/field'
 import { useId, type ReactNode } from 'react'
 import { SectionHeader } from '~/components/app/section-header'
-import { Button } from '~/components/ui/button'
 import { Skeleton } from '~/components/ui/skeleton'
-import { Tooltip } from '~/components/ui/tooltip'
 import { cx } from '~/lib/cx'
 
 // The building blocks that all settings tabs share: the 720px column, sections,
 // rows with a label and a control at the right edge, cards, and their loading
-// and error states.
+// state.
 
 /**
  * The column of a settings tab. Inputs on the white page get the neutral-3
@@ -169,22 +167,6 @@ export const quietAction = cx(
 )
 
 /**
- * Shows an error message in a tooltip on a status, as a failed image pull. The
- * trigger takes keyboard focus, and screen readers read the message with it.
- */
-export function ErrorHint({ error, children }: { error: string; children: ReactNode }) {
-  if (!error) return children
-  return (
-    <Tooltip content={error}>
-      <span tabIndex={0} className="flex min-w-0 cursor-default items-center rounded-xs">
-        {children}
-        <span className="sr-only">: {error}</span>
-      </span>
-    </Tooltip>
-  )
-}
-
-/**
  * Placeholder rows with the height of real rows: a label line, a description
  * line, and a block in the shape of the control.
  */
@@ -209,18 +191,6 @@ const skeletonControls = {
   input: cx(inputHeight, 'w-[280px]'),
   number: cx(inputHeight, 'w-[120px]'),
   switch: 'h-[18px] w-[32px] rounded-full',
-}
-
-/** In place of content whose data did not load. */
-export function LoadError({ what = 'settings', onRetry, retrying }: { what?: string; onRetry: () => void; retrying: boolean }) {
-  return (
-    <div role="alert" className="flex items-center justify-between gap-m py-m text-s text-neutral-8">
-      <p>Could not load {what}.</p>
-      <Button onClick={onRetry} loading={retrying}>
-        Retry
-      </Button>
-    </div>
-  )
 }
 
 /** The note on tabs that a member can see but not change. */

@@ -1,5 +1,4 @@
 import { useLayoutEffect, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
-import { cx } from '~/lib/cx'
 
 // Pieces shared by BarChart and LineChart.
 
@@ -17,19 +16,15 @@ export function ChartTooltip({ title, detail, style }: { title: ReactNode; detai
   )
 }
 
-type LegendItem = { label: string; color: string; shape?: 'square' | 'line' }
+type LegendItem = { label: string; color: string }
 
-/** Legend of a chart with two or more series: an 8px swatch (or a short line for line series) and the name. */
-export function ChartLegend({ items, className }: { items: readonly LegendItem[]; className?: string }) {
+/** Legend of a chart with two or more series: a swatch of each series and its name. */
+export function ChartLegend({ items }: { items: readonly LegendItem[] }) {
   return (
-    <ul className={cx('flex flex-wrap items-center gap-m', className)}>
+    <ul className="flex flex-wrap items-center gap-m">
       {items.map((item) => (
         <li key={item.label} className="flex items-center gap-xs text-xs font-medium text-neutral-7">
-          <span
-            aria-hidden
-            className={item.shape === 'line' ? 'h-[2px] w-[10px] rounded-full' : 'size-[8px] rounded-xs'}
-            style={{ backgroundColor: item.color }}
-          />
+          <span aria-hidden className="size-[8px] rounded-xs" style={{ backgroundColor: item.color }} />
           {item.label}
         </li>
       ))}

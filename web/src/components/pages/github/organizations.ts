@@ -1,10 +1,18 @@
+import { limits } from '~/api/limits'
+
 // The organization search of the Connect GitHub step. The browser asks the
 // public GitHub API, which needs no token; GitHub then permits 10 searches a
 // minute and 60 other requests an hour for each IP address.
 
 export type Organization = { login: string; avatar_url: string }
 
-const login = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/
+const organization = limits.ManifestRequest.organization
+const loginPattern = new RegExp(organization.pattern)
+
+/** Whether `text` can be the login of an organization, as the API accepts it. */
+function isLogin(text: string): boolean {
+  return text.length <= organization.maxLength && loginPattern.test(text)
+}
 
 /**
  * Organizations for the search text. The organization whose login is the text
@@ -14,7 +22,7 @@ const login = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/
 export async function findOrganizations(text: string, signal?: AbortSignal): Promise<Organization[]> {
   const search = new URLSearchParams({ per_page: '8', q: `${text} type:org` })
   const [exact, found] = await Promise.allSettled([
-    login.test(text) ? github<Organization>(`/orgs/${encodeURIComponent(text)}`, signal) : Promise.reject(new Error('not a login')),
+    isLogin(text) ? github<Organization>(`/orgs/${encodeURIComponent(text)}`, signal) : Promise.reject(new Error('not a login')),
     github<{ items: Organization[] }>(`/search/users?${search}`, signal),
   ])
   const orgs = [...(exact.status === 'fulfilled' ? [exact.value] : []), ...(found.status === 'fulfilled' ? found.value.items : [])]

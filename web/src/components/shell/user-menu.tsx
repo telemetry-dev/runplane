@@ -4,6 +4,7 @@ import { KeyRound, LogOut } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, isApiError } from '~/api/client'
 import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
 import { sessionQuery, statusQuery } from '~/api/session'
 import { Avatar } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
@@ -98,8 +99,8 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
       <Field name="current_password" label="Current password">
         <Input type="password" autoComplete="current-password" required />
       </Field>
-      <Field name="new_password" label="New password">
-        <Input type="password" autoComplete="new-password" required />
+      <Field name="new_password" label="New password" description={`At least ${newPassword.minLength} characters.`}>
+        <Input type="password" autoComplete="new-password" minLength={newPassword.minLength} required />
       </Field>
       <Field
         name="confirm_password"
@@ -122,6 +123,8 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
     </Form>
   )
 }
+
+const newPassword = limits.UpdateMeRequest.new_password
 
 /** "v1.2.0 (3f2a9c1)" and "1.2.0" both give "v1.2.0"; other names such as "dev" stay. */
 function shortVersion(version: string): string {

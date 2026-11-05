@@ -17,9 +17,9 @@ export function defaultStep(steps: readonly Step[]): number {
  * stored log splits into steps. A live log is the sandbox's stream of the
  * whole job, so it shows whole (0).
  */
-export function shownStep(job: Pick<Schemas['Job'], 'log_state' | 'steps'>, search: { step?: number }): number {
+export function shownStep(job: Pick<Schemas['Job'], 'log_state' | 'steps'>, step: number | undefined): number {
   if (job.log_state !== 'stored') return 0
-  return search.step ?? defaultStep(job.steps)
+  return step ?? defaultStep(job.steps)
 }
 
 /** The step that ran longest, for the marker on the CPU and Memory charts. */

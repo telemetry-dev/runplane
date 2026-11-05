@@ -11,11 +11,13 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { ErrorHint } from '~/components/app/error-hint'
+import { LoadErrorRow } from '~/components/app/load-error'
 import { None } from '~/components/app/none'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { StatusIcon } from '~/components/app/status-icon'
-import { Skeleton } from '~/components/ui/skeleton'
 import { formatDate } from '~/lib/format'
-import { Badge, ErrorHint, LoadError, SettingsSection } from './parts'
+import { Badge, SettingsSection } from './parts'
 import { groupVersions } from './runner-info'
 
 /** The GitHub runner versions that runplane has downloaded, newest first. */
@@ -74,45 +76,19 @@ export function RunnerVersions() {
               </DataTableRow>
             ))
           ) : versions.isError ? (
-            <div role="row" className="px-m">
-              <div role="cell">
-                <LoadError what="runner versions" onRetry={() => void versions.refetch()} retrying={versions.isFetching} />
-              </div>
-            </div>
+            <LoadErrorRow what="the runner versions" error={versions.error} onRetry={() => void versions.refetch()} retrying={versions.isFetching} />
           ) : (
-            <SkeletonRows shown={shown} />
+            <SkeletonRows label="Loading the runner versions" count={2}>
+              <SkeletonCell shape="icon" />
+              <SkeletonCell lines={[64]} />
+              {shown.architectures && <SkeletonCell lines={[72]} />}
+              {shown.released && <SkeletonCell lines={[80]} />}
+              {shown.endDate && <SkeletonCell lines={[24]} />}
+            </SkeletonRows>
           )}
           {groups?.length === 0 && <DataTableEmpty>runplane has not checked for runner releases yet.</DataTableEmpty>}
         </DataTable>
       </div>
     </SettingsSection>
   )
-}
-
-function SkeletonRows({ shown }: { shown: Record<'architectures' | 'released' | 'endDate', boolean> }) {
-  return Array.from({ length: 2 }, (_, index) => (
-    <DataTableRow key={index}>
-      <DataTableCell>
-        <Skeleton className="size-[16px] rounded-full" />
-      </DataTableCell>
-      <DataTableCell>
-        <Skeleton className="my-[3px] h-[12px] w-[64px]" />
-      </DataTableCell>
-      {shown.architectures && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[72px]" />
-        </DataTableCell>
-      )}
-      {shown.released && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[80px]" />
-        </DataTableCell>
-      )}
-      {shown.endDate && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[24px]" />
-        </DataTableCell>
-      )}
-    </DataTableRow>
-  ))
 }

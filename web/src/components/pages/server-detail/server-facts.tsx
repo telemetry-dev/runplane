@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react'
+import { ErrorHint } from '~/components/app/error-hint'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { None } from '~/components/app/none'
 import { Stat } from '~/components/app/stat'
 import { serverStatusNames } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { agentUpdateNote, currentUsage, serverLocation } from '~/components/pages/servers/server-info'
-import { Tooltip } from '~/components/ui/tooltip'
 import { formatPercent } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
 import { diskDetail, memoryDetail, sandboxMode, statusDetail, type Server } from './server-format'
@@ -43,7 +43,14 @@ export function ServerFacts({ server }: { server: Server }) {
       <KeyValue label="KVM">{reported ? (server.kvm ? 'Yes' : 'No') : <None />}</KeyValue>
       <KeyValue label="runplane">
         {server.version.replace(/^v/, '') || <None />}
-        {update && <span className="text-neutral-7"> · {failure ? <WhyHint why={failure}>{update}</WhyHint> : update}</span>}
+        {update && (
+          <span className="text-neutral-7">
+            {' · '}
+            <ErrorHint error={failure} className="inline underline decoration-dotted underline-offset-2">
+              {update}
+            </ErrorHint>
+          </span>
+        )}
       </KeyValue>
     </KeyValueList>
   )
@@ -71,17 +78,5 @@ function Usage({ label, value, detail }: { label: string; value: number | null; 
       {value !== null && <UsageBar value={value} label={label} className="w-full" />}
       {detail && <p className="truncate text-xs text-neutral-7">{detail}</p>}
     </div>
-  )
-}
-
-/** Text with a dotted underline that shows `why` in a tooltip. It takes keyboard focus, and screen readers read `why` with it. */
-function WhyHint({ why, children }: { why: string; children: ReactNode }) {
-  return (
-    <Tooltip content={why}>
-      <span tabIndex={0} className="cursor-default rounded-xs underline decoration-dotted underline-offset-2">
-        {children}
-        <span className="sr-only">: {why}</span>
-      </span>
-    </Tooltip>
   )
 }

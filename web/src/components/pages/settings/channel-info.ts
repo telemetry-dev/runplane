@@ -1,17 +1,20 @@
 import type { Schemas } from '~/api/client'
+import { limits } from '~/api/limits'
 
 export type ChannelEvent = Schemas['CreateNotificationRequest']['events'][number]
 export type ChannelKind = Schemas['NotificationChannel']['kind']
 
-/** The events a channel can get, in the order of the dialog. */
-export const channelEvents: { value: ChannelEvent; label: string }[] = [
-  { value: 'job.failed', label: 'Job failed' },
-  { value: 'server.unreachable', label: 'Server unreachable' },
-  { value: 'disk.low', label: 'Disk almost full' },
-  { value: 'runner.deprecation', label: 'Runner version end date' },
-  { value: 'update.available', label: 'Update available' },
-  { value: 'backup.failed', label: 'Backup failed' },
-]
+const eventNames: Record<ChannelEvent, string> = {
+  'job.failed': 'Job failed',
+  'server.unreachable': 'Server unreachable',
+  'disk.low': 'Disk almost full',
+  'runner.deprecation': 'Runner version end date',
+  'update.available': 'Update available',
+  'backup.failed': 'Backup failed',
+}
+
+/** The events a channel can get, in the order of the API and of the dialog. */
+export const channelEvents = limits.CreateNotificationRequest.events.items.enum.map((value) => ({ value, label: eventNames[value] }))
 
 /** The events a new channel starts with. */
 export const defaultEvents: ChannelEvent[] = ['job.failed', 'server.unreachable', 'disk.low']
@@ -22,23 +25,22 @@ export function eventsSummary(events: string[]): string {
   return labels.map((label, index) => (index === 0 ? label : label[0]!.toLowerCase() + label.slice(1))).join(', ')
 }
 
-export const channelKinds: { value: ChannelKind; label: string; namePlaceholder: string; urlHelp: string }[] = [
-  {
-    value: 'slack',
+const kinds: Record<ChannelKind, { label: string; namePlaceholder: string; urlHelp: string }> = {
+  slack: {
     label: 'Slack',
     namePlaceholder: '#ci-alerts',
     urlHelp: 'An incoming webhook URL from Slack. It is hidden after you save.',
   },
-  {
-    value: 'discord',
+  discord: {
     label: 'Discord',
     namePlaceholder: '#builds',
     urlHelp: 'A channel webhook URL from Discord. It is hidden after you save.',
   },
-  {
-    value: 'webhook',
+  webhook: {
     label: 'Webhook',
     namePlaceholder: 'Ops webhook',
     urlHelp: 'runplane sends a JSON POST for each event. It is hidden after you save.',
   },
-]
+}
+
+export const channelKinds = limits.CreateNotificationRequest.kind.enum.map((value) => ({ value, ...kinds[value] }))

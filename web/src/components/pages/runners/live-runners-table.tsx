@@ -15,6 +15,7 @@ import {
 import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { RunnerStateIcon, sandboxStateNames } from '~/components/app/runner-state-icon'
+import { SkeletonRows } from '~/components/app/skeleton-rows'
 import { workflowFile } from '~/components/pages/jobs/job-format'
 import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
@@ -22,7 +23,6 @@ import { useNow } from '~/lib/use-now'
 import { Code } from './code'
 import { formatUptime, sortSandboxes, type Sandbox } from './runner-format'
 import { RunnerLogDrawer } from './runner-log'
-import { SkeletonRows } from './skeleton-rows'
 import { StopRunnerDialog } from './stop-runner-dialog'
 
 type LiveRunnersTableProps = {
@@ -32,7 +32,7 @@ type LiveRunnersTableProps = {
   showServer?: boolean
   /** The row of an empty list. */
   empty: ReactNode
-  /** The row while the list did not load, in place of the loading rows. */
+  /** A LoadErrorRow in place of the loading rows, when the list did not load. */
   failed?: ReactNode
 }
 
@@ -76,11 +76,7 @@ export function LiveRunnersTable({ sandboxes, showServer = true, empty, failed }
           </DataTableHead>
         </DataTableHeader>
         {!sandboxes ? (
-          failed ? (
-            <DataTableEmpty>{failed}</DataTableEmpty>
-          ) : (
-            <SkeletonRows lines={2} label="Loading runners" />
-          )
+          failed ?? <SkeletonRows lines={2} label="Loading runners" />
         ) : sandboxes.length === 0 ? (
           <DataTableEmpty>{empty}</DataTableEmpty>
         ) : (

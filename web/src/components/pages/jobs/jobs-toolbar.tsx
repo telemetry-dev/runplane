@@ -3,11 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { facetsQuery } from '~/api/jobs'
 import { FilterSelect } from '~/components/app/filter-select'
 import { SearchInput } from '~/components/ui/input'
-import { rangeOptions, statusOptions, type JobsSearch } from './jobs-search'
+import { defaultRange, rangeOptions, statusOptions, type JobsSearch } from './jobs-search'
 
 type JobsToolbarProps = {
   search: JobsSearch
-  /** Applies a change to the search params. `typing` replaces the history entry instead of adding one. Keep it stable. */
+  /** Applies a change to the search params. `typing` replaces the history entry instead of adding one. */
   onChange: (change: Partial<JobsSearch>, typing?: boolean) => void
 }
 
@@ -49,8 +49,8 @@ export function JobsToolbar({ search, onChange }: JobsToolbarProps) {
         />
         <FilterSelect
           aria-label="Time range"
-          value={search.range ?? '7d'}
-          onValueChange={(range) => onChange({ range: range === '7d' || range === null ? undefined : range })}
+          value={search.range ?? defaultRange}
+          onValueChange={(range) => onChange({ range: range === defaultRange || range === null ? undefined : range })}
           options={rangeOptions}
         />
       </div>

@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CirclePause, CirclePlay, Ellipsis, Pencil, Trash2 } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
-import { $api, errorMessage, type Schemas } from '~/api/client'
+import { useState } from 'react'
+import { $api, api, errorMessage, type Schemas } from '~/api/client'
 import { dropPool, putPool, refreshRunners } from '~/api/pools'
 import { serversQuery } from '~/api/servers'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import {
   CellTitle,
   DataTable,
@@ -14,13 +15,12 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
-import { Button, IconButton } from '~/components/ui/button'
+import { SkeletonRows } from '~/components/app/skeleton-rows'
+import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
 import { Code } from './code'
 import { poolHardware, poolScope, poolSize, type Pool } from './runner-format'
-import { SkeletonRows } from './skeleton-rows'
 
 type LabelsTableProps = {
   /** Undefined while the list loads. */
@@ -207,37 +207,22 @@ type DeleteDialogProps = { pool: Pool; open: boolean; onOpenChange: (open: boole
 
 function DeleteDialog({ pool, open, onOpenChange }: DeleteDialogProps) {
   const client = useQueryClient()
-  const remove = $api.useMutation('delete', '/api/pools/{id}', {
-    onSuccess: () => {
-      onOpenChange(false)
-      toastManager.add({ title: `Deleted ${pool.label}` })
-    },
-  })
-
   return (
-    <AlertDialog
+    <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      onOpenChangeComplete={(isOpen) => {
-        if (isOpen) return
-        // Drop the row only after the close animation; the dialog lives in it.
-        if (remove.isSuccess) {
-          dropPool(client, pool.id)
-          void refreshRunners(client)
-        }
-        remove.reset()
+      title={`Delete ${pool.label}?`}
+      description={deleteDescription(pool)}
+      action="Delete label"
+      onConfirm={async () => {
+        await api.DELETE('/api/pools/{id}', { params: { path: { id: pool.id } } })
+        toastManager.add({ title: `Deleted ${pool.label}` })
       }}
-    >
-      <AlertDialogPopup title={`Delete ${pool.label}?`} description={deleteDescription(pool)}>
-        {remove.error && <ErrorText>{errorMessage(remove.error)}</ErrorText>}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate({ params: { path: { id: pool.id } } })}>
-            Delete label
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+      onDone={() => {
+        dropPool(client, pool.id)
+        void refreshRunners(client)
+      }}
+    />
   )
 }
 
@@ -245,12 +230,4 @@ function deleteDescription(pool: Pool): string {
   const runners = pool.idle + pool.busy + pool.starting
   const stop = runners === 0 ? '' : runners === 1 ? ', and its runner stops' : `, and its ${runners} runners stop`
   return `Workflows that use ${pool.label} stop getting runners${stop}.`
-}
-
-function ErrorText({ children }: { children: ReactNode }) {
-  return (
-    <p role="alert" className="text-s text-error">
-      {children}
-    </p>
-  )
 }

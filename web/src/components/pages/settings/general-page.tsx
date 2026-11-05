@@ -1,20 +1,27 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, type QueryClient } from '@tanstack/react-query'
 import { Check, X } from 'lucide-react'
 import type { Schemas } from '~/api/client'
 import { useIsAdmin } from '~/api/session'
+import { limits } from '~/api/limits'
 import { domainDNSQuery, settingsQuery } from '~/api/settings'
+import { LoadError } from '~/components/app/load-error'
 import { Spinner } from '~/components/ui/spinner'
 import { formatDate } from '~/lib/format'
 import { Backups } from './backups'
 import { dnsStatus, serverRecord } from './dns-info'
-import { LoadError, ReadOnlyNote, SettingRow, SettingRows, SettingsColumn, SettingsSection, SettingRowsSkeleton } from './parts'
+import { ReadOnlyNote, SettingRow, SettingRows, SettingsColumn, SettingsSection, SettingRowsSkeleton } from './parts'
 import { NumberSetting, TextSetting } from './setting-controls'
 import { Updates } from './updates'
+
+/** Starts the request of the page; its sections show their own loading and error states. */
+export function prefetch(client: QueryClient) {
+  void client.prefetchQuery(settingsQuery)
+}
 
 /** Settings · General: instance, HTTPS, data retention, and for admins updates and backups. */
 export function GeneralSettings() {
   const admin = useIsAdmin()
-  const { data: settings, isError, refetch, isFetching } = useQuery({
+  const { data: settings, error, refetch, isFetching } = useQuery({
     ...settingsQuery,
     // No event reports the certificate, so ask until the request ends.
     refetchInterval: (query) => (query.state.data?.https?.state === 'requesting' ? 5_000 : false),
@@ -25,10 +32,10 @@ export function GeneralSettings() {
     refetchInterval: (query) => (['missing', 'other', 'error'].includes(query.state.data?.state ?? '') ? 10_000 : false),
   })
 
-  if (isError && !settings) {
+  if (error && !settings) {
     return (
       <SettingsColumn>
-        <LoadError onRetry={() => void refetch()} retrying={isFetching} />
+        <LoadError what="the settings" error={error} onRetry={() => void refetch()} retrying={isFetching} />
       </SettingsColumn>
     )
   }
@@ -46,7 +53,7 @@ export function GeneralSettings() {
             description="Shown in the sidebar."
             value={settings.instance_name}
             toPatch={(instance_name) => ({ instance_name })}
-            maxLength={64}
+            maxLength={settingLimits.instance_name.maxLength}
             disabled={disabled}
           />
           <TextSetting
@@ -96,8 +103,7 @@ export function GeneralSettings() {
             value={settings.job_retention_days}
             toPatch={(job_retention_days) => ({ job_retention_days })}
             unit="days"
-            min={1}
-            max={3650}
+            limit={settingLimits.job_retention_days}
             disabled={disabled}
           />
           <NumberSetting
@@ -106,8 +112,7 @@ export function GeneralSettings() {
             value={settings.log_retention_days}
             toPatch={(log_retention_days) => ({ log_retention_days })}
             unit="days"
-            min={1}
-            max={3650}
+            limit={settingLimits.log_retention_days}
             disabled={disabled}
           />
         </SettingRows>
@@ -118,6 +123,8 @@ export function GeneralSettings() {
     </SettingsColumn>
   )
 }
+
+const settingLimits = limits.SettingsPatch
 
 type DNSRowProps = {
   domain: string

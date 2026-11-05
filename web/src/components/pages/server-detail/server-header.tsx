@@ -2,15 +2,16 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { CirclePause, CirclePlay, Ellipsis, Pencil, Stethoscope, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { $api, errorMessage } from '~/api/client'
+import { $api, api, errorMessage } from '~/api/client'
 import { applyChange, dropServer } from '~/api/events'
 import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
 import type { Doctor } from '~/api/servers'
 import { BreadcrumbLink, BreadcrumbPage, Breadcrumbs } from '~/components/app/breadcrumbs'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import { StatusDot } from '~/components/app/status-dot'
 import { removeDescription } from '~/components/pages/servers/server-info'
 import { UpdateAgentItem } from '~/components/pages/servers/update-agent-item'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
 import { Field, Input } from '~/components/ui/field'
@@ -58,25 +59,15 @@ export function ServerHeader({ server, admin, doctor }: ServerHeaderProps) {
 function DrainButton({ server }: { server: Server }) {
   const client = useQueryClient()
   const [confirming, setConfirming] = useState(false)
-  const paused = server.status === 'draining' || server.status === 'disabled'
-  const update = $api.useMutation('patch', '/api/servers/{id}', {
-    onSuccess: (updated) => {
-      setConfirming(false)
-      void applyChange(client, 'server.state', updated)
-    },
-    onError: (error) => {
-      if (paused) toastManager.add({ title: `Could not resume ${server.name}`, description: errorMessage(error) })
-    },
+  const resume = $api.useMutation('patch', '/api/servers/{id}', {
+    onSuccess: (updated) => applyChange(client, 'server.state', updated),
+    onError: (error) => toastManager.add({ title: `Could not resume ${server.name}`, description: errorMessage(error) }),
   })
 
-  function setStatus(status: 'online' | 'draining') {
-    update.mutate({ params: { path: { id: server.id } }, body: { status } })
-  }
-
-  if (paused) {
+  if (server.status === 'draining' || server.status === 'disabled') {
     return (
-      <Button loading={update.isPending} onClick={() => setStatus('online')}>
-        {!update.isPending && <CirclePlay aria-hidden />}
+      <Button loading={resume.isPending} onClick={() => resume.mutate({ params: { path: { id: server.id } }, body: { status: 'online' } })}>
+        {!resume.isPending && <CirclePlay aria-hidden />}
         Resume
       </Button>
     )
@@ -87,17 +78,18 @@ function DrainButton({ server }: { server: Server }) {
         <CirclePause aria-hidden />
         Drain
       </Button>
-      <AlertDialog open={confirming} onOpenChange={setConfirming} onOpenChangeComplete={(open) => !open && update.reset()}>
-        <AlertDialogPopup title={`Drain ${server.name}?`} description="New jobs go to other servers. Running jobs finish.">
-          {update.error && <ErrorText error={update.error} />}
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-            <Button variant="primary" loading={update.isPending} onClick={() => setStatus('draining')}>
-              Drain server
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title={`Drain ${server.name}?`}
+        description="New jobs go to other servers. Running jobs finish."
+        action="Drain server"
+        variant="primary"
+        onConfirm={async () => {
+          const { data } = await api.PATCH('/api/servers/{id}', { params: { path: { id: server.id } }, body: { status: 'draining' } })
+          void applyChange(client, 'server.state', data!)
+        }}
+      />
     </>
   )
 }
@@ -152,7 +144,7 @@ function RenameDialog({ server, open, onOpenChange }: DialogProps) {
           className="gap-l"
         >
           <Field name="name" label="Name" validate={(value) => (String(value).trim() ? null : 'Enter a name.')}>
-            <Input defaultValue={server.name} maxLength={64} autoComplete="off" spellCheck={false} />
+            <Input defaultValue={server.name} maxLength={limits.UpdateServerRequest.name.maxLength} autoComplete="off" spellCheck={false} />
           </Field>
           {problems.alert && <ErrorText error={problems.alert} />}
           <DialogFooter>
@@ -170,25 +162,19 @@ function RenameDialog({ server, open, onOpenChange }: DialogProps) {
 function RemoveDialog({ server, open, onOpenChange }: DialogProps) {
   const client = useQueryClient()
   const navigate = useNavigate()
-  const remove = $api.useMutation('delete', '/api/servers/{id}', {
-    onSuccess: () => {
-      toastManager.add({ title: `Removed ${server.name}` })
-      void navigate({ to: '/servers' }).then(() => dropServer(client, server.id))
-    },
-  })
-
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={(isOpen) => !isOpen && remove.reset()}>
-      <AlertDialogPopup title={`Remove ${server.name}?`} description={removeDescription(server.running_jobs)}>
-        {remove.error && <ErrorText error={remove.error} />}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate({ params: { path: { id: server.id } } })}>
-            Remove server
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+    <ConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Remove ${server.name}?`}
+      description={removeDescription(server.running_jobs)}
+      action="Remove server"
+      onConfirm={async () => {
+        await api.DELETE('/api/servers/{id}', { params: { path: { id: server.id } } })
+        toastManager.add({ title: `Removed ${server.name}` })
+        void navigate({ to: '/servers' }).then(() => dropServer(client, server.id))
+      }}
+    />
   )
 }
 

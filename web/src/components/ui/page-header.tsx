@@ -4,7 +4,7 @@ type PageHeaderProps = {
   title: ReactNode
   /** Shown after the title in regular weight, as in "Servers 6". */
   count?: number
-  /** Before the title, as the 22px StatusIcon of Job detail. */
+  /** Before the title, as a status icon. */
   icon?: ReactNode
   /** Buttons on the right. */
   actions?: ReactNode

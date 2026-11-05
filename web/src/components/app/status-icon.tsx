@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 import type { Schemas } from '~/api/client'
 import { Spinner } from '~/components/ui/spinner'
 
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped'
+/** A state of a job, or its result once it completes. */
+export type JobStatus = 'queued' | 'running' | NonNullable<Schemas['JobSummary']['result']>
 
 type StatusIconProps = {
   status: JobStatus
@@ -112,14 +113,13 @@ function warning(size: number) {
 }
 
 /**
- * The icon status of a job from the API: `state` is queued, assigned, running,
- * or completed, and `result` is set once it completes. An assigned job shows as
- * running, because its sandbox is starting.
+ * The icon status of a job from the API. `result` is set once the job
+ * completes. An assigned job shows as running, because its sandbox is starting.
  */
-export function jobStatus(job: { state: string; result?: string | null }): JobStatus {
+export function jobStatus(job: Pick<Schemas['JobSummary'], 'state' | 'result'>): JobStatus {
   if (job.state === 'queued') return 'queued'
   if (job.state !== 'completed') return 'running'
-  return isResult(job.result) ? job.result : 'failed'
+  return job.result ?? 'failed'
 }
 
 /** The icon status of a GitHub step: `status` is queued, in_progress, or completed; `conclusion` is success, failure, … */
@@ -135,10 +135,6 @@ const stepConclusions: Record<string, JobStatus> = {
   cancelled: 'cancelled',
   skipped: 'skipped',
   neutral: 'succeeded',
-}
-
-function isResult(result: string | null | undefined): result is 'succeeded' | 'failed' | 'cancelled' | 'skipped' {
-  return result === 'succeeded' || result === 'failed' || result === 'cancelled' || result === 'skipped'
 }
 
 type BuildState = Schemas['ImageBuild']['status']

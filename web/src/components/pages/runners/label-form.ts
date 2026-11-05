@@ -25,8 +25,6 @@ export type Draft = {
 
 export type PoolRequest = Required<Omit<Schemas['CreatePoolRequest'], 'name' | 'enabled'>>
 
-export const labelPattern = /^[a-z0-9][a-z0-9-]{0,62}$/
-
 /** The values of an existing pool, or the defaults of a new one on the given arch. */
 export function draftFrom(pool: Pool | undefined, arch: Arch, defaultImageId: string | undefined): Draft {
   if (!pool) {

@@ -1,11 +1,12 @@
-import { createFileRoute, notFound } from '@tanstack/react-router'
 import { Copy, Ellipsis, ExternalLink, Pencil, Plus, RotateCcw, Terminal, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import type { Schemas } from '~/api/client'
 import { BarChart, type BarChartBar } from '~/components/app/bar-chart'
 import { BranchRef } from '~/components/app/branch-ref'
 import { Breadcrumbs, BreadcrumbLink, BreadcrumbPage } from '~/components/app/breadcrumbs'
 import { ChartLegend } from '~/components/app/chart'
-import { CodeBlock, type CodeLine } from '~/components/app/code-block'
+import { CodeBlock } from '~/components/app/code-block'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import { CopyButton } from '~/components/app/copy-button'
 import {
   CellTitle,
@@ -18,18 +19,25 @@ import {
   DataTableRow,
   RowLink,
 } from '~/components/app/data-table'
+import { DoctorChecks } from '~/components/app/doctor-checks'
 import { EmptyState } from '~/components/app/empty-state'
+import { ErrorHint } from '~/components/app/error-hint'
 import { FilterSelect } from '~/components/app/filter-select'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { LineChart, type LinePoint } from '~/components/app/line-chart'
+import { LoadError, NotFound } from '~/components/app/load-error'
 import { LogViewer } from '~/components/app/log-viewer'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { SectionButton, SectionHeader, SectionLink } from '~/components/app/section-header'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { Stat } from '~/components/app/stat'
 import { StatusDot, type ServerStatus } from '~/components/app/status-dot'
 import { RunnerStateIcon } from '~/components/app/runner-state-icon'
 import { CheckIcon, StatusIcon, type CheckStatus, type JobStatus } from '~/components/app/status-icon'
 import { UsageBar } from '~/components/app/usage-bar'
+import { workflowDiff } from '~/components/pages/first-job/first-job'
+import { clock } from '~/components/pages/jobs/job-format'
+import { defaultRange, rangeOptions, statusOptions, type JobsRange, type JobsStatus } from '~/components/pages/jobs/jobs-search'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup, AlertDialogTrigger } from '~/components/ui/alert-dialog'
 import { Avatar } from '~/components/ui/avatar'
 import { Button, IconButton } from '~/components/ui/button'
@@ -60,19 +68,10 @@ import { toastManager } from '~/components/ui/toast'
 import { Toggle, ToggleGroup } from '~/components/ui/toggle-group'
 import { Tooltip } from '~/components/ui/tooltip'
 import { DiscordIcon, GithubIcon, SlackIcon } from '~/components/ui/icons'
-import { pageHead } from '~/lib/head'
 import { useThemeMode, type ThemeMode } from '~/lib/theme-mode'
 
-// Every shared component in its states, for design review. Only in dev builds.
-export const Route = createFileRoute('/dev/components')({
-  beforeLoad: () => {
-    if (!import.meta.env.DEV) throw notFound()
-  },
-  head: () => pageHead('Components'),
-  component: ComponentGallery,
-})
-
-function ComponentGallery() {
+/** Every shared component in its states, for design review. withGallery adds it to the routes of `pnpm dev`. */
+export function ComponentGallery() {
   const [mode, setMode] = useThemeMode()
   return (
     <div className="min-h-dvh bg-neutral-1">
@@ -96,6 +95,7 @@ function ComponentGallery() {
         <Overlays />
         <Choices />
         <Feedback />
+        <States />
         <Measures />
         <Statuses />
         <Tables />
@@ -249,9 +249,9 @@ const pools = [
 const repositories = ['kestrel-hq/api', 'kestrel-hq/web', 'kestrel-hq/mobile', 'kestrel-hq/infra', 'ada-okafor/dotfiles']
 
 function Pickers() {
-  const [status, setStatus] = useState<string | null>(null)
+  const [status, setStatus] = useState<JobsStatus | null>(null)
   const [repository, setRepository] = useState<string | null>(null)
-  const [range, setRange] = useState('7d')
+  const [range, setRange] = useState<JobsRange>(defaultRange)
   return (
     <Section title="Select, Combobox, FilterSelect">
       <div className="grid grid-cols-1 gap-xl md:grid-cols-2">
@@ -308,19 +308,7 @@ function Pickers() {
       <Specimen label="FilterSelect in the Jobs toolbar" className="flex flex-col">
         <div className="flex flex-wrap items-center gap-xs rounded-m bg-neutral-2 p-xs">
           <SearchInput placeholder="Search job, branch or commit" aria-label="Search jobs" className="min-w-[200px] grow basis-0" />
-          <FilterSelect
-            label="Status"
-            allLabel="Any"
-            value={status}
-            onValueChange={setStatus}
-            options={[
-              { value: 'running', label: 'Running' },
-              { value: 'queued', label: 'Queued' },
-              { value: 'succeeded', label: 'Succeeded' },
-              { value: 'failed', label: 'Failed' },
-              { value: 'cancelled', label: 'Cancelled' },
-            ]}
-          />
+          <FilterSelect label="Status" allLabel="Any" value={status} onValueChange={setStatus} options={statusOptions} />
           <FilterSelect
             label="Repository"
             allLabel="All"
@@ -329,16 +317,7 @@ function Pickers() {
             options={repositories.map((name) => ({ value: name, label: name }))}
           />
           <FilterSelect label="Runner" allLabel="All" value={null} onValueChange={() => {}} options={pools} />
-          <FilterSelect
-            aria-label="Time range"
-            value={range}
-            onValueChange={(next) => next && setRange(next)}
-            options={[
-              { value: '24h', label: 'Last 24 hours' },
-              { value: '7d', label: 'Last 7 days' },
-              { value: '30d', label: 'Last 30 days' },
-            ]}
-          />
+          <FilterSelect aria-label="Time range" value={range} onValueChange={(next) => next && setRange(next)} options={rangeOptions} />
         </div>
       </Specimen>
     </Section>
@@ -610,6 +589,99 @@ function Feedback() {
   )
 }
 
+const demoChecks: Schemas['Check'][] = [
+  { id: 'kernel', name: 'Kernel', status: 'ok', detail: 'Linux 6.8.0-49-generic', fix: '', command: '' },
+  {
+    id: 'ip_forward',
+    name: 'IP forwarding',
+    status: 'fail',
+    detail: 'net.ipv4.ip_forward is 0, so sandboxes cannot reach the internet.',
+    fix: 'Turn on IP forwarding and keep it on after a restart.',
+    command: "echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-runplane.conf && sudo sysctl --system",
+  },
+  { id: 'time', name: 'Clock', status: 'warn', detail: 'The clock is 4 seconds ahead of pool.ntp.org.', fix: 'Turn on time sync with timedatectl.', command: '' },
+  { id: 'disk', name: 'Free disk', status: 'ok', detail: '1.7 TB free of 1.9 TB', fix: '', command: '' },
+]
+
+function States() {
+  const [dialog, setDialog] = useState<'remove' | 'drain'>()
+  const close = (open: boolean) => !open && setDialog(undefined)
+  return (
+    <Section title="ConfirmDialog, LoadError, NotFound, SkeletonRows, DoctorChecks, ErrorHint">
+      <Specimen label="ConfirmDialog: Remove fails, Drain succeeds after a second">
+        <Button variant="danger" onClick={() => setDialog('remove')}>
+          Remove server
+        </Button>
+        <Button onClick={() => setDialog('drain')}>Drain</Button>
+        <ConfirmDialog
+          open={dialog === 'remove'}
+          onOpenChange={close}
+          title="Remove fsn1-ax52-b?"
+          description="Its 2 running jobs are cancelled, and runplane disconnects the agent."
+          action="Remove server"
+          onConfirm={() => Promise.reject(new Error('runplane runs on this server, so it cannot be removed.'))}
+        />
+        <ConfirmDialog
+          open={dialog === 'drain'}
+          onOpenChange={close}
+          title="Drain fsn1-ax52-b?"
+          description="New jobs go to other servers. Running jobs finish."
+          action="Drain server"
+          variant="primary"
+          onConfirm={() => new Promise((resolve) => setTimeout(resolve, 1000))}
+        />
+      </Specimen>
+      <Specimen label="LoadError, in a section and in place of a page body" className="flex flex-col gap-l">
+        <LoadError what="the backups" error={new Error('Bad Gateway')} onRetry={() => {}} />
+        <LoadError heading={2} what="the overview" error={new Error('Bad Gateway')} onRetry={() => {}} retrying />
+      </Specimen>
+      <Specimen label="NotFound" className="flex flex-col">
+        <NotFound title="Job not found" to="/jobs" link="All jobs">
+          No job has this ID. Jobs older than the job retention are deleted.
+        </NotFound>
+      </Specimen>
+      <Specimen label="SkeletonRows: a bar across the table, and cells" className="grid grid-cols-1 gap-xl md:grid-cols-2">
+        <DataTable aria-label="Labels" columns={['grow', 150, 48]} rowSpacing="m">
+          <DataTableHeader>
+            <DataTableHead>Label</DataTableHead>
+            <DataTableHead>Size</DataTableHead>
+            <DataTableHead align="end">Busy</DataTableHead>
+          </DataTableHeader>
+          <SkeletonRows lines={2} label="Loading labels" />
+        </DataTable>
+        <DataTable aria-label="Members" columns={[28, 'grow', 120, 24]}>
+          <DataTableHeader>
+            <DataTableHead />
+            <DataTableHead>Name</DataTableHead>
+            <DataTableHead>Role</DataTableHead>
+            <DataTableHead />
+          </DataTableHeader>
+          <SkeletonRows label="Loading members" count={2}>
+            <SkeletonCell shape="large-avatar" />
+            <SkeletonCell lines={[96, 120]} />
+            <SkeletonCell shape="select" />
+            <SkeletonCell />
+          </SkeletonRows>
+        </DataTable>
+      </Specimen>
+      <Specimen label="DoctorChecks" className="flex flex-col">
+        <DoctorChecks checks={demoChecks} />
+      </Specimen>
+      <Specimen label="ErrorHint, on an icon and on text">
+        <ErrorHint error="pull ghcr.io/kestrel-hq/android-sdk:34: unauthorized">
+          <StatusIcon status="failed" />
+        </ErrorHint>
+        <span className="text-s text-neutral-7">
+          v1.4.0 ·{' '}
+          <ErrorHint error="The new agent did not connect within 2 minutes." className="inline underline decoration-dotted underline-offset-2">
+            Update failed
+          </ErrorHint>
+        </span>
+      </Specimen>
+    </Section>
+  )
+}
+
 function Measures() {
   return (
     <Section title="Progress, Meter, NumberField, Separator, ScrollArea, Avatar, Collapsible">
@@ -768,7 +840,7 @@ function Tables() {
                 <StatusIcon status="running" />
               </DataTableCell>
               <DataTableCell>
-                <RowLink to="/dev/components" hash="tables">
+                <RowLink to="." hash="tables">
                   <CellTitle title={['test (node 22)', 'e2e · chromium', 'build-image', 'lint'][index]} detail="kestrel-hq/api · ci.yml" />
                 </RowLink>
               </DataTableCell>
@@ -805,7 +877,7 @@ function Tables() {
               <StatusIcon status={job.status} />
             </DataTableCell>
             <DataTableCell>
-              <RowLink to="/dev/components" hash="tables">
+              <RowLink to="." hash="tables">
                 <CellTitle title={job.name} detail={job.workflow} muted={job.status === 'cancelled'} />
               </RowLink>
             </DataTableCell>
@@ -905,8 +977,8 @@ function PageParts() {
     <Section title="PageHeader, Breadcrumbs, SectionHeader, KeyValue, Stat, EmptyState">
       <div className="flex flex-col gap-s">
         <Breadcrumbs>
-          <BreadcrumbLink to="/dev/components">Jobs</BreadcrumbLink>
-          <BreadcrumbLink to="/dev/components">kestrel-hq/web</BreadcrumbLink>
+          <BreadcrumbLink to=".">Jobs</BreadcrumbLink>
+          <BreadcrumbLink to=".">kestrel-hq/web</BreadcrumbLink>
           <BreadcrumbPage>e2e.yml #2290</BreadcrumbPage>
         </Breadcrumbs>
         <PageHeader
@@ -949,7 +1021,7 @@ function PageParts() {
         <Stat label="Failure rate" value={null} />
         <Stat label="Cache hit rate" value={null} />
       </div>
-      <SectionHeader title="Recent jobs" action={<SectionLink to="/dev/components" chevron>All jobs</SectionLink>} />
+      <SectionHeader title="Recent jobs" action={<SectionLink to="." chevron>All jobs</SectionLink>} />
       <SectionHeader title="Servers" action={<SectionButton>Add server</SectionButton>} level={3} />
       <EmptyState
         title="No jobs yet"
@@ -961,7 +1033,7 @@ function PageParts() {
             <Button>See all labels</Button>
           </>
         }
-        aside={<CodeBlock title=".github/workflows/ci.yml" code={workflowDiff} />}
+        aside={<CodeBlock title=".github/workflows/ci.yml" code={workflowDiff('runplane-4cpu')} />}
       >
         Change runs-on in any workflow to send that job to your servers. Jobs show up here as soon as GitHub queues them.
       </EmptyState>
@@ -969,20 +1041,11 @@ function PageParts() {
   )
 }
 
-const workflowDiff: CodeLine[] = [
-  'jobs:',
-  '  test:',
-  { text: '    runs-on: ubuntu-latest', change: 'removed' },
-  { text: '    runs-on: runplane-4cpu', change: 'added' },
-  '    steps:',
-  '      - uses: actions/checkout@v4',
-]
-
 function Code() {
   return (
     <Section title="CodeBlock, CopyButton">
       <div className="grid grid-cols-1 gap-xl md:grid-cols-2">
-        <CodeBlock title=".github/workflows/ci.yml" code={workflowDiff} copyable />
+        <CodeBlock title=".github/workflows/ci.yml" code={workflowDiff('runplane-4cpu')} copyable />
         <CodeBlock title="runplane.toml" code={'[server]\nlisten = ":8484"\npublic_url = "https://ci.kestrel.dev"'} lineNumbers />
       </div>
       <CodeBlock copyable code={['curl -fsSL https://ci.kestrel.dev/install.sh | sudo sh -s -- \\', '  --token rp_srv_8Fq2nL7xVb3kR9tW']} />
@@ -1006,7 +1069,7 @@ const jobBars: BarChartBar[] = barHeights.map((height, index) => {
   const value = Math.round((height / 161) * 131)
   const part = capHeights[index] ? Math.max(1, Math.round((capHeights[index]! / 161) * 131 * 0.8)) : 0
   const hour = (15 + index) % 24
-  const label = `${pad(hour)}:00 – ${pad((hour + 1) % 24)}:00`
+  const label = `${hours(hour)} – ${hours((hour + 1) % 24)}`
   return { label, value, part, detail: `${value} jobs · ${part} failed` }
 })
 
@@ -1198,11 +1261,7 @@ function Logs() {
   )
 }
 
-function clock(ms: number): string {
-  const seconds = Math.round(ms / 1000)
-  return `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`
-}
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
+/** "15:00" for hour 15. */
+function hours(hour: number): string {
+  return `${String(hour).padStart(2, '0')}:00`
 }

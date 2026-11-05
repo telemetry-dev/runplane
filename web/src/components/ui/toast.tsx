@@ -1,7 +1,7 @@
 import { Toast } from '@base-ui/react/toast'
 import { X } from 'lucide-react'
 import { cx } from '~/lib/cx'
-import { buttonClassName } from './button'
+import { buttonClassName, IconButton } from './button'
 import { Spinner } from './spinner'
 
 // Toasts of gui/components/runplane/toast.md. Mount <Toaster /> once near the
@@ -62,11 +62,8 @@ function ToastList() {
           </div>
         )}
       </Toast.Content>
-      <Toast.Close
-        aria-label="Dismiss"
-        className="absolute top-s right-s grid place-items-center rounded-s p-xxs text-neutral-7 transition-colors hover:bg-neutral-3 hover:text-neutral-10"
-      >
-        <X size={14} aria-hidden />
+      <Toast.Close render={<IconButton label="Dismiss" className="absolute top-s right-s p-xxs [&_svg]:size-[14px]" />}>
+        <X aria-hidden />
       </Toast.Close>
     </Toast.Root>
   ))

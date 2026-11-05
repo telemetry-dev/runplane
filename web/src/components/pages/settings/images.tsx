@@ -2,9 +2,10 @@ import { Collapsible } from '@base-ui/react/collapsible'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Ellipsis, RefreshCw, Star, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { $api, errorMessage, type Schemas } from '~/api/client'
+import { $api, api, errorMessage, type Schemas } from '~/api/client'
 import { useFormProblems } from '~/api/form-problems'
 import { dropImage, imagesQuery, putImage } from '~/api/images'
+import { limits } from '~/api/limits'
 import {
   DataTable,
   DataTableCell,
@@ -15,17 +16,19 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
+import { ErrorHint } from '~/components/app/error-hint'
+import { LoadErrorRow } from '~/components/app/load-error'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { buildStateNames, buildStatus, StatusIcon } from '~/components/app/status-icon'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
 import { Button, IconButton } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
-import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { formatBytes } from '~/lib/format'
 import { cx } from '~/lib/cx'
-import { Badge, CardTitle, ErrorHint, LoadError, SettingsCard, SettingsSection } from './parts'
+import { Badge, CardTitle, SettingsCard, SettingsSection } from './parts'
 import { buildSummary, usedBy } from './runner-info'
 
 type Image = Schemas['Image']
@@ -58,13 +61,15 @@ export function Images({ admin }: { admin: boolean }) {
           {images.data ? (
             images.data.map((image) => <ImageRows key={image.id} image={image} admin={admin} shown={shown} />)
           ) : images.isError ? (
-            <div role="row" className="px-m">
-              <div role="cell">
-                <LoadError what="images" onRetry={() => void images.refetch()} retrying={images.isFetching} />
-              </div>
-            </div>
+            <LoadErrorRow what="the images" error={images.error} onRetry={() => void images.refetch()} retrying={images.isFetching} />
           ) : (
-            <SkeletonRows shown={shown} />
+            <SkeletonRows label="Loading the images" count={2}>
+              <SkeletonCell />
+              <SkeletonCell lines={[96, 140]} />
+              {shown.usedBy && <SkeletonCell lines={[56]} />}
+              {shown.servers && <SkeletonCell lines={[112]} />}
+              <SkeletonCell />
+            </SkeletonRows>
           )}
           {images.data?.length === 0 && <DataTableEmpty>No images yet.</DataTableEmpty>}
         </DataTable>
@@ -205,36 +210,16 @@ function ImageMenu({ image }: { image: Image }) {
 
 function RemoveImage({ image, open, onOpenChange }: { image: Image; open: boolean; onOpenChange: (open: boolean) => void }) {
   const client = useQueryClient()
-  const remove = $api.useMutation('delete', '/api/images/{id}', { onSuccess: () => onOpenChange(false) })
-
   return (
-    <AlertDialog
+    <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      onOpenChangeComplete={(isOpen) => {
-        if (isOpen) return
-        // Drop the row only after the close animation; the dialog lives in it.
-        if (remove.isSuccess) void dropImage(client, image.id)
-        remove.reset()
-      }}
-    >
-      <AlertDialogPopup
-        title={`Remove ${image.name}?`}
-        description="Each server deletes the image. Runner labels that use it change to the default image."
-      >
-        {remove.error && (
-          <p role="alert" className="text-s text-error">
-            {errorMessage(remove.error)}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate({ params: { path: { id: image.id } } })}>
-            Remove image
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+      title={`Remove ${image.name}?`}
+      description="Each server deletes the image. Runner labels that use it change to the default image."
+      action="Remove image"
+      onConfirm={() => api.DELETE('/api/images/{id}', { params: { path: { id: image.id } } })}
+      onDone={() => void dropImage(client, image.id)}
+    />
   )
 }
 
@@ -274,7 +259,7 @@ function AddImage() {
               autoComplete="off"
               spellCheck={false}
               required
-              maxLength={64}
+              maxLength={limits.CreateImageRequest.name.maxLength}
             />
           </Field>
           <Field name="ref" label="OCI reference" className="min-w-0 flex-1">
@@ -285,7 +270,7 @@ function AddImage() {
               autoComplete="off"
               spellCheck={false}
               required
-              maxLength={512}
+              maxLength={limits.CreateImageRequest.ref.maxLength}
             />
           </Field>
           {/* Level with the inputs: below the label line and the field gap. */}
@@ -301,27 +286,4 @@ function AddImage() {
       </Form>
     </SettingsCard>
   )
-}
-
-function SkeletonRows({ shown }: { shown: Shown }) {
-  return Array.from({ length: 2 }, (_, index) => (
-    <DataTableRow key={index}>
-      <DataTableCell />
-      <DataTableCell className="flex-col items-start gap-0">
-        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
-        <Skeleton className="my-[2px] h-[10px] w-[140px] max-w-full" />
-      </DataTableCell>
-      {shown.usedBy && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[56px]" />
-        </DataTableCell>
-      )}
-      {shown.servers && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[112px]" />
-        </DataTableCell>
-      )}
-      <DataTableCell />
-    </DataTableRow>
-  ))
 }

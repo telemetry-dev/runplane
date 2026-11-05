@@ -4,56 +4,17 @@ import { useEffect, useEffectEvent } from 'react'
 import type { Schemas } from '~/api/client'
 import { useLiveEvents } from '~/api/events'
 import { statusQuery } from '~/api/session'
+import type { CodeLine } from '~/components/app/code-block'
 import { DataTable, DataTableCell, DataTableEmpty, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
 import { buttonClassName } from '~/components/ui/button'
-import { GithubIcon } from '~/components/ui/icons'
 import { Spinner } from '~/components/ui/spinner'
-import { formatCount, formatMegabytes } from '~/lib/format'
-import { ExternalTextLink } from './parts'
+import { formatMegabytes } from '~/lib/format'
 
-// Parts of the "Setup · First job" design.
-
-/** One row for each account that the app is installed on, as "kestrel-hq connected · 12 repositories". */
-export function ConnectedAccounts({ installations }: { installations: Schemas['Installation'][] }) {
-  if (installations.length === 0) {
-    return (
-      <div className={accountRow}>
-        <GithubIcon size={16} aria-hidden />
-        <p className="min-w-0 flex-1 text-s text-neutral-7">No GitHub account is connected yet.</p>
-        <Link to="/setup/github" className="shrink-0 rounded-xs text-s font-medium text-neutral-7 transition-colors hover:text-neutral-10">
-          Connect GitHub
-        </Link>
-      </div>
-    )
-  }
-  return (
-    <ul aria-label="Connected accounts" className="flex flex-col gap-xs">
-      {installations.map((installation) => (
-        <li key={installation.id} className={accountRow}>
-          <GithubIcon size={16} aria-hidden />
-          <p className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-xs text-s">
-            <span className="font-medium text-neutral-10">{installation.account_login}</span>
-            <span className="text-neutral-7">
-              {installation.suspended ? 'suspended' : 'connected'} · {formatCount(installation.repository_count)}{' '}
-              {installation.repository_count === 1 ? 'repository' : 'repositories'}
-            </span>
-          </p>
-          <ExternalTextLink
-            href={installation.html_url}
-            aria-label={`Manage access of ${installation.account_login} on GitHub (opens in a new tab)`}
-          >
-            Manage access
-          </ExternalTextLink>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-const accountRow = 'flex items-center gap-s rounded-s bg-neutral-2 px-m py-s text-neutral-10'
+// The parts that send a first job to runplane, for the empty Overview and the
+// last setup step.
 
 /** The change to a workflow that moves a job to runplane. */
-export function workflowDiff(label: string) {
+export function workflowDiff(label: string): CodeLine[] {
   return [
     'jobs:',
     '  test:',
@@ -61,7 +22,13 @@ export function workflowDiff(label: string) {
     { text: `    runs-on: ${label}`, change: 'added' },
     '    steps:',
     '      - uses: actions/checkout@v4',
-  ] as const
+  ]
+}
+
+/** The label to suggest for a first job. A 4 vCPU x64 pool is at least as large as GitHub's ubuntu-latest runner, so it is a safe first change. */
+export function suggestedLabel(pools: readonly Schemas['Pool'][]): string | undefined {
+  const enabled = pools.filter((pool) => pool.enabled)
+  return (enabled.find((pool) => pool.arch === 'x64' && pool.vcpu === 4) ?? enabled[0])?.label
 }
 
 /** "Labels you can use": the runs-on label, size, and arch of each pool. */

@@ -4,9 +4,11 @@ import { useEffect, useId, useRef, useState, type ReactElement } from 'react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
 import { applyChange, refreshServers } from '~/api/events'
 import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
 import { serversQuery, sshKeyQuery, tokenStatusQuery } from '~/api/servers'
 import { settingsQuery } from '~/api/settings'
 import { CodeBlock } from '~/components/app/code-block'
+import { LoadError } from '~/components/app/load-error'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogPopup, DialogTrigger } from '~/components/ui/dialog'
 import { Field, Input } from '~/components/ui/field'
@@ -216,12 +218,7 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
       {key.data ? (
         <CodeBlock code={key.data.public_key} copyable wrap />
       ) : key.error ? (
-        <div role="alert" className="flex items-center justify-between gap-m text-s text-neutral-8">
-          <p className="min-w-0">Could not load the SSH key. {errorMessage(key.error)}</p>
-          <Button onClick={() => void key.refetch()} loading={key.isFetching}>
-            Try again
-          </Button>
-        </div>
+        <LoadError what="the SSH key" error={key.error} onRetry={() => void key.refetch()} retrying={key.isFetching} />
       ) : (
         <div className="flex items-center gap-s rounded-s bg-(--code-background) p-m text-s text-neutral-7">
           <Spinner size={14} />
@@ -246,15 +243,15 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
             <Input placeholder="203.0.113.10" autoComplete="off" spellCheck={false} />
           </Field>
           <Field name="port" label="Port" disabled={disabled} validate={validatePort}>
-            <Input defaultValue="22" inputMode="numeric" autoComplete="off" />
+            <Input defaultValue={String(sshLimits.port.default)} inputMode="numeric" autoComplete="off" />
           </Field>
         </div>
         <div className="grid grid-cols-2 items-start gap-m">
           <Field name="user" label="User" description="Root, or a user with passwordless sudo." disabled={disabled}>
-            <Input defaultValue="root" autoComplete="off" spellCheck={false} />
+            <Input defaultValue={sshLimits.user.default} autoComplete="off" spellCheck={false} />
           </Field>
           <Field name="name" label="Name" disabled={disabled} validate={(input) => (String(input).trim() ? null : 'Enter a name.')}>
-            <Input maxLength={64} autoComplete="off" spellCheck={false} />
+            <Input maxLength={sshLimits.name.maxLength} autoComplete="off" spellCheck={false} />
           </Field>
         </div>
         {problems.alert && (
@@ -277,9 +274,12 @@ function validateHost(value: unknown): string | null {
   return String(value).trim() ? null : 'Enter a host name or an IP address.'
 }
 
+const sshLimits = limits.SSHInstall
+
 function validatePort(value: unknown): string | null {
   const port = Number(value)
-  return Number.isInteger(port) && port >= 1 && port <= 65535 ? null : 'Enter a port from 1 to 65535.'
+  const { minimum, maximum } = sshLimits.port
+  return Number.isInteger(port) && port >= minimum && port <= maximum ? null : `Enter a port from ${minimum} to ${maximum}.`
 }
 
 /** True once the time has passed. */

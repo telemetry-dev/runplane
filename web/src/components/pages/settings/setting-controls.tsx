@@ -4,7 +4,7 @@ import { Input } from '~/components/ui/input'
 import { NumberInput } from '~/components/ui/number-field'
 import { Switch } from '~/components/ui/switch'
 import type { Schemas } from '~/api/client'
-import { useSaveSettings, type SwitchKey } from '~/api/settings'
+import { useSaveSettings, useSaveSwitch, type SwitchKey } from '~/api/settings'
 import { cx } from '~/lib/cx'
 import { lineNumber, listItems } from './list-text'
 import { SettingRow } from './parts'
@@ -120,8 +120,8 @@ type NumberOptions = {
   value: number
   toPatch: (value: number) => SettingsPatch
   unit?: ReactNode
-  min: number
-  max: number
+  /** The range of the value, as the API limits of the setting. */
+  limit: { minimum: number; maximum: number }
   step?: number
   /** How the field shows the value; whole numbers by default. Its maximum decimals are also the ones it keeps. */
   format?: Intl.NumberFormatOptions
@@ -140,8 +140,7 @@ type NumberOptions = {
 export function useNumberSetting({
   value,
   toPatch,
-  min,
-  max,
+  limit: { minimum: min, maximum: max },
   step = 1,
   format = { maximumFractionDigits: 0 },
   zeroPlaceholder,
@@ -195,7 +194,7 @@ type SwitchSettingProps = RowProps & {
 
 /** A switch row. It moves at once, and moves back with the reason if the API refuses the change. */
 export function SwitchSetting({ name, label, description, disabled, checked }: SwitchSettingProps) {
-  const save = useSaveSettings({ optimistic: true })
+  const save = useSaveSwitch(name)
   return (
     <Switch
       label={label}
@@ -203,7 +202,7 @@ export function SwitchSetting({ name, label, description, disabled, checked }: S
       error={saveError(save.error)}
       checked={checked}
       disabled={disabled}
-      onCheckedChange={(next) => save.mutate({ body: { [name]: next } })}
+      onCheckedChange={(next) => save.mutate(next)}
       className="py-m"
     />
   )

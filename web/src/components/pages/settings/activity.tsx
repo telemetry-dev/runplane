@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery, type QueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { auditQuery } from '~/api/audit'
 import {
@@ -10,20 +10,28 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { LoadError } from '~/components/app/load-error'
 import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { Avatar } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
-import { Skeleton } from '~/components/ui/skeleton'
 import { Tooltip } from '~/components/ui/tooltip'
 import { formatDateTime } from '~/lib/format'
 import { auditActor, auditChange, auditTarget, auditTime, type AuditEntry } from './audit-format'
-import { LoadError, SettingsSection } from './parts'
+import { SettingsSection } from './parts'
+
+/** The cursor of the first page. */
+const first = ''
+
+export function prefetchActivity(client: QueryClient) {
+  void client.prefetchQuery(auditQuery(first))
+}
 
 /** The Activity section of Settings · Members: the audit log in pages, newest first. For admins. */
 export function Activity() {
   // The cursors of the pages so far; the last one is on screen.
-  const [cursors, setCursors] = useState([''])
+  const [cursors, setCursors] = useState([first])
   const audit = useQuery({ ...auditQuery(cursors.at(-1)!), placeholderData: keepPreviousData })
   // A narrow table drops Target.
   const fit = useFittingColumns({ time: 96, change: 'grow', target: { width: 120, drop: 1 } })
@@ -33,7 +41,7 @@ export function Activity() {
   return (
     <SettingsSection title="Activity" table>
       {audit.isError && !audit.data ? (
-        <LoadError what="the activity" onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
+        <LoadError what="the activity" error={audit.error} onRetry={() => void audit.refetch()} retrying={audit.isFetching} />
       ) : (
         <div ref={fit.ref} className="flex flex-col gap-s">
           <DataTable aria-label="Activity" columns={fit.columns}>
@@ -46,7 +54,11 @@ export function Activity() {
               {fit.shown.target && <DataTableHead>Target</DataTableHead>}
             </DataTableHeader>
             {!entries ? (
-              <SkeletonRows target={fit.shown.target} />
+              <SkeletonRows label="Loading the activity">
+                <SkeletonCell lines={[64]} />
+                <SkeletonCell shape="avatar" lines={[240]} />
+                {fit.shown.target && <SkeletonCell lines={[80]} />}
+              </SkeletonRows>
             ) : entries.length === 0 ? (
               <DataTableEmpty>No changes yet.</DataTableEmpty>
             ) : (
@@ -104,23 +116,4 @@ function AuditRow({ entry, target }: { entry: AuditEntry; target: boolean }) {
       )}
     </DataTableRow>
   )
-}
-
-function SkeletonRows({ target }: { target: boolean }) {
-  return Array.from({ length: 3 }, (_, index) => (
-    <DataTableRow key={index}>
-      <DataTableCell>
-        <Skeleton className="my-[3px] h-[12px] w-[64px]" />
-      </DataTableCell>
-      <DataTableCell className="gap-s">
-        <Skeleton className="size-[24px] rounded-full" />
-        <Skeleton className="my-[3px] h-[12px] w-[240px] max-w-full" />
-      </DataTableCell>
-      {target && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[80px]" />
-        </DataTableCell>
-      )}
-    </DataTableRow>
-  ))
 }
