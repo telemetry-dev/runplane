@@ -58,6 +58,22 @@ main() {
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --listen 127.0.0.1:9000)
 	expect "--listen" "$out" "RUNPLANE_LISTEN=127.0.0.1:9000" "Dashboard:  http://127.0.0.1:9000"
 
+	# A stub nft prints the ruleset of a host firewall that accepts only SSH
+	# and HTTPS. A dashboard URL would not open, so the script gives the tunnel.
+	firewall='printf "%s\n" "table inet firewall {" "chain input {" "type filter hook input priority filter; policy drop;" \
+		"tcp dport { 22, 80, 443, 2222 } accept" "}" "}" >/rules &&
+		printf "#!/bin/sh\ncat /rules\n" >/usr/local/bin/nft && chmod +x /usr/local/bin/nft'
+	out=$(on ubuntu:24.04 "$firewall && sh /install.sh --dry-run --yes --version v1.2.3 --mode container")
+	expect "a firewall that blocks the dashboard" "$out" "exit=0" \
+		"Dashboard:  http://localhost:18484 through an SSH tunnel" \
+		"The firewall of this server blocks port 8484" \
+		"ssh -N -L 18484:localhost:8484 root@"
+
+	out=$(on ubuntu:24.04 "$firewall && sed -i 's/2222 }/2222, 8484 }/' /rules &&
+		sh /install.sh --dry-run --yes --version v1.2.3 --mode container")
+	expect "a firewall that accepts the dashboard" "$out" "exit=0" "Then open http://localhost:18484."
+	refuse "a firewall that accepts the dashboard" "$out" "blocks port" "through an SSH tunnel (see below)"
+
 	# set-domain runs before the start, so that the first start serves HTTPS.
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --mode container --domain CI.Example.com)
 	expect "--domain" "$out" "exit=0" \

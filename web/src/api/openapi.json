@@ -754,6 +754,32 @@
         ],
         "type": "object"
       },
+      "GitHubAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "login": {
+            "type": "string"
+          },
+          "owner": {
+            "description": "The user owns the account. Other members of an organization can make the app only as its GitHub App managers.",
+            "type": "boolean"
+          },
+          "type": {
+            "description": "The account_type of the manifest request.",
+            "enum": [
+              "organization",
+              "user"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "login",
+          "type",
+          "owner"
+        ],
+        "type": "object"
+      },
       "GitHubApp": {
         "additionalProperties": false,
         "properties": {
@@ -808,12 +834,83 @@
         ],
         "type": "object"
       },
+      "GitHubSignIn": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Read the result of the sign-in with this ID.",
+            "type": "string"
+          },
+          "interval": {
+            "description": "Seconds to wait before the first read of the result.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "user_code": {
+            "description": "The code that the user types on GitHub, for example WDJB-MJHT.",
+            "type": "string"
+          },
+          "verification_uri": {
+            "description": "The GitHub page where the user types the code.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_code",
+          "verification_uri",
+          "interval"
+        ],
+        "type": "object"
+      },
+      "GitHubSignInResult": {
+        "additionalProperties": false,
+        "properties": {
+          "accounts": {
+            "description": "The accounts for the app when done: the organizations that the user owns, the personal account, then the other organizations.",
+            "items": {
+              "$ref": "#/components/schemas/GitHubAccount"
+            },
+            "type": "array"
+          },
+          "interval": {
+            "description": "Seconds to wait before the next read. GitHub can make the interval longer.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "login": {
+            "description": "The GitHub user who signed in. Empty until done.",
+            "type": "string"
+          },
+          "status": {
+            "description": "pending until the user approves runplane on GitHub. After expired or denied, start a new sign-in.",
+            "enum": [
+              "pending",
+              "done",
+              "expired",
+              "denied"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "interval",
+          "login",
+          "accounts"
+        ],
+        "type": "object"
+      },
       "GitHubStatus": {
         "additionalProperties": false,
         "properties": {
           "app": {
             "$ref": "#/components/schemas/GitHubApp",
             "description": "Absent before the manifest flow."
+          },
+          "can_sign_in": {
+            "description": "The setup can list the GitHub accounts of the user with a sign-in. A build without the OAuth client ID of runplane cannot.",
+            "type": "boolean"
           },
           "connected": {
             "description": "An app with at least one installation exists.",
@@ -836,7 +933,8 @@
         "required": [
           "connected",
           "installations",
-          "scale_sets"
+          "scale_sets",
+          "can_sign_in"
         ],
         "type": "object"
       },
@@ -4745,6 +4843,89 @@
           }
         },
         "summary": "Record an installation (browser redirect from GitHub)",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/github/sign-in": {
+      "post": {
+        "operationId": "start-github-sign-in",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubSignIn"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Start a GitHub sign-in that lists the accounts for the app",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/github/sign-in/{id}": {
+      "get": {
+        "operationId": "get-github-sign-in",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 100,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubSignInResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Read the state and the accounts of a GitHub sign-in",
         "tags": [
           "github"
         ]

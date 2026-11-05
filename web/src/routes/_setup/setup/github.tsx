@@ -23,7 +23,7 @@ export const Route = createFileRoute('/_setup/setup/github')({
 function GithubStep() {
   const { error, requested } = Route.useSearch()
   const navigate = Route.useNavigate()
-  const { app, installations } = useSuspenseQuery(githubQuery).data
+  const { app, installations, can_sign_in } = useSuspenseQuery(githubQuery).data
   const dismiss = () => void navigate({ search: {}, replace: true })
 
   return (
@@ -31,7 +31,7 @@ function GithubStep() {
       <Header />
       {error && <CallbackError message={error} onDismiss={dismiss} />}
       {requested && <InstallRequested installations={installations.length} canSync onDismiss={dismiss} />}
-      {app ? <ExistingApp app={app} installations={installations} /> : <ConnectForm />}
+      {app ? <ExistingApp app={app} installations={installations} /> : <ConnectForm canSignIn={can_sign_in} />}
     </>
   )
 }

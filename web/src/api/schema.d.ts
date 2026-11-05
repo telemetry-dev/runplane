@@ -186,6 +186,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/github/sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a GitHub sign-in that lists the accounts for the app */
+        post: operations["start-github-sign-in"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/github/sign-in/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the state and the accounts of a GitHub sign-in */
+        get: operations["get-github-sign-in"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/github/sync": {
         parameters: {
             query?: never;
@@ -1268,6 +1302,16 @@ export interface components {
             id: string;
             name: string;
         };
+        GitHubAccount: {
+            login: string;
+            /** @description The user owns the account. Other members of an organization can make the app only as its GitHub App managers. */
+            owner: boolean;
+            /**
+             * @description The account_type of the manifest request.
+             * @enum {string}
+             */
+            type: "organization" | "user";
+        };
         GitHubApp: {
             /** Format: int64 */
             app_id: number;
@@ -1286,9 +1330,40 @@ export interface components {
             settings_url: string;
             slug: string;
         };
+        GitHubSignIn: {
+            /** @description Read the result of the sign-in with this ID. */
+            id: string;
+            /**
+             * Format: int64
+             * @description Seconds to wait before the first read of the result.
+             */
+            interval: number;
+            /** @description The code that the user types on GitHub, for example WDJB-MJHT. */
+            user_code: string;
+            /** @description The GitHub page where the user types the code. */
+            verification_uri: string;
+        };
+        GitHubSignInResult: {
+            /** @description The accounts for the app when done: the organizations that the user owns, the personal account, then the other organizations. */
+            accounts: components["schemas"]["GitHubAccount"][];
+            /**
+             * Format: int64
+             * @description Seconds to wait before the next read. GitHub can make the interval longer.
+             */
+            interval: number;
+            /** @description The GitHub user who signed in. Empty until done. */
+            login: string;
+            /**
+             * @description pending until the user approves runplane on GitHub. After expired or denied, start a new sign-in.
+             * @enum {string}
+             */
+            status: "pending" | "done" | "expired" | "denied";
+        };
         GitHubStatus: {
             /** @description Absent before the manifest flow. */
             app?: components["schemas"]["GitHubApp"];
+            /** @description The setup can list the GitHub accounts of the user with a sign-in. A build without the OAuth client ID of runplane cannot. */
+            can_sign_in: boolean;
             /** @description An app with at least one installation exists. */
             connected: boolean;
             installations: components["schemas"]["Installation"][];
@@ -2929,6 +3004,66 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "start-github-sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubSignIn"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-github-sign-in": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubSignInResult"];
+                };
             };
             /** @description Error */
             default: {

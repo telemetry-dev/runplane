@@ -135,6 +135,15 @@ type GitHub interface {
 	Sync(ctx context.Context) error
 	// Disconnect stops the listeners, deletes the scale sets, and removes the app.
 	Disconnect(ctx context.Context) error
+	// CanSignIn reports if StartSignIn works: the build has the OAuth client
+	// ID of runplane.
+	CanSignIn() bool
+	// StartSignIn starts a GitHub sign-in with the device flow, to list the
+	// accounts where the user can make the app.
+	StartSignIn(ctx context.Context) (GitHubSignIn, error)
+	// SignInResult reads the state of a sign-in. It asks GitHub at most once
+	// in each interval of the sign-in.
+	SignInResult(ctx context.Context, id string) (GitHubSignInResult, error)
 }
 
 type Servers interface {
@@ -269,6 +278,8 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionRead, "GET /api/overview", "get-overview", "Read the overview numbers, running jobs, servers, and chart", h.getOverview)
 
 	handle(h, auth.ActionRead, "GET /api/github", "get-github", "Read the GitHub App, installations, and listener status", h.getGitHub)
+	handle(h, auth.ActionAdmin, "POST /api/github/sign-in", "start-github-sign-in", "Start a GitHub sign-in that lists the accounts for the app", h.startGitHubSignIn)
+	handle(h, auth.ActionAdmin, "GET /api/github/sign-in/{id}", "get-github-sign-in", "Read the state and the accounts of a GitHub sign-in", h.getGitHubSignIn)
 	handle(h, auth.ActionAdmin, "POST /api/github/manifest", "create-github-manifest", "Start the GitHub App manifest flow", h.createManifest)
 	handle(h, public, "GET /api/github/callback", "github-callback", "Finish the manifest flow (browser redirect from GitHub)", h.githubCallback, redirectResponse)
 	handle(h, public, "GET /api/github/setup", "github-setup", "Record an installation (browser redirect from GitHub)", h.githubSetup, redirectResponse)

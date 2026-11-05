@@ -807,6 +807,13 @@ finish() {
 	case $host in
 	'' | 0.0.0.0 | '[::]') host=$ip ;;
 	esac
+	# The tunnel uses a different local port, because a runplane on the
+	# computer of the user can have the dashboard port.
+	tunnel="ssh -N -L 18484:localhost:$port ${SUDO_USER:-root}@$ip"
+	blocked=0
+	if [ -z "$DOMAIN" ] && dashboard_blocked "$port"; then
+		blocked=1
+	fi
 	mode=$MODE
 	[ "$DRY_RUN" = 1 ] || mode=$(running_mode)
 	say "runplane operates in ${mode:-$MODE} mode."
@@ -817,6 +824,8 @@ finish() {
 	if [ -n "$DOMAIN" ]; then
 		say "  Dashboard:  https://$DOMAIN"
 		say "              http://$host:$port until the DNS record points to this server"
+	elif [ "$blocked" = 1 ]; then
+		say "  Dashboard:  http://localhost:18484 through an SSH tunnel (see below)"
 	else
 		say "  Dashboard:  http://$host:$port"
 	fi
@@ -834,16 +843,23 @@ finish() {
 	fi
 	case $host in
 	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*)
-		say "This address is private. From a different network, use the public address of this server."
+		say "$host is a private address. From a different network, use the public address of this server."
 		;;
 	esac
 	say ""
 	if [ -n "$DOMAIN" ]; then
 		say "The A record of $DOMAIN must point to the public IP address of this server, with no proxy."
 		say "runplane gets the certificate at the first visit. Settings > General shows the DNS record."
+	elif [ "$blocked" = 1 ]; then
+		say "The firewall of this server blocks port $port. On your computer, open an SSH tunnel:"
+		say ""
+		say "  $tunnel"
+		say ""
+		say "Then open http://localhost:18484. For HTTPS without a tunnel, set a domain in Settings > General."
 	else
 		say "The dashboard uses HTTP. Set a domain in Settings > General to get HTTPS,"
-		say "or connect through an SSH tunnel: ssh -L $port:localhost:$port <user>@$ip"
+		say "or open an SSH tunnel on your computer: $tunnel"
+		say "Then open http://localhost:18484."
 	fi
 	say "Logs: journalctl -u $SERVICE -f"
 }
@@ -1078,6 +1094,26 @@ with_env() {
 listen_addr() {
 	addr=${LISTEN:-$(sed -n 's/^RUNPLANE_LISTEN=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)}
 	printf '%s' "${addr:-:8484}"
+}
+
+# dashboard_blocked reports if the host firewall drops new connections to
+# port $1: ufw is active and has no rule for the port, or an nftables input
+# chain drops by default and no rule accepts the port. A firewall of the
+# cloud provider, outside this host, can also block the port.
+dashboard_blocked() {
+	if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+		if ufw status | grep -Eq "^$1(/tcp)?[[:space:]].*ALLOW"; then
+			return 1
+		fi
+		return 0
+	fi
+	command -v nft >/dev/null 2>&1 || return 1
+	rules=$(nft list ruleset 2>/dev/null) || return 1
+	printf '%s\n' "$rules" | grep -q 'hook input .*policy drop' || return 1
+	if printf '%s\n' "$rules" | grep 'dport' | grep 'accept' | grep -Eq "(^|[^0-9])$1([^0-9]|\$)"; then
+		return 1
+	fi
+	return 0
 }
 
 # local_url is the dashboard address for requests from this host.

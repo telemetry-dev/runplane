@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -17,6 +19,7 @@ type GitHubStatus struct {
 	App           *GitHubApp       `json:"app,omitempty" doc:"Absent before the manifest flow."`
 	Installations []Installation   `json:"installations"`
 	ScaleSets     []ScaleSetStatus `json:"scale_sets" doc:"One for each pool and installation, or for each pool and repository of a personal account."`
+	CanSignIn     bool             `json:"can_sign_in" doc:"The setup can list the GitHub accounts of the user with a sign-in. A build without the OAuth client ID of runplane cannot."`
 }
 
 type GitHubApp struct {
@@ -78,7 +81,7 @@ type ScaleSetStats struct {
 
 func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 	st := h.d.Store
-	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}}
+	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}, CanSignIn: h.d.GitHub != nil && h.d.GitHub.CanSignIn()}
 	web := "https://github.com"
 	app, err := st.GetGitHubApp(ctx)
 	switch {
@@ -182,6 +185,48 @@ func (h *Handler) githubConnected(ctx context.Context) (bool, error) {
 	}
 	list, err := h.d.Store.ListInstallations(ctx)
 	return len(list) > 0, err
+}
+
+type GitHubSignIn struct {
+	ID              string `json:"id" doc:"Read the result of the sign-in with this ID."`
+	UserCode        string `json:"user_code" doc:"The code that the user types on GitHub, for example WDJB-MJHT."`
+	VerificationURI string `json:"verification_uri" doc:"The GitHub page where the user types the code."`
+	Interval        int    `json:"interval" doc:"Seconds to wait before the first read of the result."`
+}
+
+type GitHubSignInResult struct {
+	Status   string          `json:"status" enum:"pending,done,expired,denied" doc:"pending until the user approves runplane on GitHub. After expired or denied, start a new sign-in."`
+	Interval int             `json:"interval" doc:"Seconds to wait before the next read. GitHub can make the interval longer."`
+	Login    string          `json:"login" doc:"The GitHub user who signed in. Empty until done."`
+	Accounts []GitHubAccount `json:"accounts" doc:"The accounts for the app when done: the organizations that the user owns, the personal account, then the other organizations."`
+}
+
+type GitHubAccount struct {
+	Login string `json:"login"`
+	Type  string `json:"type" enum:"organization,user" doc:"The account_type of the manifest request."`
+	Owner bool   `json:"owner" doc:"The user owns the account. Other members of an organization can make the app only as its GitHub App managers."`
+}
+
+func (h *Handler) startGitHubSignIn(ctx context.Context, _ *struct{}) (*body[GitHubSignIn], error) {
+	if h.d.GitHub == nil || !h.d.GitHub.CanSignIn() {
+		return nil, huma.Error503ServiceUnavailable("This runplane build cannot sign in to GitHub. Type the organization name.")
+	}
+	in, err := h.d.GitHub.StartSignIn(ctx)
+	if err != nil {
+		return nil, h.serviceErr(err)
+	}
+	return &body[GitHubSignIn]{in}, nil
+}
+
+func (h *Handler) getGitHubSignIn(ctx context.Context, in *PathID) (*body[GitHubSignInResult], error) {
+	if h.d.GitHub == nil {
+		return nil, unavailable("The GitHub connection")
+	}
+	r, err := h.d.GitHub.SignInResult(ctx, in.ID)
+	if err != nil {
+		return nil, h.serviceErr(err)
+	}
+	return &body[GitHubSignInResult]{r}, nil
 }
 
 type ManifestRequest struct {

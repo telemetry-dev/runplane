@@ -113,10 +113,12 @@ sudo sh install.sh --binary ./runplane-linux-<arch> --token rp_srv_... --primary
 1. Open the dashboard URL that the install script shows, for example `http://203.0.113.10:8484`.
 2. Type the setup code to make the admin account.
 3. Select **Connect GitHub**.
-4. Select an organization or your personal account.
-5. On GitHub, select **Create GitHub App**.
-6. Install the app on your repositories.
-7. In a workflow file, set `runs-on` to the label of the default pool:
+4. Select **Sign in with GitHub**, then select **Copy code and open GitHub**.
+5. On GitHub, paste the code and approve runplane. runplane uses the sign-in only to list your accounts. It does not keep the token.
+6. In **Install on**, select the organization or your personal account. The organizations that you own come first.
+7. Select **Create GitHub App**, then on GitHub, select **Create GitHub App** again.
+8. Install the app on your repositories.
+9. In a workflow file, set `runs-on` to the label of the default pool:
 
    ```yaml
    jobs:
@@ -127,9 +129,11 @@ sudo sh install.sh --binary ./runplane-linux-<arch> --token rp_srv_... --primary
          - run: make test
    ```
 
-8. Push the change.
+10. Push the change.
 
 The job shows on the **Jobs** page of the dashboard. If you lose the setup code, run `sudo runplane setup-code` on the server.
+
+A build without an OAuth client ID has no sign-in (refer to [Release](#release)). With such a build, or after **Type the name**, type the name of the organization from its URL: `acme` for `github.com/acme`. If GitHub does not find the organization, it makes the app on your personal account. runplane then shows an error with the page where you delete that app.
 
 ## The two modes
 
@@ -205,8 +209,10 @@ runplane encrypts the secrets in its database with `/etc/runplane/secret.key`: t
 The dashboard uses HTTP on port 8484. To get HTTPS with Let's Encrypt, set a domain in **Settings > General**, or add `--domain ci.example.com` to the install command. The A or AAAA record of the domain must point to the server, with no proxy. **Settings > General** shows the IP address for the record, and it shows if the record is correct. Ports 80 and 443 must be free on the server and open in the firewall. If a different web server uses these ports, the certificate row of the settings shows the error. If you do not set a domain, open the dashboard through an SSH tunnel:
 
 ```sh
-ssh -L 8484:localhost:8484 user@server
+ssh -N -L 18484:localhost:8484 user@server
 ```
+
+Then open `http://localhost:18484`. The tunnel uses the local port 18484, because a runplane on your computer can use port 8484. If the firewall of the server blocks port 8484, the install script shows this command in place of the dashboard URL.
 
 To set the domain from the shell of the primary, run `sudo runplane set-domain ci.example.com`. Then run `sudo systemctl restart runplane`. An empty domain (`''`) stops HTTPS.
 
@@ -304,7 +310,11 @@ docker run --rm --privileged -v "$PWD":/src -v "$HOME/go/pkg/mod":/go/pkg/mod -w
 1. Make an ed25519 key one time: `openssl genpkey -algorithm ed25519 -out runplane-signing.pem`.
 2. Keep a copy of the key in a safe location.
 3. Add the contents of the key file as the repository secret `RUNPLANE_SIGNING_KEY`.
-4. Push a tag: `git tag v1.2.0 && git push origin v1.2.0`.
+4. Make an OAuth app one time in the settings of the GitHub organization. Select **Enable Device Flow**. Use the repository URL as the homepage URL and the callback URL.
+5. Set `GITHUB_CLIENT_ID` in the `Makefile` to the client ID of the OAuth app.
+6. Push a tag: `git tag v1.2.0 && git push origin v1.2.0`.
+
+The setup signs in to GitHub with the OAuth app to list the accounts of the user. The client ID is not a secret, and the device flow needs no client secret.
 
 The `release.yml` workflow then does these steps:
 

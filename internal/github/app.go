@@ -87,7 +87,8 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 	if code == "" || state == "" {
 		return "", errors.New("GitHub did not send the code and the state. Start again")
 	}
-	if _, err := s.st.ConsumeManifestState(ctx, hashState(state), time.Now()); err != nil {
+	requested, err := s.st.ConsumeManifestState(ctx, hashState(state), time.Now())
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return "", errors.New("the GitHub App request is unknown or older than one hour. Start again")
 		}
@@ -104,9 +105,16 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 		HTMLURL       string  `json:"html_url"`
 		Owner         account `json:"owner"`
 	}
-	err := s.api.json(ctx, call{method: http.MethodPost, path: "/app-manifests/" + url.PathEscape(code) + "/conversions"}, &conv)
+	err = s.api.json(ctx, call{method: http.MethodPost, path: "/app-manifests/" + url.PathEscape(code) + "/conversions"}, &conv)
 	if err != nil {
 		return "", fmt.Errorf("make the GitHub App: %w", err)
+	}
+	// For an organization that does not exist, or where the user cannot make
+	// apps, GitHub makes the app on the personal account.
+	if requested.AccountType == "organization" && !strings.EqualFold(conv.Owner.Login, requested.Organization) {
+		made := store.GitHubApp{Slug: conv.Slug, OwnerLogin: conv.Owner.Login, OwnerType: conv.Owner.Type, HTMLURL: conv.HTMLURL}
+		return "", fmt.Errorf("GitHub made the app on %s, not on the organization %s: the organization does not exist, "+
+			"or you cannot make apps in it. Delete the app at %s, then start again", conv.Owner.Login, requested.Organization, appDeleteURL(made))
 	}
 	if _, err := parseKey([]byte(conv.PEM)); err != nil {
 		return "", err

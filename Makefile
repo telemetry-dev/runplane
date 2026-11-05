@@ -6,6 +6,10 @@ COMMIT  ?= $(shell git rev-parse --verify -q HEAD)
 REPO    ?= runplane/runplane
 # Base64 of the raw 32-byte ed25519 key that verifies SHA256SUMS.sig (self-update).
 UPDATE_PUBLIC_KEY ?=
+# Client ID of the OAuth app of runplane, with the device flow on. The setup
+# signs in to GitHub with it to list the accounts for the GitHub App. It is
+# not a secret. Without it, the setup asks for the organization name.
+GITHUB_CLIENT_ID ?=
 GOOS    ?= $(shell go env GOOS)
 GOARCH  ?= $(shell go env GOARCH)
 
@@ -13,7 +17,8 @@ LDFLAGS := -s -w \
 	-X $(PKG)/internal/version.Version=$(VERSION) \
 	-X $(PKG)/internal/version.Commit=$(COMMIT) \
 	-X $(PKG)/internal/version.Repo=$(REPO) \
-	-X $(PKG)/internal/update.PublicKey=$(UPDATE_PUBLIC_KEY)
+	-X $(PKG)/internal/update.PublicKey=$(UPDATE_PUBLIC_KEY) \
+	-X $(PKG)/internal/github.ClientID=$(GITHUB_CLIENT_ID)
 
 SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo shasum -a 256)
 SHELLSCRIPTS := install.sh kernel/build.sh $(wildcard deploy/*.sh)
@@ -109,7 +114,7 @@ dev: init
 	mkdir -p .dev/data .dev/etc
 	pnpm -C web install
 	RUNPLANE_DATA_DIR=.dev/data RUNPLANE_CONFIG_DIR=.dev/etc RUNPLANE_MODE=dev RUNPLANE_DEV=1 \
-		RUNPLANE_DEV_INSECURE=1 go run ./cmd/runplane serve & \
+		RUNPLANE_DEV_INSECURE=1 go run -ldflags "-X $(PKG)/internal/github.ClientID=$(GITHUB_CLIENT_ID)" ./cmd/runplane serve & \
 	pnpm -C web dev & \
 	wait
 

@@ -64,6 +64,10 @@ type Service struct {
 	web     string
 	owner   string // names the listener sessions on GitHub
 
+	clientID string // OAuth app of the sign-ins, see ClientID
+	signMu   sync.Mutex
+	signIns  map[string]*signIn
+
 	// ops serializes the changes of installations and scale sets.
 	ops  sync.Mutex
 	poke chan struct{}
@@ -105,6 +109,8 @@ func New(cfg Config) *Service {
 		api:       newREST("https://api.github.com"),
 		web:       "https://github.com",
 		owner:     cmp.Or(owner, "runplane"),
+		clientID:  ClientID,
+		signIns:   map[string]*signIn{},
 		poke:      make(chan struct{}, 1),
 		base:      base,
 		stop:      stop,
