@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -82,6 +83,27 @@ func TestSetDomainStoresTheDomain(t *testing.T) {
 	}
 }
 
+// install.sh makes the setup code before the first start of runplane, thus
+// before the database exists. serve then keeps that code.
+func TestSetupCodeBeforeTheFirstStart(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("RUNPLANE_CONFIG_DIR", dir)
+	t.Setenv("RUNPLANE_DATA_DIR", dir)
+
+	if err := setupCode(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(dir + "/runplane.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if code, err := auth.NewService(st, nil, nil).EnsureSetupCode(ctx); err != nil || code != "" {
+		t.Fatalf("serve makes the setup code %q (%v), want none: the code of setup-code is valid", code, err)
+	}
+}
+
 // An agent must not install the latest release, which can be newer than
 // the release of its primary.
 func TestUpdateRefusesAnAgent(t *testing.T) {
@@ -100,7 +122,8 @@ func TestUpdateRefusesAnAgent(t *testing.T) {
 
 // An agent reads no database, and the primary makes its database at the
 // first start. A command that made a database would report a change that
-// runplane does not use. Only set-domain makes one, for install.sh --domain.
+// runplane does not use. Only set-domain and setup-code make one on a
+// primary, because install.sh runs them before the first start.
 func TestCommandsMakeNoDatabase(t *testing.T) {
 	for _, tt := range []struct {
 		agent bool
@@ -110,7 +133,6 @@ func TestCommandsMakeNoDatabase(t *testing.T) {
 		{true, []string{"reset-password", "admin@example.com"}},
 		{true, []string{"set-mode", "vm"}},
 		{true, []string{"set-domain", "ci.example.com"}},
-		{false, []string{"setup-code"}},
 		{false, []string{"reset-password", "admin@example.com"}},
 		{false, []string{"set-mode", "vm"}},
 	} {

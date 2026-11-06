@@ -36,8 +36,8 @@ The script does these steps:
 3. It downloads runplane and makes sure that the signature of `SHA256SUMS` and the SHA-256 of each file are correct (refer to [Release](#release)).
 4. In container mode, it installs Docker Engine (only if the server does not have it) and Sysbox.
 5. In VM mode, it installs Firecracker v1.17.0, the jailer, and the guest kernel. It also gives the user `runplane-vm` a range of uids and gids, one for each VM. If the base image of the release repository is not public on GHCR, it installs Docker Engine, because runplane then builds the base image on the server. Docker builds images only, and the jobs operate in VMs.
-6. It writes `/etc/runplane/runplane.env` and the systemd units, then it starts `runplane.service`.
-7. It runs `runplane doctor` and shows the dashboard URL and a one-time setup code.
+6. It writes `/etc/runplane/runplane.env` and the systemd units, and it makes a one-time setup code. Then it starts `runplane.service`.
+7. It runs `runplane doctor` and shows the dashboard URL and the setup code.
 
 To see each step before the install, add `--dry-run`. The dry run changes nothing on the server.
 

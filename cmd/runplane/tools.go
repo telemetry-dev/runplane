@@ -32,12 +32,15 @@ import (
 	"github.com/runplane/runplane/internal/version"
 )
 
+// setupCode prints a new setup code for the first admin. It makes the
+// database when it does not exist, because install.sh makes the code before
+// the first start: serve then keeps that code and logs no different code.
 func setupCode(ctx context.Context, args []string) error {
 	cfg, err := config.Parse(flag.NewFlagSet("setup-code", flag.ContinueOnError), args, config.DataDir)
 	if err != nil {
 		return err
 	}
-	st, err := openDB(cfg, false)
+	st, err := openDB(cfg, true)
 	if err != nil {
 		return err
 	}
