@@ -6,9 +6,8 @@ import { poolsQuery } from '~/api/pools'
 import { useCapabilities } from '~/api/session'
 import { CodeBlock } from '~/components/app/code-block'
 import { JobWait, LabelTable, suggestedLabel, workflowDiff } from '~/components/pages/first-job/first-job'
-import { jobRepositories } from '~/components/pages/github/links'
 import { ExternalTextLink, Loading } from '~/components/pages/github/parts'
-import { PullRequestForm } from '~/components/pages/github/pull-request-form'
+import { PullRequestForm, useJobRepositories } from '~/components/pages/github/pull-request-form'
 import { GithubIcon } from '~/components/ui/icons'
 import { formatCount } from '~/lib/format'
 import { SetupHeader } from './parts'
@@ -24,11 +23,11 @@ export function prefetch(client: QueryClient) {
 export function FirstJobStep() {
   const navigate = useNavigate()
   const { admin } = useCapabilities()
-  const { app, installations, hosted_labels } = useSuspenseQuery(githubQuery).data
+  const { installations } = useSuspenseQuery(githubQuery).data
   const pools = useSuspenseQuery(poolsQuery).data
   const labels = pools.filter((pool) => pool.enabled)
   const label = suggestedLabel(pools)
-  const repositories = jobRepositories(installations)
+  const repositories = useJobRepositories()
 
   return (
     <>
@@ -38,13 +37,7 @@ export function FirstJobStep() {
       {label && admin && repositories.length > 0 && (
         <section className="flex flex-col gap-xs">
           <h2 className="text-s font-medium text-neutral-10">Open a pull request</h2>
-          <PullRequestForm
-            repositories={repositories}
-            labels={[label]}
-            defaultLabel={label}
-            hostedLabels={hosted_labels}
-            permissionsUrl={app?.permissions_url}
-          />
+          <PullRequestForm labels={[label]} defaultLabel={label} />
         </section>
       )}
       <LabelTable pools={labels} />

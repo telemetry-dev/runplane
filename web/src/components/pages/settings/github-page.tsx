@@ -12,9 +12,8 @@ import { GitHubAppCard, GitHubCard, ListenerStatus } from '~/components/pages/gi
 import type { CallbackSearch } from '~/components/pages/github/callback'
 import { DisconnectGitHub } from '~/components/pages/github/disconnect'
 import { InstallationList } from '~/components/pages/github/installation-list'
-import { jobRepositories } from '~/components/pages/github/links'
 import { CallbackError, InstallRequested, Loading } from '~/components/pages/github/parts'
-import { PullRequestForm } from '~/components/pages/github/pull-request-form'
+import { PullRequestForm, useJobRepositories } from '~/components/pages/github/pull-request-form'
 import { buttonClassName, IconButton } from '~/components/ui/button'
 import { GithubIcon } from '~/components/ui/icons'
 import { cx } from '~/lib/cx'
@@ -28,7 +27,7 @@ export function prefetch(client: QueryClient) {
 /** Settings · GitHub: the app, its installations, the pull request form, job access, and the disconnect. `search` is what the GitHub callbacks report. */
 export function GitHubSettings({ search: { error, requested } }: { search: CallbackSearch }) {
   const navigate = useNavigate()
-  const { app, installations, scale_sets, hosted_labels } = useSuspenseQuery(githubQuery).data
+  const { app, installations, scale_sets } = useSuspenseQuery(githubQuery).data
   const settings = useSuspenseQuery(settingsQuery).data
   const { admin } = useCapabilities()
   const dismiss = () => void navigate({ to: '/settings/github', search: {}, replace: true })
@@ -57,7 +56,7 @@ export function GitHubSettings({ search: { error, requested } }: { search: Callb
         )}
       </section>
       {app && <Installations app={app} installations={installations} admin={admin} />}
-      {app && admin && <PullRequests app={app} installations={installations} hostedLabels={hosted_labels} />}
+      {app && admin && <PullRequests />}
       <JobAccess settings={settings} admin={admin} />
       {app && admin && <DisconnectGitHub appName={app.name} />}
     </SettingsColumn>
@@ -109,30 +108,18 @@ function Installations({ app, installations, admin }: InstallationsProps) {
   )
 }
 
-type PullRequestsProps = {
-  app: Schemas['GitHubApp']
-  installations: Schemas['Installation'][]
-  hostedLabels: string[]
-}
-
 /** "Open a pull request": moves the jobs of one more repository to runplane at any time after the setup. */
-function PullRequests({ app, installations, hostedLabels }: PullRequestsProps) {
+function PullRequests() {
   const pools = useSuspenseQuery(poolsQuery).data
   const labels = pools.filter((pool) => pool.enabled).map((pool) => pool.label)
   const label = suggestedLabel(pools)
-  const repositories = jobRepositories(installations)
+  const repositories = useJobRepositories()
   if (!label || repositories.length === 0) return null
 
   return (
     <section className="flex flex-col gap-s">
       <SectionHeader title="Open a pull request" />
-      <PullRequestForm
-        repositories={repositories}
-        labels={labels}
-        defaultLabel={label}
-        hostedLabels={hostedLabels}
-        permissionsUrl={app.permissions_url}
-      />
+      <PullRequestForm labels={labels} defaultLabel={label} />
     </section>
   )
 }
