@@ -97,3 +97,17 @@ jobs:
           test ! -e /usr/local/bin/runplane
           test ! -e /etc/systemd/system/runplane.service
           sudo test ! -e /var/lib/runplane
+      # The tests that start real sandboxes, on the Docker and Sysbox that
+      # the uninstall keeps. The service and its firewall rules are gone, so
+      # the tests can own the runplane network. -p 1 runs one package at a
+      # time, because the two packages use the same network.
+      - name: Sandbox tests on Docker and Sysbox
+        run: |
+          sudo apt-get install -y -q nftables
+          sudo docker build -q -t runplane-test internal/sandbox/sysbox/sysboxtest
+          CGO_ENABLED=0 go build -o /tmp/runplane-init ./init
+          sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME \
+            RUNPLANE_TEST_DOCKER=1 RUNPLANE_TEST_IMAGE=runplane-test RUNPLANE_TEST_INIT=/tmp/runplane-init \
+            "$(go env GOROOT)/bin/go" test -count=1 -p 1 -v -run 'TestContainerMode|TestSandbox' ./internal/sandbox/sysbox/ ./internal/sandbox/devdocker/
+        env:
+          GOCACHE: /tmp/go-root-cache

@@ -186,6 +186,8 @@ func TestSandbox(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("stop of an idle sandbox: %s", time.Since(stopped).Round(time.Millisecond))
+		// The events come after Stop returns.
+		ev.Wait(t, id, sandbox.StateGone, time.Minute)
 		if got, want := ev.States(id), []sandbox.State{"starting", "idle", "stopping", "gone"}; !slices.Equal(got, want) {
 			t.Errorf("states = %v, want %v", got, want)
 		}
