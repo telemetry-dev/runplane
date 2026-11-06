@@ -16,8 +16,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const tableName = "runplane"
-
 // blockedNets are the destinations that sandboxes may not reach: private
 // networks, carrier-grade NAT (with Alibaba metadata at 100.100.100.200),
 // link-local (with cloud metadata at 169.254.169.254), the Azure host
@@ -70,7 +68,7 @@ func writeTable(p policy) error {
 	if err := addBridgeTable(c, p); err != nil {
 		return err
 	}
-	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: tableName})
+	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: TableName})
 
 	concat := nftables.MustConcatSetType(nftables.TypeIFName, nftables.TypeIPAddr)
 	ifaces := &nftables.Set{Table: t, Name: "ifaces", KeyType: nftables.TypeIFName, Interval: true}
@@ -211,7 +209,7 @@ func tableExists(c *nftables.Conn, family nftables.TableFamily) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list nftables tables: %w", err)
 	}
-	return slices.ContainsFunc(tables, func(t *nftables.Table) bool { return t.Name == tableName }), nil
+	return slices.ContainsFunc(tables, func(t *nftables.Table) bool { return t.Name == TableName }), nil
 }
 
 // dropTable adds the deletion of the runplane table of family to the batch
@@ -219,7 +217,7 @@ func tableExists(c *nftables.Conn, family nftables.TableFamily) (bool, error) {
 func dropTable(c *nftables.Conn, family nftables.TableFamily) (bool, error) {
 	exists, err := tableExists(c, family)
 	if exists {
-		c.DelTable(&nftables.Table{Family: family, Name: tableName})
+		c.DelTable(&nftables.Table{Family: family, Name: TableName})
 	}
 	return exists, err
 }
@@ -236,7 +234,7 @@ func readLinks() (map[string]link, error) {
 	if err != nil || !exists {
 		return links, err
 	}
-	t := &nftables.Table{Family: nftables.TableFamilyINet, Name: tableName}
+	t := &nftables.Table{Family: nftables.TableFamilyINet, Name: TableName}
 	sources, err := c.GetSetElements(&nftables.Set{Table: t, Name: "sources"})
 	if err != nil {
 		return nil, fmt.Errorf("read set sources: %w", err)

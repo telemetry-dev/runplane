@@ -58,25 +58,25 @@ func (d *Driver) recover(ctx context.Context) error {
 	}
 	res, err := d.docker.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: d.owned(client.Filters{}.Add("label", labelSandbox)),
+		Filters: d.owned(client.Filters{}.Add("label", LabelSandbox)),
 	})
 	if err != nil {
 		return fmt.Errorf("list sandbox containers: %w", err)
 	}
 	for _, c := range res.Items {
-		if !hasFolder(c.Labels[labelSandbox]) {
+		if !hasFolder(c.Labels[LabelSandbox]) {
 			d.removeOrphan(ctx, c.ID)
 		}
 	}
 	if !d.opts.Profile.loopScratch {
 		vols, err := d.docker.VolumeList(ctx, client.VolumeListOptions{
-			Filters: d.owned(client.Filters{}.Add("label", labelSandbox)),
+			Filters: d.owned(client.Filters{}.Add("label", LabelSandbox)),
 		})
 		if err != nil {
 			return fmt.Errorf("list scratch volumes: %w", err)
 		}
 		for _, v := range vols.Items {
-			if hasFolder(v.Labels[labelSandbox]) {
+			if hasFolder(v.Labels[LabelSandbox]) {
 				continue
 			}
 			if _, err := d.docker.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true}); err != nil {

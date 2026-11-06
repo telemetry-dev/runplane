@@ -21,11 +21,27 @@ const TapPrefix = "rp-"
 // TunDevice is the device through which the kernel makes TAP devices.
 const TunDevice = "/dev/net/tun"
 
+// TableName is the name of the nftables tables "inet runplane" and "bridge
+// runplane".
+const TableName = "runplane"
+
+// RuleComment marks the iptables rules that runplane owns.
+const RuleComment = "runplane"
+
+const dockerUser = "DOCKER-USER"
+
+// RuleChains are the chains of the iptables filter table that can have
+// runplane rules.
+var RuleChains = []string{"INPUT", "FORWARD", dockerUser}
+
 // DefaultTapSubnet is the VM mode address range. Each VM gets one /30 of it.
 var DefaultTapSubnet = netip.MustParsePrefix("10.214.0.0/16")
 
 // leaseBits is the prefix length of the block of one lease.
 const leaseBits = 30
+
+// TapLeases is the count of leases in a TAP range.
+func TapLeases(subnet netip.Prefix) int { return 1 << (leaseBits - subnet.Bits()) }
 
 // Config is the firewall policy for all sandboxes on the host.
 type Config struct {
@@ -125,7 +141,7 @@ func (a *allocator) use(names []string) {
 	}
 }
 
-func (a *allocator) size() int { return 1 << (leaseBits - a.subnet.Bits()) }
+func (a *allocator) size() int { return TapLeases(a.subnet) }
 
 func tapIndex(name string) (int, bool) {
 	s, ok := strings.CutPrefix(name, TapPrefix)

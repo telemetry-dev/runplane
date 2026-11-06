@@ -21,6 +21,8 @@ RUNPLANE_PUBLIC_KEY=${RUNPLANE_PUBLIC_KEY:-}
 # from api.github.com, which has a low rate limit without a token.
 RUNPLANE_FIRECRACKER_VERSION=${RUNPLANE_FIRECRACKER_VERSION:-v1.17.0}
 
+# The Go code has copies of many values of this script.
+# cmd/runplane/install_test.go compares them.
 BIN=/usr/local/bin/runplane
 CONFIG_DIR=/etc/runplane
 DATA_DIR=/var/lib/runplane
@@ -29,9 +31,9 @@ AGENT_FILE=$CONFIG_DIR/agent.json
 KERNEL_FILE=$DATA_DIR/kernel/vmlinux
 UNIT_DIR=/etc/systemd/system
 VM_USER=runplane-vm
-# The uids and gids of the VMs (reserve_vm_ids): one for each TAP address
-# block of 10.214.0.0/16. The range starts after the container ranges of
-# systemd (https://systemd.io/UIDS-GIDS/), in IDs that no tool allocates.
+# The uids and gids of the VMs (reserve_vm_ids): one for each TAP lease of
+# the VM subnet. The range starts after the container ranges of systemd
+# (https://systemd.io/UIDS-GIDS/), in IDs that no tool allocates.
 VM_ID_START=1879048192
 VM_ID_COUNT=16384
 SYSBOX_MIN=0.7.1

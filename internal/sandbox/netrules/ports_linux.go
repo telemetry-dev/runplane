@@ -116,7 +116,7 @@ func addBridgeTable(c *nftables.Conn, p policy) error {
 	if _, err := dropTable(c, nftables.TableFamilyBridge); err != nil {
 		return err
 	}
-	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyBridge, Name: tableName})
+	t := c.AddTable(&nftables.Table{Family: nftables.TableFamilyBridge, Name: TableName})
 
 	bridges := &nftables.Set{Table: t, Name: "bridges", KeyType: nftables.TypeIFName}
 	bound := &nftables.Set{Table: t, Name: "bound", KeyType: nftables.TypeIFName}
@@ -208,7 +208,7 @@ func readPorts() (map[string]port, error) {
 	if err != nil || !exists {
 		return ports, err
 	}
-	t := &nftables.Table{Family: nftables.TableFamilyBridge, Name: tableName}
+	t := &nftables.Table{Family: nftables.TableFamilyBridge, Name: TableName}
 	elems, err := c.GetSetElements(&nftables.Set{Table: t, Name: "ports"})
 	if err != nil {
 		return nil, fmt.Errorf("read set ports: %w", err)

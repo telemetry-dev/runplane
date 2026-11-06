@@ -25,6 +25,9 @@ import (
 // connect after the install script ends.
 const connectWait = time.Minute
 
+// StepPrefix starts the line of each step in the output of install.sh.
+const StepPrefix = "==> "
+
 // Script returns install.sh with the values of this primary: the release
 // repository, the agent address for the agents that reach the primary at
 // host (host[:port] of the request), the certificate fingerprint, the
@@ -216,7 +219,7 @@ func (f *Fleet) install(ctx context.Context, job installJob) {
 	var last string
 	var shown time.Time
 	err := sshinstall.Install(ctx, job.target, job.signer, f.knownHosts, job.command, bytes.NewReader(job.script), func(line string) {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "==> "))
+		line = strings.TrimSpace(strings.TrimPrefix(line, StepPrefix))
 		if line == "" {
 			return
 		}

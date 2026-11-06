@@ -21,11 +21,11 @@ import (
 // The programs and the user of the VMs on the host, which install.sh
 // installs.
 const (
-	firecrackerBin = "/usr/local/bin/firecracker"
-	jailerBin      = "/usr/local/bin/jailer"
-	// jailerUser has the ranges of the uids and gids of the VMs in subuidFile
+	Binary       = "/usr/local/bin/firecracker"
+	JailerBinary = "/usr/local/bin/jailer"
+	// JailerUser has the ranges of the uids and gids of the VMs in subuidFile
 	// and subgidFile.
-	jailerUser = "runplane-vm"
+	JailerUser = "runplane-vm"
 	subuidFile = "/etc/subuid"
 	subgidFile = "/etc/subgid"
 )
@@ -36,13 +36,13 @@ func Requirements(kernel, jailDir string) doctor.Requirements {
 	return doctor.Requirements{
 		Mode: doctor.ModeCheck.OK("VM mode (Firecracker)"),
 		Software: func(ctx context.Context, h *doctor.Host) {
-			h.FirecrackerVersion = doctor.ToolVersion(ctx, firecrackerBin)
+			h.FirecrackerVersion = doctor.ToolVersion(ctx, Binary)
 		},
 		Checks: func(ctx context.Context, h *doctor.Host) []doctor.Check {
 			f := vmHost{Host: h, guestKernel: kernel, jailDir: jailDir}
-			f.jailerVersion = doctor.ToolVersion(ctx, jailerBin)
+			f.jailerVersion = doctor.ToolVersion(ctx, JailerBinary)
 			f.guestKernelErr = checkKernelFile(kernel)
-			f.ids, f.idsErr = readIDRange(jailerUser, subuidFile, subgidFile)
+			f.ids, f.idsErr = readIDRange(JailerUser, subuidFile, subgidFile)
 			f.tunErr = checkTun()
 			f.mount, f.mountErr = readMountOptions(jailDir)
 			f.firewall = doctor.ReadFirewall(ctx, h.Root)
@@ -112,9 +112,9 @@ func (h vmHost) firecrackerCheck() doctor.Check {
 	c := doctor.Check{ID: "firecracker", Name: "Firecracker"}
 	switch {
 	case h.FirecrackerVersion == "":
-		return c.Fail("Cannot run "+firecrackerBin, "Run the install script again.")
+		return c.Fail("Cannot run "+Binary, "Run the install script again.")
 	case h.jailerVersion == "":
-		return c.Fail("Cannot run "+jailerBin, "Run the install script again.")
+		return c.Fail("Cannot run "+JailerBinary, "Run the install script again.")
 	case h.FirecrackerVersion != h.jailerVersion:
 		return c.Fail(fmt.Sprintf("firecracker %s and jailer %s differ", h.FirecrackerVersion, h.jailerVersion), "Install firecracker and jailer from the same release.")
 	}
@@ -143,9 +143,9 @@ func checkKernelFile(path string) error {
 func (h vmHost) idsCheck() doctor.Check {
 	c := doctor.Check{ID: "vm_ids", Name: "VM user IDs"}
 	if h.idsErr != nil {
-		return c.Fail(fmt.Sprintf("Cannot read the IDs of the VMs: %v", h.idsErr), "Run the install script again: it adds the user "+jailerUser+" and its ID ranges.")
+		return c.Fail(fmt.Sprintf("Cannot read the IDs of the VMs: %v", h.idsErr), "Run the install script again: it adds the user "+JailerUser+" and its ID ranges.")
 	}
-	return c.OK(fmt.Sprintf("%s has the uids from %d and the gids from %d for %d VMs", jailerUser, h.ids.uid, h.ids.gid, h.ids.count))
+	return c.OK(fmt.Sprintf("%s has the uids from %d and the gids from %d for %d VMs", JailerUser, h.ids.uid, h.ids.gid, h.ids.count))
 }
 
 func (h vmHost) tunCheck() doctor.Check {

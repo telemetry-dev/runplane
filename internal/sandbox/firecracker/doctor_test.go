@@ -71,7 +71,7 @@ func TestVMChecks(t *testing.T) {
 		{"jailer from another release", func(h *vmHost) { h.jailerVersion = "1.12.0" }, "firecracker", doctor.StatusFail},
 		{"guest kernel missing", func(h *vmHost) { h.guestKernelErr = fs.ErrNotExist }, "guest_kernel", doctor.StatusFail},
 		{"no ID range", func(h *vmHost) {
-			h.idsErr = fmt.Errorf("/etc/subuid has no ID range for %s; run the install script again", jailerUser)
+			h.idsErr = fmt.Errorf("/etc/subuid has no ID range for %s; run the install script again", JailerUser)
 		}, "vm_ids", doctor.StatusFail},
 		{"no tun device", func(h *vmHost) { h.tunErr = fs.ErrNotExist }, "tun", doctor.StatusFail},
 		{"data folder noexec", func(h *vmHost) { h.mount = []string{"rw", "nosuid", "noexec"} }, "jail_mount", doctor.StatusFail},

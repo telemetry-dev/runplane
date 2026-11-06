@@ -50,7 +50,7 @@ func (d backend) Create(ctx context.Context, b *box, spec sandbox.Spec, s sandbo
 		m.scratch = volumeName(b.ID)
 		_, err := d.docker.VolumeCreate(ctx, client.VolumeCreateOptions{
 			Name:   m.scratch,
-			Labels: map[string]string{labelSandbox: b.ID, guest.LabelManaged: "true", labelData: d.opts.DataDir},
+			Labels: map[string]string{LabelSandbox: b.ID, guest.LabelManaged: "true", labelData: d.opts.DataDir},
 		})
 		if err != nil {
 			return fmt.Errorf("make scratch volume: %w", err)

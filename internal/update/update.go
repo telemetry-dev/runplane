@@ -120,7 +120,6 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 	if err != nil {
 		return err
 	}
-	num := strings.TrimPrefix(v, "v")
 	base := cmp.Or(u.DownloadURL, ghrest.Web) + "/" + u.Repo + "/releases/download/" + v + "/"
 
 	var sums, sig bytes.Buffer
@@ -134,16 +133,11 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 		return errors.New("update: the signature of SHA256SUMS is not valid")
 	}
 	hashes := parseSums(sums.Bytes())
-	name, err := findArchive(hashes, num, runtime.GOARCH)
-	if err != nil {
-		return err
+	name := ArchiveName(v, runtime.GOARCH)
+	if hashes[name] == "" {
+		return fmt.Errorf("update: SHA256SUMS has no entry for %s", name)
 	}
-	// kernel/build.sh and install.sh name the kernel with the arch name of
-	// Linux: x86_64 or arm64.
-	kernelName := "vmlinux-" + runtime.GOARCH
-	if runtime.GOARCH == "amd64" {
-		kernelName = "vmlinux-x86_64"
-	}
+	kernelName := KernelName(runtime.GOARCH)
 	var kernel string // empty when this server has no guest kernel
 	if _, err := os.Stat(u.Kernel); err == nil {
 		kernel = u.Kernel
@@ -258,14 +252,19 @@ func parseSums(sums []byte) map[string]string {
 	return hashes
 }
 
-// findArchive returns the name of the archive for this version and arch.
-// The Makefile and the release workflow name it.
-func findArchive(hashes map[string]string, num, arch string) (string, error) {
-	name := "runplane_" + num + "_linux_" + arch + ".tar.gz"
-	if _, ok := hashes[name]; !ok {
-		return "", fmt.Errorf("update: SHA256SUMS has no entry for %s", name)
+// ArchiveName is the release archive of version v for arch. The Makefile and
+// the release workflow name it, and install.sh downloads it.
+func ArchiveName(v, arch string) string {
+	return "runplane_" + strings.TrimPrefix(v, "v") + "_linux_" + arch + ".tar.gz"
+}
+
+// KernelName is the guest kernel of a release for arch. kernel/build.sh
+// names it with the arch name of Linux: x86_64 or arm64.
+func KernelName(arch string) string {
+	if arch == "amd64" {
+		return "vmlinux-x86_64"
 	}
-	return name, nil
+	return "vmlinux-" + arch
 }
 
 // extract writes the runplane binary of the archive to a new file for exe.
