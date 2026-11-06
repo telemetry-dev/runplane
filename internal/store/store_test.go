@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -43,9 +44,13 @@ func TestOpenMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	_, err = s.w.Exec("PRAGMA user_version = 999")
-	must(t, err)
 	s.Close()
+	// A newer runplane gives its schema a higher number.
+	db, err := sql.Open("sqlite", path)
+	must(t, err)
+	_, err = db.Exec("PRAGMA user_version = 999")
+	must(t, err)
+	db.Close()
 	if s, err := Open(path); err == nil {
 		s.Close()
 		t.Fatal("Open accepted a database from a newer runplane")

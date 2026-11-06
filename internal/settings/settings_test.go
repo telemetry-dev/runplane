@@ -5,7 +5,6 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/events"
@@ -105,18 +104,19 @@ func TestUpdateSendsOneEventForEachChange(t *testing.T) {
 	if _, err := s.Update(ctx, audit.Actor{UserID: "u1"}, rename("ci")); err != nil {
 		t.Fatal(err)
 	}
+	// Publish gives the event to the channel before Update returns.
 	select {
 	case c := <-changes:
 		if c.Old.InstanceName != "runplane" || c.New.InstanceName != "ci" {
 			t.Errorf("change %q to %q, want runplane to ci", c.Old.InstanceName, c.New.InstanceName)
 		}
-	case <-time.After(5 * time.Second):
+	default:
 		t.Fatal("no event for the change")
 	}
 	select {
 	case c := <-changes:
 		t.Errorf("an event for a change with no effect: %+v", c)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 	entries, _, err := st.ListAudit(ctx, "", 10)
 	if err != nil {

@@ -231,8 +231,7 @@ func TestListJobsCursorPages(t *testing.T) {
 	}
 }
 
-// CountJobs repeats the conditions of ListJobs, so each filter must give
-// the same jobs to both.
+// The jobs page shows the jobs of a filter and the count of all of them.
 func TestListAndCountJobsFilters(t *testing.T) {
 	s := openTest(t)
 	ctx := t.Context()
