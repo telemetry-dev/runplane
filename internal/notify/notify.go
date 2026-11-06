@@ -135,7 +135,6 @@ type webhookMessage struct {
 	At    string         `json:"at"`
 }
 
-// payload returns the JSON body for the channel kind.
 func payload(kind string, ev Event) any {
 	at := ev.At.UTC().Format(time.RFC3339)
 	switch kind {
