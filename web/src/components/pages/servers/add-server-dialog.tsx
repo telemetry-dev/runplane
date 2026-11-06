@@ -16,6 +16,7 @@ import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Spinner } from '~/components/ui/spinner'
 import { Tab, Tabs, TabsList, TabsPanel } from '~/components/ui/tabs'
+import { formatRelativeTime } from '~/lib/format'
 import { InstallProgress } from './install-progress'
 import { commandLines, installState, systemsText } from './server-info'
 
@@ -185,7 +186,9 @@ function InstallCommand({ script }: { script: ScriptInstall }) {
   return (
     <>
       <CodeBlock code={commandLines(script.token.command)} copyable wrap />
-      <p className="text-xs text-neutral-7">The token works once and expires in 1 hour.</p>
+      <p className="text-xs text-neutral-7">
+        The token works once and expires {formatRelativeTime(script.token.expires_at, Date.now(), { long: true })}.
+      </p>
     </>
   )
 }

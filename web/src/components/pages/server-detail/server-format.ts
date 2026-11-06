@@ -1,5 +1,6 @@
 import type { Schemas } from '~/api/client'
 import { gigabytes } from '~/components/pages/runners/runner-format'
+import { statusNote } from '~/components/pages/servers/server-info'
 import { formatBytes, formatTimeAgo } from '~/lib/format'
 
 // Text of the Server detail design, from GET /api/servers/{id}, the doctor, and GET /api/images.
@@ -8,11 +9,11 @@ export type Server = Schemas['Server']
 type Image = Schemas['Image']
 type ImageBuild = Schemas['ImageBuild']
 
-/** The state after the status word: "seen 4s ago" for an agent, or the install or error detail. */
+/** The state after the status word: the status note of a server without a connection, or "seen 4s ago" for an agent. */
 export function statusDetail(server: Server, now: number): string {
-  const seen = server.kind === 'agent' && server.last_seen_at ? `seen ${formatTimeAgo(server.last_seen_at, now)}` : ''
-  if (server.status === 'installing' || server.status === 'unreachable') return server.status_detail || seen
-  return seen
+  const note = statusNote(server, now)
+  if (note) return note.detail
+  return server.kind === 'agent' && server.last_seen_at ? `seen ${formatTimeAgo(server.last_seen_at, now)}` : ''
 }
 
 /** "VM" with "Firecracker 1.10.1", "Container" with "Sysbox 0.6.4", or "Dev". */

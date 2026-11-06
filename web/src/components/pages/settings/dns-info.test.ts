@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import type { Schemas } from '~/api/client'
-import { dnsStatus, serverRecord } from './dns-info'
+import { dnsPolls, dnsStatus, serverRecord } from './dns-info'
 
 function dns(fields: Partial<Schemas['DomainDNS']>): Schemas['DomainDNS'] {
   return {
@@ -23,6 +23,11 @@ test('a wrong record names only the addresses that are not this server', () => {
   const status = dnsStatus(dns({ state: 'other', records: ['203.0.113.7', '2606:4700::1'] }))
   expect(status.tone).toBe('error')
   expect(status.text).toBe('Points to 2606:4700::1')
+})
+
+test('the page asks again only while the admin must change the record, or the lookup failed', () => {
+  const states = ['ok', 'missing', 'other', 'unknown', 'error', 'none'] as const
+  expect(states.filter((state) => dnsPolls(dns({ state })))).toEqual(['missing', 'other', 'error'])
 })
 
 test('without a known server address, the records show without a verdict', () => {

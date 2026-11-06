@@ -126,6 +126,12 @@ describe('currentUsage', () => {
   test('an unreachable server has no current usage', () => {
     expect(currentUsage({ ...primary, status: 'unreachable' })).toEqual({ cpu: null, memory: null, disk: null })
   })
+
+  // They stay connected and finish their jobs.
+  test('a draining or disabled server keeps its usage', () => {
+    expect(currentUsage({ ...primary, status: 'draining' })).toEqual({ cpu: 52, memory: 38, disk: 34 })
+    expect(currentUsage({ ...primary, status: 'disabled' })).toEqual({ cpu: 52, memory: 38, disk: 34 })
+  })
 })
 
 describe('statusNote', () => {

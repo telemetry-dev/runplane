@@ -11,7 +11,7 @@ import { serversQuery } from '~/api/servers'
 import { settingsQuery } from '~/api/settings'
 import { LoadError } from '~/components/app/load-error'
 import { serverStatusNames } from '~/components/app/status-dot'
-import { serverSize, sortServers } from '~/components/pages/servers/server-info'
+import { serverSize, sortServers, statusFacts } from '~/components/pages/servers/server-info'
 import { Button } from '~/components/ui/button'
 import { Checkbox } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
@@ -271,8 +271,7 @@ function FitHint({ draft }: { draft: Draft }) {
     arch,
     vcpu: vcpu ?? 0,
     memory_mb: Math.round((memoryGb ?? 0) * 1024),
-    // The API reads the server IDs as one comma-separated value.
-    server_ids: serverIds.length > 0 ? [serverIds.join(',')] : undefined,
+    server_ids: serverIds,
   }
   const placement = useQuery({ ...placementQuery(query), enabled: sized, placeholderData: keepPreviousData }).data
   if (!sized || !placement) return null
@@ -410,7 +409,7 @@ function ServerChoice({ arch, servers, allServers, selected, onChange, error }: 
                 className="flex cursor-pointer items-center gap-s px-m py-xs text-s [&:not(:last-child)]:pb-[calc(var(--space-xs)+1px)] [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--neutral-4)]"
               >
                 <Checkbox checked={selected.includes(server.id)} onCheckedChange={(checked) => toggle(server.id, checked)} />
-                <span className={cx('min-w-0 grow truncate', muted(server) ? 'text-neutral-7' : 'text-neutral-10')}>{server.name}</span>
+                <span className={cx('min-w-0 grow truncate', statusFacts[server.status].muted ? 'text-neutral-7' : 'text-neutral-10')}>{server.name}</span>
                 <span className="shrink-0 text-neutral-7">{serverDetail(server)}</span>
               </label>
             ))}
@@ -449,10 +448,6 @@ function validateLabel(value: unknown): string | null {
 
 function inRange({ minimum, maximum }: { minimum: number; maximum: number }) {
   return (value: unknown) => (typeof value === 'number' && value >= minimum && value <= maximum ? null : `Enter ${minimum} to ${maximum}.`)
-}
-
-function muted(server: Server): boolean {
-  return server.status === 'unreachable' || server.status === 'disabled'
 }
 
 /** "16 vCPU · 64 GB", after the state of a server that is not online: "Installing · 8 vCPU · 30 GB". */

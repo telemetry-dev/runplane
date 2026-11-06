@@ -1,8 +1,13 @@
 import type { Schemas } from '~/api/client'
 
-// Text and times of a job, shared by the Jobs table and Job detail.
+// Text and times of a job, shared by the job tables and Job detail.
 
 type JobTimes = Pick<Schemas['JobSummary'], 'state' | 'queued_at' | 'started_at' | 'queue_ms' | 'duration_ms'>
+
+/** Cancelled and skipped jobs show in lighter text. */
+export function mutedJob(status: Schemas['JobSummary']['status']): boolean {
+  return status === 'cancelled' || status === 'skipped'
+}
 
 /** Time in the queue. It grows while the job waits. */
 export function queueTime(job: JobTimes, now: number): number {

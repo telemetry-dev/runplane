@@ -1,5 +1,5 @@
 import type { Schemas } from '~/api/client'
-import { formatDateTime, formatRelativeTime } from '~/lib/format'
+import { formatDateTime, formatRelativeTime, formatVersion } from '~/lib/format'
 
 // The rows of Settings · Members › Activity, from the entries of GET /api/audit.
 
@@ -57,6 +57,12 @@ class Detail {
     const value = this.values[key]
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
   }
+
+  /** The entry has the old and the new value of the key in its changes. */
+  changed(key: string): boolean {
+    const changes = this.values.changes
+    return typeof changes === 'object' && changes !== null && Object.hasOwn(changes, key)
+  }
 }
 
 // A new action of the API does not compile until it has a text here.
@@ -73,9 +79,9 @@ const changes: Record<Action, (detail: Detail) => string> = {
   'pool.delete': (d) => `removed the label ${d.text('label')}`,
   'server.token': (d) => `made an install command for ${d.text('name')}`,
   'server.install': (d) => `installed the server ${d.text('name')} over SSH`,
-  'server.update': (d) => `${serverVerbs[d.text('status')] ?? 'changed'} the server ${d.text('name')}`,
+  'server.update': (d) => `${(d.changed('status') && nameIn(serverVerbs, d.text('status'))) || 'changed'} the server ${d.text('name')}`,
   'server.delete': (d) => `removed the server ${d.text('name')}`,
-  'server.update_agent': (d) => `started the update of ${d.text('name')} to runplane ${d.text('to').replace(/^v/, '')}`,
+  'server.update_agent': (d) => `started the update of ${d.text('name')} to runplane ${formatVersion(d.text('to'))}`,
   'sandbox.stop': () => 'stopped a runner',
   'sandbox.shell': () => 'opened a debug shell',
   // The SSH gateway writes no user: the key of a GitHub user or an admin key opened the shell.
@@ -102,26 +108,30 @@ const changes: Record<Action, (detail: Detail) => string> = {
   'github.installation.request': () => 'asked an owner to install the GitHub App',
   'github.sync': () => 'checked GitHub for new installations',
   'github.disconnect': () => 'disconnected GitHub',
-  'notification.create': (d) => `added the ${channelKinds[d.text('kind')] ?? 'notification'} channel ${d.text('name')}`,
+  'notification.create': (d) => `added the ${nameIn(channelKinds, d.text('kind')) ?? 'notification'} channel ${d.text('name')}`,
   'notification.update': (d) => `changed the channel ${d.text('name')}`,
   'notification.delete': () => 'removed a notification channel',
 }
 
-const serverVerbs: Record<string, string> = { draining: 'drained', online: 'resumed', disabled: 'disabled' }
+const serverVerbs: Record<NonNullable<Schemas['UpdateServerRequest']['status']>, string> = {
+  draining: 'drained',
+  online: 'resumed',
+  disabled: 'disabled',
+}
 
-const channelKinds: Record<string, string> = { slack: 'Slack', discord: 'Discord', webhook: 'webhook' }
+const channelKinds: Record<Schemas['NotificationChannel']['kind'], string> = { slack: 'Slack', discord: 'Discord', webhook: 'webhook' }
+
+/** The name of a value of an entry, or undefined for a value that the API no longer has. */
+function nameIn<K extends string>(names: Record<K, string>, value: string): string | undefined {
+  return Object.hasOwn(names, value) ? names[value as K] : undefined
+}
 
 /** "CPU overcommit", "the log retention and the debug hold", "3 settings". */
 function settingNames(keys: string[]): string {
-  const names = [...new Set(keys.map(settingName))]
+  const names = [...new Set(keys.map((key) => nameIn(settingNamesByKey, key) ?? key.replaceAll('_', ' ')))]
   if (names.length === 0) return 'the settings'
   if (names.length > 2) return `${names.length} settings`
   return names.join(' and ')
-}
-
-/** The name of a setting key, also of a key that the API no longer has. */
-function settingName(key: string): string {
-  return Object.hasOwn(settingNamesByKey, key) ? settingNamesByKey[key as keyof typeof settingNamesByKey] : key.replaceAll('_', ' ')
 }
 
 // The names of the settings pages, with "the" where a sentence needs it.

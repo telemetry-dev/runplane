@@ -52,11 +52,13 @@ describe('statusDetail', () => {
     expect(statusDetail({ ...agent, kind: 'local' }, now)).toBe('')
   })
 
-  test('an installing or unreachable server shows its detail, or else when it was seen', () => {
+  test('an installing or unreachable server shows the note of the Servers table', () => {
     expect(statusDetail({ ...agent, status: 'installing', status_detail: 'pulling runner image', last_seen_at: null }, now)).toBe(
       'pulling runner image',
     )
-    expect(statusDetail({ ...agent, status: 'unreachable', last_seen_at: '2026-11-04T02:49:51.447Z' }, now)).toBe('seen 2h ago')
+    const lost = { ...agent, status: 'unreachable', status_detail: 'No connection to the agent.' } as const
+    expect(statusDetail({ ...lost, last_seen_at: '2026-11-04T02:49:51.447Z' }, now)).toBe('last heartbeat 2h ago')
+    expect(statusDetail({ ...lost, last_seen_at: null, status_detail: 'ssh: handshake failed' }, now)).toBe('ssh: handshake failed')
   })
 })
 

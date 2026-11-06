@@ -5,7 +5,7 @@ import { SectionButton, SectionHeader, SectionLink } from '~/components/app/sect
 import { serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { AddServerDialog } from '~/components/pages/servers/add-server-dialog'
-import { jobCount } from '~/components/pages/servers/server-info'
+import { jobCount, statusFacts } from '~/components/pages/servers/server-info'
 import { formatMegabytes } from '~/lib/format'
 
 type Server = Schemas['ServerSummary']
@@ -72,24 +72,20 @@ export function ServerList({ servers }: { servers: readonly Server[] }) {
 function ServerName({ server, detail }: { server: Server; detail: string }) {
   return (
     <RowLink to="/servers/$serverId" params={{ serverId: server.id }} className="flex-1">
-      <CellTitle title={server.name} detail={detail} muted={server.status === 'unreachable' || server.status === 'disabled'} />
+      <CellTitle title={server.name} detail={detail} muted={statusFacts[server.status].muted} />
     </RowLink>
   )
 }
 
-/** CPU of a server that reports it; its state otherwise. */
+/** CPU of a connected server; its state otherwise. */
 function ServerUsage({ server }: { server: Server }) {
   const cpu = server.cpu_percent
+  const { connected } = statusFacts[server.status]
   // A 92px bar, as in the designs. The root also holds the gap and the 4ch percent.
-  if (reporting(server) && cpu !== null) {
+  if (connected && cpu !== null) {
     return <UsageBar value={cpu} label={`${server.name} CPU`} showValue className="w-[calc(92px+var(--space-s)+4ch)] text-xs" />
   }
-  return <span className="block min-w-0 truncate text-xs text-neutral-7">{reporting(server) ? 'No data yet' : serverStatusNames[server.status]}</span>
-}
-
-/** Online and draining servers run jobs and send stats. */
-function reporting(server: Server): boolean {
-  return server.status === 'online' || server.status === 'draining'
+  return <span className="block min-w-0 truncate text-xs text-neutral-7">{connected ? 'No data yet' : serverStatusNames[server.status]}</span>
 }
 
 function specs(server: Server): string {
@@ -98,5 +94,5 @@ function specs(server: Server): string {
 }
 
 function jobs(server: Server): string {
-  return reporting(server) ? jobCount(server.running_jobs) : ''
+  return statusFacts[server.status].connected ? jobCount(server.running_jobs) : ''
 }

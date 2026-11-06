@@ -22,6 +22,7 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from '~/components/ui/menu'
+import { formatVersion } from '~/lib/format'
 import { useThemeMode } from '~/lib/theme-mode'
 import { useFrameSubscribed } from './pending'
 
@@ -50,7 +51,7 @@ export function UserMenu() {
           <span className="min-w-0 flex-1 truncate text-s text-neutral-8">{name}</span>
           {version && (
             <span title={version} className="text-xs text-neutral-6">
-              {shortVersion(version)}
+              {formatVersion(version)}
             </span>
           )}
         </MenuTrigger>
@@ -124,9 +125,3 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
 }
 
 const newPassword = limits.UpdateMeRequest.new_password
-
-/** "v1.2.0 (3f2a9c1)" and "1.2.0" both give "v1.2.0"; other names such as "dev" stay. */
-function shortVersion(version: string): string {
-  const name = version.split(' ')[0]!
-  return /^\d/.test(name) ? `v${name}` : name
-}
