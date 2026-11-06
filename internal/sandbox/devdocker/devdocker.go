@@ -19,7 +19,6 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
 )
 
-// Driver is the sysbox driver of dev mode.
 type Driver struct{ *sysbox.Driver }
 
 // New makes the driver with opts and the sysbox.Dev profile. devInsecure is
