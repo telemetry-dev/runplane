@@ -338,22 +338,28 @@ func TestSettingsReachServers(t *testing.T) {
 	local := newFakeNode("arm64")
 	h := newHarness(t, local)
 	h.run()
+	prev, err := h.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.DNSServers, s.EgressAllowlist, s.MinFreeDiskPercent = []string{"1.1.1.1"}, []string{"github.com"}, 10
+		s.BandwidthMbps, s.RegistryMirror, s.ActionsCache = 50, true, false
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	agentNode := newFakeNode("x64")
 	h.connectAgent("build-x64", agentNode)
 
 	waitFor(t, "the settings of the new agent", func() bool { return len(agentNode.args("Configure")) == 1 })
-	defaults := agent.Settings{
+	stored := agent.Settings{
 		Settings: sandbox.Settings{
-			DNS:             []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")},
-			EgressAllowlist: []string{}, RegistryMirror: true, ActionsCache: true,
+			DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 50, RegistryMirror: true,
 		},
-		MinFreeDiskPercent: 15,
+		MinFreeDiskPercent: 10,
 	}
-	if got := agentNode.args("Configure")[0]; !reflect.DeepEqual(got, defaults) {
-		t.Errorf("settings at connect:\n%+v\nwant\n%+v", got, defaults)
+	if got := agentNode.args("Configure")[0]; !reflect.DeepEqual(got, stored) {
+		t.Errorf("settings at connect:\n%+v\nwant\n%+v", got, stored)
 	}
 
-	prev := store.DefaultSettings()
 	next := prev
 	next.ReserveVCPU, next.ReserveMemoryMB, next.CPUOvercommit = 2, 4096, 1.5
 	next.MinFreeDiskPercent = 12.5
@@ -488,7 +494,10 @@ func TestHostStats(t *testing.T) {
 	}
 
 	sample(90)
-	h.f.flushStats(ctx)
+	// Run writes the samples that wait for the next write when it ends
+	// after its start. Run pulls the default image after its start.
+	waitFor(t, "the first pull", func() bool { return len(local.args("EnsureImage")) > 0 })
+	h.stop()
 	latest, err := h.st.LatestServerStats(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -545,43 +554,32 @@ func TestUpdateAgentByHand(t *testing.T) {
 	agentNode := newFakeNode("arm64")
 	a, id := h.connectAgent("arm-2", agentNode)
 	state := func() UpdateState { return h.f.UpdateState(h.server(id)) }
-	// olderAgent makes the connected agent look like an agent of v1.4.1.
-	olderAgent := func() {
-		h.f.mu.Lock()
-		h.f.nodes[id].version = "v1.4.1"
-		h.f.mu.Unlock()
-		v := h.server(id)
-		v.ServerFacts.Version = "v1.4.1"
-		if err := h.st.UpdateServerFacts(ctx, id, v.ServerFacts, h.clock.now()); err != nil {
-			t.Fatal(err)
-		}
-	}
 
 	if got := state(); got != UpdateCurrent {
 		t.Fatalf("update state %q of an agent of the same version, want current", got)
 	}
-	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err == nil {
-		t.Fatal("UpdateAgent started an update of an agent of the same version")
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); !errors.Is(err, ErrUpToDate) {
+		t.Fatalf("UpdateAgent of an agent of the same version: %v, want ErrUpToDate", err)
 	}
 	if got := h.f.UpdateState(h.server(h.localID())); got != UpdateCurrent {
 		t.Errorf("update state %q of the primary, want current", got)
 	}
 
-	olderAgent()
-	if got := state(); got != UpdateAvailable {
-		t.Fatalf("update state %q of an older agent, want available", got)
-	}
+	// An agent of an older release gets the release of the primary when it
+	// connects.
 	agentNode.set(func(n *fakeNode) { n.updateErr = errors.New("download failed") })
-	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
-		t.Fatal(err)
-	}
+	a.restart("v1.4.1")
 	waitFor(t, "the failed update", func() bool { return state() == UpdateFailed })
-	// An admin can try a failed version again.
-	agentNode.set(func(n *fakeNode) { n.updateErr = nil })
+	if got := agentNode.args("Update"); !slices.Equal(got, []any{"v1.4.2"}) {
+		t.Errorf("updates %v, want one to v1.4.2", got)
+	}
+	// An admin can try a failed version again. The agent holds the update
+	// until the gate closes, so the connection stays.
+	gate := make(chan struct{})
+	agentNode.set(func(n *fakeNode) { n.updateErr, n.updateGate = nil, gate })
 	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the second update call", func() bool { return len(agentNode.args("Update")) == 2 })
 	if got := state(); got != UpdateUpdating {
 		t.Fatalf("update state %q before the agent restarts, want updating", got)
 	}
@@ -590,23 +588,24 @@ func TestUpdateAgentByHand(t *testing.T) {
 		string(entries[0].Detail) != `{"from":"v1.4.1","name":"arm-2","to":"v1.4.2"}` {
 		t.Errorf("audit entries %+v, %v; want the server.update_agent of arm-2 from v1.4.1 to v1.4.2 first", entries, err)
 	}
-	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err == nil {
-		t.Fatal("UpdateAgent started a second update while one runs")
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); !errors.Is(err, ErrUpdateInProgress) {
+		t.Fatalf("UpdateAgent while an update runs: %v, want ErrUpdateInProgress", err)
 	}
 
-	// The agent restarts with the release of the primary.
-	a.stop()
+	// The agent replaces its binary and restarts with the release of the
+	// primary.
+	close(gate)
+	// The primary closes the connection when it has the answer.
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(id) == nil })
-	a.start()
+	a.restart("v1.4.2")
 	waitFor(t, "the end of the update", func() bool { return h.f.Driver(id) != nil && state() == UpdateCurrent })
 
 	// An agent that does not come back fails the update.
-	olderAgent()
+	a.restart("v1.4.1")
+	waitFor(t, "the older agent", func() bool { return h.f.Driver(id) != nil && state() == UpdateAvailable })
 	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the third update call", func() bool { return len(agentNode.args("Update")) == 3 })
-	a.stop()
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(id) == nil })
 	h.clock.add(61 * time.Second)
 	h.f.syncServers(ctx)
