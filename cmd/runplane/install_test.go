@@ -9,7 +9,6 @@ import (
 	"go/token"
 	"maps"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -25,6 +24,7 @@ import (
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/initbin"
+	"github.com/runplane/runplane/internal/installtest"
 	"github.com/runplane/runplane/internal/sandbox/firecracker"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
@@ -73,7 +73,7 @@ func TestInstallFilesAgreeWithGo(t *testing.T) {
 		vars := configVars(t, "-mode", "vm")
 		for _, role := range roles {
 			envFile := filepath.Join(t.TempDir(), "runplane.env")
-			out := installSh(t, "parse_flags --dry-run "+role.flags+"\nMODE=vm\nENV_FILE="+envFile+"\nAGENT_FILE="+filepath.Join(t.TempDir(), "agent.json")+"\nwrite_config")
+			out := installtest.Run(t, "parse_flags --dry-run "+role.flags+"\nMODE=vm\nENV_FILE="+envFile+"\nAGENT_FILE="+filepath.Join(t.TempDir(), "agent.json")+"\nwrite_config")
 			env, ok := writtenFiles(out)[envFile]
 			if !ok {
 				t.Fatalf("install.sh of the %s writes no runplane.env:\n%s", role.name, out)
@@ -93,9 +93,9 @@ func TestInstallFilesAgreeWithGo(t *testing.T) {
 			}
 		}
 
-		listen := installSh(t, "ENV_FILE="+filepath.Join(t.TempDir(), "runplane.env")+"\nlisten_addr")
+		listen := installtest.Run(t, "ENV_FILE="+filepath.Join(t.TempDir(), "runplane.env")+"\nlisten_addr")
 		agree(t, "the dashboard address of install.sh without runplane.env", listen, def.Listen, "install.sh", "internal/config/config.go")
-		usage := match(t, installSh(t, "usage"), `--listen <addr> .*\(default: (\S+)\)`)
+		usage := match(t, installtest.Run(t, "usage"), `--listen <addr> .*\(default: (\S+)\)`)
 		agree(t, "the default --listen of install.sh --help", usage, def.Listen, "install.sh", "internal/config/config.go")
 
 		// The script reads and changes runplane.env with sed. Its other
@@ -116,7 +116,7 @@ func TestInstallFilesAgreeWithGo(t *testing.T) {
 	t.Run("systemd units", func(t *testing.T) {
 		unitDir := installVars(t, "UNIT_DIR")["UNIT_DIR"]
 		for _, role := range roles {
-			out := installSh(t, "parse_flags --dry-run "+role.flags+"\nMODE=container\nwrite_units")
+			out := installtest.Run(t, "parse_flags --dry-run "+role.flags+"\nMODE=container\nwrite_units")
 			files := writtenFiles(out)
 			unit, ok := files[path.Join(unitDir, role.unit+".service")]
 			if !ok {
@@ -174,7 +174,7 @@ func TestInstallFilesAgreeWithGo(t *testing.T) {
 
 	t.Run("release files", func(t *testing.T) {
 		files := []string{"install.sh", "Makefile", ".github/workflows/release.yml", "internal/update/update.go"}
-		out := installSh(t, "parse_flags --dry-run --version v1.2.3\nARCH=arm64\nTMP=/tmp\nfetch_runplane")
+		out := installtest.Run(t, "parse_flags --dry-run --version v1.2.3\nARCH=arm64\nTMP=/tmp\nfetch_runplane")
 		archive := update.ArchiveName("v1.2.3", "arm64")
 		if !strings.Contains(out, "/releases/download/v1.2.3/"+archive+"\n") {
 			t.Errorf("install.sh does not download %s. Change %s together:\n%s", archive, list(files), out)
@@ -245,7 +245,7 @@ func TestInstallFilesAgreeWithGo(t *testing.T) {
 		ref := images.Ref("Acme/Fork", images.Default)
 		name, tag, _ := strings.Cut(ref, ":")
 		registry, repository, _ := strings.Cut(name, "/")
-		out := installSh(t, `REPO=Acme/Fork
+		out := installtest.Run(t, `REPO=Acme/Fork
 curl() {
 	for a; do case $a in https://*/manifests/*) printf 'manifest %s\n' "$a" ;; esac; done
 	printf '{"token":"t"}\n'
@@ -289,7 +289,7 @@ check_base_image`)
 
 	// An install over SSH shows the latest step of install.sh.
 	t.Run("step lines", func(t *testing.T) {
-		out := strings.TrimSpace(installSh(t, "step 'Write the configuration'"))
+		out := strings.TrimSpace(installtest.Run(t, "step 'Write the configuration'"))
 		if text, ok := strings.CutPrefix(out, fleet.StepPrefix); !ok || text != "Write the configuration" {
 			t.Errorf("install.sh shows the step %q, which does not start with %q. Change install.sh and internal/fleet/install.go together.", out, fleet.StepPrefix)
 		}
@@ -303,7 +303,7 @@ check_base_image`)
 			}
 			return string(b)
 		}
-		out := installSh(t, "ENV_FILE="+filepath.Join(t.TempDir(), "runplane.env")+"\ncurl() { printf '%s\\n' '"+status(api.Status{Mode: "vm"})+"'; }\nrunning_mode")
+		out := installtest.Run(t, "ENV_FILE="+filepath.Join(t.TempDir(), "runplane.env")+"\ncurl() { printf '%s\\n' '"+status(api.Status{Mode: "vm"})+"'; }\nrunning_mode")
 		agree(t, "the mode that install.sh reads from /api/status", strings.TrimSpace(out), "vm", "install.sh", "internal/api/setup.go")
 		pattern := match(t, script, `grep -q '([^']*needs_setup[^']*)'`)
 		for _, needs := range []bool{true, false} {
@@ -321,7 +321,6 @@ func agree(t *testing.T, what string, got, want any, files ...string) {
 	}
 }
 
-// list joins file names with commas and "and".
 func list(files []string) string {
 	if len(files) < 3 {
 		return strings.Join(files, " and ")
@@ -329,7 +328,6 @@ func list(files []string) string {
 	return strings.Join(files[:len(files)-1], ", ") + ", and " + files[len(files)-1]
 }
 
-// match returns the first group of the first match of expr in s.
 func match(t *testing.T, s, expr string) string {
 	t.Helper()
 	m := regexp.MustCompile(expr).FindStringSubmatch(s)
@@ -339,7 +337,6 @@ func match(t *testing.T, s, expr string) string {
 	return m[1]
 }
 
-// repoFile returns a file of the repository.
 func repoFile(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "..", name))
@@ -349,39 +346,22 @@ func repoFile(t *testing.T, name string) string {
 	return string(b)
 }
 
-// installSh runs install.sh with body in the place of its call of main, and
-// returns the output.
-func installSh(t *testing.T, body string) string {
-	t.Helper()
-	script, ok := strings.CutSuffix(strings.TrimRight(string(runplane.InstallScript), "\n"), `main "$@"`)
-	if !ok {
-		t.Fatal(`install.sh does not end with main "$@"`)
-	}
-	return sh(t, script+body+"\n")
-}
-
-// sh runs a shell script without the RUNPLANE_* variables of the
-// environment, and returns its output.
 func sh(t *testing.T, script string) string {
 	t.Helper()
-	cmd := exec.Command("sh", "-s")
-	cmd.Stdin = strings.NewReader(script)
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "RUNPLANE_") })
-	out, err := cmd.CombinedOutput()
+	out, err := installtest.Sh([]byte(script), nil, "-s")
 	if err != nil {
 		t.Fatalf("sh: %v\n%s", err, out)
 	}
-	return string(out)
+	return out
 }
 
-// installVars returns the values of variables of install.sh.
 func installVars(t *testing.T, names ...string) map[string]string {
 	t.Helper()
 	body := "printf '%s\\n'"
 	for _, n := range names {
 		body += ` "$` + n + `"`
 	}
-	lines := strings.Split(strings.TrimSuffix(installSh(t, body), "\n"), "\n")
+	lines := strings.Split(strings.TrimSuffix(installtest.Run(t, body), "\n"), "\n")
 	if len(lines) != len(names) {
 		t.Fatalf("values of %v: %q", names, lines)
 	}
