@@ -409,6 +409,46 @@ func TestSettingsChangeWhileAnAgentConnects(t *testing.T) {
 	waitFor(t, "the new settings on the agent", func() bool { return slices.Equal(allowlist(agentNode), []string{"10.0.0.0/8"}) })
 }
 
+// The dashboard saves each switch at once, so two changes can come in one
+// second. A send to a server must wait for the send before it: else the
+// server can apply the older value last and keep it until the next change.
+func TestQuickSettingsChanges(t *testing.T) {
+	ctx := t.Context()
+	local := newFakeNode("arm64")
+	h := newHarness(t, local)
+	h.run()
+	gate := make(chan struct{})
+	local.set(func(n *fakeNode) { n.configureGate = gate })
+	sends := len(local.args("Configure"))
+	prev := store.DefaultSettings()
+	change := func(allowlist ...string) {
+		next := prev
+		next.EgressAllowlist = allowlist
+		if _, err := h.st.UpdateSettings(ctx, func(s *store.Settings) error {
+			*s = next
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		h.bus.Publish(events.SettingsChanged{Old: prev, New: next})
+		prev = next
+	}
+
+	change("10.0.0.0/8")
+	waitFor(t, "the first send", func() bool { return len(local.args("Configure")) == sends+1 })
+	change("192.168.0.0/16")
+	// Time for a second send that does not wait.
+	time.Sleep(50 * time.Millisecond)
+	if n := len(local.args("Configure")) - sends; n != 1 {
+		t.Errorf("%d sends while the first send waits, want 1", n)
+	}
+	close(gate)
+	waitFor(t, "the newest settings", func() bool {
+		list := local.args("Configure")
+		return slices.Equal(list[len(list)-1].(agent.Settings).EgressAllowlist, []string{"192.168.0.0/16"})
+	})
+}
+
 // An admin can remove a server while it connects. The fleet must not add
 // the server then: no row and no sync finds the node again, and the
 // scheduler would start sandboxes on it.

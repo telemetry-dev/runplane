@@ -92,6 +92,7 @@ main() {
 	write_units
 	store_mode
 	store_domain
+	make_setup_code
 	start_service
 	finish
 }
@@ -758,6 +759,25 @@ store_domain() {
 	run "$BIN" set-domain "$DOMAIN" || die "runplane cannot write the domain $DOMAIN to its settings"
 }
 
+# make_setup_code makes the setup code of the first admin before the start.
+# serve then keeps this code and logs no different code.
+make_setup_code() {
+	SETUP_CODE=
+	[ "$ROLE" = primary ] || return 0
+	# setup-code applies the migrations of the new release to the database.
+	# A running primary that has an admin needs no code, and it must not get
+	# the migrations before its restart.
+	if status=$(api_status) && ! needs_setup "$status"; then
+		return 0
+	fi
+	step "Make the setup code"
+	if [ "$DRY_RUN" = 1 ]; then
+		say "+ $BIN setup-code"
+		return 0
+	fi
+	SETUP_CODE=$("$BIN" setup-code 2>/dev/null) || SETUP_CODE=
+}
+
 start_service() {
 	step "Start $SERVICE"
 	run systemctl daemon-reload
@@ -824,15 +844,12 @@ finish() {
 	fi
 	if [ "$DRY_RUN" = 1 ]; then
 		say "  Setup code: (from runplane setup-code)"
-	elif curl -fsS "$(local_url)/api/status" 2>/dev/null | grep -q '"needs_setup": *true'; then
-		code=$("$BIN" setup-code 2>/dev/null) || code=
-		if [ -n "$code" ]; then
-			say "  Setup code: $code"
-			say ""
-			say "Open the dashboard and type the setup code to make the admin account."
-		else
-			warn "cannot get a setup code. Run: sudo runplane setup-code"
-		fi
+	elif [ -n "$SETUP_CODE" ]; then
+		say "  Setup code: $SETUP_CODE"
+		say ""
+		say "Open the dashboard and type the setup code to make the admin account."
+	elif needs_setup "$(api_status)"; then
+		warn "cannot get a setup code. Run: sudo runplane setup-code"
 	fi
 	case $host in
 	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*)
@@ -1082,10 +1099,22 @@ local_url() {
 	printf 'http://%s:%s' "$host" "${addr##*:}"
 }
 
+# api_status prints the /api/status answer of the primary that runs on this
+# host. It fails when no primary answers.
+api_status() {
+	curl -fsS --max-time 5 "$(local_url)/api/status" 2>/dev/null
+}
+
 # running_mode prints the sandbox mode of the primary that runs on this host,
 # or nothing.
 running_mode() {
-	curl -fsS --max-time 5 "$(local_url)/api/status" 2>/dev/null | sed -n 's/.*"mode": *"\([a-z]*\)".*/\1/p'
+	api_status | sed -n 's/.*"mode": *"\([a-z]*\)".*/\1/p'
+}
+
+# needs_setup reports if the /api/status answer $1 tells that no admin
+# exists.
+needs_setup() {
+	printf '%s' "$1" | grep -q '"needs_setup": *true'
 }
 
 # host_ip prints the address of the interface with the default route.

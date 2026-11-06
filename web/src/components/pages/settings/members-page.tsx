@@ -18,7 +18,7 @@ import { toastManager } from '~/components/ui/toast'
 import { formatRelativeTime } from '~/lib/format'
 import { Activity, prefetchActivity } from './activity'
 import { Invites } from './invites'
-import { roleNames, roles, type Members, type Role } from './member-info'
+import { roles, roleWithArticle, type Members, type Role } from './member-info'
 import { ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
 
 type User = Schemas['User']
@@ -176,9 +176,9 @@ function UserRow({ user, me, lastAdmin, capabilities, shown }: UserRowProps) {
           <ConfirmDialog
             open={dialog === 'demote'}
             onOpenChange={(open) => setDialog(open ? 'demote' : undefined)}
-            title={`Make yourself a ${roleNames[demoteTo].toLowerCase()}?`}
+            title={`Make yourself ${roleWithArticle(demoteTo)}?`}
             description="You can no longer change settings or manage members. Another admin can make you an admin again."
-            action={`Make me a ${roleNames[demoteTo].toLowerCase()}`}
+            action={`Make me ${roleWithArticle(demoteTo)}`}
             onConfirm={() => changeRole.mutateAsync({ user, role: demoteTo })}
           />
         )}

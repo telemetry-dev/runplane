@@ -344,6 +344,34 @@ check_base_image`)
 	})
 }
 
+// install.sh makes the setup code before runplane starts. It runs no
+// setup-code while a primary with an admin runs, because setup-code applies
+// the migrations of the new release before the restart.
+func TestInstallMakesTheSetupCode(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status *api.Status // the answer of the running primary, nil for none
+		want   bool
+	}{
+		{"new install", nil, true},
+		{"primary without an admin", &api.Status{NeedsSetup: true}, true},
+		{"primary with an admin", &api.Status{}, false},
+	} {
+		curl := "curl() { return 7; }"
+		if tt.status != nil {
+			b, err := json.Marshal(tt.status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			curl = "curl() { printf '%s\\n' '" + string(b) + "'; }"
+		}
+		out := installtest.Run(t, "parse_flags --dry-run\n"+curl+"\nmake_setup_code")
+		if got := strings.Contains(out, "setup-code"); got != tt.want {
+			t.Errorf("%s: install.sh runs setup-code: %v, want %v:\n%s", tt.name, got, tt.want, out)
+		}
+	}
+}
+
 // agree reports a copy that differs from the value that it must have.
 func agree(t *testing.T, what string, got, want any, files ...string) {
 	t.Helper()

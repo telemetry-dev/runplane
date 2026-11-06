@@ -113,18 +113,22 @@ func TestEnsureRootDisk(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, ".pull-1"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// keep is empty, but Ensure just returned the image.
-	if err := m.GC(ctx, nil); err != nil {
+	if err := m.GC(ctx, []string{got.Digest}); err != nil {
 		t.Fatal(err)
 	}
 	if left := names(t, dir); left != filepath.Base(wantPath) {
-		t.Errorf("after the first GC: %s, want only %s", left, filepath.Base(wantPath))
+		t.Errorf("after a GC that keeps the image: %s, want only %s", left, filepath.Base(wantPath))
+	}
+	// Only keep decides, also for an image that Ensure just returned: else
+	// the old build of a tag stays until the GC after the next change.
+	if _, err := m.Ensure(ctx, ref, nil); err != nil {
+		t.Fatal(err)
 	}
 	if err := m.GC(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if left := names(t, dir); left != "" {
-		t.Errorf("after the second GC: %s, want nothing", left)
+		t.Errorf("after a GC with no keep: %s, want nothing", left)
 	}
 }
 

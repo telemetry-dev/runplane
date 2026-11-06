@@ -189,10 +189,8 @@ func (f *Fleet) runnerVersions(ctx context.Context) (map[string][]string, error)
 	return versions, nil
 }
 
-// pull makes an image ready on a server and records each step in the image
-// build row of the server. A pull again of a ready image, to get a new
-// build of its tag, keeps the row ready while it runs and when it fails:
-// the server goes on with the image it has.
+// pull makes an image ready on a server. When the server gets a new digest
+// of the image, pull removes the images that the server does not use.
 func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 	defer func() {
 		f.mu.Lock()
@@ -201,6 +199,19 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 		}
 		f.mu.Unlock()
 	}()
+	if f.ensureImage(ctx, n, img) {
+		f.gcImages(ctx, n)
+	}
+}
+
+// ensureImage makes an image ready on a server and records each step in the
+// image build row of the server. A pull again of a ready image, to get a
+// new build of its tag, keeps the row ready while it runs and when it
+// fails: the server goes on with the image it has. ensureImage reports if
+// the server has a new digest of the image.
+func (f *Fleet) ensureImage(ctx context.Context, n *node, img store.Image) bool {
+	n.gcMu.RLock()
+	defer n.gcMu.RUnlock()
 	f.mu.Lock()
 	r, had := n.images[img.ID]
 	refresh := had && r.ref == img.Ref
@@ -229,7 +240,7 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 		if !refresh {
 			f.saveBuild(ctx, &b, store.BuildFailed, err.Error())
 		}
-		return
+		return false
 	}
 	// An agent of an earlier release sends no size. Then the largest total
 	// of the steps takes its place, or the size of the last pull.
@@ -238,7 +249,7 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 	dropped := f.dropped[img.ID]
 	f.mu.Unlock()
 	if dropped {
-		return
+		return false
 	}
 	// The row says ready before the scheduler can use the image.
 	f.saveBuild(ctx, &b, store.BuildReady, "")
@@ -253,9 +264,7 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 	if !wasReady {
 		f.capacityChanged()
 	}
-	if before != "" && before != ready.Digest {
-		f.gcImages(ctx, n)
-	}
+	return before != "" && before != ready.Digest
 }
 
 // buildStatus gives the status of the image build row for a step of a pull
@@ -322,8 +331,11 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 }
 
 // gcImages removes the images on the server of n that no image row and no
-// live sandbox uses.
+// live sandbox uses. It waits until the pulls on the server record their
+// images.
 func (f *Fleet) gcImages(ctx context.Context, n *node) {
+	n.gcMu.Lock()
+	defer n.gcMu.Unlock()
 	builds, err := f.st.ListImageBuilds(ctx)
 	if err != nil {
 		f.log.Warn("list image builds", "err", err)

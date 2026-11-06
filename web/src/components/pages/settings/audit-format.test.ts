@@ -21,6 +21,9 @@ describe('auditChange', () => {
   test.each([
     ['user.update', { email: 'mira@kestrel.dev', role: 'admin' }, 'made mira@kestrel.dev an admin'],
     ['user.update', { email: 'mira@kestrel.dev', role: 'member' }, 'made mira@kestrel.dev a member'],
+    // A role of an older runplane.
+    ['user.update', { email: 'mira@kestrel.dev', role: 'owner' }, 'made mira@kestrel.dev owner'],
+    ['invite.create', { email: 'mira@kestrel.dev', role: 'admin' }, 'invited mira@kestrel.dev as an admin'],
     [
       'server.update',
       { name: 'fsn1-ax52-a', status: 'draining', changes: { status: ['online', 'draining'] } },

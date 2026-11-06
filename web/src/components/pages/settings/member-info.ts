@@ -7,6 +7,13 @@ type Capabilities = Schemas['Capabilities']
 
 export const roleNames: Record<Role, string> = { admin: 'Admin', member: 'Member' }
 
+const articles: Record<Role, 'a' | 'an'> = { admin: 'an', member: 'a' }
+
+/** The role in a sentence: "an admin", "a member". */
+export function roleWithArticle(role: Role): string {
+  return `${articles[role]} ${roleNames[role].toLowerCase()}`
+}
+
 export const roles = limits.User.role.enum.map((value) => ({ value, label: roleNames[value] }))
 
 /** "Members can re-run jobs, stop runners, and open debug shells, but cannot change settings." */

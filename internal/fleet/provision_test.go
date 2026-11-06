@@ -266,6 +266,42 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	}
 }
 
+// A GC on a server must wait until the pulls there record their images.
+// Else the GC does not keep the image of a pull that just ended, and the
+// fleet records a ready image that the server removed.
+func TestImageGCWaitsForPulls(t *testing.T) {
+	ctx := t.Context()
+	local := newFakeNode("arm64")
+	gate := make(chan struct{})
+	local.set(func(n *fakeNode) {
+		n.digests["registry.example.com/app:1"] = "sha256:a001"
+		n.digests["registry.example.com/new:1"] = "sha256:e001"
+		n.gates["registry.example.com/new:1"] = gate
+	})
+	h := newHarness(t, local)
+	addImage(t, h.st, "ubuntu-24.04", "builtin:ubuntu-24.04", true)
+	app := addImage(t, h.st, "app", "registry.example.com/app:1", false)
+	addPool(t, h.st, "app", "arm64", app, true, nil)
+	h.run()
+	id := h.localID()
+	waitFor(t, "the pool image", func() bool { _, ok := h.f.Image(id, app); return ok })
+
+	if _, err := h.f.CreateImage(ctx, audit.Actor{}, "new", "registry.example.com/new:1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the pull of the new image", func() bool { return count(local.args("EnsureImage"), "registry.example.com/new:1") == 1 })
+	if err := h.f.RemoveImage(ctx, audit.Actor{}, app); err != nil {
+		t.Fatal(err)
+	}
+	// Time for a GC that does not wait.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	waitFor(t, "the image GC", func() bool { return len(local.args("GCImages")) > 0 })
+	if kept := local.args("GCImages"); !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0", "sha256:e001"}}) {
+		t.Errorf("image GC kept %v, want one GC that keeps sha256:b0b0 and the new sha256:e001", kept)
+	}
+}
+
 func count(list []any, v any) int {
 	n := 0
 	for _, x := range list {
