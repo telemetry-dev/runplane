@@ -7,7 +7,7 @@ type Step = Schemas['JobStep']
  * The step whose log opens with the page: the first failed step, or 0 (the
  * whole log) when no step failed.
  */
-export function defaultStep(steps: readonly Step[]): number {
+function defaultStep(steps: readonly Step[]): number {
   return steps.find((step) => step.status === 'failed')?.number ?? 0
 }
 
