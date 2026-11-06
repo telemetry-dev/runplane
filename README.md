@@ -264,7 +264,7 @@ If you do not have the old `secret.key`, the jobs, pools, users, and settings st
 
 ## Base images
 
-Pools use `ghcr.io/runplane/runplane/runner-ubuntu-24.04` by default. The image contains Docker, Node.js, Python, Go, and the GitHub CLI. It also has a tool cache for `actions/setup-node`, `setup-python`, and `setup-go`. To add tools, make a custom image `FROM` the base image. Refer to [images/README.md](images/README.md).
+Pools use `ghcr.io/runplane/runplane/runner-ubuntu-24.04` by default. The image contains Docker, Node.js, Python, Go, rustup, and the GitHub CLI. It also has a tool cache for `actions/setup-node`, `setup-python`, and `setup-go`. To add tools, make a custom image `FROM` the base image. Refer to [images/README.md](images/README.md).
 
 If a server cannot pull the image from GHCR, runplane builds it on the server from the Dockerfile in its binary, with Docker. The first build takes some minutes. The check "Base image source" of `runplane doctor` shows which of the two the server does.
 
