@@ -70,12 +70,11 @@ type Job struct {
 	SizeAdvice    SizeAdvice `json:"size_advice" doc:"Whether the pool fits the CPU and memory use of the last 10 completed runs of this job (same repository, workflow file, and job name)."`
 }
 
-// JobStep is one step from the GitHub jobs API.
+// JobStep is one step of the job on GitHub.
 type JobStep struct {
 	Number      int        `json:"number"`
 	Name        string     `json:"name"`
-	Status      string     `json:"status" doc:"queued, in_progress, or completed."`
-	Conclusion  string     `json:"conclusion" doc:"For example success, failure, cancelled, or skipped. Empty until the step completes."`
+	Status      string     `json:"status" enum:"queued,running,succeeded,failed,cancelled,skipped" doc:"queued until the step starts, then running, and then the result."`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
@@ -247,7 +246,7 @@ func (h *Handler) getJob(ctx context.Context, in *PathID) (*body[Job], error) {
 		LogState: j.LogState, FinishPending: j.FinishPending, CPUPeak: j.CPUPeak, CPUAvg: j.CPUAvg, MemPeakMB: j.MemPeakMB, AssignedAt: j.AssignedAt,
 	}
 	for i, st := range j.Steps {
-		out.Steps[i] = JobStep(st)
+		out.Steps[i] = JobStep{Number: st.Number, Name: st.Name, Status: st.Status(), StartedAt: st.StartedAt, CompletedAt: st.CompletedAt}
 	}
 	if out.ExpectedDurationMS, err = h.d.Store.ExpectedDurationMS(ctx, j.Repository, j.WorkflowFile, j.JobName); err != nil {
 		return nil, err

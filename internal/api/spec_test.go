@@ -149,6 +149,7 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		"Job.sandbox_state":                          append(sandboxStates, ""),
 		"Job.state":                                  jobStates,
 		"Job.status":                                 jobStatuses,
+		"JobStep.status":                             jobStatuses,
 		"JobSummary.result":                          results,
 		"JobSummary.state":                           jobStates,
 		"JobSummary.status":                          jobStatuses,

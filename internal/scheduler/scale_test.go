@@ -665,8 +665,8 @@ func TestStepsRefreshWhileTheJobRuns(t *testing.T) {
 	now := start.Add(time.Minute)
 	e.gh.mu.Lock()
 	e.gh.steps = []store.JobStep{
-		{Number: 1, Name: "Set up job", Status: "completed", Conclusion: "success", StartedAt: &start, CompletedAt: &now},
-		{Number: 2, Name: "Run tests", Status: "in_progress", StartedAt: &now},
+		{Number: 1, Name: "Set up job", State: "completed", Conclusion: "success", StartedAt: &start, CompletedAt: &now},
+		{Number: 2, Name: "Run tests", State: "in_progress", StartedAt: &now},
 	}
 	e.gh.mu.Unlock()
 	deadline := time.Now().Add(5 * time.Second)
@@ -676,7 +676,7 @@ func TestStepsRefreshWhileTheJobRuns(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if got := e.job(81).Steps[1]; got.Name != "Run tests" || got.Status != "in_progress" {
+	if got := e.job(81).Steps[1]; got.Name != "Run tests" || got.State != "in_progress" {
 		t.Errorf("step 2 = %+v, want Run tests in progress", got)
 	}
 

@@ -181,6 +181,27 @@ func TestJobStatus(t *testing.T) {
 	}
 }
 
+// The dashboard shows each step with the status names of a job, and opens
+// the log of the first failed step.
+func TestJobStepStatus(t *testing.T) {
+	for _, tt := range []struct {
+		state, conclusion, want string
+	}{
+		{"queued", "", StatusQueued},
+		{"in_progress", "", StatusRunning},
+		{"completed", "success", ResultSucceeded},
+		{"completed", "failure", ResultFailed},
+		{"completed", "skipped", ResultSkipped},
+		{"completed", "cancelled", ResultCancelled},
+		{"completed", "timed_out", ResultFailed},
+		{"completed", "", ResultFailed},
+	} {
+		if got := (JobStep{State: tt.state, Conclusion: tt.conclusion}).Status(); got != tt.want {
+			t.Errorf("step %s with conclusion %q: status %q, want %q", tt.state, tt.conclusion, got, tt.want)
+		}
+	}
+}
+
 func TestListJobsCursorPages(t *testing.T) {
 	s := openTest(t)
 	// Four jobs share one queued_at, so the cursor must also use the ID.

@@ -1791,10 +1791,6 @@
               "null"
             ]
           },
-          "conclusion": {
-            "description": "For example success, failure, cancelled, or skipped. Empty until the step completes.",
-            "type": "string"
-          },
           "name": {
             "type": "string"
           },
@@ -1810,7 +1806,15 @@
             ]
           },
           "status": {
-            "description": "queued, in_progress, or completed.",
+            "description": "queued until the step starts, then running, and then the result.",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "skipped"
+            ],
             "type": "string"
           }
         },
@@ -1818,7 +1822,6 @@
           "number",
           "name",
           "status",
-          "conclusion",
           "started_at",
           "completed_at"
         ],

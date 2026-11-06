@@ -2,22 +2,17 @@ import { describe, expect, test } from 'vitest'
 import type { Schemas } from '~/api/client'
 import { defaultStep, longestStep, parseJobSearch, shownStep, withoutRunGroups } from './job-steps'
 
-function step(number: number, conclusion: string, started_at: string | null, completed_at: string | null): Schemas['JobStep'] {
-  return {
-    number,
-    name: `Step ${number}`,
-    status: completed_at ? 'completed' : started_at ? 'in_progress' : 'queued',
-    conclusion,
-    started_at,
-    completed_at,
-  }
+type Step = Schemas['JobStep']
+
+function step(number: number, status: Step['status'], started_at: string | null, completed_at: string | null): Step {
+  return { number, name: `Step ${number}`, status, started_at, completed_at }
 }
 
 const steps = [
-  step(1, 'success', '2026-11-04T04:38:47Z', '2026-11-04T04:38:49Z'),
+  step(1, 'succeeded', '2026-11-04T04:38:47Z', '2026-11-04T04:38:49Z'),
   step(2, 'cancelled', '2026-11-04T04:38:49Z', '2026-11-04T04:38:52Z'),
-  step(3, 'failure', '2026-11-04T04:38:52Z', '2026-11-04T04:44:24Z'),
-  step(4, 'failure', '2026-11-04T04:44:24Z', '2026-11-04T04:44:25Z'),
+  step(3, 'failed', '2026-11-04T04:38:52Z', '2026-11-04T04:44:24Z'),
+  step(4, 'failed', '2026-11-04T04:44:24Z', '2026-11-04T04:44:25Z'),
   step(5, 'skipped', '2026-11-04T04:44:25Z', '2026-11-04T04:44:25Z'),
 ]
 
@@ -52,13 +47,13 @@ describe('longestStep', () => {
 
   test('counts a running step up to now and skips steps that have not started', () => {
     const running = [
-      step(1, 'success', '2026-11-04T04:00:00Z', '2026-11-04T04:01:00Z'),
-      step(2, '', '2026-11-04T04:01:00Z', null),
-      step(3, '', null, null),
+      step(1, 'succeeded', '2026-11-04T04:00:00Z', '2026-11-04T04:01:00Z'),
+      step(2, 'running', '2026-11-04T04:01:00Z', null),
+      step(3, 'queued', null, null),
     ]
     expect(longestStep(running, Date.parse('2026-11-04T04:01:30Z'))?.number).toBe(1)
     expect(longestStep(running, Date.parse('2026-11-04T04:03:00Z'))?.number).toBe(2)
-    expect(longestStep([step(1, '', null, null)], 0)).toBeUndefined()
+    expect(longestStep([step(1, 'queued', null, null)], 0)).toBeUndefined()
   })
 })
 

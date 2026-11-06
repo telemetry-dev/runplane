@@ -1640,15 +1640,16 @@ export interface components {
         JobStep: {
             /** Format: date-time */
             completed_at: string | null;
-            /** @description For example success, failure, cancelled, or skipped. Empty until the step completes. */
-            conclusion: string;
             name: string;
             /** Format: int64 */
             number: number;
             /** Format: date-time */
             started_at: string | null;
-            /** @description queued, in_progress, or completed. */
-            status: string;
+            /**
+             * @description queued until the step starts, then running, and then the result.
+             * @enum {string}
+             */
+            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
         };
         JobSummary: {
             /** @description The sandbox stays after the job for a debug shell. */
