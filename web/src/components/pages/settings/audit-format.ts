@@ -1,5 +1,6 @@
 import type { Schemas } from '~/api/client'
 import { formatDateTime, formatRelativeTime, formatVersion } from '~/lib/format'
+import { roleNames, roleWithArticle, type Role } from './member-info'
 
 // The rows of Settings · Members › Activity, from the entries of GET /api/audit.
 
@@ -68,11 +69,11 @@ class Detail {
 // A new action of the API does not compile until it has a text here.
 const changes: Record<Action, (detail: Detail) => string> = {
   'setup.done': () => 'set up runplane',
-  'user.update': (d) => `made ${d.text('email') || 'a user'} ${d.text('role') === 'admin' ? 'an admin' : 'a member'}`,
+  'user.update': (d) => `made ${d.text('email') || 'a user'} ${roleText(d.text('role'))}`,
   'user.delete': (d) => `removed ${d.text('email') || 'a member'}`,
   'user.password': () => 'changed their password',
   'user.password_reset': (d) => `reset the password of ${d.text('email') || 'a user'}`,
-  'invite.create': (d) => `invited ${d.text('email')} as ${d.text('role') || 'member'}`,
+  'invite.create': (d) => `invited ${d.text('email')} as ${roleText(d.text('role'))}`,
   'invite.link': (d) => `made a new invite link for ${d.text('email')}`,
   'invite.delete': () => 'revoked an invite',
   'pool.create': (d) => `added the label ${d.text('label')}`,
@@ -126,6 +127,11 @@ const channelKinds: Record<Schemas['NotificationChannel']['kind'], string> = { s
 /** The name of a value of an entry, or undefined for a value that the API no longer has. */
 function nameIn<K extends string>(names: Record<K, string>, value: string): string | undefined {
   return Object.hasOwn(names, value) ? names[value as K] : undefined
+}
+
+/** "an admin", or the role as it is for a role that the API no longer has. */
+function roleText(role: string): string {
+  return Object.hasOwn(roleNames, role) ? roleWithArticle(role as Role) : role
 }
 
 /** "CPU overcommit", "the log retention and the debug hold", "3 settings". */

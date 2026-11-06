@@ -7,6 +7,7 @@ import { limits } from '~/api/limits'
 import { sessionQuery } from '~/api/session'
 import { FormAlert } from '~/components/app/form-alert'
 import { LoadError } from '~/components/app/load-error'
+import { roleWithArticle } from '~/components/pages/settings/member-info'
 import { useElapsed } from '~/components/shell/pending'
 import { SetupColumn } from '~/components/shell/setup'
 import { Button, buttonClassName } from '~/components/ui/button'
@@ -60,7 +61,7 @@ function AcceptForm({ token, invite }: { token: string; invite: Schemas['InviteI
         ) : (
           'You are invited as'
         )}{' '}
-        {invite.role === 'admin' ? 'an' : 'a'} <span className="font-medium text-neutral-10">{invite.role}</span>.
+        <span className="font-medium text-neutral-10">{roleWithArticle(invite.role)}</span>.
       </SetupHeader>
       <Form
         className="gap-xl"
