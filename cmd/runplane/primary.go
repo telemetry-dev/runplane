@@ -340,7 +340,7 @@ func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, error) {
 	resolver := cache.NewSandboxResolver(p.st, l.driver.List)
 	space := func() datadisk.Space {
 		st := p.settings.Load()
-		return diskSpace(p.cfg.CacheDir(), datadisk.Settings{CacheMaxGB: st.CacheMaxGB, MinFreePercent: st.MinFreeDiskPercent})
+		return datadisk.Of(p.cfg.CacheDir(), datadisk.Settings{CacheMaxGB: st.CacheMaxGB, MinFreePercent: st.MinFreeDiskPercent})
 	}
 	srv, err := cache.New(cache.Config{
 		Dir: p.cfg.CacheDir(), Store: p.st, Resolver: resolver, Space: space,

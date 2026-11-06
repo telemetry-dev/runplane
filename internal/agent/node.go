@@ -213,11 +213,7 @@ func (n *LocalNode) mirrorSpace() datadisk.Space {
 	n.mu.Lock()
 	minFree := n.minFree
 	n.mu.Unlock()
-	total, free, err := host.DiskSpace(n.cfg.Mirror.Dir)
-	if err != nil {
-		total, free = 0, 0
-	}
-	return datadisk.Limits(datadisk.Settings{MinFreePercent: minFree}, total, free)
+	return datadisk.Of(n.cfg.Mirror.Dir, datadisk.Settings{MinFreePercent: minFree})
 }
 
 // sendLatest puts v in ch, a channel with a buffer of one, and drops an

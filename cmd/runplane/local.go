@@ -15,8 +15,6 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/datadisk"
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/initbin"
 	"github.com/runplane/runplane/internal/mirror"
@@ -207,13 +205,3 @@ func serveServicePort(cfg config.Config, mir, cache http.Handler, log *slog.Logg
 }
 
 func servicePortAddr(cfg config.Config) string { return fmt.Sprintf(":%d", cfg.ServicePort) }
-
-// diskSpace returns the room of the Actions cache and the registry mirror
-// on the disk of dir, which is on the data disk.
-func diskSpace(dir string, s datadisk.Settings) datadisk.Space {
-	total, free, err := host.DiskSpace(dir)
-	if err != nil {
-		total, free = 0, 0
-	}
-	return datadisk.Limits(s, total, free)
-}
