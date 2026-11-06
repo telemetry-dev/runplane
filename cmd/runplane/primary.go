@@ -198,7 +198,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	// Release reads with an installation token have a higher rate limit.
 	token := func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
 	local, err := newLocal(context.Background(), cfg, localConfig{
-		mode: mode, settings: fleet.NodeSettings(settings), domain: settings.Domain, token: token,
+		mode: mode, settings: fleet.NodeSettings(settings), doctor: doctorOptions(cfg, mode, false, settings.Domain), token: token,
 	}, log)
 	if err != nil {
 		return nil, err

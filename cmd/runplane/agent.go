@@ -7,12 +7,15 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/localnode"
 	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/version"
 )
 
 // runAgent operates the sandboxes of this server for the primary in
-// agent.json. The primary sends the settings when the agent connects.
+// agent.json. The primary sends the settings when the agent connects. The
+// agent keeps them, so that after a restart the sandboxes keep their egress
+// allowlist before the primary connects.
 func runAgent(ctx context.Context, args []string) error {
 	cfg, err := config.Parse(flag.NewFlagSet("agent", flag.ContinueOnError), args,
 		config.ServicePort, config.DataDir, config.Mode, config.Dev, config.DevInsecure)
@@ -26,7 +29,13 @@ func runAgent(ctx context.Context, args []string) error {
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-	l, err := newLocal(ctx, cfg, localConfig{mode: cfg.Mode, agent: true}, log)
+	settings, err := localnode.ReadSettings(cfg.AgentSettingsPath())
+	if err != nil {
+		log.Warn("the sandboxes have no egress allowlist until the primary connects", "err", err)
+	}
+	l, err := newLocal(ctx, cfg, localConfig{
+		mode: cfg.Mode, settings: settings, settingsFile: cfg.AgentSettingsPath(), doctor: doctorOptions(cfg, cfg.Mode, true, ""),
+	}, log)
 	if err != nil {
 		return err
 	}

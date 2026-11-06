@@ -47,6 +47,11 @@ func (c Config) SSHHostKeyPath() string { return filepath.Join(c.DataDir, "ssh_h
 // installed over SSH.
 func (c Config) KnownHostsPath() string { return filepath.Join(c.DataDir, "known_hosts") }
 
+// AgentSettingsPath holds the last settings that an agent got from the
+// primary. At its start, the agent gives them to its sandbox driver, which
+// has sandboxes from before the restart.
+func (c Config) AgentSettingsPath() string { return filepath.Join(c.DataDir, "agent-settings.json") }
+
 // EnsureDirs makes the configuration and data folders and sets their modes.
 // It also corrects the mode of folders that exist.
 func (c Config) EnsureDirs() error {
