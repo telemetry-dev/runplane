@@ -40,7 +40,6 @@ const (
 	RoleMember = store.RoleMember
 )
 
-// Roles are all roles.
 var Roles = []string{RoleAdmin, RoleMember}
 
 type Action int
@@ -106,6 +105,17 @@ func CanDo(role string, a Action) bool {
 // NewSetupCode makes a new setup code in the format XXXX-XXXX-XXXX. It is
 // valid for 24 hours, and the earlier codes stop working.
 func (s *Service) NewSetupCode(ctx context.Context) (string, error) {
+	return s.setupCode(ctx, false)
+}
+
+// EnsureSetupCode makes a setup code as NewSetupCode does, but only when no
+// code is valid. It returns "" while a code is valid, because install.sh
+// printed that code and only its hash is stored.
+func (s *Service) EnsureSetupCode(ctx context.Context) (string, error) {
+	return s.setupCode(ctx, true)
+}
+
+func (s *Service) setupCode(ctx context.Context, keepValid bool) (string, error) {
 	n, err := s.store.CountUsers(ctx)
 	if err != nil {
 		return "", err
@@ -113,8 +123,13 @@ func (s *Service) NewSetupCode(ctx context.Context) (string, error) {
 	if n > 0 {
 		return "", ErrSetupDone
 	}
-	code := newSetupCode()
 	now := s.now()
+	if keepValid {
+		if open, err := s.store.HasOpenSetupCode(ctx, now); err != nil || open {
+			return "", err
+		}
+	}
+	code := newSetupCode()
 	err = s.store.CreateSetupCode(ctx, store.SetupCode{
 		CodeHash: hashCode(code), CreatedAt: now, ExpiresAt: now.Add(SetupCodeTTL),
 	})
@@ -273,10 +288,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, next, ip,
 	if utf8.RuneCountInString(next) < MinPasswordLen {
 		return "", ErrShortPassword
 	}
-	if err := s.store.SetUserPassword(ctx, u.ID, HashPassword(next)); err != nil {
-		return "", err
-	}
-	if err := s.store.DeleteUserSessions(ctx, u.ID); err != nil {
+	if err := s.setPassword(ctx, u.ID, next); err != nil {
 		return "", err
 	}
 	token, sess := newSession(u.ID, ip, userAgent, now)
@@ -285,6 +297,31 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, next, ip,
 	}
 	s.audit.Record(ctx, audit.Actor{UserID: u.ID, IP: ip}, audit.UserPassword, u.ID, nil)
 	return token, nil
+}
+
+// ResetPassword gives the user with the email a new random password, ends
+// all sessions of the user, and returns the password. It returns
+// store.ErrNotFound when no user has the email.
+func (s *Service) ResetPassword(ctx context.Context, by audit.Actor, email string) (string, error) {
+	u, err := s.store.GetUserByEmail(ctx, cleanEmail(email))
+	if err != nil {
+		return "", err
+	}
+	password := rand.Text()
+	if err := s.setPassword(ctx, u.ID, password); err != nil {
+		return "", err
+	}
+	s.audit.Record(ctx, by, audit.UserPasswordReset, u.ID, map[string]any{"email": u.Email})
+	return password, nil
+}
+
+// setPassword changes the password of a user. It ends all sessions of the
+// user, because each browser must log in with the new password.
+func (s *Service) setPassword(ctx context.Context, userID, password string) error {
+	if err := s.store.SetUserPassword(ctx, userID, HashPassword(password)); err != nil {
+		return err
+	}
+	return s.store.DeleteUserSessions(ctx, userID)
 }
 
 // UpdateMe changes the name or the password of a user, for the user, and

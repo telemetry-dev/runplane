@@ -26,7 +26,7 @@ type Settings struct {
 	DefaultTimeLimitMinutes int          `json:"default_time_limit_minutes" minimum:"1" maximum:"7200" doc:"Time limit of a job in a pool without its own limit."`
 	AllowPublicRepos        bool         `json:"allow_public_repos" doc:"Take jobs of public repositories. Only when the mode setting and each server are in VM mode."`
 	AllowForkPRs            bool         `json:"allow_fork_prs" doc:"Take jobs of pull requests from forks."`
-	EgressAllowlist         []string     `json:"egress_allowlist" maxItems:"256" doc:"Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet."`
+	EgressAllowlist         []string     `json:"egress_allowlist" maxItems:"256" doc:"Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet."`
 	BandwidthMbps           int          `json:"bandwidth_mbps" minimum:"0" maximum:"100000" doc:"Bandwidth limit of each VM. 0: no limit."`
 	DNSServers              []string     `json:"dns_servers" minItems:"1" maxItems:"4" doc:"IPv4 addresses of the DNS servers of the sandboxes."`
 	RegistryMirror          bool         `json:"registry_mirror" doc:"Docker Hub pull-through cache for the sandboxes."`

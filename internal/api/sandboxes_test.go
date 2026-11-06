@@ -143,15 +143,12 @@ func TestCloseReasonKeepsWholeCharacters(t *testing.T) {
 }
 
 type fakeLogs struct {
-	log  io.ReadCloser
-	live bool
-	err  error
+	log io.ReadCloser
+	err error
 }
 
-func (f fakeLogs) Sandbox(context.Context, string, bool) (io.ReadCloser, error) { return f.log, f.err }
-func (f fakeLogs) Job(context.Context, string, int, bool) (io.ReadCloser, bool, error) {
-	return f.log, f.live, f.err
-}
+func (f fakeLogs) Sandbox(context.Context, string, bool) (io.ReadCloser, error)  { return f.log, f.err }
+func (f fakeLogs) Job(context.Context, string, int, bool) (io.ReadCloser, error) { return f.log, f.err }
 
 // A log that is not there is a 404, and a server that is not connected a
 // 503, so that the page tells why it shows no log.

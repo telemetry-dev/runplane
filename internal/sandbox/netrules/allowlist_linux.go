@@ -8,10 +8,11 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/runplane/runplane/internal/sandbox/allowlist"
 )
 
 const (
@@ -69,27 +70,17 @@ func (m *Manager) allowed(cfg Config) []netip.Prefix {
 }
 
 // splitAllowlist sorts allowlist entries into IPv4 prefixes and host names.
-// It returns IPv6 entries and wildcards as bad, because sandboxes have IPv4
-// only and a wildcard does not resolve.
+// bad has the entries that allowlist.Parse refuses.
 func splitAllowlist(entries []string) (prefixes []netip.Prefix, names, bad []string) {
-	for _, e := range entries {
-		e = strings.ToLower(strings.TrimSpace(e))
-		if e == "" {
-			continue
-		}
-		p, err := netip.ParsePrefix(e)
-		if err != nil {
-			if a, aerr := netip.ParseAddr(e); aerr == nil {
-				p, err = netip.PrefixFrom(a, a.BitLen()), nil
-			}
-		}
+	for _, s := range entries {
+		e, ok := allowlist.Parse(s)
 		switch {
-		case err == nil && p.Addr().Is4():
-			prefixes = append(prefixes, p.Masked())
-		case err == nil || strings.ContainsAny(e, "*/: "):
-			bad = append(bad, e)
+		case !ok:
+			bad = append(bad, s)
+		case e.Name != "":
+			names = append(names, e.Name)
 		default:
-			names = append(names, strings.TrimSuffix(e, "."))
+			prefixes = append(prefixes, e.Prefix)
 		}
 	}
 	return prefixes, names, bad

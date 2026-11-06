@@ -81,6 +81,7 @@
               "user.update",
               "user.delete",
               "user.password",
+              "user.password_reset",
               "invite.create",
               "invite.link",
               "invite.delete",
@@ -1204,7 +1205,12 @@
         "additionalProperties": false,
         "properties": {
           "arch": {
-            "description": "Arch of the server: x64 or arm64. Empty until the server reports its facts.",
+            "description": "Arch of the server. Empty until the server reports its facts.",
+            "enum": [
+              "x64",
+              "arm64",
+              ""
+            ],
             "type": "string"
           },
           "digest": {
@@ -3042,7 +3048,12 @@
             "type": "string"
           },
           "arch": {
-            "description": "x64 or arm64. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "x64",
+              "arm64",
+              ""
+            ],
             "type": "string"
           },
           "cpu_percent": {
@@ -3119,7 +3130,13 @@
             ]
           },
           "mode": {
-            "description": "container, vm, or dev. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "container",
+              "vm",
+              "dev",
+              ""
+            ],
             "type": "string"
           },
           "name": {
@@ -3292,7 +3309,12 @@
         "additionalProperties": false,
         "properties": {
           "arch": {
-            "description": "x64 or arm64. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "x64",
+              "arm64",
+              ""
+            ],
             "type": "string"
           },
           "cpu_percent": {
@@ -3349,7 +3371,13 @@
             ]
           },
           "mode": {
-            "description": "container, vm, or dev. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "container",
+              "vm",
+              "dev",
+              ""
+            ],
             "type": "string"
           },
           "name": {
@@ -3623,7 +3651,7 @@
             "type": "string"
           },
           "egress_allowlist": {
-            "description": "Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet.",
+            "description": "Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet.",
             "items": {
               "type": "string"
             },
@@ -3825,7 +3853,7 @@
             "type": "string"
           },
           "egress_allowlist": {
-            "description": "Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet.",
+            "description": "Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet.",
             "items": {
               "type": "string"
             },
@@ -5367,13 +5395,16 @@
             }
           },
           {
-            "description": "install, update, or request.",
             "explode": false,
             "in": "query",
             "name": "setup_action",
+            "required": true,
             "schema": {
-              "description": "install, update, or request.",
-              "maxLength": 20,
+              "enum": [
+                "install",
+                "update",
+                "request"
+              ],
               "type": "string"
             }
           }
@@ -6123,12 +6154,12 @@
             }
           },
           {
-            "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored.",
+            "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps.",
             "explode": false,
             "in": "query",
             "name": "step",
             "schema": {
-              "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored.",
+              "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps.",
               "format": "int64",
               "minimum": 0,
               "type": "integer"
@@ -6154,18 +6185,7 @@
                 }
               }
             },
-            "description": "The log as plain text. With follow=1, the response streams until the log ends.",
-            "headers": {
-              "X-Runplane-Step-Filter": {
-                "description": "ignored: the log has all steps, because the job runs and its live log has no step marks.",
-                "schema": {
-                  "enum": [
-                    "ignored"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "The log as plain text. With follow=1, the response streams until the log ends."
           },
           "default": {
             "content": {
