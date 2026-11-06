@@ -12,12 +12,12 @@ import (
 
 // ReadFirewall reads the host firewall where it can block the sandboxes:
 // the iptables filter tables that runplane puts its rules in
-// (filterBackends), and the nftables drop chains (DropChains).
+// (filterBackends), and the nftables drop chains (dropChains).
 func ReadFirewall(ctx context.Context) Firewall {
 	if os.Geteuid() != 0 {
 		return Firewall{Err: ErrNeedRoot}
 	}
-	f := Firewall{Drops: DropChains()}
+	f := Firewall{Drops: dropChains()}
 	backends, err := filterBackends(ctx)
 	if err != nil {
 		f.Err = err
@@ -50,13 +50,13 @@ func Available() bool {
 	return err == nil
 }
 
-// DropChains returns the nftables base chains of the IPv4 input and forward
+// dropChains returns the nftables base chains of the IPv4 input and forward
 // hooks with a drop policy, as "family table chain", outside the tables
 // where runplane can accept sandbox traffic: its own, and the filter table
 // of iptables-nft. In nftables, each base chain must accept, so these chains
 // block the sandboxes whatever runplane accepts. It returns nil if it
 // cannot read nftables.
-func DropChains() []string {
+func dropChains() []string {
 	c, err := nftables.New()
 	if err != nil {
 		return nil

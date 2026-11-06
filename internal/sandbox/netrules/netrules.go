@@ -60,7 +60,7 @@ type Config struct {
 
 // Firewall is what ReadFirewall reads of the host firewall, for the doctor.
 type Firewall struct {
-	Drops []string // the nftables chains that block the sandboxes (DropChains)
+	Drops []string // the nftables chains that block the sandboxes (dropChains)
 	// ForwardPolicy is "DROP" when the FORWARD chain of an iptables filter
 	// table drops by default, else "ACCEPT", or "" without a FORWARD chain.
 	ForwardPolicy string

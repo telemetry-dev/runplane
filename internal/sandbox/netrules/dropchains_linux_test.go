@@ -23,7 +23,7 @@ func TestDropChains(t *testing.T) {
 	} {
 		run(t, "nft", cmd)
 	}
-	if got := DropChains(); !slices.Equal(got, []string{"inet mine input"}) {
-		t.Errorf("DropChains = %v, want [inet mine input]", got)
+	if got := dropChains(); !slices.Equal(got, []string{"inet mine input"}) {
+		t.Errorf("dropChains = %v, want [inet mine input]", got)
 	}
 }
