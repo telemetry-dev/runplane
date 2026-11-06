@@ -27,7 +27,8 @@ ENV LANG=C.UTF-8 \
     TZ=Etc/UTC \
     ImageOS=${IMAGE_OS} \
     RUNNER_TOOL_CACHE=/opt/hostedtoolcache \
-    AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
+    AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache \
+    PATH=/home/runner/.cargo/bin:$PATH
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
@@ -128,3 +129,13 @@ RUN case $(dpkg --print-architecture) in \
     \
     rm -rf /tmp/* /root/.cache; \
     chown -R runner:runner "$RUNNER_TOOL_CACHE"
+
+# rustup as on the GitHub-hosted runners, but with no toolchain: a stable
+# toolchain adds 540 to 640 MB. A job installs the toolchain of its
+# rust-toolchain.toml, or runs "rustup default stable". Login shells
+# (su -, sudo -i) read PATH from /etc/environment, not from the ENV above.
+RUN runuser -u runner -- env HOME=/home/runner bash -o pipefail -c \
+      'curl --proto =https --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y -q --no-modify-path \
+        --profile minimal --default-toolchain none'; \
+    sed -i 's|^PATH="|PATH="/home/runner/.cargo/bin:|' /etc/environment; \
+    grep -q '^PATH="/home/runner/.cargo/bin:' /etc/environment
