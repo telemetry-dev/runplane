@@ -206,7 +206,7 @@ func TestFailedModeStopsTheDoctor(t *testing.T) {
 
 func TestScanPortFindsThisProcess(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("port owners come from /proc")
+		t.Skip("needs Linux, where the port owners come from /proc")
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -231,12 +231,20 @@ func TestDoctorOfARunningServerKnowsItsPorts(t *testing.T) {
 		defer l.Close()
 		addrs = append(addrs, l.Addr().String())
 	}
-	o := Options{DataDir: t.TempDir(), Listen: addrs[:1], Serving: true, Requirements: Requirements{Listen: addrs[1:]}}
-	o.Docker = func(context.Context) (Docker, error) { return Docker{}, errors.New("no docker") }
-	s := o.scan(t.Context())
-	cs := portChecks(s.ports, s.Root, "")
-	if len(cs) != 2 || cs[0].Status != StatusOK || cs[1].Status != StatusOK {
-		t.Errorf("port checks = %+v, want two OK checks", cs)
+	r := Run(t.Context(), Options{
+		DataDir:      t.TempDir(),
+		Listen:       addrs[:1],
+		Serving:      true,
+		Requirements: Requirements{Mode: ModeCheck.OK("Test mode"), Listen: addrs[1:]},
+		Docker:       func(context.Context) (Docker, error) { return Docker{}, errors.New("no docker") },
+		BaseImage:    func(context.Context) (string, error) { return "runner:1", nil },
+	})
+	for _, addr := range addrs {
+		_, port, _ := net.SplitHostPort(addr)
+		i := slices.IndexFunc(r.Checks, func(c Check) bool { return c.ID == "port_"+port })
+		if i < 0 || r.Checks[i].Status != StatusOK {
+			t.Errorf("no OK check of the port %s in %+v", port, r.Checks)
+		}
 	}
 }
 

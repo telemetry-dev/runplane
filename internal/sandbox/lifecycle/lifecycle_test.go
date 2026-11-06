@@ -290,74 +290,128 @@ func TestStopKillsASandboxWithoutGuest(t *testing.T) {
 // The end state comes from what runplane found, what the runner reported,
 // and what the backend found, in this order.
 func TestOutcome(t *testing.T) {
-	code := 0
+	stop := func(c *Core[note]) {
+		ended, cancel := context.WithCancel(context.Background())
+		cancel()
+		c.Stop(ended, "sb1") // the stop goes on after Stop returns
+	}
+	exit := func(b *Box[note], err string) {
+		b.OnConnect()
+		b.OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, Error: err})
+	}
 	tests := []struct {
 		name   string
-		box    *Box[note]
+		run    func(*Core[note], *Box[note])
 		fault  string
 		state  sandbox.State
 		reason string
 	}{
-		{"a fault of runplane", &Box[note]{failure: "the sandbox passed its time limit", stopReason: "stopped by runplane", runnerExit: &code}, "", sandbox.StateFailed, "the sandbox passed its time limit"},
-		{"a runner error", &Box[note]{runnerErr: "the runner did not connect to GitHub", stopReason: "stopped by runplane", runnerExit: &code}, "", sandbox.StateFailed, "the runner did not connect to GitHub"},
-		{"a stop", &Box[note]{stopReason: "stopped by runplane", heard: true}, "out of memory", sandbox.StateGone, "stopped by runplane"},
-		{"a fault of the backend", &Box[note]{heard: true, runnerExit: &code}, "out of memory", sandbox.StateFailed, "out of memory"},
-		{"no guest", &Box[note]{}, "", sandbox.StateFailed, "the sandbox stopped before runplane-init connected: Kernel panic"},
-		{"no runner exit", &Box[note]{heard: true}, "", sandbox.StateFailed, "the sandbox stopped unexpectedly: Kernel panic"},
-		{"the runner ended", &Box[note]{heard: true, runnerExit: &code}, "", sandbox.StateGone, "the runner exited with code 0"},
+		{"a fault of runplane", func(c *Core[note], b *Box[note]) {
+			exit(b, "")
+			stop(c)
+			b.Fail("the sandbox passed its time limit")
+		}, "out of memory", sandbox.StateFailed, "the sandbox passed its time limit"},
+		{"a runner error", func(c *Core[note], b *Box[note]) {
+			exit(b, "the runner did not connect to GitHub")
+			stop(c)
+		}, "out of memory", sandbox.StateFailed, "the runner did not connect to GitHub"},
+		{"a stop", func(c *Core[note], b *Box[note]) {
+			b.OnConnect()
+			stop(c)
+		}, "out of memory", sandbox.StateGone, "stopped by runplane"},
+		{"a fault of the backend", func(_ *Core[note], b *Box[note]) { exit(b, "") }, "out of memory", sandbox.StateFailed, "out of memory"},
+		{"no guest", func(*Core[note], *Box[note]) {}, "", sandbox.StateFailed, "the sandbox stopped before runplane-init connected: Kernel panic"},
+		{"no runner exit", func(_ *Core[note], b *Box[note]) { b.OnConnect() }, "", sandbox.StateFailed, "the sandbox stopped unexpectedly: Kernel panic"},
+		{"the runner ended", func(_ *Core[note], b *Box[note]) { exit(b, "") }, "", sandbox.StateGone, "the runner exited with code 0"},
 	}
 	for _, tt := range tests {
-		b := tt.box
-		b.lastLines = []string{"Kernel panic"}
-		state, reason := b.outcome(tt.fault)
-		if state != tt.state || reason != tt.reason {
-			t.Errorf("%s: %s %q, want %s %q", tt.name, state, reason, tt.state, tt.reason)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			c := newCore(t, t.TempDir(), &fakeBackend{fault: tt.fault}, sandbox.Limits{})
+			if err := c.Start(context.Background(), testSpec("sb1")); err != nil {
+				t.Fatal(err)
+			}
+			b := c.Box("sb1")
+			b.Console("Kernel panic")
+			tt.run(c, b)
+			b.MarkExited()
+			for {
+				ev := next(t, c)
+				if ev.Type != sandbox.EventState || !ev.State.Done() {
+					continue
+				}
+				if ev.State != tt.state || ev.Reason != tt.reason {
+					t.Errorf("ended %s %q, want %s %q", ev.State, ev.Reason, tt.state, tt.reason)
+				}
+				return
+			}
+		})
 	}
 }
 
-func TestDeadline(t *testing.T) {
-	created := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
-	tests := []struct {
-		name       string
-		limit      time.Duration
-		jobStarted time.Time
-		hold       time.Time
-		want       time.Time
-	}{
-		// Without a job: the limit, the idle grace of 5 minutes, and the grace for init.
-		{"a warm sandbox", time.Hour, time.Time{}, time.Time{}, created.Add(65*time.Minute + limitGrace)},
+// runplane stops a sandbox 4m35s after its time limit, so that
+// runplane-init can end it first. The limit counts from the job start, or
+// from the creation with the idle grace of 5 minutes. A debug hold moves
+// the end later, never earlier. A sandbox past the end fails, and the
+// scheduler then removes its runner from GitHub. The records come from
+// before a restart, so the ends can be in the past.
+func TestTimeLimit(t *testing.T) {
+	const grace = 4*time.Minute + 35*time.Second
+	// Each case gives the record of a sandbox that runplane stops at end.
+	cases := map[string]func(end time.Time) record[note]{
+		"warm": func(end time.Time) record[note] {
+			return record[note]{CreatedAt: end.Add(-time.Hour - 5*time.Minute - grace), State: sandbox.StateIdle}
+		},
 		// A sandbox that waited 3 hours for its job gets the full hour for it.
-		{"a job after a long wait", time.Hour, created.Add(3 * time.Hour), time.Time{}, created.Add(4*time.Hour + limitGrace)},
-		{"a debug hold past the limit", time.Hour, created.Add(10 * time.Minute), created.Add(2 * time.Hour), created.Add(2*time.Hour + limitGrace)},
-		{"a hold inside the limit", time.Hour, created.Add(10 * time.Minute), created.Add(20 * time.Minute), created.Add(70*time.Minute + limitGrace)},
-		{"no time limit", 0, created.Add(10 * time.Minute), time.Time{}, time.Time{}},
+		"job": func(end time.Time) record[note] {
+			job := end.Add(-time.Hour - grace)
+			return record[note]{CreatedAt: job.Add(-3 * time.Hour), JobStarted: job, State: sandbox.StateBusy}
+		},
+		"holdpastthelimit": func(end time.Time) record[note] {
+			hold := end.Add(-grace)
+			job := hold.Add(-2 * time.Hour)
+			return record[note]{CreatedAt: job.Add(-10 * time.Minute), JobStarted: job, HoldUntil: hold, State: sandbox.StateBusy}
+		},
+		"holdinsidethelimit": func(end time.Time) record[note] {
+			job := end.Add(-time.Hour - grace)
+			return record[note]{CreatedAt: job.Add(-10 * time.Minute), JobStarted: job, HoldUntil: job.Add(20 * time.Minute), State: sandbox.StateBusy}
+		},
 	}
-	for _, tt := range tests {
-		b := &Box[note]{created: created, spec: sandbox.Spec{TimeLimit: tt.limit}, jobStarted: tt.jobStarted, holdUntil: tt.hold}
-		if got := b.deadline(); !got.Equal(tt.want) {
-			t.Errorf("%s: deadline %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
-// A sandbox past its deadline fails: runplane-init did not end it, and the
-// scheduler then removes its runner from GitHub.
-func TestTimeLimitFailsTheSandbox(t *testing.T) {
 	dir := t.TempDir()
-	writeRecord(t, dir, record[note]{
-		Mode: sandbox.ModeVM, Spec: testSpec("sb1"), CreatedAt: time.Now().Add(-3 * time.Hour), State: sandbox.StateIdle,
-	})
-	f := &fakeBackend{alive: map[string]bool{"sb1": true}, exitOnEnd: true}
-	c := newCore(t, dir, f, sandbox.Limits{})
+	now := time.Now().UTC()
+	alive := map[string]bool{}
+	write := func(id string, limit time.Duration, rec record[note]) {
+		rec.Mode, rec.Spec = sandbox.ModeVM, testSpec(id)
+		rec.Spec.TimeLimit = limit
+		writeRecord(t, dir, rec)
+		alive[id] = true
+	}
+	var late []string
+	for name, rec := range cases {
+		write(name+"early", time.Hour, rec(now.Add(time.Minute)))
+		write(name+"late", time.Hour, rec(now.Add(-time.Minute)))
+		late = append(late, name+"late")
+	}
+	write("nolimit", 0, record[note]{CreatedAt: now.Add(-72 * time.Hour), State: sandbox.StateBusy})
+
+	c := newCore(t, dir, &fakeBackend{alive: alive, exitOnEnd: true}, sandbox.Limits{})
 	if _, err := c.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if ev := next(t, c); ev.State != sandbox.StateStopping || ev.Reason != "the sandbox passed its time limit" {
-		t.Fatalf("got %+v, want stopping at the time limit", ev)
+	var failed []string
+	for len(failed) < len(late) {
+		ev := next(t, c)
+		if ev.Reason != "the sandbox passed its time limit" {
+			t.Fatalf("got %+v, want a stop at the time limit", ev)
+		}
+		if ev.State == sandbox.StateFailed {
+			failed = append(failed, ev.SandboxID)
+		}
 	}
-	if ev := next(t, c); ev.State != sandbox.StateFailed || ev.Reason != "the sandbox passed its time limit" {
-		t.Errorf("got %+v, want failed at the time limit", ev)
+	quiet(t, c)
+	slices.Sort(failed)
+	slices.Sort(late)
+	if !slices.Equal(failed, late) {
+		t.Errorf("failed at the time limit: %v, want %v", failed, late)
 	}
 }
 
@@ -393,12 +447,11 @@ func TestRecover(t *testing.T) {
 	if ev := next(t, c); ev.SandboxID != "stop" || ev.State != sandbox.StateGone || ev.Reason != "stopped by runplane" {
 		t.Errorf("got %+v, want the stop to go on", ev)
 	}
+	// If the time limit of "job" counts from its creation 3 hours ago, and
+	// not from its job start, it fails at once.
 	quiet(t, c)
 	if got := c.Box("job").Host.Note; got != "lease 3" {
 		t.Errorf("the backend part after the restart: %q, want lease 3", got)
-	}
-	if got, want := c.Box("job").deadline(), jobStarted.Add(time.Hour+limitGrace); !got.Equal(want) {
-		t.Errorf("deadline after the restart %v, want %v from the job start", got, want)
 	}
 	for id, want := range map[string]bool{"job": true, "held": true, "dead": false, "other": true} {
 		if _, err := os.Stat(filepath.Join(dir, "sandboxes", id)); (err == nil) != want {

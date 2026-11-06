@@ -9,9 +9,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
@@ -77,12 +81,16 @@ func TestShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	openSessions := func() int {
-		shells.mu.Lock()
-		defer shells.mu.Unlock()
-		return len(shells.open)
-	}
-	waitFor(t, "an open session", func() bool { return openSessions() == 1 })
+	out = &syncBuffer{}
+	go io.Copy(out, term)
+	io.WriteString(term, "echo pid=$$\n")
+	pidLine := regexp.MustCompile(`pid=(\d+)`)
+	waitFor(t, "the shell PID", func() bool { return pidLine.MatchString(out.String()) })
+	pid, _ := strconv.Atoi(pidLine.FindStringSubmatch(out.String())[1])
 	term.Close()
-	waitFor(t, "the session to end", func() bool { return openSessions() == 0 })
+	waitFor(t, "the shell to exit", func() bool { return unix.Kill(pid, 0) == unix.ESRCH })
+	waitFor(t, "the session to end", func() bool {
+		err := term.Resize(sandbox.TermSize{Rows: 10, Cols: 10})
+		return err != nil && strings.Contains(err.Error(), "404 Not Found")
+	})
 }

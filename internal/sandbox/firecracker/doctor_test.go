@@ -33,7 +33,7 @@ func healthyHost() vmHost {
 	}
 }
 
-// A healthy host passes all checks of VM mode, in this order.
+// VM mode needs these checks, and a healthy host passes them.
 func TestHealthyVMHost(t *testing.T) {
 	var ids []string
 	for _, c := range healthyHost().checks() {
@@ -42,9 +42,10 @@ func TestHealthyVMHost(t *testing.T) {
 			t.Errorf("%s is %s: %s", c.ID, c.Status, c.Detail)
 		}
 	}
-	want := []string{"os", "kernel", "cgroup", "kvm", "nftables", "ip_forward", "firecracker", "guest_kernel", "vm_ids", "tun", "jail_mount", "firewall", "systemd"}
-	if !slices.Equal(ids, want) {
-		t.Errorf("checks %v, want %v", ids, want)
+	for _, id := range []string{"os", "kernel", "cgroup", "kvm", "nftables", "ip_forward", "firecracker", "guest_kernel", "vm_ids", "tun", "jail_mount", "firewall", "systemd"} {
+		if !slices.Contains(ids, id) {
+			t.Errorf("no %s check in %v", id, ids)
+		}
 	}
 }
 

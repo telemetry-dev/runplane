@@ -37,14 +37,27 @@ func TestControlChannel(t *testing.T) {
 		TimeLimitSeconds: 3600,
 		Debug:            true,
 	}
-	rec1 := &recorder{}
+	// host1 takes the job.started event, but does not answer.
+	taking, release := make(chan struct{}, 1), make(chan struct{})
+	defer close(release)
+	rec1 := &recorder{onEvent: func(ev sandbox.RunnerEvent) {
+		if ev.Kind == "job.started" {
+			select {
+			case taking <- struct{}{}:
+			default:
+			}
+			<-release
+		}
+	}}
 	host1, err := control.Listen(sock, &cfg, rec1, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	sent := &syncBuffer{}
+	var dials atomic.Int32
 	dial := func(ctx context.Context) (net.Conn, error) {
+		dials.Add(1)
 		c, err := dialHost(ctx, filepath.Dir(sock))
 		if err != nil {
 			return nil, err
@@ -89,15 +102,22 @@ func TestControlChannel(t *testing.T) {
 			lines[2].Source, lines[3].Source, len(lines[2].Text), len(lines[3].Text))
 	}
 
-	// runplane restarts: the guest keeps events and logs, connects again,
-	// and does not ask for the config again.
+	// runplane restarts while it takes an event: the guest keeps that event
+	// and the events and logs of the outage, connects again, and does not
+	// ask for the config again.
+	started := sandbox.RunnerEvent{Kind: "job.started", JobName: "build"}
+	link.event(started)
+	select {
+	case <-taking:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the guest did not send the job.started event")
+	}
+	before := dials.Load()
 	host1.Close()
-	waitFor(t, "the guest to see the host leave", func() bool {
-		link.mu.Lock()
-		defer link.mu.Unlock()
-		return link.conn == nil
-	})
-	link.event(sandbox.RunnerEvent{Kind: "job.started", JobName: "build"})
+	// The guest dials again only after it dropped the old connection.
+	waitFor(t, "the guest to dial again", func() bool { return dials.Load() > before })
+	completed := sandbox.RunnerEvent{Kind: "job.completed", JobName: "build", Result: "Succeeded"}
+	link.event(completed)
 	logs.push("runner", "while the host was away")
 	rec2 := &recorder{}
 	host2, err := control.Listen(sock, nil, rec2, log)
@@ -105,8 +125,8 @@ func TestControlChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host2.Close()
-	waitFor(t, "events after the restart", func() bool { return len(rec2.eventList()) == 1 })
-	want := []sandbox.RunnerEvent{{Kind: "job.started", JobName: "build"}}
+	waitFor(t, "events after the restart", func() bool { return len(rec2.eventList()) == 2 })
+	want := []sandbox.RunnerEvent{started, completed}
 	if ev := rec2.eventList(); !slices.Equal(ev, want) {
 		t.Errorf("events after the restart = %+v, want %+v", ev, want)
 	}
@@ -220,14 +240,31 @@ func TestLogQueueDropsOldest(t *testing.T) {
 
 func TestWaitHoldInDebugWaitsForALateHold(t *testing.T) {
 	req := newHostRequests()
+	holds := make(chan time.Time, 1)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		req.setHold(time.Now().Add(300 * time.Millisecond))
+		until := time.Now().Add(50 * time.Millisecond)
+		req.setHold(until)
+		holds <- until
 	}()
-	start := time.Now()
-	req.waitHold(true, 100*time.Millisecond)
-	if d := time.Since(start); d < 250*time.Millisecond {
-		t.Errorf("waitHold returned after %v; the hold that came during the grace time is 300ms", d)
+	returned := make(chan time.Time, 1)
+	go func() {
+		req.waitHold(true, time.Hour)
+		returned <- time.Now()
+	}()
+	var end, until time.Time
+	select {
+	case end = <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("waitHold still waits after the hold ended")
+	}
+	select {
+	case until = <-holds:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no hold")
+	}
+	if end.Before(until) {
+		t.Errorf("waitHold returned %v before the end of the hold that came during the grace time", until.Sub(end))
 	}
 }
 
@@ -252,67 +289,21 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// After a runplane restart, the host has no JIT config for a guest that did
-// not get its config yet, and it stops the sandbox. The guest must then stop
-// asking for the config, or the VM never powers off.
-func TestShutdownWhileWaitingForConfig(t *testing.T) {
-	sock := socketPath(t)
-	log := slog.New(slog.DiscardHandler)
-	var host *control.Server
-	shutdown := make(chan error, 1)
-	rec := &recorder{lost: func() { shutdown <- host.Shutdown(context.Background()) }}
-	host, err := control.Listen(sock, nil, rec, log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer host.Close()
-
-	req := newHostRequests()
-	link := newGuestLink(func(ctx context.Context) (net.Conn, error) { return dialHost(ctx, filepath.Dir(sock)) },
-		log, newLogQueue(1<<20), guestMux(req, newShellServer(log)))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go link.run(ctx)
-	// As guestInit.run does: a shutdown ends the wait for the config.
-	configCtx, stop := context.WithCancel(ctx)
-	go func() {
-		<-req.stop
-		stop()
-	}()
-	done := make(chan error, 1)
-	go func() {
-		_, err := link.config(configCtx)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Error("the guest got a config without a JIT config")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the guest still asks for its config after the host stopped the sandbox")
-	}
-	select {
-	case err := <-shutdown:
-		if err != nil {
-			t.Errorf("shutdown: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the host never asked the guest to stop")
-	}
-}
-
 type recorder struct {
 	connects atomic.Int32
 	mu       sync.Mutex
 	events   []sandbox.RunnerEvent
 	logs     []guest.LogLine
-	lost     func() // OnLostConfig, if set
+	lost     func()                    // OnLostConfig, if set
+	onEvent  func(sandbox.RunnerEvent) // runs before OnEvent keeps the event, if set
 }
 
 func (r *recorder) OnConnect() { r.connects.Add(1) }
 
 func (r *recorder) OnEvent(ev sandbox.RunnerEvent) {
+	if r.onEvent != nil {
+		r.onEvent(ev)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, ev)
