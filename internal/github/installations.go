@@ -7,13 +7,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
 type account struct {
-	ghrest.Account
+	ghapp.Account
 	ID        int64  `json:"id"`
 	AvatarURL string `json:"avatar_url"`
 }
@@ -38,11 +39,10 @@ func (s *Service) Setup(ctx context.Context, installationID int64, setupAction s
 	if err != nil {
 		return "", err
 	}
-	known, err := s.st.ListInstallations(ctx)
+	connected, err := s.st.GitHubConnected(ctx)
 	if err != nil {
 		return "", err
 	}
-	connected := len(known) > 0
 	if setupAction == "request" || installationID == 0 {
 		return pages.GitHubRequested(connected), nil
 	}

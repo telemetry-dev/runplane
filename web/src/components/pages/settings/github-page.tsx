@@ -28,7 +28,7 @@ export function prefetch(client: QueryClient) {
 /** Settings · GitHub: the app, its installations, the pull request form, job access, and the disconnect. `search` is what the GitHub callbacks report. */
 export function GitHubSettings({ search: { error, requested } }: { search: CallbackSearch }) {
   const navigate = useNavigate()
-  const { app, installations, scale_sets } = useSuspenseQuery(githubQuery).data
+  const { app, installations, scale_sets, hosted_labels } = useSuspenseQuery(githubQuery).data
   const settings = useSuspenseQuery(settingsQuery).data
   const { admin } = useCapabilities()
   const dismiss = () => void navigate({ to: '/settings/github', search: {}, replace: true })
@@ -57,7 +57,7 @@ export function GitHubSettings({ search: { error, requested } }: { search: Callb
         )}
       </section>
       {app && <Installations app={app} installations={installations} admin={admin} />}
-      {app && admin && <PullRequests app={app} installations={installations} settings={settings} />}
+      {app && admin && <PullRequests app={app} installations={installations} hostedLabels={hosted_labels} />}
       <JobAccess settings={settings} admin={admin} />
       {app && admin && <DisconnectGitHub appName={app.name} />}
     </SettingsColumn>
@@ -112,21 +112,27 @@ function Installations({ app, installations, admin }: InstallationsProps) {
 type PullRequestsProps = {
   app: Schemas['GitHubApp']
   installations: Schemas['Installation'][]
-  settings: Schemas['Settings']
+  hostedLabels: string[]
 }
 
 /** "Open a pull request": moves the jobs of one more repository to runplane at any time after the setup. */
-function PullRequests({ app, installations, settings }: PullRequestsProps) {
+function PullRequests({ app, installations, hostedLabels }: PullRequestsProps) {
   const pools = useSuspenseQuery(poolsQuery).data
   const labels = pools.filter((pool) => pool.enabled).map((pool) => pool.label)
   const label = suggestedLabel(pools)
-  const repositories = jobRepositories(installations, settings)
+  const repositories = jobRepositories(installations)
   if (!label || repositories.length === 0) return null
 
   return (
     <section className="flex flex-col gap-s">
       <SectionHeader title="Open a pull request" />
-      <PullRequestForm repositories={repositories} labels={labels} defaultLabel={label} permissionsUrl={app.permissions_url} />
+      <PullRequestForm
+        repositories={repositories}
+        labels={labels}
+        defaultLabel={label}
+        hostedLabels={hostedLabels}
+        permissionsUrl={app.permissions_url}
+      />
     </section>
   )
 }

@@ -3,8 +3,6 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"slices"
-	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -44,40 +42,11 @@ func (s *Scheduler) onState(ctx context.Context, serverID string, ev sandbox.Eve
 		return
 	}
 	b, changed := s.setStateAt(ctx, b.ID, ev.State, ev.Reason, ev.Time)
-	switch {
-	case ev.State == sandbox.StateIdle:
-		s.recordIP(serverID, b.ID)
-	case changed && ev.State == sandbox.StateFailed:
+	if changed && ev.State == sandbox.StateFailed {
 		if err := s.removeRunner(ctx, b); err != nil {
 			s.log.Warn("remove runner", "sandbox", b.ID, "runner", b.RunnerName, "err", err)
 		}
 	}
-}
-
-// recordIP saves the address that the driver of the server lists for a
-// sandbox whose runner listens. The list of an agent is a request on its
-// connection, so the event loop does not wait for it.
-func (s *Scheduler) recordIP(serverID, id string) {
-	d := s.fleet.Driver(serverID)
-	if d == nil {
-		return
-	}
-	s.goBg(func(ctx context.Context) {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		list, err := d.List(ctx)
-		if err != nil {
-			s.log.Debug("list sandboxes for an address", "server_id", serverID, "err", err)
-			return
-		}
-		i := slices.IndexFunc(list, func(x sandbox.Sandbox) bool { return x.ID == id })
-		if i < 0 || list[i].IP == "" {
-			return
-		}
-		if err := s.st.SetSandboxIP(ctx, serverID, id, list[i].IP); err != nil {
-			s.log.Debug("record sandbox address", "server_id", serverID, "sandbox", id, "err", err)
-		}
-	})
 }
 
 func (s *Scheduler) onRunner(ctx context.Context, serverID string, ev sandbox.Event) {

@@ -30,7 +30,6 @@ type Sandbox struct {
 	ServerName      string     `json:"server_name"`
 	State           string     `json:"state" enum:"starting,idle,busy,stopping,gone,failed"`
 	RunnerName      string     `json:"runner_name"`
-	IP              string     `json:"ip"`
 	JobID           string     `json:"job_id" doc:"Empty until the runner gets a job."`
 	JobName         string     `json:"job_name"`
 	JobRepository   string     `json:"job_repository" doc:"owner/name of the job."`
@@ -63,7 +62,7 @@ func (h *Handler) sandboxes(ctx context.Context, list []store.Sandbox) ([]Sandbo
 		}
 		out[i] = Sandbox{
 			ID: b.ID, PoolID: b.PoolID, PoolLabel: r.pools[b.PoolID].Label, ServerID: b.ServerID,
-			ServerName: r.servers[b.ServerID].Name, State: string(b.State), RunnerName: b.RunnerName, IP: b.IP,
+			ServerName: r.servers[b.ServerID].Name, State: string(b.State), RunnerName: b.RunnerName,
 			JobID: b.JobID, JobName: j.JobName, JobRepository: j.Repository, JobWorkflowFile: j.WorkflowFile,
 			Debug: b.Debug, HoldUntil: b.HoldUntil, VCPU: b.VCPU, MemoryMB: b.MemoryMB,
 			Error: b.Error, CreatedAt: b.CreatedAt, IdleAt: b.IdleAt, BusyAt: b.BusyAt, StoppedAt: b.StoppedAt,

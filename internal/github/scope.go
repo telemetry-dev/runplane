@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/ghrest"
 )
 
@@ -20,7 +21,7 @@ func (s *Service) ReadScope(ctx context.Context) (string, ghrest.Auth, bool) {
 	for _, inst := range insts {
 		switch {
 		case inst.SuspendedAt != nil:
-		case inst.AccountType == ghrest.Organization:
+		case inst.AccountType == ghapp.Organization:
 			return target{inst: inst}.path(), installAuth{s, inst.ID}, true
 		case repoScope == "":
 			if repos, err := s.st.ListRepositories(ctx, inst.ID); err == nil && len(repos) > 0 {

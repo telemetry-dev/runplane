@@ -1,20 +1,11 @@
 import type { Schemas } from '~/api/client'
-import { publicReposRun } from '~/api/settings'
 import { formatCount } from '~/lib/format'
 
-/**
- * owner/name of the repositories whose jobs runplane takes: not archived, in an
- * installation that is not suspended, and private unless jobs of public repositories run.
- */
-export function jobRepositories(
-  installations: readonly Schemas['Installation'][],
-  settings: Pick<Schemas['Settings'], 'allow_public_repos' | 'public_repos_possible'>,
-): string[] {
-  const publicRepos = publicReposRun(settings)
+/** owner/name of the repositories whose jobs runplane takes. */
+export function jobRepositories(installations: readonly Schemas['Installation'][]): string[] {
   return installations
-    .filter((installation) => !installation.suspended)
     .flatMap((installation) => installation.repositories)
-    .filter((repository) => !repository.archived && (repository.private || publicRepos))
+    .filter((repository) => repository.takes_jobs)
     .map((repository) => repository.full_name)
 }
 

@@ -28,44 +28,43 @@ var (
 // Job returns the stored GitHub log of a finished job. While the job runs,
 // it returns the step output that the sandbox streams: the "diag" lines of
 // the sandbox log, which have the GitHub log format. The live log has no
-// step marks, so live is true and the log has all steps whatever step is.
-// step 0 means all steps.
-func (l *Logs) Job(ctx context.Context, jobID string, step int, follow bool) (_ io.ReadCloser, live bool, _ error) {
+// step marks, so it has all steps whatever step is. step 0 means all steps.
+func (l *Logs) Job(ctx context.Context, jobID string, step int, follow bool) (io.ReadCloser, error) {
 	job, err := l.cfg.Store.GetJob(ctx, jobID)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if job.LogState == store.LogStored {
 		f, err := os.Open(l.path(job.ID))
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, ErrMissing
+			return nil, ErrMissing
 		}
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		if step > 0 {
-			return filterLines(f, stepLines(job.Steps, step)), false, nil
+			return filterLines(f, stepLines(job.Steps, step)), nil
 		}
-		return f, false, nil
+		return f, nil
 	}
-	if job.SandboxID != "" {
+	if job.LogState == store.LogLive {
 		// The sandbox log fails for a sandbox that stopped.
 		if b, err := l.cfg.Store.GetSandbox(ctx, job.SandboxID); err == nil {
 			if rc, err := l.sandbox(ctx, b, follow); err == nil {
-				return filterLines(rc, diagLines), true, nil
+				return filterLines(rc, diagLines), nil
 			}
 		}
 	}
 	switch job.LogState {
 	case store.LogExpired:
-		return nil, false, ErrExpired
+		return nil, ErrExpired
 	case store.LogNone:
 		// The finish step can still store the GitHub log.
 		if job.State == store.JobCompleted && !job.FinishPending {
-			return nil, false, ErrNoGitHubLog
+			return nil, ErrNoGitHubLog
 		}
 	}
-	return nil, false, ErrNotYet
+	return nil, ErrNotYet
 }
 
 // Sandbox returns the console and runner log of a sandbox. With follow,

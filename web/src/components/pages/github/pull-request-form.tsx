@@ -14,6 +14,8 @@ type PullRequestFormProps = {
   /** The labels of the enabled pools. With more than one, the form shows a label select. */
   labels: string[]
   defaultLabel: string
+  /** The runs-on labels of GitHub-hosted runners that the pull request moves. */
+  hostedLabels: string[]
   /** The permissions page of the GitHub App. An app from before runplane opened pull requests must get write access there first. */
   permissionsUrl: string | undefined
 }
@@ -23,7 +25,7 @@ type PullRequestFormProps = {
  * a pull request. The form stays after a pull request opens, so the next
  * repository can follow.
  */
-export function PullRequestForm({ repositories, labels, defaultLabel, permissionsUrl }: PullRequestFormProps) {
+export function PullRequestForm({ repositories, labels, defaultLabel, hostedLabels, permissionsUrl }: PullRequestFormProps) {
   const [repository, setRepository] = useState<string | null>(repositories.length === 1 ? (repositories[0] ?? null) : null)
   const [label, setLabel] = useState(defaultLabel)
   const [unselected, setUnselected] = useState(false)
@@ -86,7 +88,7 @@ export function PullRequestForm({ repositories, labels, defaultLabel, permission
         </Button>
       </div>
       <p className="text-s text-neutral-7">
-        runplane sets runs-on to {label} for each job on ubuntu-latest or ubuntu-24.04 in the repository, then opens a pull request for you to
+        runplane sets runs-on to {label} for each job on {or.format(hostedLabels)} in the repository, then opens a pull request for you to
         review.
       </p>
       {unselected && <FormAlert>Select a repository in the list.</FormAlert>}
@@ -123,3 +125,5 @@ export function PullRequestForm({ repositories, labels, defaultLabel, permission
     </form>
   )
 }
+
+const or = new Intl.ListFormat('en-US', { type: 'disjunction' })

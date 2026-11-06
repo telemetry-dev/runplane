@@ -125,39 +125,44 @@ func TestJobLog(t *testing.T) {
 		return consoleDriver{log: console}
 	}})
 
-	rc, live, err := l.Job(ctx, stored.ID, 3, false)
+	rc, err := l.Job(ctx, stored.ID, 3, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := readAll(t, rc); live || !strings.HasPrefix(got, "2026-11-04T10:00:05.4000000Z ##[group]Run make test\n") || strings.Contains(got, "checkout") {
-		t.Errorf("step 3 of the stored log (live %v):\n%s", live, got)
+	if got := readAll(t, rc); !strings.HasPrefix(got, "2026-11-04T10:00:05.4000000Z ##[group]Run make test\n") || strings.Contains(got, "checkout") {
+		t.Errorf("step 3 of the stored log:\n%s", got)
 	}
 
 	// The live log has no step marks, so a step gives the whole log.
 	want := "2026-11-04T10:00:01.4000000Z ##[group]Run make test\n2026-11-04T10:00:02.4000000Z ok\n"
 	for _, step := range []int{0, 2} {
-		rc, live, err = l.Job(ctx, running.ID, step, true)
+		rc, err = l.Job(ctx, running.ID, step, true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := readAll(t, rc); !live || got != want {
-			t.Errorf("log of a running job with step %d (live %v):\n got %q\nwant %q", step, live, got, want)
+		if got := readAll(t, rc); got != want {
+			t.Errorf("log of a running job with step %d:\n got %q\nwant %q", step, got, want)
 		}
 	}
 
-	if _, _, err := l.Job(ctx, expired.ID, 0, false); !errors.Is(err, ErrExpired) {
+	if _, err := l.Job(ctx, expired.ID, 0, false); !errors.Is(err, ErrExpired) {
 		t.Errorf("log of an expired job: %v, want ErrExpired", err)
 	}
 
-	// GitHub has no log for a completed job only after its finish step.
-	finishing := newJob(4, store.JobCompleted, store.LogNone, "")
-	if _, _, err := l.Job(ctx, finishing.ID, 0, false); !errors.Is(err, ErrNotYet) {
+	// GitHub has no log for a completed job only after its finish step. The
+	// debug sandbox that runplane holds after the job does not give its log.
+	if err := st.InsertSandbox(ctx, store.Sandbox{ID: "held", PoolID: "p", ServerID: "s1", Mode: sandbox.ModeDev,
+		State: sandbox.StateStopping, Debug: true, VCPU: 1, MemoryMB: 1024, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	finishing := newJob(4, store.JobCompleted, store.LogNone, "held")
+	if _, err := l.Job(ctx, finishing.ID, 0, false); !errors.Is(err, ErrNotYet) {
 		t.Errorf("log of a job in its finish step: %v, want ErrNotYet", err)
 	}
 	if err := st.EndJobFinish(ctx, finishing.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := l.Job(ctx, finishing.ID, 0, false); !errors.Is(err, ErrNoGitHubLog) {
+	if _, err := l.Job(ctx, finishing.ID, 0, false); !errors.Is(err, ErrNoGitHubLog) {
 		t.Errorf("log of a finished job: %v, want ErrNoGitHubLog", err)
 	}
 }

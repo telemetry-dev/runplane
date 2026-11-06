@@ -29,7 +29,7 @@ const (
 	// The waiting sandboxes of a server with no connection for this long stop
 	// counting as runners. A short loss, such as an agent update, keeps them.
 	lostServerAfter = 15 * time.Minute
-	// A queued job that runplane did not take for this long is closed.
+	// A job that waits for a runner this long, queued or assigned, is closed.
 	unclaimedJobAfter = time.Hour
 	// The cleanup runs the finish step again for at most this many jobs at
 	// a time.
@@ -316,7 +316,7 @@ func (s *Scheduler) goBg(fn func(ctx context.Context)) {
 }
 
 func (s *Scheduler) publishPoolStats(ctx context.Context, poolID string) {
-	counts, err := s.st.PoolCounts(ctx, s.now())
+	counts, err := s.st.PoolCounts(ctx)
 	if err != nil {
 		s.log.Warn("count pool runners and jobs", "err", err)
 		return

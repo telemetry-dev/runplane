@@ -133,12 +133,7 @@ func TestDoctorResult(t *testing.T) {
 func TestServerRegion(t *testing.T) {
 	e := newEnv(t)
 	e.addServer("srv1", "x64", store.ServerOnline, 4, 8192)
-	if changed, err := e.st.SetServerRegion(context.Background(), "srv1", "fsn1"); err != nil || !changed {
-		t.Fatalf("set region: changed %v, %v", changed, err)
-	}
-	if changed, _ := e.st.SetServerRegion(context.Background(), "srv1", "fsn1"); changed {
-		t.Fatal("the same region again reports a change")
-	}
+	must(t, e.st.UpdateServerFacts(context.Background(), "srv1", store.ServerFacts{Arch: "x64", Region: "fsn1"}, time.Now()))
 	var v Server
 	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/servers/srv1", nil, &v).want(t, 200)
 	if v.Region != "fsn1" {

@@ -14,60 +14,62 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// The actions of the audit log, as "<object>.<verb>".
+// Action is the kind of change of an entry, as "<object>.<verb>".
+type Action string
+
 const (
-	SetupDone         = "setup.done"
-	UserUpdate        = "user.update"
-	UserDelete        = "user.delete"
-	UserPassword      = "user.password"
-	InviteCreate      = "invite.create"
-	InviteLink        = "invite.link"
-	InviteDelete      = "invite.delete"
-	PoolCreate        = "pool.create"
-	PoolUpdate        = "pool.update"
-	PoolDelete        = "pool.delete"
-	ServerToken       = "server.token"
-	ServerInstall     = "server.install"
-	ServerUpdate      = "server.update"
-	ServerDelete      = "server.delete"
-	ServerUpdateAgent = "server.update_agent"
-	SandboxStop       = "sandbox.stop"
-	SandboxShell      = "sandbox.shell"
-	SandboxSSH        = "sandbox.ssh"
-	CacheDelete       = "cache.delete"
-	ImageCreate       = "image.create"
-	ImageUpdate       = "image.update"
-	ImageDelete       = "image.delete"
-	ImageRefresh      = "image.refresh"
-	SettingsUpdate    = "settings.update"
-	JobRerun          = "job.rerun"
-	BackupCreate      = "backup.create"
-	BackupDownload    = "backup.download"
-	UpdateApply       = "update.apply"
-	GitHubManifest    = "github.manifest"
-	GitHubAppCreate   = "github.app.create"
-	GitHubSync        = "github.sync"
-	GitHubPullRequest = "github.pull_request.create"
-	GitHubDisconnect  = "github.disconnect"
-	ChannelCreate     = "notification.create"
-	ChannelUpdate     = "notification.update"
-	ChannelDelete     = "notification.delete"
+	SetupDone         Action = "setup.done"
+	UserUpdate        Action = "user.update"
+	UserDelete        Action = "user.delete"
+	UserPassword      Action = "user.password"
+	UserPasswordReset Action = "user.password_reset"
+	InviteCreate      Action = "invite.create"
+	InviteLink        Action = "invite.link"
+	InviteDelete      Action = "invite.delete"
+	PoolCreate        Action = "pool.create"
+	PoolUpdate        Action = "pool.update"
+	PoolDelete        Action = "pool.delete"
+	ServerToken       Action = "server.token"
+	ServerInstall     Action = "server.install"
+	ServerUpdate      Action = "server.update"
+	ServerDelete      Action = "server.delete"
+	ServerUpdateAgent Action = "server.update_agent"
+	SandboxStop       Action = "sandbox.stop"
+	SandboxShell      Action = "sandbox.shell"
+	SandboxSSH        Action = "sandbox.ssh"
+	CacheDelete       Action = "cache.delete"
+	ImageCreate       Action = "image.create"
+	ImageUpdate       Action = "image.update"
+	ImageDelete       Action = "image.delete"
+	ImageRefresh      Action = "image.refresh"
+	SettingsUpdate    Action = "settings.update"
+	JobRerun          Action = "job.rerun"
+	BackupCreate      Action = "backup.create"
+	BackupDownload    Action = "backup.download"
+	UpdateApply       Action = "update.apply"
+	GitHubManifest    Action = "github.manifest"
+	GitHubAppCreate   Action = "github.app.create"
+	// The returns from the GitHub page of the app installation, one for each
+	// setup_action of GitHub.
+	GitHubInstall        Action = "github.installation.install"
+	GitHubInstallUpdate  Action = "github.installation.update"
+	GitHubInstallRequest Action = "github.installation.request"
+	GitHubSync           Action = "github.sync"
+	GitHubPullRequest    Action = "github.pull_request.create"
+	GitHubDisconnect     Action = "github.disconnect"
+	ChannelCreate        Action = "notification.create"
+	ChannelUpdate        Action = "notification.update"
+	ChannelDelete        Action = "notification.delete"
 )
 
-// GitHubInstallation is the action of a return from the GitHub page of the
-// app installation, with the setup_action of GitHub: install, update, or
-// request.
-func GitHubInstallation(setupAction string) string { return "github.installation." + setupAction }
-
-// Actions are all actions.
-var Actions = []string{
-	SetupDone, UserUpdate, UserDelete, UserPassword, InviteCreate, InviteLink, InviteDelete,
+var Actions = []Action{
+	SetupDone, UserUpdate, UserDelete, UserPassword, UserPasswordReset, InviteCreate, InviteLink, InviteDelete,
 	PoolCreate, PoolUpdate, PoolDelete,
 	ServerToken, ServerInstall, ServerUpdate, ServerDelete, ServerUpdateAgent,
 	SandboxStop, SandboxShell, SandboxSSH, CacheDelete,
 	ImageCreate, ImageUpdate, ImageDelete, ImageRefresh,
 	SettingsUpdate, JobRerun, BackupCreate, BackupDownload, UpdateApply,
-	GitHubManifest, GitHubAppCreate, GitHubInstallation("install"), GitHubInstallation("update"), GitHubInstallation("request"),
+	GitHubManifest, GitHubAppCreate, GitHubInstall, GitHubInstallUpdate, GitHubInstallRequest,
 	GitHubSync, GitHubPullRequest, GitHubDisconnect,
 	ChannelCreate, ChannelUpdate, ChannelDelete,
 }
@@ -84,9 +86,9 @@ type Log struct {
 	Logger *slog.Logger // nil: no log
 }
 
-// Record writes an entry. action is one of Actions. A failure goes to the log and does not fail the change,
-// because the change is done already.
-func (l Log) Record(ctx context.Context, by Actor, action, target string, detail map[string]any) {
+// Record writes an entry. A failure goes to the log and does not fail the
+// change, because the change is done already.
+func (l Log) Record(ctx context.Context, by Actor, action Action, target string, detail map[string]any) {
 	var raw json.RawMessage
 	if detail != nil {
 		b, err := json.Marshal(detail)
@@ -96,7 +98,7 @@ func (l Log) Record(ctx context.Context, by Actor, action, target string, detail
 		raw = b
 	}
 	err := l.Store.InsertAudit(context.WithoutCancel(ctx), store.AuditEntry{
-		ID: ids.New(), At: time.Now(), UserID: by.UserID, Action: action, Target: target, Detail: raw, IP: by.IP,
+		ID: ids.New(), At: time.Now(), UserID: by.UserID, Action: string(action), Target: target, Detail: raw, IP: by.IP,
 	})
 	if err != nil {
 		l.logger().Error("write audit entry", "action", action, "target", target, "err", err)

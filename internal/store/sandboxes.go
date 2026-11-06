@@ -20,7 +20,6 @@ type Sandbox struct {
 	State         sandbox.State `json:"state"`
 	RunnerID      int64         `json:"runner_id"`
 	RunnerName    string        `json:"runner_name"`
-	IP            string        `json:"ip"`
 	ImageDigest   string        `json:"image_digest"`
 	RunnerVersion string        `json:"runner_version"`
 	JobID         string        `json:"job_id"`
@@ -54,25 +53,18 @@ type SandboxJob struct {
 	RunRef
 }
 
-const sandboxCols = `id, pool_id, server_id, scale_set_id, mode, state, runner_id, runner_name, ip, image_digest,
+const sandboxCols = `id, pool_id, server_id, scale_set_id, mode, state, runner_id, runner_name, image_digest,
 	runner_version, job_id, debug, hold_until, vcpu, memory_mb, disk_gb, created_at, idle_at, busy_at, stopped_at, exit_reason,
 	error`
 
 func (b *Sandbox) cols() []any {
 	return []any{&b.ID, &b.PoolID, &b.ServerID, &b.ScaleSetID, &b.Mode, &b.State, &b.RunnerID, &b.RunnerName,
-		&b.IP, &b.ImageDigest, &b.RunnerVersion, &b.JobID, &b.Debug, atPtr(&b.HoldUntil), &b.VCPU, &b.MemoryMB,
+		&b.ImageDigest, &b.RunnerVersion, &b.JobID, &b.Debug, atPtr(&b.HoldUntil), &b.VCPU, &b.MemoryMB,
 		&b.DiskGB, at(&b.CreatedAt), atPtr(&b.IdleAt), atPtr(&b.BusyAt), atPtr(&b.StoppedAt), &b.ExitReason, &b.Error}
 }
 
 func (s *Store) InsertSandbox(ctx context.Context, b Sandbox) error {
 	return exec(ctx, s.w, "insert sandbox", insert("sandboxes", sandboxCols), b.cols()...)
-}
-
-// SetSandboxIP records the address of a sandbox of the server serverID. It
-// returns ErrNotFound for a sandbox of another server, so a server cannot
-// give its address to a sandbox that it does not run.
-func (s *Store) SetSandboxIP(ctx context.Context, serverID, id, ip string) error {
-	return exec1(ctx, s.w, "set sandbox ip", "UPDATE sandboxes SET ip = ? WHERE id = ? AND server_id = ?", ip, id, serverID)
 }
 
 // LinkJobSandbox records that the sandbox runs the job: the job gets the

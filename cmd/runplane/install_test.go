@@ -287,14 +287,35 @@ check_base_image`)
 			match(t, repoFile(t, "kernel/build.sh"), `(?m)^FIRECRACKER_REF=\$\{FIRECRACKER_REF:-(\S+)\}$`), "install.sh", "kernel/build.sh")
 	})
 
-	// The add-server dialog names the systems of runplane.Systems. install.sh
-	// takes them without a warning, or with one for a best-effort system.
+	// The add-server dialog names the systems of runplane.Systems: the
+	// systems that select_mode names. install.sh takes them without a
+	// warning, or with one for a best-effort system.
 	t.Run("systems", func(t *testing.T) {
-		for _, s := range runplane.Systems {
-			out := installtest.Run(t, "have_kvm() { return 0; }\nMODE=vm\nOS_ID="+s.ID+"\nOS_VERSION="+s.Version+"\nselect_mode")
-			warned := strconv.FormatBool(strings.Contains(out, "best effort"))
-			agree(t, "the best-effort warning of install.sh for "+s.Name+" "+s.Version, warned, strconv.FormatBool(s.BestEffort), "install.sh", "install.go")
+		system := func(id, version string, bestEffort bool) string {
+			if bestEffort {
+				return id + "-" + version + " (best effort)"
+			}
+			return id + "-" + version
 		}
+		var named, want []string
+		block := match(t, script, `(?s)\n\tcase \$OS_ID-\$OS_VERSION in\n(.*?)\n\tesac\n`)
+		for _, m := range regexp.MustCompile(`(?m)^\t([^\t)]+)\)`).FindAllStringSubmatch(block, -1) {
+			for p := range strings.SplitSeq(m[1], "|") {
+				p = strings.TrimSpace(p)
+				if strings.Contains(p, "*") {
+					continue
+				}
+				id, version, _ := strings.Cut(p, "-")
+				out := installtest.Run(t, "have_kvm() { return 0; }\nMODE=vm\nOS_ID="+id+"\nOS_VERSION="+version+"\nselect_mode")
+				named = append(named, system(id, version, strings.Contains(out, "best effort")))
+			}
+		}
+		for _, s := range runplane.Systems {
+			want = append(want, system(s.ID, s.Version, s.BestEffort))
+		}
+		slices.Sort(named)
+		slices.Sort(want)
+		agree(t, "the systems that install.sh names", named, want, "install.sh", "install.go")
 	})
 
 	// An install over SSH shows the latest step of install.sh.

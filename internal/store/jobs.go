@@ -45,6 +45,12 @@ const (
 	ResultSkipped   = "skipped"
 )
 
+var results = []string{ResultSucceeded, ResultFailed, ResultCancelled, ResultSkipped}
+
+// JobStatuses are the values of Job.Status, in the order of the jobs
+// filter. The filter takes each of them.
+var JobStatuses = slices.Concat([]string{StatusRunning, StatusQueued}, results)
+
 // ResultOf returns the job result for a result name of GitHub or of the
 // runner, in any case, or "" for "". The scale set messages and the runner
 // use names such as Succeeded, SucceededWithIssues, Canceled, and
@@ -215,7 +221,7 @@ type RunUsage struct {
 
 // JobFilter selects jobs for ListJobs. Zero values select all.
 type JobFilter struct {
-	Status     string // a Job.Status: queued, running, succeeded, failed, or cancelled
+	Status     string // one of JobStatuses
 	Repository string
 	PoolID     string
 	ServerID   string
@@ -307,10 +313,10 @@ func stateRank(state string) int {
 
 func mergeJob(j *Job, m JobMessage, now time.Time) {
 	// A cancelled job that never ran can come back. ExpireQueuedJobs closes
-	// the jobs that runplane did not take, whatever their reject reason, and
-	// GitHub cancels an assignment that no runner takes in time and then
-	// offers the job again (actions/scaleset, Job Reassignment). Such a job
-	// opens again, and the scheduler checks it again.
+	// the jobs that wait too long, whatever their reject reason, and GitHub
+	// cancels an assignment that no runner takes in time and then offers the
+	// job again (actions/scaleset, Job Reassignment). Such a job opens again,
+	// and the scheduler checks it again.
 	if j.State == JobCompleted && j.Result == ResultCancelled && !j.Ran() && m.State != JobCompleted {
 		j.State, j.Result, j.ResultGuessed, j.FinishedAt, j.RejectReason = JobQueued, "", false, nil, ""
 		j.LogState, j.FinishPending = LogNone, false
@@ -483,11 +489,11 @@ func jobWhere(f JobFilter) ([]string, []any, error) {
 		conds = append(conds, cond)
 		args = append(args, a...)
 	}
-	switch f.Status {
-	case "":
-	case StatusQueued, StatusRunning:
+	switch {
+	case f.Status == "":
+	case statusStates[f.Status] != nil:
 		add(stateTerm(statusStates[f.Status]))
-	case ResultSucceeded, ResultFailed, ResultCancelled:
+	case slices.Contains(results, f.Status):
 		add("state = 'completed' AND result = ?", f.Status)
 	default:
 		return nil, nil, fmt.Errorf("unknown status %q", f.Status)
@@ -587,16 +593,16 @@ func (s *Store) ListUnfinishedJobs(ctx context.Context, limit int) ([]Job, error
 		WHERE finish_pending ORDER BY finished_at DESC LIMIT ?`, limit)
 }
 
-// ExpireQueuedJobs completes the jobs that are queued since before:
-// runplane did not take them, so it guesses that they are cancelled at now.
-// These jobs never ran, so they get no FinishPending. It returns the
-// changed jobs.
+// ExpireQueuedJobs completes the jobs with the status queued that wait
+// since before: queued since before, or assigned since before. No runner
+// took them, so it guesses that they are cancelled at now. These jobs never
+// ran, so they get no FinishPending. It returns the changed jobs.
 func (s *Store) ExpireQueuedJobs(ctx context.Context, before, now time.Time) ([]Job, error) {
 	var list []Job
 	err := s.tx(ctx, "expire queued jobs", func(tx *sql.Tx) error {
 		var err error
-		list, err = queryAll(ctx, tx, "list queued jobs", scanRow[Job],
-			"SELECT "+jobCols+" FROM jobs WHERE state = 'queued' AND queued_at < ?", ms(before))
+		list, err = queryAll(ctx, tx, "list queued jobs", scanRow[Job], "SELECT "+jobCols+" FROM jobs WHERE "+
+			stateTerm(statusStates[StatusQueued])+" AND coalesce(assigned_at, queued_at) < ?", ms(before))
 		if err != nil {
 			return err
 		}

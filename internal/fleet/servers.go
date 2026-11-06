@@ -104,7 +104,6 @@ func (f *Fleet) connect(ctx context.Context, id string, n agent.Node, h agent.He
 	if err := f.st.UpdateServerFacts(ctx, id, serverFacts(h.Host, h.Mode, h.Version, h.Addr), now); err != nil {
 		return err
 	}
-	f.setRegion(ctx, id, h.Host.Region)
 	// last_seen_at is the last contact of an agent.
 	if !n.Local() {
 		if err := f.st.TouchServer(ctx, id, now); err != nil {
@@ -258,9 +257,8 @@ func (f *Fleet) refreshFacts(ctx context.Context) {
 				f.localAddr = info.IPv4
 				f.mu.Unlock()
 			}
-			regionChanged := f.setRegion(ctx, n.id, info.Region)
 			v, err := f.st.GetServer(ctx, n.id)
-			if err != nil || v.ServerFacts == facts && !regionChanged {
+			if err != nil || v.ServerFacts == facts {
 				return
 			}
 			if err := f.st.UpdateServerFacts(ctx, n.id, facts, f.now()); err != nil {
@@ -271,15 +269,6 @@ func (f *Fleet) refreshFacts(ctx context.Context) {
 		})
 	}
 	wg.Wait()
-}
-
-// setRegion records the cloud region of a server and reports whether it changed.
-func (f *Fleet) setRegion(ctx context.Context, id, region string) bool {
-	changed, err := f.st.SetServerRegion(ctx, id, region)
-	if err != nil {
-		f.log.Warn("record server region", "server_id", id, "err", err)
-	}
-	return changed
 }
 
 // ServerChange is a change of a server by an admin. A nil field keeps its
@@ -521,6 +510,7 @@ func serverFacts(info host.Info, mode sandbox.Mode, ver, addr string) store.Serv
 	return store.ServerFacts{
 		Address:            cmp.Or(addr, info.IPv4),
 		Provider:           info.Provider,
+		Region:             info.Region,
 		OS:                 info.OS,
 		Kernel:             info.Kernel,
 		Arch:               info.Arch,

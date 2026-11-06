@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
@@ -22,7 +23,7 @@ import (
 // Manifest returns the GitHub URL for the manifest form and the manifest
 // JSON of a new app of owner: an organization with its login, or the
 // personal account of the user, with no login.
-func (s *Service) Manifest(ctx context.Context, base string, owner ghrest.Account) (string, string, error) {
+func (s *Service) Manifest(ctx context.Context, base string, owner ghapp.Account) (string, string, error) {
 	settings, err := s.st.GetSettings(ctx)
 	if err != nil {
 		return "", "", err
@@ -57,7 +58,7 @@ func (s *Service) Manifest(ctx context.Context, base string, owner ghrest.Accoun
 	if err != nil {
 		return "", "", err
 	}
-	return owner.SettingsURL(s.web) + "/apps/new?state=" + url.QueryEscape(state), string(manifest), nil
+	return owner.NewAppURL(s.web, state), string(manifest), nil
 }
 
 // appName makes a name from the instance name. GitHub App names are unique
@@ -98,7 +99,7 @@ func (s *Service) Callback(ctx context.Context, code, state string) (string, err
 	}
 	// For an organization that does not exist, or where the user cannot make
 	// apps, GitHub makes the app on the personal account.
-	if requested.AccountType == ghrest.Organization && !strings.EqualFold(conv.Owner.Login, requested.Organization) {
+	if requested.AccountType == ghapp.Organization && !strings.EqualFold(conv.Owner.Login, requested.Organization) {
 		made := store.GitHubApp{Slug: conv.Slug, OwnerLogin: conv.Owner.Login, OwnerType: conv.Owner.Type}
 		return "", fmt.Errorf("GitHub made the app on %s, not on the organization %s: the organization does not exist, "+
 			"or you cannot make apps in it. Delete the app at %s, then start again", conv.Owner.Login, requested.Organization, s.appDeleteURL(made))
@@ -123,7 +124,7 @@ func (s *Service) Callback(ctx context.Context, code, state string) (string, err
 	s.dropCreds()
 	s.changed()
 	s.log.Info("made GitHub App", "slug", app.Slug, "owner", app.OwnerLogin)
-	return ghrest.AppInstallURL(s.web, app.Slug), nil
+	return ghapp.AppInstallURL(s.web, app.Slug), nil
 }
 
 // Disconnect stops the listeners, deletes the scale sets and their runners
@@ -148,8 +149,7 @@ func (s *Service) Disconnect(ctx context.Context) error {
 
 // appDeleteURL is the GitHub page with the "Delete GitHub App" button.
 func (s *Service) appDeleteURL(app store.GitHubApp) string {
-	owner := ghrest.Account{Type: app.OwnerType, Login: app.OwnerLogin}
-	return owner.AppURL(s.web, app.Slug) + "/advanced"
+	return ghapp.Account{Type: app.OwnerType, Login: app.OwnerLogin}.AppDeleteURL(s.web, app.Slug)
 }
 
 // removeApp deletes all scale sets on GitHub and all app rows. A scale set

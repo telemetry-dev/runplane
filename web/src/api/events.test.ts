@@ -354,7 +354,6 @@ const stoppedDebugSandbox = {
   idle_at: '2026-11-04T12:00:20Z',
   busy_at: '2026-11-04T12:00:21Z',
   stopped_at: '2026-11-04T12:10:00Z',
-  ip: '10.64.0.12',
   job_id: 'j1',
   job_name: 'test (node 22)',
   job_repository: 'kestrel-hq/api',

@@ -30,7 +30,7 @@ type JobSummary struct {
 	ServerID     string     `json:"server_id" doc:"Empty until the job has a sandbox."`
 	ServerName   string     `json:"server_name"`
 	State        string     `json:"state" enum:"queued,assigned,running,completed"`
-	Status       string     `json:"status" enum:"queued,running,succeeded,failed,cancelled,skipped" doc:"queued until a runner starts the job, also when GitHub assigned it, then running, and then the result."`
+	Status       jobStatus  `json:"status" doc:"queued until a runner starts the job, also when GitHub assigned it, then running, and then the result."`
 	Result       *string    `json:"result" enum:"succeeded,failed,cancelled,skipped" doc:"Null until the job completes."`
 	Debug        bool       `json:"debug" doc:"The sandbox stays after the job for a debug shell."`
 	RejectReason string     `json:"reject_reason" doc:"Why runplane does not take this queued job. Empty if it takes it."`
@@ -70,11 +70,22 @@ type Job struct {
 	SizeAdvice    SizeAdvice `json:"size_advice" doc:"Whether the pool fits the CPU and memory use of the last 10 completed runs of this job (same repository, workflow file, and job name)."`
 }
 
+// jobStatus is a store.Job status, with the enum store.JobStatuses.
+type jobStatus string
+
+func (jobStatus) Schema(huma.Registry) *huma.Schema {
+	s := &huma.Schema{Type: huma.TypeString}
+	for _, v := range store.JobStatuses {
+		s.Enum = append(s.Enum, v)
+	}
+	return s
+}
+
 // JobStep is one step of the job on GitHub.
 type JobStep struct {
 	Number      int        `json:"number"`
 	Name        string     `json:"name"`
-	Status      string     `json:"status" enum:"queued,running,succeeded,failed,cancelled,skipped" doc:"queued until the step starts, then running, and then the result."`
+	Status      jobStatus  `json:"status" doc:"queued until the step starts, then running, and then the result."`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
@@ -94,7 +105,7 @@ func jobSummary(j store.Job, r refs, now time.Time) JobSummary {
 		ID: j.ID, JobName: j.JobName, WorkflowName: j.WorkflowName, WorkflowFile: j.WorkflowFile,
 		Repository: j.Repository, RunNumber: j.RunNumber, HeadBranch: j.HeadBranch, HeadSHA: j.HeadSHA,
 		PoolID: j.PoolID, PoolLabel: r.pools[j.PoolID].Label, ServerID: j.ServerID, ServerName: r.servers[j.ServerID].Name,
-		State: j.State, Status: j.Status(), Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
+		State: j.State, Status: jobStatus(j.Status()), Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
 		QueueMS: queueMS(j, now), DurationMS: durationMS(j, now),
 		QueuedAt: j.QueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
 	}
@@ -154,14 +165,14 @@ func (h *Handler) jobSummaries(ctx context.Context, jobs []store.Job) ([]JobSumm
 }
 
 type listJobsInput struct {
-	Status     string `query:"status" enum:"running,queued,succeeded,failed,cancelled" doc:"The status of the jobs."`
-	Repository string `query:"repository" maxLength:"200"`
-	PoolID     string `query:"pool_id" maxLength:"100"`
-	ServerID   string `query:"server_id" maxLength:"100"`
-	Q          string `query:"q" maxLength:"200" doc:"Text in the job, workflow, repository, or branch name, or the start of a commit SHA."`
-	Range      string `query:"range" enum:"24h,7d,30d" doc:"Only the jobs queued in this time. All jobs if absent."`
-	Cursor     string `query:"cursor" maxLength:"200" doc:"next_cursor of the previous page."`
-	Limit      int    `query:"limit" minimum:"1" maximum:"200" default:"50"`
+	Status     jobStatus `query:"status" doc:"The status of the jobs."`
+	Repository string    `query:"repository" maxLength:"200"`
+	PoolID     string    `query:"pool_id" maxLength:"100"`
+	ServerID   string    `query:"server_id" maxLength:"100"`
+	Q          string    `query:"q" maxLength:"200" doc:"Text in the job, workflow, repository, or branch name, or the start of a commit SHA."`
+	Range      string    `query:"range" enum:"24h,7d,30d" doc:"Only the jobs queued in this time. All jobs if absent."`
+	Cursor     string    `query:"cursor" maxLength:"200" doc:"next_cursor of the previous page."`
+	Limit      int       `query:"limit" minimum:"1" maximum:"200" default:"50"`
 }
 
 // ranges are the time ranges of the job list and the overview, in buckets
@@ -177,7 +188,7 @@ var ranges = map[string]struct {
 
 func (h *Handler) listJobs(ctx context.Context, in *listJobsInput) (*body[JobPage], error) {
 	f := store.JobFilter{
-		Status: in.Status, Repository: in.Repository, PoolID: in.PoolID, ServerID: in.ServerID,
+		Status: string(in.Status), Repository: in.Repository, PoolID: in.PoolID, ServerID: in.ServerID,
 		Q: in.Q, Cursor: in.Cursor, Limit: in.Limit,
 	}
 	if rg, ok := ranges[in.Range]; ok {
@@ -246,7 +257,7 @@ func (h *Handler) getJob(ctx context.Context, in *PathID) (*body[Job], error) {
 		LogState: j.LogState, FinishPending: j.FinishPending, CPUPeak: j.CPUPeak, CPUAvg: j.CPUAvg, MemPeakMB: j.MemPeakMB, AssignedAt: j.AssignedAt,
 	}
 	for i, st := range j.Steps {
-		out.Steps[i] = JobStep{Number: st.Number, Name: st.Name, Status: st.Status(), StartedAt: st.StartedAt, CompletedAt: st.CompletedAt}
+		out.Steps[i] = JobStep{Number: st.Number, Name: st.Name, Status: jobStatus(st.Status()), StartedAt: st.StartedAt, CompletedAt: st.CompletedAt}
 	}
 	if out.ExpectedDurationMS, err = h.d.Store.ExpectedDurationMS(ctx, j.Repository, j.WorkflowFile, j.JobName); err != nil {
 		return nil, err
@@ -373,7 +384,7 @@ func (h *Handler) rerunJob(ctx context.Context, in *struct {
 
 type logInput struct {
 	PathID
-	Step   int  `query:"step" minimum:"0" doc:"Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored."`
+	Step   int  `query:"step" minimum:"0" doc:"Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps."`
 	Follow bool `query:"follow" doc:"Stream new lines until the log ends."`
 }
 
@@ -381,28 +392,12 @@ func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamRespons
 	if _, err := h.d.Store.GetJob(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No job has this ID.")
 	}
-	rc, live, err := h.d.Logs.Job(ctx, in.ID, in.Step, in.Follow)
+	rc, err := h.d.Logs.Job(ctx, in.ID, in.Step, in.Follow)
 	if err != nil {
 		return nil, h.logErr(err)
 	}
-	resp := h.stream(rc, "text/plain; charset=utf-8", in.Follow)
-	if live && in.Step > 0 {
-		send := resp.Body
-		resp.Body = func(hctx huma.Context) {
-			hctx.SetHeader(stepFilterHeader, stepFilterIgnored)
-			send(hctx)
-		}
-	}
-	return resp, nil
+	return h.stream(rc, "text/plain; charset=utf-8", in.Follow), nil
 }
-
-// stepFilterHeader with the value stepFilterIgnored tells that the job log
-// has all steps although the request asked for one: the live log of a
-// running job has no step marks.
-const (
-	stepFilterHeader  = "X-Runplane-Step-Filter"
-	stepFilterIgnored = "ignored"
-)
 
 type Overview struct {
 	Range    string           `json:"range" enum:"24h,7d,30d"`

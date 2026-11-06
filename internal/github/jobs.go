@@ -211,40 +211,19 @@ func (s *Service) DownloadLog(ctx context.Context, job store.Job) (io.ReadCloser
 	if err != nil {
 		return nil, err
 	}
-	// GitHub answers with a redirect to a short-lived blob URL. The blob
-	// store must not get the token, so runplane follows the redirect itself.
+	// GitHub answers with a redirect to a short-lived blob URL on a
+	// different host. net/http does not send the token to that host.
 	resp, err := s.api.Do(ctx, ghrest.Call{
 		Method: http.MethodGet, Path: fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", job.Repository, id),
-		Auth: a, Timeout: logTimeout, NoRedirect: true,
+		Auth: a, Timeout: logTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("download log of job %d: %w", id, err)
 	}
-	loc := resp.Header.Get("Location")
-	if resp.StatusCode < 300 || loc == "" {
-		return resp.Body, nil
-	}
-	resp.Body.Close()
-	ctx, cancel := context.WithTimeout(ctx, logTimeout)
-	resp, err = s.api.Download(ctx, loc)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("download log of job %d: %w", id, err)
-	}
-	return cancelBody{resp.Body, cancel}, nil
+	return resp.Body, nil
 }
 
 const logTimeout = 10 * time.Minute
-
-type cancelBody struct {
-	io.ReadCloser
-	cancel context.CancelFunc
-}
-
-func (b cancelBody) Close() error {
-	defer b.cancel()
-	return b.ReadCloser.Close()
-}
 
 func (s *Service) Rerun(ctx context.Context, job store.Job) error {
 	id, err := s.githubJobID(ctx, job)

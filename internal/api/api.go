@@ -25,7 +25,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
-	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -134,7 +134,7 @@ type GitHub interface {
 	// the manifest JSON for the form field "manifest". base is the browser
 	// URL of runplane, for example "https://ci.example.com", without a
 	// trailing slash.
-	Manifest(ctx context.Context, base string, owner ghrest.Account) (actionURL, manifest string, err error)
+	Manifest(ctx context.Context, base string, owner ghapp.Account) (actionURL, manifest string, err error)
 	// Callback converts the manifest code into the app and returns the URL
 	// for the browser, normally the app installation page on GitHub.
 	Callback(ctx context.Context, code, state string) (redirect string, err error)
@@ -147,12 +147,11 @@ type GitHub interface {
 	// Disconnect stops the listeners, deletes the scale sets, and removes the app.
 	Disconnect(ctx context.Context) error
 	// OpenPullRequest opens a pull request in the repository (owner/name)
-	// that sets runs-on to label in each job on a GitHub-hosted Ubuntu
-	// runner. While the pull request of an earlier call is open, it returns
-	// that one. It returns store.ErrNotFound when the app has no access to
-	// the repository, ghrest.ErrNoPullPermissions when the account has not
-	// accepted the permissions, and field.Problems when the repository has
-	// no job to move.
+	// that sets runs-on to label in each job on one of ghapp.HostedLabels.
+	// While the pull request of an earlier call is open, it returns that
+	// one. It returns ghapp.ErrNoPullPermissions when the account has not
+	// accepted the permissions, and field.Problems at "repository" or
+	// "label" when the jobs of the pull request would not start.
 	OpenPullRequest(ctx context.Context, base, repository, label string) (number int, url string, err error)
 }
 
@@ -242,8 +241,8 @@ type Logs interface {
 	Sandbox(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 	// Job returns the log of a job: the stored GitHub log after the job,
 	// the sandbox log while it runs. step 0 means all steps. The sandbox log
-	// has no step marks, so it always has all steps: live is true for it.
-	Job(ctx context.Context, jobID string, step int, follow bool) (log io.ReadCloser, live bool, err error)
+	// has no step marks, so it always has all steps.
+	Job(ctx context.Context, jobID string, step int, follow bool) (io.ReadCloser, error)
 }
 
 type Shell interface {
@@ -310,7 +309,7 @@ func (h *Handler) routes() {
 	handle(h, public, "GET /api/github/setup", "github-setup", "Record an installation (browser redirect from GitHub)", h.githubSetup, redirectResponse)
 	handle(h, auth.ActionAdmin, "POST /api/github/sync", "sync-github", "Sync the installations now", h.syncGitHub)
 	handle(h, auth.ActionAdmin, "POST /api/github/pull-requests", "create-github-pull-request", "Open a pull request that moves jobs to a runplane label", h.createPullRequest,
-		describe("The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one."))
+		describe("The pull request sets runs-on to the label for each job on "+ghapp.HostedLabelsText("")+". While an earlier pull request of runplane is open in the repository, the response gives that one."))
 	handle(h, auth.ActionAdmin, "DELETE /api/github", "disconnect-github", "Disconnect GitHub", h.disconnectGitHub)
 
 	handle(h, auth.ActionRead, "GET /api/pools", "list-pools", "List the pools with live sandbox counts", h.listPools)
@@ -329,7 +328,7 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionRead, "GET /api/jobs", "list-jobs", "List jobs, newest first", h.listJobs)
 	handle(h, auth.ActionRead, "GET /api/jobs/facets", "get-job-facets", "List the values for the job filters", h.getJobFacets)
 	handle(h, auth.ActionRead, "GET /api/jobs/{id}", "get-job", "Read a job", h.getJob)
-	handle(h, auth.ActionRead, "GET /api/jobs/{id}/log", "get-job-log", "Read the log of a job", h.jobLog, jobLogResponse)
+	handle(h, auth.ActionRead, "GET /api/jobs/{id}/log", "get-job-log", "Read the log of a job", h.jobLog, textResponse)
 	handle(h, auth.ActionRead, "GET /api/jobs/{id}/metrics", "get-job-metrics", "Read the CPU and memory samples of a job", h.getJobMetrics)
 	handle(h, auth.ActionRerunJob, "POST /api/jobs/{id}/rerun", "rerun-job", "Run a job again", h.rerunJob)
 
@@ -457,14 +456,6 @@ func textResponse(op *huma.Operation) {
 	op.Responses = map[string]*huma.Response{"200": {
 		Description: "The log as plain text. With follow=1, the response streams until the log ends.",
 		Content:     map[string]*huma.MediaType{"text/plain": {Schema: &huma.Schema{Type: huma.TypeString}}},
-	}}
-}
-
-func jobLogResponse(op *huma.Operation) {
-	textResponse(op)
-	op.Responses["200"].Headers = map[string]*huma.Param{stepFilterHeader: {
-		Description: "ignored: the log has all steps, because the job runs and its live log has no step marks.",
-		Schema:      &huma.Schema{Type: huma.TypeString, Enum: []any{stepFilterIgnored}},
 	}}
 }
 

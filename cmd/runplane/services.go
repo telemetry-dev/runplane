@@ -18,7 +18,7 @@ type schedulerFleet struct{ *fleet.Fleet }
 func (f schedulerFleet) Online() []scheduler.Host {
 	var hosts []scheduler.Host
 	for _, h := range f.Fleet.Online() {
-		hosts = append(hosts, scheduler.Host{ServerID: h.ServerID, Name: h.Name, Arch: h.Arch, Driver: h.Driver})
+		hosts = append(hosts, scheduler.Host{ServerID: h.ServerID, Arch: h.Arch, Driver: h.Driver})
 	}
 	return hosts
 }

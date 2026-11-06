@@ -246,6 +246,7 @@ func TestListAndCountJobsFilters(t *testing.T) {
 		{4, JobCompleted, ResultSucceeded, "acme/web", "p2", "main", "ddd444", "e2e"},
 		{5, JobCompleted, ResultFailed, "acme/api", "p1", "fix", "eee555", "test"},
 		{6, JobCompleted, ResultCancelled, "acme/api", "p2", "feat/x-y", "fff666", "lint"},
+		{7, JobCompleted, ResultSkipped, "acme/api", "p1", "main", "ggg777", "deploy"},
 	} {
 		job := addJob(t, s, JobMessage{RunnerRequestID: j.id, State: j.state, Result: j.result,
 			Repository: j.repo, PoolID: j.pool, JobName: j.name, QueuedAt: sec(int(j.id))})
@@ -261,12 +262,13 @@ func TestListAndCountJobsFilters(t *testing.T) {
 		f    JobFilter
 		want []int64
 	}{
-		{JobFilter{}, []int64{6, 5, 4, 3, 2, 1}},
+		{JobFilter{}, []int64{7, 6, 5, 4, 3, 2, 1}},
 		{JobFilter{Status: "queued"}, []int64{2, 1}},
 		{JobFilter{Status: "running"}, []int64{3}},
 		{JobFilter{Status: ResultSucceeded}, []int64{4}},
 		{JobFilter{Status: ResultFailed}, []int64{5}},
 		{JobFilter{Status: ResultCancelled}, []int64{6}},
+		{JobFilter{Status: ResultSkipped}, []int64{7}},
 		{JobFilter{Repository: "acme/web"}, []int64{4, 3}},
 		{JobFilter{PoolID: "p2"}, []int64{6, 4, 3}},
 		{JobFilter{ServerID: "srv-acme/web"}, []int64{4, 3}},
@@ -296,8 +298,8 @@ func TestListAndCountJobsFilters(t *testing.T) {
 			t.Errorf("%+v: ListJobs %v, CountJobs %d; want %v", tt.f, got, n, tt.want)
 		}
 	}
-	if n, err := s.CountJobs(ctx, JobFilter{Cursor: "anything", Limit: 1}); err != nil || n != 6 {
-		t.Errorf("count with a cursor and a limit = %d, %v; want 6", n, err)
+	if n, err := s.CountJobs(ctx, JobFilter{Cursor: "anything", Limit: 1}); err != nil || n != 7 {
+		t.Errorf("count with a cursor and a limit = %d, %v; want 7", n, err)
 	}
 	if _, _, err := s.ListJobs(ctx, JobFilter{Status: "bogus"}); err == nil {
 		t.Error("unknown status: no error")
@@ -455,20 +457,26 @@ func TestUpsertJobConcurrentMessages(t *testing.T) {
 	}
 }
 
-// A job that runplane never takes must not wait in queued forever, but it
-// must open again when GitHub gives it to runplane after all.
+// A job that no runner takes must not wait in queued or assigned forever,
+// but it must open again when GitHub gives it to runplane after all.
 func TestExpireQueuedJobs(t *testing.T) {
 	s := openTest(t)
 	ctx := t.Context()
 	upsert := func(id int64, state string, queued int) Job {
 		return addJob(t, s, JobMessage{RunnerRequestID: id, State: state, QueuedAt: sec(queued)})
 	}
+	assign := func(id int64, assigned int) Job {
+		return addJob(t, s, JobMessage{RunnerRequestID: id, State: JobAssigned, QueuedAt: sec(0), AssignedAt: sec(assigned)})
+	}
 	const fork = "Fork pull request: the setting allow_fork_prs is off."
 	waiting := upsert(1, JobQueued, 0)
 	rejected := upsert(2, JobQueued, 0)
 	must(t, s.SetJobRejectReason(ctx, rejected.ID, fork))
 	recent := upsert(3, JobQueued, 3700)
-	assigned := upsert(4, JobAssigned, 0)
+	// runplane can lose the message that ends an assignment.
+	lost := assign(4, 100)
+	// The wait of an assigned job starts at the assignment.
+	assigned := assign(5, 3700)
 
 	got, err := s.ExpireQueuedJobs(ctx, sec(3600), sec(4000))
 	must(t, err)
@@ -477,12 +485,12 @@ func TestExpireQueuedJobs(t *testing.T) {
 		ids = append(ids, j.ID)
 	}
 	slices.Sort(ids)
-	if want := []string{waiting.ID, rejected.ID}; !slices.Equal(ids, want) {
-		t.Fatalf("expired %v, want the two jobs queued before the limit %v", ids, want)
+	if want := []string{waiting.ID, rejected.ID, lost.ID}; !slices.Equal(ids, want) {
+		t.Fatalf("expired %v, want the three jobs that wait since before the limit %v", ids, want)
 	}
 	// Only the scheduler gives reject reasons, and a job that never ran has
 	// nothing to finish.
-	for id, want := range map[string]string{waiting.ID: "", rejected.ID: fork} {
+	for id, want := range map[string]string{waiting.ID: "", rejected.ID: fork, lost.ID: ""} {
 		j, _ := s.GetJob(ctx, id)
 		if j.State != JobCompleted || j.Result != ResultCancelled || !j.ResultGuessed || j.FinishedAt == nil ||
 			!j.FinishedAt.Equal(sec(4000)) || j.RejectReason != want || j.FinishPending {
@@ -510,8 +518,8 @@ func TestExpireQueuedJobs(t *testing.T) {
 	}
 
 	// A cancelled job that ran stays closed.
-	addJob(t, s, JobMessage{RunnerRequestID: 4, State: JobCompleted, Result: ResultCancelled, StartedAt: sec(2)})
-	if j := upsert(4, JobQueued, 0); j.State != JobCompleted {
+	addJob(t, s, JobMessage{RunnerRequestID: 6, State: JobCompleted, Result: ResultCancelled, StartedAt: sec(2)})
+	if j := upsert(6, JobQueued, 0); j.State != JobCompleted {
 		t.Errorf("cancelled job that ran, after a late offer = %s, want completed", j.State)
 	}
 }

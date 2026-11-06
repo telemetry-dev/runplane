@@ -54,7 +54,7 @@ func TestResolver(t *testing.T) {
 		{ID: "busy", ServerID: "local", State: sandbox.StateBusy, JobID: jobs[0]},
 		{ID: "idle", ServerID: "local", State: sandbox.StateIdle},
 		{ID: "old", ServerID: "local", State: sandbox.StateGone, JobID: jobs[0]},
-		{ID: "agent", ServerID: "remote", State: sandbox.StateBusy, IP: "10.213.0.8", JobID: jobs[1]},
+		{ID: "agent", ServerID: "remote", State: sandbox.StateBusy, JobID: jobs[1]},
 	}
 	for _, b := range sandboxes {
 		b.PoolID, b.Mode, b.VCPU, b.MemoryMB, b.CreatedAt = "pool", sandbox.ModeContainer, 2, 4096, t0
@@ -87,7 +87,6 @@ func TestResolver(t *testing.T) {
 		{"IPv4 in IPv6 form", at("::ffff:10.213.0.5"), api},
 		{"sandbox without a job", at("10.213.0.6"), Identity{SandboxID: "idle"}},
 		{"stopped sandbox", at("10.213.0.7"), Identity{}},
-		{"address of an agent sandbox", at("10.213.0.8"), Identity{}},
 		{"unknown address", at("192.0.2.1"), Identity{}},
 		{"agent names its sandbox", on("remote", "agent"), web("agent")},
 		{"agent names a sandbox of the primary", on("remote", "busy"), Identity{}},

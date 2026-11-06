@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -183,18 +182,11 @@ func resetPassword(ctx context.Context, args []string) error {
 		return err
 	}
 	defer st.Close()
-	u, err := st.GetUserByEmail(ctx, flags.Arg(0))
+	password, err := auth.NewService(st, nil, nil).ResetPassword(ctx, audit.Actor{}, flags.Arg(0))
 	if errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("no user has the email address %s", flags.Arg(0))
 	}
 	if err != nil {
-		return err
-	}
-	password := rand.Text()
-	if err := st.SetUserPassword(ctx, u.ID, auth.HashPassword(password)); err != nil {
-		return err
-	}
-	if err := st.DeleteUserSessions(ctx, u.ID); err != nil {
 		return err
 	}
 	fmt.Println(password)

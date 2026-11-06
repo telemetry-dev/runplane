@@ -483,6 +483,9 @@ func TestSettingsValidation(t *testing.T) {
 		{map[string]any{"public_url": "ci.example.com"}, "body.public_url"},
 		{map[string]any{"domain": "192.0.2.1"}, "body.domain"},
 		{map[string]any{"egress_allowlist": []string{"github.com", "not a host"}}, "body.egress_allowlist[1]"},
+		// The firewall of the sandboxes cannot apply a wildcard or an IPv6 entry.
+		{map[string]any{"egress_allowlist": []string{"*.example.com"}}, "body.egress_allowlist[0]"},
+		{map[string]any{"egress_allowlist": []string{"10.0.0.0/8", "2001:db8::/32"}}, "body.egress_allowlist[1]"},
 		{map[string]any{"cpu_overcommit": 20}, "body.cpu_overcommit"},
 		{map[string]any{"default_time_limit_minutes": 0}, "body.default_time_limit_minutes"},
 		{map[string]any{"allow_public_repos": true}, "body.allow_public_repos"},

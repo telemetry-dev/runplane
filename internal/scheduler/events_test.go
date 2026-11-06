@@ -65,35 +65,6 @@ func TestRunnerAndStateEvents(t *testing.T) {
 	}
 }
 
-// The cache and the mirror find a sandbox of the primary by its address, so
-// an agent must not give its address to a sandbox of the primary.
-func TestIdleEventRecordsTheAddressOfASandboxOfTheServer(t *testing.T) {
-	e := newTestEnv(t)
-	primaryID, _ := e.addServer("primary", capacity("x64", 16, 65536))
-	agentID, agent := e.addServer("agent", capacity("x64", 16, 65536))
-	pool := e.addPool("runplane")
-	_, _, set := e.attach(pool)
-	onPrimary := e.insertSandbox(pool, set, primaryID, sandbox.StateStarting, start)
-	if err := e.st.SetSandboxIP(e.ctx, primaryID, onPrimary.ID, "10.213.0.5"); err != nil {
-		t.Fatal(err)
-	}
-	onAgent := e.insertSandbox(pool, set, agentID, sandbox.StateStarting, start)
-	// The agent lists the sandbox of the primary with an address of its own.
-	for id, ip := range map[string]string{onPrimary.ID: "10.214.0.7", onAgent.ID: "10.214.0.8"} {
-		agent.running[id] = sandbox.Spec{ID: id}
-		agent.ips[id] = ip
-	}
-
-	e.event(agentID, onPrimary.ID, stateEvent(sandbox.StateIdle, ""))
-	e.event(agentID, onAgent.ID, stateEvent(sandbox.StateIdle, ""))
-	e.settle()
-	for id, want := range map[string]string{onPrimary.ID: "10.213.0.5", onAgent.ID: "10.214.0.8"} {
-		if got := e.sandbox(id).IP; got != want {
-			t.Errorf("sandbox %s: address %q, want %s", id, got, want)
-		}
-	}
-}
-
 func TestDebugRerunHoldsSandbox(t *testing.T) {
 	e := newTestEnv(t)
 	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))

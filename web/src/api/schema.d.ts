@@ -1037,7 +1037,7 @@ export interface components {
              * @description <object>.<verb>, for example "pool.create".
              * @enum {string}
              */
-            action: "setup.done" | "user.update" | "user.delete" | "user.password" | "invite.create" | "invite.link" | "invite.delete" | "pool.create" | "pool.update" | "pool.delete" | "server.token" | "server.install" | "server.update" | "server.delete" | "server.update_agent" | "sandbox.stop" | "sandbox.shell" | "sandbox.ssh" | "cache.delete" | "image.create" | "image.update" | "image.delete" | "image.refresh" | "settings.update" | "job.rerun" | "backup.create" | "backup.download" | "update.apply" | "github.manifest" | "github.app.create" | "github.installation.install" | "github.installation.update" | "github.installation.request" | "github.sync" | "github.pull_request.create" | "github.disconnect" | "notification.create" | "notification.update" | "notification.delete";
+            action: "setup.done" | "user.update" | "user.delete" | "user.password" | "user.password_reset" | "invite.create" | "invite.link" | "invite.delete" | "pool.create" | "pool.update" | "pool.delete" | "server.token" | "server.install" | "server.update" | "server.delete" | "server.update_agent" | "sandbox.stop" | "sandbox.shell" | "sandbox.ssh" | "cache.delete" | "image.create" | "image.update" | "image.delete" | "image.refresh" | "settings.update" | "job.rerun" | "backup.create" | "backup.download" | "update.apply" | "github.manifest" | "github.app.create" | "github.installation.install" | "github.installation.update" | "github.installation.request" | "github.sync" | "github.pull_request.create" | "github.disconnect" | "notification.create" | "notification.update" | "notification.delete";
             /** Format: date-time */
             at: string;
             /** @description Names and values of the change. pool.update, server.update, and settings.update have changes, with [old, new] for each changed field. settings.update also has keys, with all changed settings keys. Its changes never hold the S3 secret key. The entries of a job or a sandbox have runner_name, job_id, job_name, workflow_file, run_number, and repository where they apply. */
@@ -1242,7 +1242,7 @@ export interface components {
         CreatePullRequestRequest: {
             /** @description The label of an enabled pool. */
             label: string;
-            /** @description owner/name of a repository that the GitHub App can access. */
+            /** @description owner/name of a repository whose takes_jobs is true. */
             repository: string;
         };
         CreatedInvite: {
@@ -1350,6 +1350,8 @@ export interface components {
             app_permissions: components["schemas"]["AppPermissions"];
             /** @description An app with at least one installation exists. */
             connected: boolean;
+            /** @description The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool. */
+            hosted_labels: string[];
             installations: components["schemas"]["Installation"][];
             /** @description One for each pool and installation, or for each pool and repository of a personal account. */
             scale_sets: components["schemas"]["ScaleSetStatus"][];
@@ -1432,8 +1434,11 @@ export interface components {
             updated_at: string;
         };
         ImageBuild: {
-            /** @description Arch of the server: x64 or arm64. Empty until the server reports its facts. */
-            arch: string;
+            /**
+             * @description Arch of the server. Empty until the server reports its facts.
+             * @enum {string}
+             */
+            arch: "x64" | "arm64" | "";
             digest: string;
             error: string;
             server_id: string;
@@ -1599,7 +1604,7 @@ export interface components {
              * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
              * @enum {string}
              */
-            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
             steps: components["schemas"]["JobStep"][];
             /**
              * Format: int64
@@ -1649,7 +1654,7 @@ export interface components {
              * @description queued until the step starts, then running, and then the result.
              * @enum {string}
              */
-            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
         };
         JobSummary: {
             /** @description The sandbox stays after the job for a debug shell. */
@@ -1705,7 +1710,7 @@ export interface components {
              * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
              * @enum {string}
              */
-            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
             /** @description For example ".github/workflows/ci.yml". */
             workflow_file: string;
             /** @description Empty until runplane reads the run from GitHub. */
@@ -1916,7 +1921,7 @@ export interface components {
             placeable_servers: number;
             /**
              * Format: int64
-             * @description Jobs of the last 24 hours that wait for a runner.
+             * @description Jobs that wait for a runner.
              */
             queued: number;
             /** @description Servers that may run the sandboxes. Empty: all servers with the arch of the pool. */
@@ -1968,7 +1973,7 @@ export interface components {
             pool_id: string;
             /**
              * Format: int64
-             * @description Jobs of the last 24 hours that wait for a runner.
+             * @description Jobs that wait for a runner.
              */
             queued: number;
             /**
@@ -1990,8 +1995,9 @@ export interface components {
             full_name: string;
             /** Format: int64 */
             id: number;
-            /** @description runplane rejects jobs of public repositories unless allow_public_repos is on in VM mode. */
             private: boolean;
+            /** @description runplane takes the jobs of the repository. The scheduler still checks each job. */
+            takes_jobs: boolean;
         };
         RerunRequest: {
             /** @description Keep the sandbox of the new attempt after the job for a debug shell. */
@@ -2072,7 +2078,6 @@ export interface components {
             id: string;
             /** Format: date-time */
             idle_at: string | null;
-            ip: string;
             /** @description Empty until the runner gets a job. */
             job_id: string;
             job_name: string;
@@ -2138,8 +2143,11 @@ export interface components {
             /** @description The changes that an admin can make to the server now. */
             actions: components["schemas"]["ServerActions"];
             address: string;
-            /** @description x64 or arm64. Empty until the server reports its facts. */
-            arch: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            arch: "x64" | "arm64" | "";
             /**
              * Format: double
              * @description Latest host sample. Null without samples.
@@ -2174,8 +2182,11 @@ export interface components {
             memory_mb: number;
             /** Format: double */
             memory_percent: number | null;
-            /** @description container, vm, or dev. Empty until the server reports its facts. */
-            mode: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            mode: "container" | "vm" | "dev" | "";
             name: string;
             os: string;
             /** @description Cloud provider, if runplane knows it. */
@@ -2237,8 +2248,11 @@ export interface components {
             id: string;
         };
         ServerSummary: {
-            /** @description x64 or arm64. Empty until the server reports its facts. */
-            arch: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            arch: "x64" | "arm64" | "";
             /**
              * Format: double
              * @description Latest host sample. Null without samples.
@@ -2265,8 +2279,11 @@ export interface components {
             memory_mb: number;
             /** Format: double */
             memory_percent: number | null;
-            /** @description container, vm, or dev. Empty until the server reports its facts. */
-            mode: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            mode: "container" | "vm" | "dev" | "";
             name: string;
             /**
              * Format: int64
@@ -2381,7 +2398,7 @@ export interface components {
             dns_servers: string[];
             /** @description With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall. */
             domain: string;
-            /** @description Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet. */
+            /** @description Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist: string[];
             /** @description Certificate of the domain. Read-only. */
             https: components["schemas"]["HTTPSStatus"];
@@ -2466,7 +2483,7 @@ export interface components {
             dns_servers?: string[];
             /** @description With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall. */
             domain?: string;
-            /** @description Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet. */
+            /** @description Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist?: string[];
             /** @description Title in the sidebar. */
             instance_name?: string;
@@ -3184,10 +3201,9 @@ export interface operations {
     };
     "github-setup": {
         parameters: {
-            query?: {
+            query: {
                 installation_id?: number;
-                /** @description install, update, or request. */
-                setup_action?: string;
+                setup_action: "install" | "update" | "request";
             };
             header?: never;
             path?: never;
@@ -3564,7 +3580,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description The status of the jobs. */
-                status?: "running" | "queued" | "succeeded" | "failed" | "cancelled";
+                status?: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
                 repository?: string;
                 pool_id?: string;
                 server_id?: string;
@@ -3665,7 +3681,7 @@ export interface operations {
     "get-job-log": {
         parameters: {
             query?: {
-                /** @description Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored. */
+                /** @description Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps. */
                 step?: number;
                 /** @description Stream new lines until the log ends. */
                 follow?: boolean;
@@ -3681,8 +3697,6 @@ export interface operations {
             /** @description The log as plain text. With follow=1, the response streams until the log ends. */
             200: {
                 headers: {
-                    /** @description ignored: the log has all steps, because the job runs and its live log has no step marks. */
-                    "X-Runplane-Step-Filter"?: "ignored";
                     [name: string]: unknown;
                 };
                 content: {
