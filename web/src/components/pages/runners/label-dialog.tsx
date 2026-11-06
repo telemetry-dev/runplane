@@ -10,8 +10,8 @@ import { placementQuery, putPool } from '~/api/pools'
 import { serversQuery } from '~/api/servers'
 import { settingsQuery } from '~/api/settings'
 import { LoadError } from '~/components/app/load-error'
-import { serverStatusNames } from '~/components/app/status-dot'
-import { serverSize, sortServers, statusFacts } from '~/components/pages/servers/server-info'
+import { mutedStatus, serverStatusNames } from '~/components/app/status-dot'
+import { serverSize, sortServers } from '~/components/pages/servers/server-info'
 import { Button } from '~/components/ui/button'
 import { Checkbox } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
@@ -409,7 +409,7 @@ function ServerChoice({ arch, servers, allServers, selected, onChange, error }: 
                 className="flex cursor-pointer items-center gap-s px-m py-xs text-s [&:not(:last-child)]:pb-[calc(var(--space-xs)+1px)] [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--neutral-4)]"
               >
                 <Checkbox checked={selected.includes(server.id)} onCheckedChange={(checked) => toggle(server.id, checked)} />
-                <span className={cx('min-w-0 grow truncate', statusFacts[server.status].muted ? 'text-neutral-7' : 'text-neutral-10')}>{server.name}</span>
+                <span className={cx('min-w-0 grow truncate', mutedStatus[server.status] ? 'text-neutral-7' : 'text-neutral-10')}>{server.name}</span>
                 <span className="shrink-0 text-neutral-7">{serverDetail(server)}</span>
               </label>
             ))}

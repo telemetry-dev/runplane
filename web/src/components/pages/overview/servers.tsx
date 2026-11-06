@@ -2,7 +2,7 @@ import type { Schemas } from '~/api/client'
 import { useCapabilities } from '~/api/session'
 import { CellTitle, DataTable, DataTableCell, DataTableRow, RowLink, useFittingColumns } from '~/components/app/data-table'
 import { SectionButton, SectionHeader, SectionLink } from '~/components/app/section-header'
-import { serverStatusNames, StatusDot } from '~/components/app/status-dot'
+import { mutedStatus, serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { AddServerDialog } from '~/components/pages/servers/add-server-dialog'
 import { jobCount, statusFacts } from '~/components/pages/servers/server-info'
@@ -72,7 +72,7 @@ export function ServerList({ servers }: { servers: readonly Server[] }) {
 function ServerName({ server, detail }: { server: Server; detail: string }) {
   return (
     <RowLink to="/servers/$serverId" params={{ serverId: server.id }} className="flex-1">
-      <CellTitle title={server.name} detail={detail} muted={statusFacts[server.status].muted} />
+      <CellTitle title={server.name} detail={detail} muted={mutedStatus[server.status]} />
     </RowLink>
   )
 }

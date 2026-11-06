@@ -32,10 +32,7 @@ type JobPageProps = {
  * debug sandbox of a debug run, steps, CPU and memory, and the log.
  */
 export function JobPage({ jobId, step }: JobPageProps) {
-  const query = useQuery({
-    ...jobQuery(jobId),
-    refetchInterval: ({ state }) => (state.data && awaitsHold(state.data) ? 2000 : false),
-  })
+  const query = useQuery(jobQuery(jobId))
   const now = useNow(1000)
 
   if (query.isPending) return <JobPageSkeleton />
@@ -93,14 +90,6 @@ function JobFacts({ job, now }: { job: Schemas['Job']; now: number }) {
       <KeyValue label="Triggered">{trigger(job)}</KeyValue>
     </KeyValueList>
   )
-}
-
-/**
- * A finished debug job whose sandbox has no hold time yet. The scheduler sets
- * the hold after the job ends, and no event tells the page, so it asks again.
- */
-function awaitsHold(job: Schemas['Job']): boolean {
-  return job.state === 'completed' && job.ssh_command !== '' && job.hold_until === null
 }
 
 /** The page while the job loads: the shapes of the header, steps, charts, and log. */
