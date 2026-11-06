@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/update"
 )
 
@@ -108,7 +109,8 @@ func (f fakeUpdater) Apply(context.Context) (update.Status, error) {
 }
 
 // The dashboard shows the state of the updater, also of an auto update. A
-// second update while one runs is a conflict.
+// second update while one runs is a conflict, and the audit log has only
+// the update that started.
 func TestUpdateState(t *testing.T) {
 	for _, tt := range []struct {
 		state  update.State
@@ -129,6 +131,12 @@ func TestUpdateState(t *testing.T) {
 		}
 		if res := b.do("POST", "/api/update", nil, nil); res.StatusCode != tt.status {
 			t.Errorf("update with %v: status %d, want %d", tt.err, res.StatusCode, tt.status)
+		}
+		entries, _, err := e.st.ListAudit(context.Background(), "", 10)
+		must(t, err)
+		recorded := slices.ContainsFunc(entries, func(a store.AuditEntry) bool { return a.Action == "update.apply" })
+		if recorded != (tt.err == nil) {
+			t.Errorf("update with %v: update.apply entry %v, want %v", tt.err, recorded, tt.err == nil)
 		}
 	}
 }

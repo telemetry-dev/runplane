@@ -5,15 +5,20 @@
 package localnode
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/atomicfile"
 	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
@@ -36,6 +41,9 @@ type Config struct {
 	// MinFreeDiskPercent is the min_free_disk_percent setting until the
 	// primary sends the settings with Configure.
 	MinFreeDiskPercent float64
+	// SettingsFile, if not "", keeps the settings of each Configure. An
+	// agent reads them with ReadSettings when it starts again.
+	SettingsFile string
 	// Mirror configures the registry mirror of the server. The node gives
 	// the mirror its room on the disk of Mirror.Dir, with the
 	// min_free_disk_percent of the last settings.
@@ -105,7 +113,36 @@ func (n *Node) Configure(ctx context.Context, s agent.Settings) error {
 	n.mu.Lock()
 	n.minFree = s.MinFreeDiskPercent
 	n.mu.Unlock()
-	return n.cfg.Driver.Configure(ctx, s.Settings)
+	err := n.cfg.Driver.Configure(ctx, s.Settings)
+	if n.cfg.SettingsFile != "" {
+		err = errors.Join(err, writeSettings(n.cfg.SettingsFile, s))
+	}
+	return err
+}
+
+// ReadSettings reads the settings that a node with this SettingsFile kept.
+// Without the file, it returns no settings.
+func ReadSettings(path string) (agent.Settings, error) {
+	var s agent.Settings
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return s, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(b, &s)
+	}
+	if err != nil {
+		return agent.Settings{}, fmt.Errorf("read the last settings: %w", err)
+	}
+	return s, nil
+}
+
+func writeSettings(path string, s agent.Settings) error {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(path, bytes.NewReader(b), 0o600)
 }
 
 func (n *Node) Facts(ctx context.Context) (host.Info, error) {
@@ -120,7 +157,7 @@ func (n *Node) Doctor(ctx context.Context) (doctor.Report, error) {
 	return doctor.Run(ctx, opts), nil
 }
 
-func (n *Node) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (sandbox.ImageRef, error) {
+func (n *Node) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (agent.Image, error) {
 	var report func(image.Progress)
 	if progress != nil {
 		report = func(p image.Progress) {
@@ -129,9 +166,9 @@ func (n *Node) EnsureImage(ctx context.Context, ref string, progress func(agent.
 	}
 	img, err := n.cfg.Images.Ensure(ctx, ref, report)
 	if err != nil {
-		return sandbox.ImageRef{}, err
+		return agent.Image{}, err
 	}
-	return sandbox.ImageRef{Ref: img.Ref, Digest: img.Digest}, nil
+	return agent.Image{ImageRef: sandbox.ImageRef{Ref: img.Ref, Digest: img.Digest}, SizeBytes: img.Size}, nil
 }
 
 // imageStatus gives the status of the agent protocol for each step of
@@ -154,8 +191,8 @@ func (n *Node) GCImages(ctx context.Context, keep []string) error {
 	return n.cfg.Images.GC(ctx, keep)
 }
 
-func (n *Node) PruneRunners(_ context.Context, keep []string) error {
-	return n.cfg.Bundles.Prune(keep)
+func (n *Node) PruneRunners(ctx context.Context, keep []string) error {
+	return n.cfg.Bundles.Prune(ctx, keep)
 }
 
 func (n *Node) MirrorStats(context.Context) (agent.MirrorStats, error) {

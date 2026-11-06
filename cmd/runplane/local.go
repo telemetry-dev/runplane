@@ -15,6 +15,7 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/initbin"
 	"github.com/runplane/runplane/internal/localnode"
@@ -40,8 +41,9 @@ type local struct {
 type localConfig struct {
 	mode     sandbox.Mode
 	settings agent.Settings // the first settings of the driver and the node
-	agent    bool           // the process is an agent, not the primary
-	domain   string         // the HTTPS domain of the primary
+	// settingsFile keeps the settings of each change on an agent, or is "".
+	settingsFile string
+	doctor       doctor.Options
 	// token gives a GitHub token for the runner release reads. Optional.
 	token func(context.Context) (string, error)
 }
@@ -130,8 +132,9 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	l.node, err = localnode.New(localnode.Config{
 		Driver: l.driver, Images: images, Bundles: bundles, Updater: update.New(cfg.KernelPath()),
 		MinFreeDiskPercent: lc.settings.MinFreeDiskPercent,
+		SettingsFile:       lc.settingsFile,
 		Mirror:             mirror.Config{Dir: cfg.MirrorDir(), Allow: allow(isSandbox), Logger: log.With("component", "mirror")},
-		Doctor:             doctorOptions(cfg, lc.mode, lc.agent, lc.domain),
+		Doctor:             lc.doctor,
 		Logger:             log.With("component", "node"),
 	})
 	if err != nil {

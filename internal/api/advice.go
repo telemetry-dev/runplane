@@ -17,7 +17,6 @@ type SizeAdvice struct {
 	Reason string `json:"reason"`
 }
 
-// Kinds of SizeAdvice.
 const (
 	adviceLarger  = "larger"
 	adviceSmaller = "smaller"

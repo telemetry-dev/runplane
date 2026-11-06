@@ -29,7 +29,6 @@ type stream struct {
 // event.
 var errSkip = errors.New("the browser does not get this event")
 
-// streamOf makes the stream of the bus event E with the data D.
 func streamOf[E events.Event, D any](name string, convert func(context.Context, E) (D, error)) stream {
 	var data D
 	return stream{event: reflect.TypeFor[E](), name: name, data: data, convert: func(ctx context.Context, e events.Event) (any, error) {

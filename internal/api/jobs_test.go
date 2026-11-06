@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -170,36 +169,6 @@ func TestAssignedJobHasTheQueuedStatus(t *testing.T) {
 	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/jobs?status=queued", nil, &page).want(t, 200)
 	if len(page.Items) != 1 || page.Items[0].Status != store.StatusQueued {
 		t.Errorf("queued jobs %+v, want the assigned job with the status queued", page.Items)
-	}
-}
-
-// The live log of a running job has no step marks. A request for one step
-// gets the whole log and a header that says so.
-func TestLiveJobLogSaysThatTheStepFilterIsOff(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		live   bool
-		query  string
-		header string
-	}{
-		{"live log, one step", true, "?step=2", "ignored"},
-		{"live log, all steps", true, "", ""},
-		{"stored log, one step", false, "?step=2", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(t, func(d *Deps) {
-				d.Logs = fakeLogs{log: io.NopCloser(strings.NewReader("line 1\n")), live: tc.live}
-			})
-			j := e.addJob(1, "acme/api", time.Now())
-			res := e.login("bob@example.com", auth.RoleMember).do("GET", "/api/jobs/"+j.ID+"/log"+tc.query, nil, nil)
-			res.want(t, 200)
-			if got := res.Header.Get("X-Runplane-Step-Filter"); got != tc.header {
-				t.Errorf("X-Runplane-Step-Filter = %q, want %q", got, tc.header)
-			}
-			if string(res.body) != "line 1\n" {
-				t.Errorf("body %q, want the log", res.body)
-			}
-		})
 	}
 }
 

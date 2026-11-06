@@ -112,21 +112,6 @@ function warning(size: number) {
   )
 }
 
-/** The icon status of a GitHub step: `status` is queued, in_progress, or completed; `conclusion` is success, failure, … */
-export function stepStatus(step: { status: string; conclusion?: string | null }): JobStatus {
-  if (step.status === 'queued') return 'queued'
-  if (step.status !== 'completed') return 'running'
-  return stepConclusions[step.conclusion ?? ''] ?? 'failed'
-}
-
-const stepConclusions: Record<string, JobStatus> = {
-  success: 'succeeded',
-  failure: 'failed',
-  cancelled: 'cancelled',
-  skipped: 'skipped',
-  neutral: 'succeeded',
-}
-
 type BuildState = Schemas['ImageBuild']['status']
 
 /** The icon status of the build of an image on one server. */

@@ -4,7 +4,6 @@ import { apiUrl, errorMessage, type Schemas } from '~/api/client'
 import { useFollowedText } from '~/api/followed-text'
 import { followJobLog, logQuery } from '~/api/jobs'
 import { LogViewer } from '~/components/app/log-viewer'
-import { stepStatus } from '~/components/app/status-icon'
 import { TextButton } from '~/components/app/text-button'
 import { formatDuration } from '~/lib/format'
 import { noLogReason, runTime, stepTime } from './job-format'
@@ -27,7 +26,7 @@ export function JobLog({ job, step, now }: JobLogProps) {
   let empty: ReactNode = 'No log output.'
   if (job.log_state === 'none') empty = noLogReason(job)
   else if (job.log_state === 'expired') empty = 'This log is older than the log retention and was deleted.'
-  else if (selected && stepStatus(selected) === 'skipped') empty = 'This step was skipped.'
+  else if (selected?.status === 'skipped') empty = 'This step was skipped.'
   else if (log.error) {
     empty = (
       <span role="alert">

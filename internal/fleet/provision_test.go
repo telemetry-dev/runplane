@@ -135,8 +135,10 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 	if b, _ := h.st.GetImageBuild(ctx, broken, id); !strings.Contains(b.Error, "not found") {
 		t.Errorf("failed build error %q, want the pull error", b.Error)
 	}
-	if b, _ := h.st.GetImageBuild(ctx, app, id); b.Status != store.BuildReady || b.Digest != "sha256:a001" {
-		t.Errorf("pool image build %+v, want ready with its digest", b)
+	// The size is the space of the image on the server, not the bytes of
+	// the download.
+	if b, _ := h.st.GetImageBuild(ctx, app, id); b.Status != store.BuildReady || b.Digest != "sha256:a001" || b.SizeBytes != imageSize {
+		t.Errorf("pool image build %+v, want ready with its digest and size", b)
 	}
 
 	if v, _ := h.f.RunnerVersion(id); v != "2.329.0" {
@@ -253,6 +255,9 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	if got := digest(); got != "" {
 		t.Errorf("digest %q after Remove, want none", got)
 	}
+	waitFor(t, "the image GC on the two servers", func() bool {
+		return len(local.args("GCImages")) > before && len(agentNode.args("GCImages")) > agentBefore
+	})
 	if kept := local.args("GCImages")[before:]; !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0", "sha256:in-use"}}) {
 		t.Errorf("image GC on the primary kept %v, want one GC that keeps sha256:b0b0 and sha256:in-use", kept)
 	}

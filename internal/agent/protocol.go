@@ -157,9 +157,9 @@ type (
 	// imageMessage is one line of the answer of opEnsureImage. The last
 	// line has Image or Error.
 	imageMessage struct {
-		Progress *Progress         `json:"progress,omitempty"`
-		Image    *sandbox.ImageRef `json:"image,omitempty"`
-		Error    string            `json:"error,omitempty"`
+		Progress *Progress `json:"progress,omitempty"`
+		Image    *Image    `json:"image,omitempty"`
+		Error    string    `json:"error,omitempty"`
 	}
 	// streamItem is one line of the stream to eventsPath.
 	streamItem struct {

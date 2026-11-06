@@ -82,7 +82,7 @@ func TestObjectURL(t *testing.T) {
 		{"AWS default endpoint", S3{Region: "eu-central-1", Bucket: "rp-backups"}, "db/a.gz", "https://rp-backups.s3.eu-central-1.amazonaws.com/db/a.gz"},
 		{"AWS bucket with dots uses path style", S3{Bucket: "backups.example.com"}, "a.gz", "https://s3.us-east-1.amazonaws.com/backups.example.com/a.gz"},
 		{"R2", S3{Endpoint: "https://acc123.r2.cloudflarestorage.com", Region: "auto", Bucket: "rp"}, "a.gz", "https://acc123.r2.cloudflarestorage.com/rp/a.gz"},
-		{"MinIO without scheme", S3{Endpoint: "minio.lan:9000/", Bucket: "rp"}, "a.gz", "https://minio.lan:9000/rp/a.gz"},
+		{"MinIO with a final slash", S3{Endpoint: "https://minio.lan:9000/", Bucket: "rp"}, "a.gz", "https://minio.lan:9000/rp/a.gz"},
 		{"key with special characters", S3{Endpoint: "http://127.0.0.1:9000", Bucket: "rp"}, "my backups/a+b$.gz", "http://127.0.0.1:9000/rp/my%20backups/a%2Bb%24.gz"},
 	}
 	for _, tt := range tests {

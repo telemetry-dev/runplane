@@ -10,21 +10,19 @@ type StatusFacts = {
   connected: boolean
   /** The scheduler starts new runners on the server. */
   takesRunners: boolean
-  /** The pages show the server in lighter text, as the hollow ring of its StatusDot: it has no connection, or an admin disabled it. */
-  muted: boolean
 }
 
 /**
- * What the status of a server means for its usage, its jobs, and its look.
- * Go gives draining and disabled servers the same rules: they stay connected,
- * send host samples, and finish their jobs, but get no new runners.
+ * What the status of a server means for its usage and its jobs. Go gives
+ * draining and disabled servers the same rules: they stay connected, send
+ * host samples, and finish their jobs, but get no new runners.
  */
 export const statusFacts: Record<Server['status'], StatusFacts> = {
-  online: { connected: true, takesRunners: true, muted: false },
-  draining: { connected: true, takesRunners: false, muted: false },
-  disabled: { connected: true, takesRunners: false, muted: true },
-  installing: { connected: false, takesRunners: false, muted: false },
-  unreachable: { connected: false, takesRunners: false, muted: true },
+  online: { connected: true, takesRunners: true },
+  draining: { connected: true, takesRunners: false },
+  disabled: { connected: true, takesRunners: false },
+  installing: { connected: false, takesRunners: false },
+  unreachable: { connected: false, takesRunners: false },
 }
 
 /** The systems that install.sh names for a server, as "Ubuntu 22.04 or 24.04, or Debian 12 or 13 (best effort)". */

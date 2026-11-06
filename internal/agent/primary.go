@@ -239,10 +239,10 @@ func (s *Session) Doctor(ctx context.Context) (doctor.Report, error) {
 	return doctor.Report{Info: rep.Info.info(), Checks: checks(rep.Doctor)}, err
 }
 
-func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(Progress)) (sandbox.ImageRef, error) {
+func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(Progress)) (Image, error) {
 	resp, err := open(ctx, s, opEnsureImage.route, sandbox.ImageRef{Ref: ref})
 	if err != nil {
-		return sandbox.ImageRef{}, err
+		return Image{}, err
 	}
 	defer resp.Body.Close()
 	dec := json.NewDecoder(resp.Body)
@@ -252,11 +252,11 @@ func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(Pro
 			if errors.Is(err, io.EOF) {
 				err = io.ErrUnexpectedEOF
 			}
-			return sandbox.ImageRef{}, fmt.Errorf("ensure image %s on server %s: %w", ref, s.ServerID(), s.closedOr(err))
+			return Image{}, fmt.Errorf("ensure image %s on server %s: %w", ref, s.ServerID(), s.closedOr(err))
 		}
 		switch {
 		case m.Error != "":
-			return sandbox.ImageRef{}, fmt.Errorf("server %s: %s", s.ServerID(), m.Error)
+			return Image{}, fmt.Errorf("server %s: %s", s.ServerID(), m.Error)
 		case m.Image != nil:
 			return *m.Image, nil
 		case m.Progress != nil && progress != nil:

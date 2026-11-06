@@ -135,6 +135,10 @@ type Fleet struct {
 	updates   map[string]agentUpdate // the last update of each agent, by server ID
 	samples   []store.ServerStat     // host stats for the next flush
 	seen      map[string]time.Time   // last sample of each agent, for the next flush
+
+	// settingsChanges counts the settings changes that settingsChanged
+	// sent to the connected servers.
+	settingsChanges int
 }
 
 // node is a connected server.
@@ -391,15 +395,27 @@ func (f *Fleet) connected() []*node {
 	return slices.Collect(maps.Values(f.nodes))
 }
 
+// errRemoved refuses the connection of a server that RemoveServer removed.
+var errRemoved = errors.New("the server was removed")
+
 // add makes n the connected node of its server and passes its driver
 // events and host stats on. The channels of an agent close when its
-// session ends.
-func (f *Fleet) add(n *node) {
+// session ends. A server that RemoveServer removed gets no node. If the
+// settings changed after settingsChanges, the server gets them again.
+func (f *Fleet) add(n *node, settingsChanges int) error {
 	n.images, n.pulls, n.failed = map[string]readyImage{}, map[string]string{}, map[string]time.Time{}
 	f.mu.Lock()
+	if f.removed[n.id] {
+		f.mu.Unlock()
+		return errRemoved
+	}
 	f.nodes[n.id] = n
 	delete(f.downSince, n.id)
+	missed := f.settingsChanges != settingsChanges
 	f.mu.Unlock()
+	if missed {
+		f.goBg(func(ctx context.Context) { f.sendSettings(ctx, n) })
+	}
 	f.goBg(func(ctx context.Context) {
 		onEvent := func(ev sandbox.Event) { f.onEvent(n.id, ev) }
 		onStats := func(s host.Stats) { f.addStats(n, s) }
@@ -407,6 +423,7 @@ func (f *Fleet) add(n *node) {
 			f.down(ctx, n)
 		}
 	})
+	return nil
 }
 
 // down drops the session of an agent that ended, unless a newer session

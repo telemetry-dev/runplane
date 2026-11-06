@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import type { Schemas } from '~/api/client'
-import { StatusIcon, stepStatus } from '~/components/app/status-icon'
+import { StatusIcon } from '~/components/app/status-icon'
 import { cx } from '~/lib/cx'
 import { formatDuration } from '~/lib/format'
 import { stepTime } from './job-format'
@@ -44,13 +44,12 @@ export function JobStepsList({ job, selected, now }: JobStepsListProps) {
 type StepRowProps = { jobId: string; step: Schemas['JobStep']; selected: boolean; linked: boolean; now: number }
 
 function StepRow({ jobId, step, selected, linked, now }: StepRowProps) {
-  const status = stepStatus(step)
-  const skipped = status === 'skipped'
+  const skipped = step.status === 'skipped'
   const time = stepTime(step, now)
   const row = 'flex items-center gap-s rounded-s px-s py-xs text-s'
   const content = (
     <>
-      <StatusIcon status={status} size={14} />
+      <StatusIcon status={step.status} size={14} />
       <span className={cx('min-w-0 grow truncate', selected ? 'font-medium text-neutral-10' : skipped ? 'text-neutral-6' : 'text-neutral-8')}>
         {step.name}
       </span>

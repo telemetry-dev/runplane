@@ -71,6 +71,7 @@ const changes: Record<Action, (detail: Detail) => string> = {
   'user.update': (d) => `made ${d.text('email') || 'a user'} ${d.text('role') === 'admin' ? 'an admin' : 'a member'}`,
   'user.delete': (d) => `removed ${d.text('email') || 'a member'}`,
   'user.password': () => 'changed their password',
+  'user.password_reset': (d) => `reset the password of ${d.text('email') || 'a user'}`,
   'invite.create': (d) => `invited ${d.text('email')} as ${d.text('role') || 'member'}`,
   'invite.link': (d) => `made a new invite link for ${d.text('email')}`,
   'invite.delete': () => 'revoked an invite',

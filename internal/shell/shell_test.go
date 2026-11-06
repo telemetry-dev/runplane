@@ -69,9 +69,10 @@ func newSigner(t *testing.T) ssh.Signer {
 
 // auditEntry is one Record call of the gateway.
 type auditEntry struct {
-	by             audit.Actor
-	action, target string
-	detail         map[string]any
+	by     audit.Actor
+	action audit.Action
+	target string
+	detail map[string]any
 }
 
 // gateway serves debugID (also by its first 8 characters) to the actor
@@ -115,7 +116,7 @@ func startGateway(t *testing.T) *gateway {
 			return nil, nil
 		},
 		AdminKeys: func(context.Context) []ssh.PublicKey { return []ssh.PublicKey{g.admin.PublicKey()} },
-		Audit: func(_ context.Context, by audit.Actor, action, target string, detail map[string]any) {
+		Audit: func(_ context.Context, by audit.Actor, action audit.Action, target string, detail map[string]any) {
 			g.audits <- auditEntry{by, action, target, detail}
 		},
 	})

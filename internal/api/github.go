@@ -260,7 +260,14 @@ func (h *Handler) githubCallback(ctx context.Context, in *githubCallbackInput) (
 
 type githubSetupInput struct {
 	InstallationID int64  `query:"installation_id" minimum:"0"`
-	SetupAction    string `query:"setup_action" maxLength:"20" doc:"install, update, or request."`
+	SetupAction    string `query:"setup_action" required:"true" enum:"install,update,request"`
+}
+
+// installActions are the audit actions of the setup_action values of GitHub.
+var installActions = map[string]audit.Action{
+	"install": audit.GitHubInstall,
+	"update":  audit.GitHubInstallUpdate,
+	"request": audit.GitHubInstallRequest,
 }
 
 func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redirectOutput, error) {
@@ -277,7 +284,7 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 		h.d.Log.Warn("github installation setup", "installation", in.InstallationID, "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
 	}
-	h.record(ctx, audit.GitHubInstallation(in.SetupAction), strconv.FormatInt(in.InstallationID, 10), nil)
+	h.record(ctx, installActions[in.SetupAction], strconv.FormatInt(in.InstallationID, 10), nil)
 	return redirect(to), nil
 }
 

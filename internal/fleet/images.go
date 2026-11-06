@@ -96,9 +96,10 @@ func (f *Fleet) UpdateImage(ctx context.Context, by audit.Actor, imageID string,
 	return img, nil
 }
 
-// RemoveImage stops the use of an image, removes its files from the
-// connected servers, and deletes its row. The pools with the image change to
-// the default image.
+// RemoveImage stops the use of an image and deletes its row. The pools with
+// the image change to the default image. The connected servers remove the
+// files of the image in the background, because a server removes images
+// only after its pulls end.
 func (f *Fleet) RemoveImage(ctx context.Context, by audit.Actor, imageID string) error {
 	img, err := f.st.GetImage(ctx, imageID)
 	if err != nil {
@@ -117,11 +118,11 @@ func (f *Fleet) RemoveImage(ctx context.Context, by audit.Actor, imageID string)
 		nodes = append(nodes, n)
 	}
 	f.mu.Unlock()
-	for _, n := range nodes {
-		f.gcImages(ctx, n, img.ID)
-	}
 	if err := f.st.DeleteImage(ctx, img.ID); err != nil {
 		return err
+	}
+	for _, n := range nodes {
+		f.goBg(func(ctx context.Context) { f.gcImages(ctx, n) })
 	}
 	f.bus.Publish(events.PoolsChanged{})
 	f.bus.Publish(events.ImageRemoved{ID: img.ID})

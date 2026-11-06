@@ -22,14 +22,6 @@ export function parseOverviewSearch(search: Record<string, unknown>): { range?: 
   return { range: range === defaultRange ? undefined : range }
 }
 
-/**
- * True when runplane has no job to show at all. `recent` holds the last
- * completed jobs of any time, so it is empty only before the first job ends.
- */
-export function hasNoJobs(overview: Overview): boolean {
-  return overview.stats.jobs === 0 && overview.running.length === 0 && overview.recent.length === 0
-}
-
 /** The figures of the stats row. `null` shows an em dash: the range has no data for it. */
 export function statValues({ stats }: Overview) {
   return {

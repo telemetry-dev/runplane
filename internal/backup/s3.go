@@ -83,11 +83,7 @@ func (s S3) region() string { return cmp.Or(s.Region, "us-east-1") }
 // objectURL sets both Path and RawPath, so the request sends the same
 // escaped path that sign uses.
 func (s S3) objectURL(key string) (*url.URL, error) {
-	endpoint := cmp.Or(s.Endpoint, "https://s3."+s.region()+".amazonaws.com")
-	if !strings.Contains(endpoint, "://") {
-		endpoint = "https://" + endpoint
-	}
-	u, err := url.Parse(endpoint)
+	u, err := url.Parse(cmp.Or(s.Endpoint, "https://s3."+s.region()+".amazonaws.com"))
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("parse S3 endpoint %q: invalid URL", s.Endpoint)
 	}

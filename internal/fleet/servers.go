@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -84,13 +85,6 @@ func (f *Fleet) startAgents(ctx context.Context) error {
 // AddSession takes a new agent session: the OnSession hook of agent.Listener.
 func (f *Fleet) AddSession(s *agent.Session) {
 	id := s.ServerID()
-	f.mu.Lock()
-	removed := f.removed[id]
-	f.mu.Unlock()
-	if removed {
-		s.Close()
-		return
-	}
 	if err := f.connect(f.bg, id, s, s.Hello()); err != nil {
 		f.log.Warn("record the agent connection", "server_id", id, "err", err)
 		s.Close()
@@ -130,18 +124,19 @@ func (f *Fleet) connect(ctx context.Context, id string, n agent.Node, h agent.He
 	nd := &node{Node: n, id: id, addr: h.Addr, version: h.Version, name: v.Name, arch: h.Host.Arch, status: v.Status}
 	// The server gets its settings before the scheduler can start a
 	// sandbox on it.
-	if st, err := f.st.GetSettings(ctx); err != nil {
-		f.log.Warn("read settings for a server", "err", err)
-	} else {
-		f.configure(ctx, nd, NodeSettings(st))
-	}
+	f.mu.Lock()
+	settingsChanges := f.settingsChanges
+	f.mu.Unlock()
+	f.sendSettings(ctx, nd)
 	nd.limits = f.readLimits(ctx, nd)
 	if n.Local() {
 		f.mu.Lock()
 		f.localAddr = h.Addr
 		f.mu.Unlock()
 	}
-	f.add(nd)
+	if err := f.add(nd, settingsChanges); err != nil {
+		return err
+	}
 	f.endUpdate(ctx, id, h.Version)
 	f.publishServer(ctx, id)
 	f.log.Info("server connected", "server_id", id, "name", v.Name, "addr", h.Addr, "version", h.Version, "arch", nd.arch, "mode", h.Mode)
@@ -159,6 +154,16 @@ func (f *Fleet) connect(ctx context.Context, id string, n agent.Node, h agent.He
 // adminStatus reports a status that only an admin sets and clears.
 func adminStatus(status string) bool {
 	return status == store.ServerDraining || status == store.ServerDisabled
+}
+
+// sendSettings gives a server the settings of the store.
+func (f *Fleet) sendSettings(ctx context.Context, n *node) {
+	st, err := f.st.GetSettings(ctx)
+	if err != nil {
+		f.log.Warn("read settings for a server", "server_id", n.id, "err", err)
+		return
+	}
+	f.configure(ctx, n, NodeSettings(st))
 }
 
 func (f *Fleet) configure(ctx context.Context, n *node, s agent.Settings) {
@@ -281,6 +286,12 @@ func (f *Fleet) UpdateServer(ctx context.Context, by audit.Actor, serverID strin
 	if err != nil {
 		return store.Server{}, err
 	}
+	newStatus := c.Status != nil && *c.Status != old.Status
+	if newStatus {
+		if err := statusChange(old.Status, *c.Status); err != nil {
+			return store.Server{}, err
+		}
+	}
 	now := f.now()
 	if c.Name != nil {
 		name := strings.TrimSpace(*c.Name)
@@ -295,10 +306,7 @@ func (f *Fleet) UpdateServer(ctx context.Context, by audit.Actor, serverID strin
 			}
 		}
 	}
-	if c.Status != nil && *c.Status != old.Status {
-		if err := statusChange(old.Status, *c.Status); err != nil {
-			return store.Server{}, err
-		}
+	if newStatus {
 		if err := f.st.SetServerStatus(ctx, old.ID, *c.Status, "", now); err != nil {
 			return store.Server{}, err
 		}
@@ -468,7 +476,11 @@ func (f *Fleet) settingsChanged(c events.SettingsChanged) {
 	if reflect.DeepEqual(NodeSettings(c.Old), s) {
 		return
 	}
-	for _, n := range f.connected() {
+	f.mu.Lock()
+	f.settingsChanges++
+	nodes := slices.Collect(maps.Values(f.nodes))
+	f.mu.Unlock()
+	for _, n := range nodes {
 		f.goBg(func(ctx context.Context) { f.configure(ctx, n, s) })
 	}
 }

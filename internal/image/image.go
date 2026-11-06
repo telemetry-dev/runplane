@@ -170,10 +170,9 @@ func (m *Manager) RootDisk(digest string) (string, error) {
 // digest is not in keep. keep must hold the digests of all images and of all
 // sandboxes that still operate. GC also keeps the images that Ensure returned
 // since the last GC, because the caller can still be about to store them. GC
-// does nothing while Ensure operates.
+// waits until no Ensure operates.
 func (m *Manager) GC(ctx context.Context, keep []string) error {
-	var err error
-	ran := m.work.Idle(func() {
+	return m.work.Idle(ctx, func() error {
 		m.freshMu.Lock()
 		set := m.fresh
 		m.fresh = map[string]bool{}
@@ -182,16 +181,15 @@ func (m *Manager) GC(ctx context.Context, keep []string) error {
 			set[d] = true
 		}
 		if m.cfg.Mode == sandbox.ModeVM {
-			err = m.diskGC(set)
+			if err := m.diskGC(set); err != nil {
+				return err
+			}
 		}
-		if err == nil && m.cfg.Docker != nil {
-			err = m.dockerGC(ctx, set)
+		if m.cfg.Docker != nil {
+			return m.dockerGC(ctx, set)
 		}
+		return nil
 	})
-	if !ran {
-		m.log.Debug("image GC skipped, an image is in progress")
-	}
-	return err
 }
 
 type source struct {

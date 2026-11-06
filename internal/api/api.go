@@ -241,8 +241,8 @@ type Logs interface {
 	Sandbox(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 	// Job returns the log of a job: the stored GitHub log after the job,
 	// the sandbox log while it runs. step 0 means all steps. The sandbox log
-	// has no step marks, so it always has all steps: live is true for it.
-	Job(ctx context.Context, jobID string, step int, follow bool) (log io.ReadCloser, live bool, err error)
+	// has no step marks, so it always has all steps.
+	Job(ctx context.Context, jobID string, step int, follow bool) (io.ReadCloser, error)
 }
 
 type Shell interface {
@@ -328,7 +328,7 @@ func (h *Handler) routes() {
 	handle(h, auth.ActionRead, "GET /api/jobs", "list-jobs", "List jobs, newest first", h.listJobs)
 	handle(h, auth.ActionRead, "GET /api/jobs/facets", "get-job-facets", "List the values for the job filters", h.getJobFacets)
 	handle(h, auth.ActionRead, "GET /api/jobs/{id}", "get-job", "Read a job", h.getJob)
-	handle(h, auth.ActionRead, "GET /api/jobs/{id}/log", "get-job-log", "Read the log of a job", h.jobLog, jobLogResponse)
+	handle(h, auth.ActionRead, "GET /api/jobs/{id}/log", "get-job-log", "Read the log of a job", h.jobLog, textResponse)
 	handle(h, auth.ActionRead, "GET /api/jobs/{id}/metrics", "get-job-metrics", "Read the CPU and memory samples of a job", h.getJobMetrics)
 	handle(h, auth.ActionRerunJob, "POST /api/jobs/{id}/rerun", "rerun-job", "Run a job again", h.rerunJob)
 
@@ -456,14 +456,6 @@ func textResponse(op *huma.Operation) {
 	op.Responses = map[string]*huma.Response{"200": {
 		Description: "The log as plain text. With follow=1, the response streams until the log ends.",
 		Content:     map[string]*huma.MediaType{"text/plain": {Schema: &huma.Schema{Type: huma.TypeString}}},
-	}}
-}
-
-func jobLogResponse(op *huma.Operation) {
-	textResponse(op)
-	op.Responses["200"].Headers = map[string]*huma.Param{stepFilterHeader: {
-		Description: "ignored: the log has all steps, because the job runs and its live log has no step marks.",
-		Schema:      &huma.Schema{Type: huma.TypeString, Enum: []any{stepFilterIgnored}},
 	}}
 }
 

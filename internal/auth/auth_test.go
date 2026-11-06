@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -284,8 +285,44 @@ func TestSetupRefusedAfterFirstAdmin(t *testing.T) {
 	if _, err := e.svc.NewSetupCode(ctx); !errors.Is(err, ErrSetupDone) {
 		t.Fatalf("new code after the first user: err = %v, want ErrSetupDone", err)
 	}
+	// The valid code does not make serve tell that no admin exists.
+	if _, err := e.svc.EnsureSetupCode(ctx); !errors.Is(err, ErrSetupDone) {
+		t.Fatalf("ensure a code after the first user: err = %v, want ErrSetupDone", err)
+	}
 	if n, _ := e.st.CountUsers(ctx); n != 1 {
 		t.Fatalf("users = %d, want 1", n)
+	}
+}
+
+// install.sh prints a code, then runplane restarts. serve keeps the code.
+func TestEnsureSetupCodeKeepsAValidCode(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	printed, err := e.svc.NewSetupCode(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, err := e.svc.EnsureSetupCode(ctx); err != nil || code != "" {
+		t.Fatalf("EnsureSetupCode = %q, %v; want no new code while one is valid", code, err)
+	}
+	if _, _, err := e.svc.Setup(ctx, printed, "Ada", "ada@example.com", "a long password", "127.0.0.1", "test"); err != nil {
+		t.Fatalf("the printed code stopped working after a restart: %v", err)
+	}
+}
+
+func TestEnsureSetupCodeReplacesAnExpiredCode(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if _, err := e.svc.NewSetupCode(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.wait(SetupCodeTTL)
+	code, err := e.svc.EnsureSetupCode(ctx)
+	if err != nil || code == "" {
+		t.Fatalf("EnsureSetupCode = %q, %v; want a new code", code, err)
+	}
+	if _, _, err := e.svc.Setup(ctx, code, "Ada", "ada@example.com", "a long password", "127.0.0.1", "test"); err != nil {
+		t.Fatalf("the new code does not work: %v", err)
 	}
 }
 
@@ -363,6 +400,37 @@ func TestChangePassword(t *testing.T) {
 	}
 	if err := e.login("admin@example.com", "second password", "", ""); err != nil {
 		t.Fatalf("new password: %v", err)
+	}
+}
+
+// The operator resets a password from the shell. The Activity page shows it.
+func TestResetPassword(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin, oldToken := e.setup(t)
+	if _, err := e.svc.ResetPassword(ctx, audit.Actor{}, "eve@example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown email: err = %v, want store.ErrNotFound", err)
+	}
+	password, err := e.svc.ResetPassword(ctx, audit.Actor{}, " Admin@Example.com ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.UserForToken(ctx, oldToken); !errors.Is(err, ErrNoSession) {
+		t.Errorf("session after the reset: err = %v, want ErrNoSession", err)
+	}
+	if err := e.login("admin@example.com", "first password", "", ""); !errors.Is(err, ErrBadLogin) {
+		t.Errorf("old password: err = %v, want ErrBadLogin", err)
+	}
+	if err := e.login("admin@example.com", password, "", ""); err != nil {
+		t.Errorf("new password: %v", err)
+	}
+	entries, _, err := e.st.ListAudit(ctx, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resets := slices.DeleteFunc(entries, func(a store.AuditEntry) bool { return a.Action != "user.password_reset" })
+	if len(resets) != 1 || resets[0].Target != admin.ID || resets[0].UserID != "" {
+		t.Errorf("reset entries %+v, want one of %s by runplane", resets, admin.ID)
 	}
 }
 

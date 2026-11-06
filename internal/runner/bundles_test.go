@@ -152,7 +152,7 @@ func TestPrune(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := NewBundles(BundleConfig{Dir: dir}).Prune([]string{"2.9.0"}); err != nil {
+	if err := NewBundles(BundleConfig{Dir: dir}).Prune(t.Context(), []string{"2.9.0"}); err != nil {
 		t.Fatal(err)
 	}
 	if left, want := names(t, dir), "2.300.0-arm64 2.337.0-x64 2.338.2-x64 2.338.2-x64.json 2.9.0-x64"; left != want {

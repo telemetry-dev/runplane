@@ -29,7 +29,7 @@ type Node interface {
 	Doctor(ctx context.Context) (doctor.Report, error)
 	// EnsureImage makes an image ready on the server. progress, if not nil,
 	// gets each step.
-	EnsureImage(ctx context.Context, ref string, progress func(Progress)) (sandbox.ImageRef, error)
+	EnsureImage(ctx context.Context, ref string, progress func(Progress)) (Image, error)
 	EnsureRunner(ctx context.Context, version, arch string) (Bundle, error)
 	// GCImages removes the images whose digest is not in keep.
 	GCImages(ctx context.Context, keep []string) error
