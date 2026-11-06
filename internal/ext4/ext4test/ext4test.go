@@ -1,4 +1,6 @@
-// Package ext4test examines the ext4 files of the tests.
+// Package ext4test examines the ext4 files of the tests. Its checks need
+// e2fsprogs; without it they skip the test, so callers run them in a
+// subtest of their own.
 package ext4test
 
 import (
@@ -10,9 +12,9 @@ import (
 )
 
 // Check examines the ext4 superblock magic, and the file system with
-// e2fsck where e2fsprogs is installed. The hcsshim writer does not set the
-// padding bits of the inode bitmap. The kernel does not read them on a
-// read-only mount, so the check permits that one problem.
+// e2fsck. The hcsshim writer does not set the padding bits of the inode
+// bitmap. The kernel does not read them on a read-only mount, so the check
+// permits that one problem.
 func Check(t *testing.T, file string) {
 	t.Helper()
 	f, err := os.Open(file)
@@ -27,12 +29,7 @@ func Check(t *testing.T, file string) {
 	if got := binary.LittleEndian.Uint16(magic); got != 0xef53 {
 		t.Fatalf("magic at 1080 = %#x, want 0xef53", got)
 	}
-	bin, err := exec.LookPath("e2fsck")
-	if err != nil {
-		t.Log("no e2fsck, skip the file system check")
-		return
-	}
-	out, err := exec.Command(bin, "-fn", file).CombinedOutput()
+	out, err := exec.Command(tool(t, "e2fsck"), "-fn", file).CombinedOutput()
 	if exit, ok := err.(*exec.ExitError); err != nil && (!ok || exit.ExitCode() != 4) {
 		t.Fatalf("e2fsck -fn %s: %v\n%s", file, err, out)
 	}
@@ -45,19 +42,24 @@ func Check(t *testing.T, file string) {
 }
 
 // Debugfs runs a debugfs request on an ext4 file and examines that the
-// output has want. It skips the check where e2fsprogs is not installed.
+// output has want.
 func Debugfs(t *testing.T, file, request, want string) {
 	t.Helper()
-	bin, err := exec.LookPath("debugfs")
-	if err != nil {
-		t.Logf("no debugfs, skip %q", request)
-		return
-	}
-	out, err := exec.Command(bin, "-R", request, file).CombinedOutput()
+	out, err := exec.Command(tool(t, "debugfs"), "-R", request, file).CombinedOutput()
 	if err != nil {
 		t.Fatalf("debugfs -R %q: %v\n%s", request, err, out)
 	}
 	if !strings.Contains(string(out), want) {
 		t.Errorf("debugfs -R %q:\n%s\nwant %q", request, out, want)
 	}
+}
+
+// tool returns the path of a program of e2fsprogs, or skips the test.
+func tool(t *testing.T, name string) string {
+	t.Helper()
+	bin, err := exec.LookPath(name)
+	if err != nil {
+		t.Skipf("needs %s of e2fsprogs to read the ext4 file", name)
+	}
+	return bin
 }
