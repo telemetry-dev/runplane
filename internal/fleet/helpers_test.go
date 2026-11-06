@@ -148,6 +148,22 @@ func (h *harness) connectAgent(name string, node *fakeNode) (*testAgent, string)
 	return a, id
 }
 
+// startGatedAgent starts a new agent whose Configure waits until the test
+// closes the returned gate, so that the agent stays in its connect. It
+// returns when the agent got the settings of its connect.
+func (h *harness) startGatedAgent(name string, node *fakeNode) (*testAgent, chan struct{}) {
+	h.t.Helper()
+	gate := make(chan struct{})
+	node.configureGate = gate
+	tok, err := h.f.NewToken(h.t.Context(), audit.Actor{}, "https://ci.example.com", name)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	a := h.startAgent(map[string]string{"primary": h.cfg.AgentListen, "fingerprint": h.fp, "token": tok.Token}, node)
+	waitFor(h.t, "the settings at connect", func() bool { return len(node.args("Configure")) == 1 })
+	return a, gate
+}
+
 type testAgent struct {
 	h       *harness
 	path    string
@@ -251,6 +267,8 @@ type fakeNode struct {
 	gates     map[string]chan struct{} // pulls of these refs wait until the channel closes
 	updateErr error
 	calls     []call
+	// configureGate, if not nil, makes Configure wait until it closes.
+	configureGate chan struct{}
 }
 
 type call struct {
@@ -303,11 +321,16 @@ func (n *fakeNode) args(method string) []any {
 	return list
 }
 
-func (n *fakeNode) Local() bool                              { return true }
-func (n *fakeNode) Driver() agent.Driver                     { return fakeDriver{n: n} }
-func (n *fakeNode) Facts(context.Context) (host.Info, error) { return n.info, nil }
-func (n *fakeNode) Stats() <-chan host.Stats                 { return n.stats }
-func (n *fakeNode) Close() error                             { return nil }
+func (n *fakeNode) Local() bool              { return true }
+func (n *fakeNode) Driver() agent.Driver     { return fakeDriver{n: n} }
+func (n *fakeNode) Stats() <-chan host.Stats { return n.stats }
+func (n *fakeNode) Close() error             { return nil }
+
+// Facts records its calls: an agent reads the facts before each connection.
+func (n *fakeNode) Facts(context.Context) (host.Info, error) {
+	n.record("Facts", nil)
+	return n.info, nil
+}
 
 func (n *fakeNode) MirrorStats(context.Context) (agent.MirrorStats, error) { return n.mirror, nil }
 
@@ -360,8 +383,18 @@ func (n *fakeNode) PruneRunners(_ context.Context, keep []string) error {
 	return nil
 }
 
-func (n *fakeNode) Configure(_ context.Context, s agent.Settings) error {
+func (n *fakeNode) Configure(ctx context.Context, s agent.Settings) error {
 	n.record("Configure", s)
+	n.mu.Lock()
+	gate := n.configureGate
+	n.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
 }
 

@@ -120,8 +120,8 @@ func TestOldSessionEndKeepsNewSession(t *testing.T) {
 	t.Cleanup(h.f.stop)
 	old := &node{Node: newFakeNode("x64"), id: "01srv", status: store.ServerOnline}
 	cur := &node{Node: newFakeNode("x64"), id: "01srv", status: store.ServerOnline}
-	h.f.add(old)
-	h.f.add(cur)
+	h.f.add(old, 0)
+	h.f.add(cur, 0)
 
 	// The agent connected again before the end of its old session arrived.
 	h.f.down(t.Context(), old)
@@ -369,6 +369,58 @@ func TestSettingsReachServers(t *testing.T) {
 			list := n.args("Configure")
 			return len(list) > 0 && reflect.DeepEqual(list[len(list)-1], want)
 		})
+	}
+}
+
+// The fleet sends a server its settings before it adds the server. A
+// settings change in that time must also reach the server, else the server
+// keeps the old egress allowlist until the next change.
+func TestSettingsChangeWhileAnAgentConnects(t *testing.T) {
+	ctx := t.Context()
+	local := newFakeNode("arm64")
+	h := newHarness(t, local)
+	h.run()
+	agentNode := newFakeNode("x64")
+	_, gate := h.startGatedAgent("build-x64", agentNode)
+
+	prev := store.DefaultSettings()
+	next := prev
+	next.EgressAllowlist = []string{"10.0.0.0/8"}
+	if _, err := h.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		*s = next
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.bus.Publish(events.SettingsChanged{Old: prev, New: next})
+	allowlist := func(n *fakeNode) []string {
+		list := n.args("Configure")
+		return list[len(list)-1].(agent.Settings).EgressAllowlist
+	}
+	waitFor(t, "the new settings on the local server", func() bool { return slices.Equal(allowlist(local), []string{"10.0.0.0/8"}) })
+	close(gate)
+	waitFor(t, "the new settings on the agent", func() bool { return slices.Equal(allowlist(agentNode), []string{"10.0.0.0/8"}) })
+}
+
+// An admin can remove a server while it connects. The fleet must not add
+// the server then: no row and no sync finds the node again, and the
+// scheduler would start sandboxes on it.
+func TestRemoveServerWhileItConnects(t *testing.T) {
+	ctx := t.Context()
+	h := newHarness(t, newFakeNode("arm64"))
+	h.run()
+	agentNode := newFakeNode("x64")
+	a, gate := h.startGatedAgent("old", agentNode)
+	id := a.file()["server_id"]
+
+	if err := h.f.RemoveServer(ctx, audit.Actor{}, id); err != nil {
+		t.Fatal(err)
+	}
+	close(gate)
+	// The agent reads its facts again before it connects again.
+	waitFor(t, "the end of the session", func() bool { return len(agentNode.args("Facts")) == 2 })
+	if h.f.Driver(id) != nil {
+		t.Error("the removed server is connected")
 	}
 }
 
