@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/sandbox"
@@ -129,13 +131,17 @@ func (d *Driver) sweep(ctx context.Context) {
 // rest, such as apt installs, go to the container root, which has no limit
 // of its own.
 func (d *Driver) checkDisks(ctx context.Context) {
+	volumes := sync.OnceValues(func() ([]volume.Volume, error) {
+		res, err := d.docker.DiskUsage(ctx, client.DiskUsageOptions{Volumes: true, Verbose: true})
+		return res.Volumes.Items, err
+	})
 	for _, b := range d.Boxes() {
 		id, _ := b.Host.get()
 		st, size := b.State(), b.Spec().DiskGB
 		if id == "" || size <= 0 || (st != sandbox.StateIdle && st != sandbox.StateBusy) {
 			continue
 		}
-		used, err := d.diskUse(ctx, b, id)
+		used, err := d.diskUse(ctx, b, id, volumes)
 		if err != nil {
 			if ctx.Err() == nil {
 				b.Log().Warn("measure the disk use of a sandbox", "err", err)
@@ -148,7 +154,11 @@ func (d *Driver) checkDisks(ctx context.Context) {
 	}
 }
 
-func (d *Driver) diskUse(ctx context.Context, b *box, containerID string) (int64, error) {
+// diskUse measures the writes of a sandbox. volumes gives the scratch
+// volumes with their sizes. Docker measures the volumes, because they are on
+// the Docker host, which can be a VM as on macOS, and in a folder that only
+// root can read.
+func (d *Driver) diskUse(ctx context.Context, b *box, containerID string, volumes func() ([]volume.Volume, error)) (int64, error) {
 	res, err := d.docker.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{Size: true})
 	if err != nil {
 		return 0, err
@@ -157,14 +167,19 @@ func (d *Driver) diskUse(ctx context.Context, b *box, containerID string) (int64
 	if res.Container.SizeRw != nil {
 		n = *res.Container.SizeRw
 	}
-	var scratchBytes int64
 	if d.opts.Profile.loopScratch {
-		scratchBytes, err = scratch.Used(filepath.Join(b.Dir, "scratch"))
-	} else {
-		var v client.VolumeInspectResult
-		if v, err = d.docker.VolumeInspect(ctx, volumeName(b.ID), client.VolumeInspectOptions{}); err == nil {
-			scratchBytes, err = scratch.Usage(v.Volume.Mountpoint)
+		used, err := scratch.Used(filepath.Join(b.Dir, "scratch"))
+		return n + used, err
+	}
+	list, err := volumes()
+	if err != nil {
+		return 0, fmt.Errorf("measure the scratch volumes: %w", err)
+	}
+	name := volumeName(b.ID)
+	for _, v := range list {
+		if v.Name == name && v.UsageData != nil && v.UsageData.Size >= 0 {
+			return n + v.UsageData.Size, nil
 		}
 	}
-	return n + scratchBytes, err
+	return 0, fmt.Errorf("Docker gave no size of the scratch volume %s", name)
 }

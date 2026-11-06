@@ -172,46 +172,6 @@ func TestLoopDeviceFreesItselfAfterUnmount(t *testing.T) {
 	}
 }
 
-func TestUsageCountsBytesOnDiskOfOneFileSystem(t *testing.T) {
-	needRoot(t)
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "data"), bytes.Repeat([]byte{0xab}, 1<<20), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(filepath.Join(dir, "data"), filepath.Join(dir, "link")); err != nil {
-		t.Fatal(err)
-	}
-	sparse, err := os.Create(filepath.Join(dir, "sparse"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sparse.Truncate(1 << 30)
-	sparse.WriteAt(bytes.Repeat([]byte{1}, 4096), 0)
-	sparse.Close()
-
-	disk, mnt := filepath.Join(t.TempDir(), "d.ext4"), filepath.Join(dir, "mnt")
-	if err := New(t.TempDir()).Create(disk, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := Attach(disk, mnt); err != nil {
-		t.Fatal(err)
-	}
-	defer Detach(mnt)
-	if err := os.WriteFile(filepath.Join(mnt, "other"), bytes.Repeat([]byte{1}, 8<<20), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := Usage(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 1 MiB of data once, 4 KiB of the sparse file, a few directory
-	// blocks. Not the hard link again, not 1 GiB, not the 8 MiB mount.
-	if low, high := int64(1<<20+4096), int64(1<<20+4096+256<<10); got < low || got > high {
-		t.Errorf("Usage = %d, want %d to %d", got, low, high)
-	}
-}
-
 func needRoot(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() != 0 {

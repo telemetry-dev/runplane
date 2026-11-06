@@ -132,48 +132,6 @@ func Used(mountpoint string) (int64, error) {
 	return int64(st.Blocks-st.Bfree) * st.Frsize, nil
 }
 
-// Usage returns the bytes that the files under dir use on disk. It stays on
-// the file system of dir and counts hard links once. Container mode uses it
-// to measure the scratch volume of a sandbox that has no scratch disk.
-func Usage(dir string) (int64, error) {
-	var root unix.Stat_t
-	if err := unix.Lstat(dir, &root); err != nil {
-		return 0, fmt.Errorf("measure %s: %w", dir, err)
-	}
-	seen := map[uint64]bool{} // inodes with more than one link
-	var total int64
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		var st unix.Stat_t
-		if err == nil {
-			err = unix.Lstat(path, &st)
-		}
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil // removed while we walk
-		}
-		if err != nil {
-			return err
-		}
-		if st.Dev != root.Dev {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.IsDir() && st.Nlink > 1 {
-			if seen[st.Ino] {
-				return nil
-			}
-			seen[st.Ino] = true
-		}
-		total += st.Blocks * 512
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("measure %s: %w", dir, err)
-	}
-	return total, nil
-}
-
 // copyFile copies src to dst. It clones the file if the file system can
 // (btrfs, XFS). Else it copies the data parts only, so holes stay holes.
 func copyFile(src, dst string) error {
