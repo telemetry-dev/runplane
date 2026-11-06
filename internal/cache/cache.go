@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
@@ -72,8 +71,9 @@ type Config struct {
 	Results *url.URL
 }
 
-// As an http.Handler, Server serves requests that come from sandboxes
-// directly; Proxied serves requests that a trusted proxy forwards.
+// As an http.Handler, Server serves the requests of the sandboxes of this
+// server. ServeAgent serves the requests that an agent sends for its
+// sandboxes.
 type Server struct {
 	cfg     Config
 	disk    disk
@@ -111,37 +111,45 @@ func New(cfg Config) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.serve(w, r, false)
+	s.serve(w, r, source{})
 }
 
-// Proxied returns the handler for requests from a trusted proxy, such as the
-// agent cache endpoint. It reads the sandbox from SandboxHeader, and the
-// host for signed URLs from X-Forwarded-Host and X-Forwarded-Proto.
-func (s *Server) Proxied() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.serve(w, r, true)
-	})
+// ServeAgent serves a request that the agent serverID sends through its
+// connection for its sandbox sandboxID. The agent finds the sandbox at the
+// source address of the request, and it gives the host for the signed URLs
+// in X-Forwarded-Host and X-Forwarded-Proto.
+func (s *Server) ServeAgent(w http.ResponseWriter, r *http.Request, serverID, sandboxID string) {
+	s.serve(w, r, source{serverID: serverID, sandboxID: sandboxID})
 }
 
-func (s *Server) serve(w http.ResponseWriter, r *http.Request, trusted bool) {
+// source tells where a request comes from: a sandbox of this server, which
+// the server finds by the source address, or a sandbox that an agent names.
+// The zero source is this server.
+type source struct {
+	serverID  string // the agent
+	sandboxID string // the sandbox on the agent
+}
+
+func (src source) agent() bool { return src.serverID != "" }
+
+func (s *Server) serve(w http.ResponseWriter, r *http.Request, src source) {
 	switch {
 	case strings.HasPrefix(r.URL.Path, twirpPrefix):
-		s.serveTwirp(w, r, trusted)
+		s.serveTwirp(w, r, src)
 	case strings.HasPrefix(r.URL.Path, blobPrefix):
-		s.serveBlob(w, r, trusted)
+		s.serveBlob(w, r, src)
 	default:
-		s.serveResults(w, r, trusted)
+		s.serveResults(w, r, src)
 	}
 }
 
 // serveResults sends a request to the GitHub results service. The service
 // port listens on all addresses, so without a check anyone could send
-// requests to GitHub through this server. A sandbox, with or without a job,
-// and this host may; a trusted proxy checks its own sandboxes. In dev mode,
-// Docker sends the requests of sandboxes from the loopback address.
-func (s *Server) serveResults(w http.ResponseWriter, r *http.Request, trusted bool) {
-	if !trusted && !fromLoopback(r) {
-		_, err := s.sandbox(r, false)
+// requests to GitHub through this server. Only a sandbox, with or without a
+// job, may. An agent examines the address of its own sandboxes.
+func (s *Server) serveResults(w http.ResponseWriter, r *http.Request, src source) {
+	if !src.agent() {
+		_, err := s.sandbox(r, src)
 		if errors.Is(err, ErrNoSandbox) {
 			http.Error(w, "the request comes from no known sandbox", http.StatusForbidden)
 			return
@@ -154,22 +162,6 @@ func (s *Server) serveResults(w http.ResponseWriter, r *http.Request, trusted bo
 	}
 	s.proxy.ServeHTTP(w, r)
 }
-
-func fromLoopback(r *http.Request) bool {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	addr, err := netip.ParseAddr(ip)
-	return err == nil && addr.IsLoopback()
-}
-
-const (
-	// SandboxHeader names the sandbox of a request that a trusted proxy (the
-	// agent cache endpoint) forwards. The server ignores it on other requests.
-	SandboxHeader = "X-Runplane-Sandbox"
-	// ServerHeader names the server of a cache request that an agent sends.
-	// The primary sets it, so that the resolver can check that the sandbox of
-	// the request belongs to that server.
-	ServerHeader = "X-Runplane-Server"
-)
 
 // ErrNoSandbox means that no sandbox with a job matches a request.
 var ErrNoSandbox = errors.New("no sandbox for this request")
@@ -188,12 +180,13 @@ type Identity struct {
 	BaseRef string
 }
 
-// Resolver finds the sandbox behind a request. header contains SandboxHeader
-// only when the request came through a trusted proxy; then the sandbox ID
-// identifies the sandbox, and remoteIP is the address of the proxy.
-// Sandbox returns ErrNoSandbox if no sandbox matches.
+// Resolver finds the sandbox behind a request. Its methods return
+// ErrNoSandbox if no sandbox matches.
 type Resolver interface {
-	Sandbox(ctx context.Context, remoteIP string, header http.Header) (Identity, error)
+	// SandboxAt finds the sandbox of this server at the address addr.
+	SandboxAt(ctx context.Context, addr netip.Addr) (Identity, error)
+	// SandboxOn finds the sandbox id on the agent serverID.
+	SandboxOn(ctx context.Context, serverID, id string) (Identity, error)
 }
 
 // readRefs returns the refs that the job may restore from, in search order:
@@ -209,10 +202,10 @@ func (id Identity) readRefs() []string {
 
 // identify returns the Identity of a request, or an error that wraps
 // ErrNoSandbox when the request has none.
-func (s *Server) identify(r *http.Request, trusted bool) (Identity, error) {
+func (s *Server) identify(r *http.Request, src source) (Identity, error) {
 	deadline := time.Now().Add(s.jobWait)
 	for {
-		ident, err := s.sandbox(r, trusted)
+		ident, err := s.sandbox(r, src)
 		if err != nil {
 			return Identity{}, err
 		}
@@ -231,27 +224,25 @@ func (s *Server) identify(r *http.Request, trusted bool) (Identity, error) {
 }
 
 // sandbox returns the sandbox of a request, which can have no job yet.
-func (s *Server) sandbox(r *http.Request, trusted bool) (Identity, error) {
-	header := r.Header
-	if !trusted && header.Get(SandboxHeader) != "" {
-		header = header.Clone()
-		header.Del(SandboxHeader)
+func (s *Server) sandbox(r *http.Request, src source) (Identity, error) {
+	if src.agent() {
+		return s.cfg.Resolver.SandboxOn(r.Context(), src.serverID, src.sandboxID)
 	}
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	addr, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
-		ip = r.RemoteAddr
+		return Identity{}, fmt.Errorf("source address %q: %w", r.RemoteAddr, ErrNoSandbox)
 	}
-	return s.cfg.Resolver.Sandbox(r.Context(), ip, header)
+	return s.cfg.Resolver.SandboxAt(r.Context(), addr.Addr().Unmap())
 }
 
 // baseURL returns the scheme and host that the client used, for signed URLs
-// that point back to this server.
-func baseURL(r *http.Request, trusted bool) string {
+// that point back to this server or to the service port of the agent.
+func baseURL(r *http.Request, src source) string {
 	scheme, host := "http", r.Host
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if trusted {
+	if src.agent() {
 		if h, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Host"), ","); h != "" {
 			host = strings.TrimSpace(h)
 		}
@@ -354,10 +345,7 @@ func (s *Server) remove(ctx context.Context, e store.CacheEntry) error {
 // artifact uploads, to GitHub with the job's own token.
 func newProxy(upstream *url.URL, log *slog.Logger) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(upstream)
-			r.Out.Header.Del(SandboxHeader)
-		},
+		Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(upstream) },
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Warn("cache: results proxy", "path", r.URL.Path, "err", err)
 			w.WriteHeader(http.StatusBadGateway)

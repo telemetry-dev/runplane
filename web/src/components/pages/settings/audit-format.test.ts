@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { auditActor, auditChange, auditTarget, auditTime, type AuditEntry } from './audit-format'
 
+// The database can hold the actions of an older runplane, so action is any text.
 function entry(action: string, detail: Record<string, unknown> = {}, user: Partial<AuditEntry> = {}): AuditEntry {
   return {
     id: '01m6audit',
@@ -8,7 +9,7 @@ function entry(action: string, detail: Record<string, unknown> = {}, user: Parti
     user_id: '01m3ada',
     user_name: 'Ada Okafor',
     user_email: 'ada@kestrel.dev',
-    action,
+    action: action as AuditEntry['action'],
     target: '01m3target',
     detail,
     ip: '203.0.113.24',
@@ -20,9 +21,25 @@ describe('auditChange', () => {
   test.each([
     ['user.update', { email: 'mira@kestrel.dev', role: 'admin' }, 'made mira@kestrel.dev an admin'],
     ['user.update', { email: 'mira@kestrel.dev', role: 'member' }, 'made mira@kestrel.dev a member'],
-    ['server.update', { name: 'fsn1-ax52-a', status: 'draining' }, 'drained the server fsn1-ax52-a'],
-    ['server.update', { name: 'fsn1-ax52-a', status: 'online' }, 'resumed the server fsn1-ax52-a'],
-    ['server.update_agent', { name: 'fsn1-ax52-a', from: 'v0.4.1', to: 'v0.4.2' }, 'started the update of fsn1-ax52-a to runplane 0.4.2'],
+    [
+      'server.update',
+      { name: 'fsn1-ax52-a', status: 'draining', changes: { status: ['online', 'draining'] } },
+      'drained the server fsn1-ax52-a',
+    ],
+    [
+      'server.update',
+      { name: 'fsn1-ax52-a', status: 'online', changes: { status: ['draining', 'online'] } },
+      'resumed the server fsn1-ax52-a',
+    ],
+    // A rename of an online server does not resume it.
+    [
+      'server.update',
+      { name: 'fsn1-ax52-b', status: 'online', changes: { name: ['fsn1-ax52-a', 'fsn1-ax52-b'] } },
+      'changed the server fsn1-ax52-b',
+    ],
+    ['server.update_agent', { name: 'fsn1-ax52-a', from: 'v0.4.1', to: 'v0.4.2' }, 'started the update of fsn1-ax52-a to runplane v0.4.2'],
+    ['notification.create', { name: 'ops', kind: 'slack' }, 'added the Slack channel ops'],
+    ['notification.create', { name: 'ops', kind: 'pager' }, 'added the notification channel ops'],
     ['cache.delete', { repository: 'kestrel-hq/mobile', id: '', deleted: 214 }, 'deleted 214 cache entries of kestrel-hq/mobile'],
     ['cache.delete', { repository: '', id: 'c1', deleted: 1 }, 'deleted 1 cache entry'],
     ['image.update', { name: 'ubuntu-24.04', is_default: true }, 'made ubuntu-24.04 the default image'],
@@ -40,7 +57,7 @@ describe('auditChange', () => {
     expect(auditChange(entry(action, detail))).toBe(want)
   })
 
-  test('an action the page does not know shows as it is', () => {
+  test('an action of an older runplane shows as it is', () => {
     expect(auditChange(entry('server.reboot'))).toBe('did server.reboot')
   })
 })

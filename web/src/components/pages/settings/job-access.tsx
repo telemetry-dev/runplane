@@ -1,4 +1,5 @@
 import type { Schemas } from '~/api/client'
+import { publicReposRun } from '~/api/settings'
 import { Switch } from '~/components/ui/switch'
 import { ReadOnlyNote, SettingRows, SettingsSection } from './parts'
 import { SwitchSetting } from './setting-controls'
@@ -6,7 +7,7 @@ import { SwitchSetting } from './setting-controls'
 /** The "Job access" switches of Settings · GitHub. */
 export function JobAccess({ settings, admin }: { settings: Schemas['Settings']; admin: boolean }) {
   // The setting has no effect while jobs of public repositories cannot run.
-  const publicRepos = settings.allow_public_repos && settings.public_repos_possible
+  const publicRepos = publicReposRun(settings)
   // Dev mode runs jobs in Docker containers too.
   const sandbox = settings.mode === 'vm' ? 'virtual machine' : 'container'
 

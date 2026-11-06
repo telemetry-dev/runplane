@@ -15,10 +15,9 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/datadisk"
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/initbin"
+	"github.com/runplane/runplane/internal/localnode"
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -33,16 +32,16 @@ import (
 // local is the server that this process operates: its sandbox driver, and
 // the node that the fleet or the agent protocol uses.
 type local struct {
-	node   *agent.LocalNode
+	node   *localnode.Node
 	driver sandbox.Driver
 	close  func()
 }
 
 type localConfig struct {
 	mode     sandbox.Mode
-	settings sandbox.Settings // the first driver settings
-	agent    bool             // the process is an agent, not the primary
-	domain   string           // the HTTPS domain of the primary
+	settings agent.Settings // the first settings of the driver and the node
+	agent    bool           // the process is an agent, not the primary
+	domain   string         // the HTTPS domain of the primary
 	// token gives a GitHub token for the runner release reads. Optional.
 	token func(context.Context) (string, error)
 }
@@ -78,7 +77,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 
 	containers := sysbox.Options{
 		Docker: docker, DataDir: cfg.DataDir, Sandboxes: cfg.SandboxesDir(), ScratchTemplates: cfg.ScratchTemplatesDir(),
-		ServicePort: cfg.ServicePort, InitPath: initbin.Path, Settings: lc.settings,
+		ServicePort: cfg.ServicePort, InitPath: initbin.Path, Settings: lc.settings.Settings,
 		Runner: func(ctx context.Context, version, arch string) (string, bool, error) {
 			b, err := bundles.Ensure(ctx, version, arch)
 			return b.Dir, b.Patched, err
@@ -111,7 +110,7 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 				b, err := bundles.Ensure(ctx, version, arch)
 				return b.Ext4Path, b.Patched, err
 			},
-			NetRules: rules, Settings: lc.settings, Logger: log.With("driver", "firecracker"),
+			NetRules: rules, Settings: lc.settings.Settings, Logger: log.With("driver", "firecracker"),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start the VM driver: %w", err)
@@ -128,11 +127,12 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		_, ok := sandbox.FindByIP(list, ip)
 		return err == nil && ok
 	}
-	l.node, err = agent.NewLocal(agent.LocalConfig{
+	l.node, err = localnode.New(localnode.Config{
 		Driver: l.driver, Images: images, Bundles: bundles, Updater: update.New(cfg.KernelPath()),
-		Mirror: mirror.Config{Dir: cfg.MirrorDir(), Allow: allow(isSandbox), Logger: log.With("component", "mirror")},
-		Doctor: doctorOptions(cfg, lc.mode, lc.agent, lc.domain),
-		Logger: log.With("component", "node"),
+		MinFreeDiskPercent: lc.settings.MinFreeDiskPercent,
+		Mirror:             mirror.Config{Dir: cfg.MirrorDir(), Allow: allow(isSandbox), Logger: log.With("component", "mirror")},
+		Doctor:             doctorOptions(cfg, lc.mode, lc.agent, lc.domain),
+		Logger:             log.With("component", "node"),
 	})
 	if err != nil {
 		return nil, err
@@ -207,13 +207,3 @@ func serveServicePort(cfg config.Config, mir, cache http.Handler, log *slog.Logg
 }
 
 func servicePortAddr(cfg config.Config) string { return fmt.Sprintf(":%d", cfg.ServicePort) }
-
-// diskSpace returns the room of the Actions cache and the registry mirror
-// on the disk of dir, which is on the data disk.
-func diskSpace(dir string, s datadisk.Settings) datadisk.Space {
-	total, free, err := host.DiskSpace(dir)
-	if err != nil {
-		total, free = 0, 0
-	}
-	return datadisk.Limits(s, total, free)
-}

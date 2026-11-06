@@ -20,9 +20,6 @@ import (
 
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/mirror"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
 )
@@ -43,7 +40,7 @@ type testPrimary struct {
 	sessions chan *Session
 }
 
-func startPrimary(t *testing.T, cache http.Handler) *testPrimary {
+func startPrimary(t *testing.T, cache func(http.ResponseWriter, *http.Request, string, string)) *testPrimary {
 	cert, fp, err := tlsutil.AgentCert(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -71,9 +68,9 @@ func startPrimary(t *testing.T, cache http.Handler) *testPrimary {
 			}
 			return "", "", errors.New("unknown server")
 		},
-		OnSession:    func(s *Session) { p.sessions <- s },
-		CacheHandler: cache,
-		Logger:       p.logs.logger("primary"),
+		OnSession: func(s *Session) { p.sessions <- s },
+		Cache:     cache,
+		Logger:    p.logs.logger("primary"),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -233,13 +230,13 @@ var (
 			{ID: "sysbox", Name: "Sysbox", Status: doctor.StatusFail, Detail: "sysbox-runc is missing", Fix: "Install Sysbox 0.7.1"},
 		},
 	}
-	testProgress = []image.Progress{
-		{Status: image.StatusPending},
-		{Status: image.StatusPulling, Done: 50, Total: 100},
-		{Status: image.StatusPulling, Done: 100, Total: 100},
-		{Status: image.StatusReady},
+	testProgress = []Progress{
+		{Status: ImagePending},
+		{Status: ImagePulling, Done: 50, Total: 100},
+		{Status: ImagePulling, Done: 100, Total: 100},
+		{Status: ImageReady},
 	}
-	testMirror   = mirror.Stats{Hits: 41, Misses: 3, HitBytes: 9 << 30, MissBytes: 700 << 20, SizeBytes: 12 << 30}
+	testMirror   = MirrorStats{Hits: 41, Misses: 3, HitBytes: 9 << 30, MissBytes: 700 << 20, SizeBytes: 12 << 30}
 	fakeCapacity = sandbox.Capacity{
 		Mode: sandbox.ModeContainer, Arch: "arm64", VCPU: 16, MemoryMB: 65536,
 		DiskBytes: 500e9, FreeDiskBytes: 320e9, AllocVCPU: 4, AllocMemoryMB: 8192, Sandboxes: 2,
@@ -247,9 +244,9 @@ var (
 	}
 )
 
-// fakeNode is the node of a test agent, and fakeDriver its driver. It keeps
-// sandboxes in memory and records the calls that change something. The test
-// writes the logs and drives the shells.
+// fakeNode is the node of a test agent and its driver. It keeps sandboxes
+// in memory and records the calls that change something. The test writes
+// the logs and drives the shells.
 type fakeNode struct {
 	events chan sandbox.Event
 	stats  chan host.Stats
@@ -301,14 +298,14 @@ func (n *fakeNode) put(sb sandbox.Sandbox) {
 }
 
 func (n *fakeNode) Local() bool                              { return true }
-func (n *fakeNode) Driver() sandbox.Driver                   { return fakeDriver{n} }
+func (n *fakeNode) Driver() Driver                           { return n }
 func (n *fakeNode) Facts(context.Context) (host.Info, error) { return testInfo, nil }
-func (n *fakeNode) Doctor(_ context.Context, minFree float64) (doctor.Report, error) {
-	return testReport, n.record("Doctor", minFree)
+func (n *fakeNode) Doctor(context.Context) (doctor.Report, error) {
+	return testReport, n.record("Doctor")
 }
 func (n *fakeNode) Stats() <-chan host.Stats { return n.stats }
 
-func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
+func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(Progress)) (sandbox.ImageRef, error) {
 	for _, p := range testProgress {
 		progress(p)
 	}
@@ -318,8 +315,8 @@ func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(imag
 	return sandbox.ImageRef{Ref: ref, Digest: "sha256:5f1c"}, nil
 }
 
-func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (runner.Bundle, error) {
-	return runner.Bundle{Version: version, Arch: arch, SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/" + version + "-" + arch}, nil
+func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (Bundle, error) {
+	return Bundle{Version: version, Arch: arch, SHA256: "9e2f", Patched: true}, nil
 }
 
 func (n *fakeNode) GCImages(_ context.Context, keep []string) error {
@@ -331,15 +328,9 @@ func (n *fakeNode) PruneRunners(_ context.Context, keep []string) error {
 func (n *fakeNode) Configure(_ context.Context, s Settings) error {
 	return n.record("Configure", s)
 }
-func (n *fakeNode) MirrorStats(context.Context) (mirror.Stats, error) { return testMirror, nil }
+func (n *fakeNode) MirrorStats(context.Context) (MirrorStats, error) { return testMirror, nil }
 func (n *fakeNode) Update(_ context.Context, version string) error {
 	return n.record("Update", version)
-}
-
-type fakeDriver struct{ *fakeNode }
-
-func (d fakeDriver) Configure(_ context.Context, s sandbox.Settings) error {
-	return d.record("Driver.Configure", s)
 }
 
 func (n *fakeNode) Mode() sandbox.Mode { return sandbox.ModeContainer }
@@ -405,8 +396,6 @@ func (n *fakeNode) Hold(_ context.Context, id string, until time.Time) error {
 	}
 	return n.record("Hold", id, until)
 }
-
-func (n *fakeNode) Probe(context.Context) error { return n.record("Probe") }
 
 func (n *fakeNode) Close() error { return nil }
 

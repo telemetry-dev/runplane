@@ -19,7 +19,7 @@ import { StatusIcon } from '~/components/app/status-icon'
 import { cx } from '~/lib/cx'
 import { formatDuration, formatRelativeTime } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
-import { jobOrigin, queueTime, runTime } from './job-format'
+import { jobOrigin, mutedJob, queueTime, runTime } from './job-format'
 
 // A narrow table drops Server first, then Queued, Runner, Branch, and Started.
 const columns = {
@@ -94,7 +94,7 @@ function JobRow({ job, now, shown }: { job: Schemas['JobSummary']; now: number; 
       </DataTableCell>
       <DataTableCell>
         <RowLink to="/jobs/$jobId" params={{ jobId: job.id }}>
-          <CellTitle title={job.job_name} detail={jobOrigin(job)} muted={job.status === 'cancelled' || job.status === 'skipped'} />
+          <CellTitle title={job.job_name} detail={jobOrigin(job)} muted={mutedJob(job.status)} />
         </RowLink>
       </DataTableCell>
       {shown.branch && (

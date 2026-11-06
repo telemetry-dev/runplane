@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/atomicfile"
-	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -24,11 +23,16 @@ type Config struct {
 	Store *store.Store
 	// Driver returns the driver of a connected server, or nil. The live log
 	// of a job comes from the driver of its sandbox.
-	Driver func(serverID string) sandbox.Driver
+	Driver func(serverID string) Driver
 	// Waits are the waits before the download tries. GitHub can need some
 	// time after a job before its log is ready. nil: 0, 10 s, 30 s, 2 min.
 	Waits []time.Duration
 	Log   *slog.Logger // nil: no log
+}
+
+// Driver is the part of a sandbox driver that the logs use.
+type Driver interface {
+	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 }
 
 type Logs struct {

@@ -18,10 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
 )
@@ -181,21 +178,19 @@ func TestCalls(t *testing.T) {
 	if err := d.Hold(ctx, "sb1", until); !errors.Is(err, sandbox.ErrNotFound) {
 		t.Errorf("hold of a stopped sandbox: %v, want sandbox.ErrNotFound", err)
 	}
-	check("probe", nil, d.Probe(ctx), nil, []any{"Probe"})
 
 	info, err := s.Facts(ctx)
 	check("facts", info, err, testInfo)
-	report, err := s.Doctor(ctx, 12.5)
-	check("doctor", report, err, testReport, []any{"Doctor", 12.5})
-	var steps []image.Progress
-	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p image.Progress) { steps = append(steps, p) })
+	report, err := s.Doctor(ctx)
+	check("doctor", report, err, testReport, []any{"Doctor"})
+	var steps []Progress
+	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p Progress) { steps = append(steps, p) })
 	check("image", ref, err, sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"})
 	check("image progress", steps, nil, testProgress)
 	_, err = s.EnsureImage(ctx, "missing:latest", nil)
 	checkErr("missing image", err, "pull missing:latest: not found")
 	b, err := s.EnsureRunner(ctx, "2.330.0", "arm64")
-	// The folder of the bundle is a path on the agent.
-	check("runner", b, err, runner.Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true})
+	check("runner", b, err, Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true})
 	m, err := s.MirrorStats(ctx)
 	check("mirror stats", m, err, testMirror)
 	keep := []string{"sha256:5f1c", "sha256:9e2f"}
@@ -209,9 +204,6 @@ func TestCalls(t *testing.T) {
 		MinFreeDiskPercent: 12.5,
 	}
 	check("settings", nil, s.Configure(ctx, settings), nil, []any{"Configure", settings})
-	// The driver settings alone keep the min_free_disk_percent of the agent.
-	driverOnly := sandbox.Settings{DNS: []netip.Addr{netip.MustParseAddr("9.9.9.9")}}
-	check("driver settings", nil, d.Configure(ctx, driverOnly), nil, []any{"Configure", Settings{Settings: driverOnly, MinFreeDiskPercent: 12.5}})
 
 	err = s.Update(ctx, "v0.5.0")
 	check("update", nil, err, nil, []any{"Update", "v0.5.0"})
@@ -339,15 +331,16 @@ func TestDisconnectEndsSession(t *testing.T) {
 
 func TestCacheProxy(t *testing.T) {
 	type cacheCall struct {
-		uri, body string
-		header    http.Header
+		serverID, sandboxID string
+		uri, body           string
+		header              http.Header
 	}
 	calls := make(chan cacheCall, 4)
-	p := startPrimary(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p := startPrimary(t, func(w http.ResponseWriter, r *http.Request, serverID, sandboxID string) {
 		body, _ := io.ReadAll(r.Body)
-		calls <- cacheCall{r.URL.RequestURI(), string(body), r.Header}
+		calls <- cacheCall{serverID, sandboxID, r.URL.RequestURI(), string(body), r.Header}
 		io.WriteString(w, `{"ok":true}`)
-	}))
+	})
 	node := newFakeNode()
 	node.put(sandbox.Sandbox{ID: "sb-here", State: sandbox.StateBusy, IP: "127.0.0.1"})
 	proxy := NewCacheProxy(node.Driver(), p.logs.logger("cache"))
@@ -361,8 +354,7 @@ func TestCacheProxy(t *testing.T) {
 	post := func() (int, string) {
 		req, _ := http.NewRequest(http.MethodPost, svc.URL+"/twirp/CacheService/CreateCacheEntry?v=2", strings.NewReader(`{"key":"npm-linux"}`))
 		// A sandbox must not choose its identity.
-		req.Header.Set(cache.SandboxHeader, "sb-other")
-		req.Header.Set(cache.ServerHeader, "other-server")
+		req.Header.Set(sandboxHeader, "sb-other")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -379,9 +371,12 @@ func TestCacheProxy(t *testing.T) {
 	if call.uri != "/twirp/CacheService/CreateCacheEntry?v=2" || call.body != `{"key":"npm-linux"}` {
 		t.Errorf("primary got %q with body %q", call.uri, call.body)
 	}
+	if call.serverID != testServer || call.sandboxID != "sb-here" {
+		t.Errorf("primary got the request of server %q and sandbox %q, want %s and sb-here", call.serverID, call.sandboxID, testServer)
+	}
+	// The cache server must not send the header of the protocol on to GitHub.
 	wantHeaders := map[string]string{
-		cache.SandboxHeader: "sb-here",
-		cache.ServerHeader:  testServer,
+		sandboxHeader:       "",
 		"X-Forwarded-Host":  svc.Listener.Addr().String(),
 		"X-Forwarded-Proto": "http",
 	}

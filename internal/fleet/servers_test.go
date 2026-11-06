@@ -14,9 +14,7 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -113,7 +111,7 @@ func TestConnectedAgentStaysOnline(t *testing.T) {
 		t.Errorf("status %q of a connected agent, want online", got)
 	}
 	waitFor(t, "the agent in Online", func() bool {
-		return slices.ContainsFunc(h.f.Online(), func(s scheduler.Host) bool { return s.ServerID == id })
+		return slices.ContainsFunc(h.f.Online(), func(s Host) bool { return s.ServerID == id })
 	})
 }
 
@@ -137,21 +135,21 @@ func TestOldSessionEndKeepsNewSession(t *testing.T) {
 }
 
 // A connected agent records its region apart from its provider, runs the
-// doctor, adds its registry mirror to the one of the primary in the stats
-// of GET /api/caches, and gives the limits of its driver for the placement
-// of the pools.
+// doctor and keeps the result, adds its registry mirror to the one of the
+// primary in the stats of GET /api/caches, and gives the limits of its
+// driver for the placement of the pools.
 func TestConnectedAgents(t *testing.T) {
 	ctx := t.Context()
 	local := newFakeNode("arm64")
 	local.info.Region = "fsn1"
-	local.mirror = mirror.Stats{Hits: 2, Misses: 1, HitBytes: 20, MissBytes: 10, SizeBytes: 30}
+	local.mirror = agent.MirrorStats{Hits: 2, Misses: 1, HitBytes: 20, MissBytes: 10, SizeBytes: 30}
 	h := newHarness(t, local)
 	h.run()
 	a, b := newFakeNode("arm64"), newFakeNode("x64")
 	a.info.Region, a.info.Kernel = "nbg1", "6.1.0-agent"
-	a.mirror = mirror.Stats{Hits: 5, Misses: 2, HitBytes: 500, MissBytes: 200, SizeBytes: 900}
+	a.mirror = agent.MirrorStats{Hits: 5, Misses: 2, HitBytes: 500, MissBytes: 200, SizeBytes: 900}
 	a.limits = sandbox.Limits{OverheadMB: 64, MaxVCPU: 32, MaxSandboxes: 100}
-	b.mirror = mirror.Stats{Hits: 1, Misses: 3, HitBytes: 100, MissBytes: 300, SizeBytes: 400}
+	b.mirror = agent.MirrorStats{Hits: 1, Misses: 3, HitBytes: 100, MissBytes: 300, SizeBytes: 400}
 	agentA, idA := h.connectAgent("arm-1", a)
 	h.connectAgent("amd-1", b)
 
@@ -162,16 +160,31 @@ func TestConnectedAgents(t *testing.T) {
 	if v := h.server(idA); v.Provider != "Hetzner" {
 		t.Errorf("provider %q, want Hetzner without the region", v.Provider)
 	}
-	want := mirror.Stats{Hits: 8, Misses: 6, HitBytes: 620, MissBytes: 510, SizeBytes: 1330}
+	want := agent.MirrorStats{Hits: 8, Misses: 6, HitBytes: 620, MissBytes: 510, SizeBytes: 1330}
 	if got := h.f.MirrorStats(ctx); got != want {
 		t.Errorf("mirror stats %+v, want %+v", got, want)
 	}
 	if got, ok := h.f.Limits(idA); !ok || got != a.limits {
 		t.Errorf("limits of the agent %+v, %v; want %+v", got, ok, a.limits)
 	}
-	checks, err := h.f.Doctor(ctx, idA)
-	if err != nil || len(checks) != 1 || checks[0].Detail != "6.1.0-agent" || checks[0].Status != "ok" {
-		t.Errorf("doctor of the agent: %+v, %v", checks, err)
+	ran, err := h.f.Doctor(ctx, idA)
+	if err != nil || len(ran.Checks) != 2 || ran.Checks[1].Detail != "6.1.0-agent" || ran.Checks[1].Status != "ok" {
+		t.Errorf("doctor of the agent: %+v, %v", ran, err)
+	}
+	// The server page shows the last doctor result of each server.
+	if kept, err := h.st.GetDoctorResult(ctx, idA); err != nil || !kept.CheckedAt.Equal(ran.CheckedAt) || !reflect.DeepEqual(kept.Checks, ran.Checks) {
+		t.Errorf("kept doctor result of the agent: %+v, %v; want %+v", kept, err, ran)
+	}
+	setup, err := h.f.Check(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The setup page names the mode in its summary, not in the list.
+	if len(setup.Checks) != 1 || setup.Checks[0].ID != "kernel" {
+		t.Errorf("checks of the setup page %+v, want only the kernel check", setup.Checks)
+	}
+	if kept, err := h.st.GetDoctorResult(ctx, h.localID()); err != nil || len(kept.Checks) != 2 || kept.Checks[1].Detail != local.info.Kernel {
+		t.Errorf("kept doctor result of the primary after the setup check: %+v, %v", kept, err)
 	}
 	agentA.stop()
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(idA) == nil })
@@ -195,11 +208,22 @@ func TestRemoveServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	removed := events.Subscribe[events.ServerRemoved](ctx, h.bus)
+
 	if err := h.f.RemoveServer(ctx, audit.Actor{}, h.localID()); !errors.Is(err, ErrLocalServer) {
 		t.Errorf("RemoveServer of the local server: %v, want ErrLocalServer", err)
 	}
 	if err := h.f.RemoveServer(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
+	}
+	// The browsers drop the server from their lists.
+	select {
+	case e := <-removed:
+		if e.ID != id {
+			t.Errorf("server.removed of %s, want %s", e.ID, id)
+		}
+	default:
+		t.Error("no server.removed event")
 	}
 	if got := node.args("Stop"); !reflect.DeepEqual(got, []any{"sb1", "sb2"}) {
 		t.Errorf("stopped sandboxes %v, want sb1 and sb2", got)
@@ -253,6 +277,8 @@ func TestUpdateServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The first start and the agent install also record entries.
+	entries = slices.DeleteFunc(entries, func(e store.AuditEntry) bool { return e.Action != "server.update" })
 	want := `{"changes":{"name":["fsn1-a","fsn1-c"],"status":["online","draining"]},"name":"fsn1-c","status":"draining"}`
 	if len(entries) != 1 || entries[0].Action != "server.update" || string(entries[0].Detail) != want ||
 		entries[0].UserID != "u1" || entries[0].IP != "192.0.2.7" {
@@ -306,7 +332,7 @@ func TestSettingsReachServers(t *testing.T) {
 	h := newHarness(t, local)
 	h.run()
 	agentNode := newFakeNode("x64")
-	_, agentID := h.connectAgent("build-x64", agentNode)
+	h.connectAgent("build-x64", agentNode)
 
 	waitFor(t, "the settings of the new agent", func() bool { return len(agentNode.args("Configure")) == 1 })
 	defaults := agent.Settings{
@@ -343,13 +369,6 @@ func TestSettingsReachServers(t *testing.T) {
 			list := n.args("Configure")
 			return len(list) > 0 && reflect.DeepEqual(list[len(list)-1], want)
 		})
-	}
-	// The doctor of each server gets the min_free_disk_percent setting.
-	if _, err := h.f.Doctor(ctx, agentID); err != nil {
-		t.Fatal(err)
-	}
-	if got := agentNode.args("Doctor"); !reflect.DeepEqual(got, []any{12.5}) {
-		t.Errorf("doctor of the agent got the minimum free disk %v, want 12.5", got)
 	}
 }
 
@@ -442,7 +461,7 @@ func TestUpdateAgentByHand(t *testing.T) {
 	if got := state(); got != UpdateCurrent {
 		t.Fatalf("update state %q of an agent of the same version, want current", got)
 	}
-	if err := h.f.UpdateAgent(ctx, id); err == nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err == nil {
 		t.Fatal("UpdateAgent started an update of an agent of the same version")
 	}
 	if got := h.f.UpdateState(h.server(h.localID())); got != UpdateCurrent {
@@ -454,20 +473,25 @@ func TestUpdateAgentByHand(t *testing.T) {
 		t.Fatalf("update state %q of an older agent, want available", got)
 	}
 	agentNode.set(func(n *fakeNode) { n.updateErr = errors.New("download failed") })
-	if err := h.f.UpdateAgent(ctx, id); err != nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the failed update", func() bool { return state() == UpdateFailed })
 	// An admin can try a failed version again.
 	agentNode.set(func(n *fakeNode) { n.updateErr = nil })
-	if err := h.f.UpdateAgent(ctx, id); err != nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the second update call", func() bool { return len(agentNode.args("Update")) == 2 })
 	if got := state(); got != UpdateUpdating {
 		t.Fatalf("update state %q before the agent restarts, want updating", got)
 	}
-	if err := h.f.UpdateAgent(ctx, id); err == nil {
+	entries, _, err := h.st.ListAudit(ctx, "", 10)
+	if err != nil || len(entries) == 0 || entries[0].Action != "server.update_agent" || entries[0].Target != id ||
+		string(entries[0].Detail) != `{"from":"v1.4.1","name":"arm-2","to":"v1.4.2"}` {
+		t.Errorf("audit entries %+v, %v; want the server.update_agent of arm-2 from v1.4.1 to v1.4.2 first", entries, err)
+	}
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err == nil {
 		t.Fatal("UpdateAgent started a second update while one runs")
 	}
 
@@ -479,7 +503,7 @@ func TestUpdateAgentByHand(t *testing.T) {
 
 	// An agent that does not come back fails the update.
 	olderAgent()
-	if err := h.f.UpdateAgent(ctx, id); err != nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the third update call", func() bool { return len(agentNode.args("Update")) == 3 })

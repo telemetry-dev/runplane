@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,20 +21,27 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// sandboxes resolves by sandbox ID when the header has one, else by IP.
+// sandboxes resolves a sandbox of this server by its address, and a sandbox
+// of an agent by its ID.
 type sandboxes map[string]Identity
 
-func (s sandboxes) Sandbox(_ context.Context, ip string, h http.Header) (Identity, error) {
-	key := ip
-	if id := h.Get(SandboxHeader); id != "" {
-		key = id
-	}
+func (s sandboxes) SandboxAt(_ context.Context, addr netip.Addr) (Identity, error) {
+	return s.find(addr.String())
+}
+
+func (s sandboxes) SandboxOn(_ context.Context, _, id string) (Identity, error) { return s.find(id) }
+
+func (s sandboxes) find(key string) (Identity, error) {
 	ident, ok := s[key]
 	if !ok {
 		return Identity{}, ErrNoSandbox
 	}
 	return ident, nil
 }
+
+// agentSandbox names the sandbox of a request to the proxied URL of the
+// fixture, which serves the requests as the requests of an agent.
+const agentSandbox = "X-Test-Sandbox"
 
 type clock struct{ ns atomic.Int64 }
 
@@ -48,12 +56,12 @@ type fixture struct {
 	clock   clock
 	dir     string
 	url     string // direct sandbox traffic
-	proxied string // traffic from a trusted proxy
+	proxied string // traffic of an agent
 }
 
 // newFixture starts a server whose requests from 127.0.0.1 belong to
 // sandbox "sb-1" with a push job on main of acme/app. The other sandboxes
-// send through the trusted proxy (see via). opts change the config.
+// are on an agent (see via). opts change the config.
 func newFixture(t *testing.T, maxBytes int64, opts ...func(*Config)) *fixture {
 	t.Helper()
 	f := &fixture{st: openStore(t), dir: t.TempDir()}
@@ -94,7 +102,9 @@ func newFixture(t *testing.T, maxBytes int64, opts ...func(*Config)) *fixture {
 	srv.jobWait = 100 * time.Millisecond
 	f.srv = srv
 	direct := httptest.NewServer(srv)
-	proxied := httptest.NewServer(srv.Proxied())
+	proxied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv.ServeAgent(w, r, "agent-1", r.Header.Get(agentSandbox))
+	}))
 	t.Cleanup(direct.Close)
 	t.Cleanup(proxied.Close)
 	f.url, f.proxied = direct.URL, proxied.URL
@@ -124,12 +134,12 @@ func acme(id, ref, baseRef string) Identity {
 	return Identity{SandboxID: id, Repository: "acme/app", DefaultBranch: "main", Ref: ref, BaseRef: baseRef}
 }
 
-// via returns a client of a sandbox whose requests come through the trusted
-// proxy. A job can write any cache scopes into its runtime token, because
-// runplane cannot check the signature. So each of these tokens claims main,
-// and the branch rules must hold anyway.
+// via returns a client of a sandbox on an agent, whose requests come
+// through the agent. A job can write any cache scopes into its runtime
+// token, because runplane cannot check the signature. So each of these
+// tokens claims main, and the branch rules must hold anyway.
 func (f *fixture) via(t *testing.T, sandboxID string) client {
-	return client{t: t, url: f.proxied, token: token(scope{"refs/heads/main", 3}), header: http.Header{SandboxHeader: {sandboxID}}}
+	return client{t: t, url: f.proxied, token: token(scope{"refs/heads/main", 3}), header: http.Header{agentSandbox: {sandboxID}}}
 }
 
 type scope struct {

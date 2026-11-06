@@ -71,14 +71,13 @@ func (s *Store) DeletePool(ctx context.Context, id string) error {
 }
 
 // PoolCounts are the runners of a pool by state, and its jobs that wait for
-// a runner.
+// a runner. The API pool and the pool.stats event have them.
 type PoolCounts struct {
-	PoolID   string `json:"pool_id"`
-	Idle     int    `json:"idle"`
-	Busy     int    `json:"busy"`
-	Starting int    `json:"starting"`
-	Queued   int    `json:"queued"`
-	Assigned int    `json:"assigned"`
+	Idle     int `json:"idle" doc:"Live count of idle sandboxes."`
+	Busy     int `json:"busy" doc:"Live count of sandboxes that run a job."`
+	Starting int `json:"starting" doc:"Live count of sandboxes that start."`
+	Queued   int `json:"queued" doc:"Jobs of the last 24 hours that wait for a runner."`
+	Assigned int `json:"assigned" doc:"Of queued, the jobs that GitHub assigned to the scale set of the pool."`
 }
 
 // A job waits for a runner when its status is queued, it has no reject
@@ -122,7 +121,6 @@ func (s *Store) PoolCounts(ctx context.Context, now time.Time) (map[string]PoolC
 		case sandbox.StateStarting:
 			p.Starting += c.n
 		}
-		p.PoolID = c.poolID
 		out[c.poolID] = p
 	}
 	for _, c := range jobs {
@@ -131,7 +129,6 @@ func (s *Store) PoolCounts(ctx context.Context, now time.Time) (map[string]PoolC
 		if c.state == JobAssigned {
 			p.Assigned += c.n
 		}
-		p.PoolID = c.poolID
 		out[c.poolID] = p
 	}
 	return out, nil

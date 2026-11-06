@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -58,7 +58,7 @@ func TestBackupsRemoveTheRowsOfPrunedFiles(t *testing.T) {
 
 // The settings page follows a backup through backup.state events, also the
 // upload to S3 and a failure. A failed upload fails the backup, and the
-// file stays. Only a failure sends a notification.
+// file stays.
 func TestBackupStateEvents(t *testing.T) {
 	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.Copy(io.Discard, r.Body)
@@ -72,22 +72,21 @@ func TestBackupStateEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := []struct {
-		name     string
-		bucket   string
-		dir      func(t *testing.T) string
-		want     []string
-		notified int
+		name   string
+		bucket string
+		dir    func(t *testing.T) string
+		want   []string
 	}{
-		{"local", "", func(t *testing.T) string { return t.TempDir() }, []string{store.BackupRunning, store.BackupDone}, 0},
+		{"local", "", func(t *testing.T) string { return t.TempDir() }, []string{store.BackupRunning, store.BackupDone}},
 		{"upload to S3", "ci-backups", func(t *testing.T) string { return t.TempDir() },
-			[]string{store.BackupRunning, store.BackupDone, store.BackupUploading, store.BackupUploaded}, 0},
+			[]string{store.BackupRunning, store.BackupDone, store.BackupUploading, store.BackupUploaded}},
 		{"upload fails", "denied", func(t *testing.T) string { return t.TempDir() },
-			[]string{store.BackupRunning, store.BackupDone, store.BackupUploading, store.BackupFailed}, 1},
+			[]string{store.BackupRunning, store.BackupDone, store.BackupUploading, store.BackupFailed}},
 		{"backup fails", "", func(t *testing.T) string {
 			file := filepath.Join(t.TempDir(), "file")
 			os.WriteFile(file, nil, 0o600)
 			return filepath.Join(file, "backups") // a folder in a file cannot exist
-		}, []string{store.BackupRunning, store.BackupFailed}, 1},
+		}, []string{store.BackupRunning, store.BackupFailed}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -105,8 +104,7 @@ func TestBackupStateEvents(t *testing.T) {
 			}
 			bus := &events.Bus{}
 			states := events.Subscribe[events.BackupState](t.Context(), bus)
-			notified := 0
-			b := New(Config{Store: st, Box: box, Bus: bus, Dir: tt.dir(t), Notify: func(notify.Event) { notified++ }})
+			b := New(Config{Store: st, Box: box, Bus: bus, Dir: tt.dir(t)})
 			b.Create(ctx)
 			var seen []string
 			var last events.BackupState
@@ -117,15 +115,57 @@ func TestBackupStateEvents(t *testing.T) {
 			if !slices.Equal(seen, tt.want) {
 				t.Errorf("backup.state events %v, want %v", seen, tt.want)
 			}
-			if notified != tt.notified {
-				t.Errorf("%d notifications, want %d", notified, tt.notified)
-			}
 			if tt.bucket == "denied" {
 				if _, err := os.Stat(last.Path); err != nil || last.Error == "" {
 					t.Errorf("failed upload: file %v, error %q; want the file and the error", err, last.Error)
 				}
 			}
 		})
+	}
+}
+
+// A download opens only a backup file in the backups folder.
+func TestOpen(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.key")
+	for _, path := range []string{filepath.Join(dir, "runplane-a.db.gz"), outside} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, path := range map[string]string{
+		"here":    filepath.Join(dir, "runplane-a.db.gz"),
+		"gone":    filepath.Join(dir, "runplane-b.db.gz"),
+		"outside": outside,
+	} {
+		if err := st.CreateBackup(ctx, store.Backup{ID: id, CreatedAt: time.Now(), Path: path, Status: store.BackupDone}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := New(Config{Store: st, Bus: &events.Bus{}, Dir: dir})
+
+	for _, tt := range []struct {
+		id        string
+		err       error
+		available bool
+	}{
+		{"here", nil, true},
+		{"gone", ErrNoFile, false},
+		{"outside", ErrNoFile, false},
+		{"unknown", store.ErrNotFound, false},
+	} {
+		row, f, err := b.Open(ctx, tt.id)
+		if f != nil {
+			f.Close()
+		}
+		if !errors.Is(err, tt.err) || (err == nil) != (f != nil) {
+			t.Errorf("Open(%s): file %v, err %v; want err %v", tt.id, f != nil, err, tt.err)
+		}
+		if got := b.Available(row); got != tt.available {
+			t.Errorf("Available(%s) = %v, want %v", tt.id, got, tt.available)
+		}
 	}
 }
 

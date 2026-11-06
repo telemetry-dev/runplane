@@ -20,11 +20,103 @@
         ],
         "type": "object"
       },
+      "AppPermission": {
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "enum": [
+              "read",
+              "write"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "enum": [
+              "organization_self_hosted_runners",
+              "administration",
+              "actions",
+              "contents",
+              "pull_requests",
+              "workflows",
+              "metadata"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "access"
+        ],
+        "type": "object"
+      },
+      "AppPermissions": {
+        "additionalProperties": false,
+        "properties": {
+          "organization": {
+            "items": {
+              "$ref": "#/components/schemas/AppPermission"
+            },
+            "type": "array"
+          },
+          "user": {
+            "items": {
+              "$ref": "#/components/schemas/AppPermission"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "organization",
+          "user"
+        ],
+        "type": "object"
+      },
       "AuditEntry": {
         "additionalProperties": false,
         "properties": {
           "action": {
             "description": "\u003cobject\u003e.\u003cverb\u003e, for example \"pool.create\".",
+            "enum": [
+              "setup.done",
+              "user.update",
+              "user.delete",
+              "user.password",
+              "invite.create",
+              "invite.link",
+              "invite.delete",
+              "pool.create",
+              "pool.update",
+              "pool.delete",
+              "server.token",
+              "server.install",
+              "server.update",
+              "server.delete",
+              "server.update_agent",
+              "sandbox.stop",
+              "sandbox.shell",
+              "sandbox.ssh",
+              "cache.delete",
+              "image.create",
+              "image.update",
+              "image.delete",
+              "image.refresh",
+              "settings.update",
+              "job.rerun",
+              "backup.create",
+              "backup.download",
+              "update.apply",
+              "github.manifest",
+              "github.app.create",
+              "github.installation.install",
+              "github.installation.update",
+              "github.installation.request",
+              "github.sync",
+              "github.pull_request.create",
+              "github.disconnect",
+              "notification.create",
+              "notification.update",
+              "notification.delete"
+            ],
             "type": "string"
           },
           "at": {
@@ -261,7 +353,7 @@
             "type": "boolean"
           },
           "hit_rate": {
-            "description": "Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.",
+            "description": "Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.",
             "format": "double",
             "type": [
               "number",
@@ -269,13 +361,12 @@
             ]
           },
           "max_bytes": {
-            "description": "The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it. 0 when the cache server is not available.",
+            "description": "The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it.",
             "format": "int64",
             "type": "integer"
           },
           "mirror": {
-            "$ref": "#/components/schemas/MirrorStats",
-            "description": "Absent when the mirror stats are not available."
+            "$ref": "#/components/schemas/MirrorStats"
           },
           "mirror_enabled": {
             "description": "The registry_mirror setting.",
@@ -292,15 +383,22 @@
             "description": "Size of all entries and of the files of the unfinished uploads.",
             "format": "int64",
             "type": "integer"
+          },
+          "stats_days": {
+            "description": "The hit rates, hits, and misses count the cache lookups of this many last days.",
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
           "enabled",
           "size_bytes",
           "max_bytes",
+          "stats_days",
           "hit_rate",
           "repositories",
-          "mirror_enabled"
+          "mirror_enabled",
+          "mirror"
         ],
         "type": "object"
       },
@@ -312,7 +410,7 @@
             "type": "integer"
           },
           "hit_rate": {
-            "description": "Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.",
+            "description": "Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.",
             "format": "double",
             "type": [
               "number",
@@ -320,7 +418,7 @@
             ]
           },
           "hits": {
-            "description": "Of the last 7 days.",
+            "description": "Of the last stats_days days.",
             "format": "int64",
             "type": "integer"
           },
@@ -332,7 +430,7 @@
             ]
           },
           "misses": {
-            "description": "Of the last 7 days.",
+            "description": "Of the last stats_days days.",
             "format": "int64",
             "type": "integer"
           },
@@ -593,10 +691,29 @@
         },
         "required": [
           "label",
-          "vcpu",
-          "memory_mb",
           "disk_gb",
-          "max_runners"
+          "max_runners",
+          "vcpu",
+          "memory_mb"
+        ],
+        "type": "object"
+      },
+      "CreatePullRequestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "description": "The label of an enabled pool.",
+            "type": "string"
+          },
+          "repository": {
+            "description": "owner/name of a repository that the GitHub App can access.",
+            "maxLength": 140,
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "label"
         ],
         "type": "object"
       },
@@ -822,6 +939,10 @@
             "description": "Organization or User.",
             "type": "string"
           },
+          "permissions_url": {
+            "description": "Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there.",
+            "type": "string"
+          },
           "settings_url": {
             "description": "Settings page of the app on GitHub: name, permissions, and keys.",
             "type": "string"
@@ -839,6 +960,7 @@
           "owner_type",
           "html_url",
           "settings_url",
+          "permissions_url",
           "install_url",
           "created_at"
         ],
@@ -850,6 +972,10 @@
           "app": {
             "$ref": "#/components/schemas/GitHubApp",
             "description": "Absent before the manifest flow."
+          },
+          "app_permissions": {
+            "$ref": "#/components/schemas/AppPermissions",
+            "description": "The permissions that the manifest of a new app asks for."
           },
           "connected": {
             "description": "An app with at least one installation exists.",
@@ -872,7 +998,8 @@
         "required": [
           "connected",
           "installations",
-          "scale_sets"
+          "scale_sets",
+          "app_permissions"
         ],
         "type": "object"
       },
@@ -920,6 +1047,7 @@
             "type": "string"
           },
           "checks": {
+            "description": "The doctor checks without the mode check: mode has its result.",
             "items": {
               "$ref": "#/components/schemas/Check"
             },
@@ -1994,11 +2122,6 @@
             "description": "Bytes in the mirror now.",
             "format": "int64",
             "type": "integer"
-          },
-          "started_at": {
-            "description": "Start of runplane, where the counts start.",
-            "format": "date-time",
-            "type": "string"
           }
         },
         "required": [
@@ -2007,8 +2130,7 @@
           "hit_bytes",
           "miss_bytes",
           "hit_rate",
-          "size_bytes",
-          "started_at"
+          "size_bytes"
         ],
         "type": "object"
       },
@@ -2202,12 +2324,12 @@
             ]
           },
           "vcpu_in_use": {
-            "description": "vCPUs of the live sandboxes on the online and draining servers.",
+            "description": "vCPUs of the live sandboxes on the online, draining, and disabled servers.",
             "format": "int64",
             "type": "integer"
           },
           "vcpu_total": {
-            "description": "vCPUs of the online and draining servers.",
+            "description": "vCPUs of the online, draining, and disabled servers.",
             "format": "int64",
             "type": "integer"
           }
@@ -2397,14 +2519,17 @@
         "additionalProperties": false,
         "properties": {
           "assigned": {
+            "description": "Of queued, the jobs that GitHub assigned to the scale set of the pool.",
             "format": "int64",
             "type": "integer"
           },
           "busy": {
+            "description": "Live count of sandboxes that run a job.",
             "format": "int64",
             "type": "integer"
           },
           "idle": {
+            "description": "Live count of idle sandboxes.",
             "format": "int64",
             "type": "integer"
           },
@@ -2412,10 +2537,12 @@
             "type": "string"
           },
           "queued": {
+            "description": "Jobs of the last 24 hours that wait for a runner.",
             "format": "int64",
             "type": "integer"
           },
           "starting": {
+            "description": "Live count of sandboxes that start.",
             "format": "int64",
             "type": "integer"
           }
@@ -2432,6 +2559,24 @@
       },
       "PoolsChanged": {
         "additionalProperties": false,
+        "type": "object"
+      },
+      "PullRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "html_url": {
+            "description": "Page of the pull request on GitHub.",
+            "type": "string"
+          },
+          "number": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "number",
+          "html_url"
+        ],
         "type": "object"
       },
       "Repository": {
@@ -3128,6 +3273,18 @@
         ],
         "type": "object"
       },
+      "ServerRemoved": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "ServerSummary": {
         "additionalProperties": false,
         "properties": {
@@ -3406,6 +3563,10 @@
             "$ref": "#/components/schemas/BackupS3",
             "description": "Optional upload of each backup to S3."
           },
+          "backup_time": {
+            "description": "Time of day in UTC of the daily backup, for example 03:00. Read-only.",
+            "type": "string"
+          },
           "bandwidth_applies": {
             "description": "bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only.",
             "type": "boolean"
@@ -3468,7 +3629,7 @@
           },
           "https": {
             "$ref": "#/components/schemas/HTTPSStatus",
-            "description": "Certificate of the domain. Read-only. Absent when this runplane process cannot report it."
+            "description": "Certificate of the domain. Read-only."
           },
           "instance_name": {
             "description": "Title in the sidebar.",
@@ -3535,15 +3696,16 @@
             "minimum": 0,
             "type": "integer"
           },
-          "ssh_port": {
-            "description": "Port of the SSH gateway for debug shells. Read-only.",
-            "format": "int64",
-            "type": "integer"
+          "secret_key_path": {
+            "description": "File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only.",
+            "type": "string"
           }
         },
         "required": [
           "backup_s3",
-          "ssh_port",
+          "backup_time",
+          "secret_key_path",
+          "https",
           "public_repos_possible",
           "public_repos_refusal",
           "bandwidth_applies",
@@ -3788,10 +3950,6 @@
       "Status": {
         "additionalProperties": false,
         "properties": {
-          "github_connected": {
-            "description": "True when a GitHub App with at least one installation exists.",
-            "type": "boolean"
-          },
           "has_jobs": {
             "description": "True when runplane has recorded at least one job.",
             "type": "boolean"
@@ -3800,12 +3958,11 @@
             "type": "string"
           },
           "mode": {
-            "description": "Sandbox mode. Empty until the install sets it.",
+            "description": "Sandbox mode.",
             "enum": [
               "container",
               "vm",
-              "dev",
-              ""
+              "dev"
             ],
             "type": "string"
           },
@@ -3813,10 +3970,12 @@
             "description": "True until the first admin exists.",
             "type": "boolean"
           },
-          "ssh_port": {
-            "description": "Port of the SSH gateway for debug shells.",
-            "format": "int64",
-            "type": "integer"
+          "systems": {
+            "description": "The operating systems of a server that install.sh names.",
+            "items": {
+              "$ref": "#/components/schemas/System"
+            },
+            "type": "array"
           },
           "version": {
             "description": "Version of runplane, for example \"v1.2.0 (3f2a9c1)\".",
@@ -3828,9 +3987,31 @@
           "version",
           "mode",
           "instance_name",
-          "github_connected",
           "has_jobs",
-          "ssh_port"
+          "systems"
+        ],
+        "type": "object"
+      },
+      "System": {
+        "additionalProperties": false,
+        "properties": {
+          "best_effort": {
+            "description": "install.sh installs runplane with a warning, because runplane has no tests on the system.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "For example Ubuntu.",
+            "type": "string"
+          },
+          "version": {
+            "description": "For example 24.04.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "best_effort"
         ],
         "type": "object"
       },
@@ -3992,7 +4173,6 @@
           },
           "name": {
             "maxLength": 64,
-            "minLength": 1,
             "type": "string"
           },
           "server_ids": {
@@ -4838,6 +5018,39 @@
                       {
                         "properties": {
                           "data": {
+                            "$ref": "#/components/schemas/ServerRemoved"
+                          },
+                          "event": {
+                            "const": "server.removed",
+                            "description": "The event name.",
+                            "type": "string"
+                          },
+                          "id": {
+                            "description": "The event ID.",
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "retry": {
+                            "description": "The retry time in milliseconds.",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "data",
+                          "event"
+                        ],
+                        "title": "Event server.removed",
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "data": {
                             "$ref": "#/components/schemas/Server"
                           },
                           "event": {
@@ -4866,6 +5079,39 @@
                           "event"
                         ],
                         "title": "Event server.state",
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "data": {
+                            "$ref": "#/components/schemas/Settings"
+                          },
+                          "event": {
+                            "const": "settings.changed",
+                            "description": "The event name.",
+                            "type": "string"
+                          },
+                          "id": {
+                            "description": "The event ID.",
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "retry": {
+                            "description": "The retry time in milliseconds.",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "data",
+                          "event"
+                        ],
+                        "title": "Event settings.changed",
                         "type": "object"
                       }
                     ]
@@ -5055,6 +5301,53 @@
           }
         ],
         "summary": "Start the GitHub App manifest flow",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/github/pull-requests": {
+      "post": {
+        "description": "The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one.",
+        "operationId": "create-github-pull-request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePullRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Open a pull request that moves jobs to a runplane label",
         "tags": [
           "github"
         ]

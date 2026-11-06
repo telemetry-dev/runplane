@@ -1,7 +1,7 @@
 // Package fleet keeps the servers of the primary: its own server and the
 // agents. It records their state and host stats, makes images and runner
-// bundles ready on them, installs agents, and tells the scheduler which
-// servers can take sandboxes.
+// bundles ready on them, installs agents, and tells which servers can take
+// sandboxes.
 package fleet
 
 import (
@@ -20,9 +20,7 @@ import (
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/sshinstall"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -50,10 +48,20 @@ const (
 // ErrNotConnected means that the server has no connection to the primary.
 var ErrNotConnected = errors.New("the server is not connected")
 
-// Runners records the runner bundle builds of the servers: the Built method
-// of the runner versions service.
+// Runners gives the runner versions for the servers, and records the
+// bundle builds of the servers: the runner versions service.
 type Runners interface {
-	Built(ctx context.Context, version, arch string, b runner.Bundle, err error)
+	// Versions returns the runner versions to try on a server of arch,
+	// best first, or nil while runplane knows no version.
+	Versions(ctx context.Context, arch string) ([]string, error)
+	// Built records the build of a bundle on one server: a ready row with
+	// its SHA-256, or a failed row with the error.
+	Built(ctx context.Context, b store.RunnerBundle)
+}
+
+// Pools makes pools: the pools service.
+type Pools interface {
+	Create(ctx context.Context, by audit.Actor, p store.Pool) (store.Pool, error)
 }
 
 type Config struct {
@@ -81,7 +89,9 @@ type Config struct {
 	// scheduler.
 	CapacityChanged func()
 	Runners         Runners
-	Now             func() time.Time // nil: time.Now
+	// Pools adds the default label at the first start.
+	Pools Pools
+	Now   func() time.Time // nil: time.Now
 }
 
 type Fleet struct {
@@ -98,6 +108,7 @@ type Fleet struct {
 	onEvent         func(string, sandbox.Event)
 	capacityChanged func()
 	runners         Runners
+	pools           Pools
 	now             func() time.Time
 	knownHosts      *sshinstall.KnownHosts
 
@@ -122,7 +133,6 @@ type Fleet struct {
 	defaultID string
 	dropped   map[string]bool        // images that RemoveImage dropped
 	updates   map[string]agentUpdate // the last update of each agent, by server ID
-	latest    string                 // newest runner version
 	samples   []store.ServerStat     // host stats for the next flush
 	seen      map[string]time.Time   // last sample of each agent, for the next flush
 }
@@ -171,6 +181,7 @@ func New(c Config) *Fleet {
 		onEvent:         c.OnEvent,
 		capacityChanged: c.CapacityChanged,
 		runners:         c.Runners,
+		pools:           c.Pools,
 		now:             c.Now,
 		knownHosts:      &sshinstall.KnownHosts{Path: c.Config.KnownHostsPath()},
 		settings:        events.Subscribe[events.SettingsChanged](bg, c.Bus),
@@ -281,17 +292,25 @@ func (f *Fleet) kick() {
 	}
 }
 
-// Online returns the connected servers with the status online.
-func (f *Fleet) Online() []scheduler.Host {
+// Host is a connected server.
+type Host struct {
+	ServerID string
+	Name     string
+	Arch     string
+	Driver   agent.Driver
+}
+
+// Online returns the connected servers with the status online, by name.
+func (f *Fleet) Online() []Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var hosts []scheduler.Host
+	var hosts []Host
 	for _, n := range f.nodes {
 		if n.status == store.ServerOnline {
-			hosts = append(hosts, scheduler.Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
+			hosts = append(hosts, Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
 		}
 	}
-	slices.SortFunc(hosts, func(a, b scheduler.Host) int {
+	slices.SortFunc(hosts, func(a, b Host) int {
 		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ServerID, b.ServerID))
 	})
 	return hosts
@@ -299,7 +318,7 @@ func (f *Fleet) Online() []scheduler.Host {
 
 // Driver returns the driver of a connected server, also a draining or
 // disabled one, or nil.
-func (f *Fleet) Driver(serverID string) sandbox.Driver {
+func (f *Fleet) Driver(serverID string) agent.Driver {
 	if n := f.node(serverID); n != nil {
 		return n.Driver()
 	}

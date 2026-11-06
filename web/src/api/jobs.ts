@@ -34,16 +34,12 @@ export function logQuery(id: string, step: number) {
   })
 }
 
-/** The live log of a running job, for useFollowedText. */
-export function followJobLog(id: string, step: number): FollowedRequest {
+/** The live log of a running job, for useFollowedText. It has no step marks, so it has all steps. */
+export function followJobLog(id: string): FollowedRequest {
   return {
-    key: `job ${id} ${step}`,
+    key: `job ${id}`,
     open: async (signal) => {
-      const { data } = await api.GET('/api/jobs/{id}/log', {
-        params: { path: { id }, query: { step: step || undefined, follow: true } },
-        parseAs: 'stream',
-        signal,
-      })
+      const { data } = await api.GET('/api/jobs/{id}/log', { params: { path: { id }, query: { follow: true } }, parseAs: 'stream', signal })
       return data
     },
   }

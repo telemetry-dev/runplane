@@ -15,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/shell"
@@ -104,9 +105,6 @@ func (h *Handler) getSandbox(ctx context.Context, in *PathID) (*body[Sandbox], e
 }
 
 func (h *Handler) stopSandbox(ctx context.Context, in *PathID) (*empty, error) {
-	if h.d.Scheduler == nil {
-		return nil, unavailable("The scheduler")
-	}
 	b, err := h.d.Store.GetSandbox(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No sandbox has this ID.")
@@ -115,9 +113,9 @@ func (h *Handler) stopSandbox(ctx context.Context, in *PathID) (*empty, error) {
 		return nil, nil
 	}
 	if err := h.d.Scheduler.StopSandbox(ctx, b.ID); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "sandbox.stop", b.ID, h.sandboxDetail(ctx, b))
+	h.record(ctx, audit.SandboxStop, b.ID, h.sandboxDetail(ctx, b))
 	return nil, nil
 }
 
@@ -142,9 +140,6 @@ type sandboxLogInput struct {
 }
 
 func (h *Handler) sandboxLog(ctx context.Context, in *sandboxLogInput) (*huma.StreamResponse, error) {
-	if h.d.Logs == nil {
-		return nil, unavailable("The sandbox log")
-	}
 	if _, err := h.d.Store.GetSandbox(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No sandbox has this ID.")
 	}
@@ -171,7 +166,7 @@ func (h *Handler) logErr(err error) error {
 	case errors.Is(err, joblog.ErrNotConnected):
 		return huma.Error503ServiceUnavailable("The server of this sandbox is not connected.")
 	}
-	return h.serviceErr(err)
+	return serviceErr(err)
 }
 
 type shellInput struct {
@@ -188,9 +183,6 @@ type shellMessage struct {
 }
 
 func (h *Handler) openShell(ctx context.Context, in *shellInput) (*huma.StreamResponse, error) {
-	if h.d.Shell == nil {
-		return nil, unavailable("The debug shell")
-	}
 	b, err := h.d.Store.GetSandbox(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No sandbox has this ID.")
@@ -230,7 +222,7 @@ func (h *Handler) openShell(ctx context.Context, in *shellInput) (*huma.StreamRe
 			conn.Close(websocket.StatusInternalError, closeReason(err.Error()))
 			return
 		}
-		h.record(ctx, "sandbox.shell", b.ID, h.sandboxDetail(ctx, b))
+		h.record(ctx, audit.SandboxShell, b.ID, h.sandboxDetail(ctx, b))
 		bridge(ctx, conn, term)
 	}}, nil
 }

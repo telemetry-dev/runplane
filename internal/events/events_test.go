@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/runplane/runplane/internal/store"
 )
 
 func TestSlowSubscriberDoesNotBlock(t *testing.T) {
@@ -18,7 +20,7 @@ func TestSlowSubscriberDoesNotBlock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := range n {
-			b.Publish(PoolStats{Idle: i})
+			b.Publish(PoolStats{PoolCounts: store.PoolCounts{Idle: i}})
 			b.Publish(GitHubState{})
 		}
 		close(done)
@@ -45,7 +47,7 @@ func TestSlowSubscriberDoesNotBlock(t *testing.T) {
 	default:
 	}
 
-	if e := <-slow; e != (PoolStats{Idle: 0}) {
+	if e := <-slow; e != (PoolStats{PoolCounts: store.PoolCounts{Idle: 0}}) {
 		t.Errorf("slow watcher got %+v, want the first event", e)
 	}
 	select {

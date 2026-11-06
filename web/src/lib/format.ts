@@ -83,6 +83,12 @@ export function formatMegabytes(mb: number): string {
   return formatBytes(mb * 1024 * 1024)
 }
 
+/** Formats a runplane version as its release tag: "v1.2.0 (3f2a9c1)" and "1.2.0" give "v1.2.0"; a name such as "dev" stays. */
+export function formatVersion(version: string): string {
+  const name = version.split(' ')[0]!
+  return /^\d/.test(name) ? `v${name}` : name
+}
+
 /** Formats a value from 0 to 100: one decimal below 10 ("4.1%"), whole numbers above ("92%"). */
 export function formatPercent(value: number): string {
   const rounded = Math.abs(value) < 10 ? Number(value.toFixed(1)) : Math.round(value)

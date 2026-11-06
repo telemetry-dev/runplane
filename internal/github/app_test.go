@@ -25,9 +25,11 @@ func TestManifest(t *testing.T) {
 		wantPermissions map[string]any
 	}{
 		{ghrest.Account{Type: ghrest.Organization, Login: "acme"}, "/organizations/acme/settings/apps/new",
-			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read",
+				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 		{ghrest.Account{Type: ghrest.User}, "/settings/apps/new",
-			map[string]any{"administration": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"administration": "write", "actions": "write", "metadata": "read",
+				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.owner.Type, func(t *testing.T) {
@@ -53,16 +55,12 @@ func TestManifest(t *testing.T) {
 			}
 
 			// The store keeps only the hash of the state, for one hour.
-			var stored string
-			var expires int64
-			err = e.st.DB().QueryRow("SELECT state_hash, expires_at FROM manifest_states").Scan(&stored, &expires)
+			sum := sha256.Sum256([]byte(u.Query().Get("state")))
+			stored, err := e.st.ConsumeManifestState(context.Background(), hex.EncodeToString(sum[:]), time.Now())
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("no stored state with the SHA-256 of the state: %v", err)
 			}
-			if sum := sha256.Sum256([]byte(u.Query().Get("state"))); stored != hex.EncodeToString(sum[:]) {
-				t.Errorf("stored state %q, want the SHA-256 of the state", stored)
-			}
-			if d := time.Until(time.UnixMilli(expires)); d < 59*time.Minute || d > time.Hour {
+			if d := time.Until(stored.ExpiresAt); d < 59*time.Minute || d > time.Hour {
 				t.Errorf("state expires in %s, want 1 hour", d)
 			}
 		})

@@ -11,6 +11,19 @@ export const limits = {
       "maxLength": 1024
     }
   },
+  "AppPermission": {
+    "access": {
+      "enum": ["read", "write"]
+    },
+    "name": {
+      "enum": ["organization_self_hosted_runners", "administration", "actions", "contents", "pull_requests", "workflows", "metadata"]
+    }
+  },
+  "AuditEntry": {
+    "action": {
+      "enum": ["setup.done", "user.update", "user.delete", "user.password", "invite.create", "invite.link", "invite.delete", "pool.create", "pool.update", "pool.delete", "server.token", "server.install", "server.update", "server.delete", "server.update_agent", "sandbox.stop", "sandbox.shell", "sandbox.ssh", "cache.delete", "image.create", "image.update", "image.delete", "image.refresh", "settings.update", "job.rerun", "backup.create", "backup.download", "update.apply", "github.manifest", "github.app.create", "github.installation.install", "github.installation.update", "github.installation.request", "github.sync", "github.pull_request.create", "github.disconnect", "notification.create", "notification.update", "notification.delete"]
+    }
+  },
   "Backup": {
     "status": {
       "enum": ["running", "done", "uploading", "uploaded", "failed"]
@@ -118,6 +131,11 @@ export const limits = {
     "vcpu": {
       "minimum": 1,
       "maximum": 64
+    }
+  },
+  "CreatePullRequestRequest": {
+    "repository": {
+      "maxLength": 140
     }
   },
   "DomainDNS": {
@@ -457,7 +475,7 @@ export const limits = {
   },
   "Status": {
     "mode": {
-      "enum": ["container", "vm", "dev", ""]
+      "enum": ["container", "vm", "dev"]
     }
   },
   "TestChannelRequest": {
@@ -538,7 +556,6 @@ export const limits = {
       "maximum": 1000
     },
     "name": {
-      "minLength": 1,
       "maxLength": 64
     },
     "server_ids": {

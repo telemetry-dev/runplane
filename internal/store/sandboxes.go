@@ -105,8 +105,7 @@ func (s *Store) SetSandboxDebug(ctx context.Context, id string) error {
 }
 
 // The SQL terms of the sandbox states come from the order in package
-// sandbox. A query that must use the partial index sandboxes_live_ip has
-// liveState as its state term, the WHERE clause of the index.
+// sandbox.
 var (
 	liveState = "state NOT IN (" + stateList(sandbox.DoneStates()) + ")"
 	doneState = "state IN (" + stateList(sandbox.DoneStates()) + ")"
@@ -217,8 +216,6 @@ var sandboxJobQuery = `SELECT s.id, s.server_id, coalesce(j.repository, ''),
 	FROM sandboxes s LEFT JOIN jobs j ON j.id = s.job_id
 	WHERE s.` + liveState + ` AND `
 
-var sandboxJobByIP = sandboxJobQuery + "s.ip = ? AND s.server_id = ? ORDER BY s.created_at DESC LIMIT 1"
-
 func (b *SandboxJob) cols() []any {
 	return []any{&b.SandboxID, &b.ServerID, &b.Repository, &b.DefaultBranch, &b.WorkflowRef, &b.Event, &b.HeadBranch,
 		&b.PRNumber, &b.BaseRef}
@@ -227,10 +224,4 @@ func (b *SandboxJob) cols() []any {
 // LiveSandboxJob returns the sandbox with this ID if it still operates.
 func (s *Store) LiveSandboxJob(ctx context.Context, id string) (SandboxJob, error) {
 	return queryOne(ctx, s.r, "get sandbox job", scanRow[SandboxJob], sandboxJobQuery+"s.id = ?", id)
-}
-
-// LiveSandboxJobByIP returns the newest operating sandbox of the server
-// with this IP address.
-func (s *Store) LiveSandboxJobByIP(ctx context.Context, serverID, ip string) (SandboxJob, error) {
-	return queryOne(ctx, s.r, "get sandbox job", scanRow[SandboxJob], sandboxJobByIP, ip, serverID)
 }

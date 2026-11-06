@@ -129,6 +129,8 @@ sudo sh install.sh --binary ./runplane-linux-<arch> --token rp_srv_... --primary
 
 8. Push the change.
 
+runplane can also make the change for you. On the **First job** page or on the **GitHub** tab of **Settings**, select a repository, then select **Open pull request**. The pull request sets `runs-on` to the label for each job on `ubuntu-latest` or `ubuntu-24.04`. If the GitHub App is from an earlier release, add read and write access to Contents, Pull requests, and Workflows in the app settings on GitHub first.
+
 The job shows on the **Jobs** page of the dashboard. If you lose the setup code, run `sudo runplane setup-code` on the server.
 
 ## The two modes
@@ -319,4 +321,4 @@ A person who can change the release files can also change the `install.sh` of th
 
 **Caution:** Do not change the key after the first release. A binary with the earlier key cannot do a self-update to a release with a new key. On these servers, run the install command of the new release again.
 
-The `images.yml` workflow pushes the base images to GHCR each week and after each change in `images/`. The arm64 images use the `ubuntu-24.04-arm` runners of GitHub. After the first push, set the visibility of each image package on GHCR to public. Then servers pull the base images without a login, and VM mode does not need Docker. To do a check, run `docker logout ghcr.io && docker pull ghcr.io/<owner>/<repo>/runner-ubuntu-24.04:latest`.
+The `images.yml` workflow pushes the base images to GHCR each week and after each change in `images/`. The builds use the `runplane` label. QEMU builds the architecture that the runner does not have. After the first push, set the visibility of each image package on GHCR to public. Then servers pull the base images without a login, and VM mode does not need Docker. To do a check, run `docker logout ghcr.io && docker pull ghcr.io/<owner>/<repo>/runner-ubuntu-24.04:latest`.

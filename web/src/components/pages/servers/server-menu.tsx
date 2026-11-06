@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { ArrowRight, Ellipsis, Pause, Play, Stethoscope, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, errorMessage } from '~/api/client'
-import { applyChange, dropServer } from '~/api/events'
+import { applyChange } from '~/api/events'
 import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
@@ -75,7 +75,7 @@ function RemoveDialog({ server, open, onOpenChange }: RemoveDialogProps) {
       description={removeDescription(server.running_jobs)}
       action="Remove server"
       onConfirm={() => api.DELETE('/api/servers/{id}', { params: { path: { id: server.id } } })}
-      onDone={() => void dropServer(client, server.id)}
+      onDone={() => void applyChange(client, 'server.removed', { id: server.id })}
     />
   )
 }

@@ -4,15 +4,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/update"
 )
@@ -28,10 +27,9 @@ type Backup struct {
 }
 
 func (h *Handler) backupOut(b store.Backup) Backup {
-	_, err := os.Stat(b.Path)
 	return Backup{
 		ID: b.ID, CreatedAt: b.CreatedAt, SizeBytes: b.SizeBytes, S3Key: b.S3Key, Status: b.Status, Error: b.Error,
-		Available: err == nil && h.inBackupsDir(b.Path),
+		Available: h.d.Backups.Available(b),
 	}
 }
 
@@ -48,52 +46,35 @@ func (h *Handler) listBackups(ctx context.Context, _ *struct{}) (*body[[]Backup]
 }
 
 func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*body[Backup], error) {
-	if h.d.Backups == nil {
-		return nil, unavailable("Backups")
-	}
 	id, err := h.d.Backups.Create(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	b, err := h.d.Store.GetBackup(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "The new backup is gone.")
 	}
-	h.record(ctx, "backup.create", b.ID, nil)
-	h.d.Bus.Publish(events.BackupState(b))
+	h.record(ctx, audit.BackupCreate, b.ID, nil)
 	return &body[Backup]{h.backupOut(b)}, nil
 }
 
 func (h *Handler) downloadBackup(ctx context.Context, in *PathID) (*huma.StreamResponse, error) {
-	b, err := h.d.Store.GetBackup(ctx, in.ID)
-	if err != nil {
+	b, f, err := h.d.Backups.Open(ctx, in.ID)
+	switch {
+	case errors.Is(err, backup.ErrNoFile):
+		return nil, huma.Error404NotFound("The backup file is not on this server.")
+	case err != nil:
 		return nil, notFound(err, "No backup has this ID.")
 	}
-	if !h.inBackupsDir(b.Path) {
-		return nil, huma.Error404NotFound("The backup file is not on this server.")
-	}
-	f, err := os.Open(b.Path)
-	if os.IsNotExist(err) {
-		return nil, huma.Error404NotFound("The backup file is not on this server.")
-	}
-	if err != nil {
-		return nil, err
-	}
-	h.record(ctx, "backup.download", b.ID, nil)
+	h.record(ctx, audit.BackupDownload, b.ID, nil)
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		defer f.Close()
 		r, w := humago.Unwrap(hctx)
-		name := filepath.Base(b.Path)
+		name := filepath.Base(f.Name())
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 		http.ServeContent(w, r, name, b.CreatedAt, f)
 	}}, nil
-}
-
-// inBackupsDir guards the download against a path outside the backups folder.
-func (h *Handler) inBackupsDir(path string) bool {
-	rel, err := filepath.Rel(h.d.Config.BackupsDir(), path)
-	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
 }
 
 type UpdateStatus struct {
@@ -108,16 +89,13 @@ type UpdateStatus struct {
 }
 
 func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*body[UpdateStatus], error) {
-	if h.d.Updater == nil {
-		return nil, unavailable("The updater")
-	}
 	st, err := h.d.Store.GetSettings(ctx)
 	if err != nil {
 		return nil, err
 	}
 	u, err := h.d.Updater.Check(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	out := UpdateStatus{
 		Current: u.Current, Latest: u.Latest, Available: u.Available, URL: u.URL, Notes: u.Notes,
@@ -130,10 +108,7 @@ func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*body[UpdateStatu
 }
 
 func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) {
-	if h.d.Updater == nil {
-		return nil, unavailable("The updater")
-	}
-	h.record(ctx, "update.apply", "", nil)
+	h.record(ctx, audit.UpdateApply, "", nil)
 	// The update goes on when the admin closes the page.
 	u, err := h.d.Updater.Apply(context.WithoutCancel(ctx))
 	switch {
@@ -142,15 +117,12 @@ func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) 
 	case errors.Is(err, update.ErrNoUpdate):
 		return nil, huma.Error409Conflict("runplane " + u.Current + " is the latest version.")
 	case err != nil:
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return nil, nil
 }
 
 func (h *Handler) installScript(ctx context.Context, _ *struct{}) (*huma.StreamResponse, error) {
-	if h.d.InstallScript == nil {
-		return nil, unavailable("The install script")
-	}
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		r, w := humago.Unwrap(hctx)
 		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")

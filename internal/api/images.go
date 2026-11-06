@@ -92,9 +92,6 @@ type CreateImageRequest struct {
 }
 
 func (h *Handler) createImage(ctx context.Context, in *body[CreateImageRequest]) (*body[Image], error) {
-	if h.d.Images == nil {
-		return nil, unavailable("Adding images")
-	}
 	img, err := h.d.Images.CreateImage(ctx, actor(ctx), in.Body.Name, in.Body.Ref)
 	if err != nil {
 		return nil, imageErr(err)
@@ -102,19 +99,21 @@ func (h *Handler) createImage(ctx context.Context, in *body[CreateImageRequest])
 	return h.imageOutput(ctx, img.ID)
 }
 
+// UpdateImageRequest has the limits of CreateImageRequest.
 type UpdateImageRequest struct {
-	Name      *string `json:"name,omitempty" minLength:"1" maxLength:"64"`
-	Ref       *string `json:"ref,omitempty" minLength:"1" maxLength:"512" doc:"A new ref pulls the image again."`
+	Name      *string `json:"name,omitempty"`
+	Ref       *string `json:"ref,omitempty" doc:"A new ref pulls the image again."`
 	IsDefault *bool   `json:"is_default,omitempty" doc:"true makes this image the default. To change the default, make another image the default."`
+}
+
+func (UpdateImageRequest) TransformSchema(r huma.Registry, s *huma.Schema) *huma.Schema {
+	return patchOf[CreateImageRequest](r, s)
 }
 
 func (h *Handler) updateImage(ctx context.Context, in *struct {
 	PathID
 	Body UpdateImageRequest
 }) (*body[Image], error) {
-	if h.d.Images == nil {
-		return nil, unavailable("Changing images")
-	}
 	b := in.Body
 	img, err := h.d.Images.UpdateImage(ctx, actor(ctx), in.ID, fleet.ImageChange{Name: b.Name, Ref: b.Ref, Default: b.IsDefault})
 	if err != nil {
@@ -124,9 +123,6 @@ func (h *Handler) updateImage(ctx context.Context, in *struct {
 }
 
 func (h *Handler) deleteImage(ctx context.Context, in *PathID) (*empty, error) {
-	if h.d.Images == nil {
-		return nil, unavailable("Removing images")
-	}
 	err := h.d.Images.RemoveImage(ctx, actor(ctx), in.ID)
 	if errors.Is(err, fleet.ErrDefaultImage) {
 		return nil, huma.Error409Conflict("The default image cannot be removed. Make another image the default first.")
@@ -138,9 +134,6 @@ func (h *Handler) deleteImage(ctx context.Context, in *PathID) (*empty, error) {
 }
 
 func (h *Handler) refreshImage(ctx context.Context, in *PathID) (*empty, error) {
-	if h.d.Images == nil {
-		return nil, unavailable("Pulling images")
-	}
 	if err := h.d.Images.RefreshImage(ctx, actor(ctx), in.ID); err != nil {
 		return nil, imageErr(err)
 	}
@@ -151,5 +144,5 @@ func imageErr(err error) error {
 	if errors.Is(err, store.ErrConflict) {
 		return conflict("body.ref", "An image with this ref exists.")
 	}
-	return notFound(changeErr(err), "No image has this ID.")
+	return notFound(err, "No image has this ID.")
 }

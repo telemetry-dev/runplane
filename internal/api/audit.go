@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -40,6 +42,16 @@ type AuditEntry struct {
 	Target    string         `json:"target" doc:"ID of the changed object."`
 	Detail    map[string]any `json:"detail" doc:"Names and values of the change. pool.update, server.update, and settings.update have changes, with [old, new] for each changed field. settings.update also has keys, with all changed settings keys. Its changes never hold the S3 secret key. The entries of a job or a sandbox have runner_name, job_id, job_name, workflow_file, run_number, and repository where they apply."`
 	IP        string         `json:"ip"`
+}
+
+// TransformSchema gives action the enum of audit.Actions. Entries of an
+// older runplane can have other actions.
+func (AuditEntry) TransformSchema(_ huma.Registry, s *huma.Schema) *huma.Schema {
+	action := s.Properties["action"]
+	for _, a := range audit.Actions {
+		action.Enum = append(action.Enum, a)
+	}
+	return s
 }
 
 type AuditPage struct {

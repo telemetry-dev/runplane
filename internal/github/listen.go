@@ -16,6 +16,7 @@ import (
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -266,21 +267,21 @@ func (l *setListener) ensureRemote(ctx context.Context) (int64, error) {
 		return id, nil
 	}
 	cl := l.client()
-	set, err := cl.GetRunnerScaleSet(ctx, defaultRunnerGroup, label)
+	set, err := cl.GetRunnerScaleSet(ctx, ghrest.DefaultRunnerGroup, label)
 	if err != nil {
 		return 0, err
 	}
 	hasLabel := func(x scaleset.Label) bool { return strings.EqualFold(x.Name, label) }
 	switch {
 	case set == nil:
-		set, err = cl.CreateRunnerScaleSet(ctx, scaleSetSpec(label, defaultRunnerGroup))
+		set, err = cl.CreateRunnerScaleSet(ctx, scaleSetSpec(label, ghrest.DefaultRunnerGroup))
 	case !slices.ContainsFunc(set.Labels, hasLabel) || !set.RunnerSetting.DisableUpdate:
-		set, err = cl.UpdateRunnerScaleSet(ctx, set.ID, scaleSetSpec(label, cmp.Or(set.RunnerGroupID, defaultRunnerGroup)))
+		set, err = cl.UpdateRunnerScaleSet(ctx, set.ID, scaleSetSpec(label, cmp.Or(set.RunnerGroupID, ghrest.DefaultRunnerGroup)))
 	}
 	if err != nil {
 		return 0, err
 	}
-	group := int64(cmp.Or(set.RunnerGroupID, defaultRunnerGroup))
+	group := int64(cmp.Or(set.RunnerGroupID, ghrest.DefaultRunnerGroup))
 	if err := l.s.st.SetScaleSetRemote(ctx, l.id, int64(set.ID), group, label, time.Now()); err != nil {
 		return 0, err
 	}
@@ -295,7 +296,7 @@ func (l *setListener) clearRemote(ctx context.Context) {
 	l.githubID = 0
 	label := l.label
 	l.mu.Unlock()
-	if err := l.s.st.SetScaleSetRemote(ctx, l.id, 0, defaultRunnerGroup, label, time.Now()); err != nil {
+	if err := l.s.st.SetScaleSetRemote(ctx, l.id, 0, ghrest.DefaultRunnerGroup, label, time.Now()); err != nil {
 		l.log.Warn("clear scale set ID", "err", err)
 	}
 }

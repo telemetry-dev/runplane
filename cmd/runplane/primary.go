@@ -17,6 +17,7 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/api"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/cache"
@@ -25,6 +26,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/github"
+	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/pools"
@@ -81,7 +83,7 @@ func serve(ctx context.Context, args []string) error {
 
 	deps := api.Deps{
 		Store: st, Auth: auth.NewService(st, subkey(key, "runplane device tokens"), log.With("component", "auth")),
-		Settings: settingsService, Pools: pools.New(pools.Config{Store: st, Bus: bus, Log: log.With("component", "pools")}),
+		Settings: settingsService, Pools: pools.New(pools.Config{Store: st, Bus: bus, Arch: host.Arch(), Log: log.With("component", "pools")}),
 		Bus: bus, Box: box, Log: log, Config: cfg,
 	}
 	p, err := startPrimary(&deps, key, mode, end)
@@ -196,7 +198,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	// Release reads with an installation token have a higher rate limit.
 	token := func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
 	local, err := newLocal(context.Background(), cfg, localConfig{
-		mode: mode, settings: fleet.NodeSettings(settings).Settings, domain: settings.Domain, token: token,
+		mode: mode, settings: fleet.NodeSettings(settings), domain: settings.Domain, token: token,
 	}, log)
 	if err != nil {
 		return nil, err
@@ -204,7 +206,8 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.stops = append(p.stops, local.close)
 	p.run(func(ctx context.Context) { local.node.Run(ctx) })
 
-	notifier := notify.New(notify.Config{Store: st, Box: d.Box, Bus: d.Bus, Log: log.With("component", "notify")})
+	channels := notify.NewChannels(st, d.Box, log.With("component", "notify"))
+	notifier := notify.New(notify.Config{Store: st, Channels: channels, Bus: d.Bus, Log: log.With("component", "notify")})
 	p.run(notifier.Run)
 
 	cert, fingerprint, err := tlsutil.AgentCert(cfg.TLSDir())
@@ -217,7 +220,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	}
 	ghRef := &githubRef{}
 	runners := versions.New(versions.Config{
-		Store: st, Bus: d.Bus, GitHub: ghRef, Notifier: notifier, Log: log.With("component", "runners"),
+		Store: st, Bus: d.Bus, GitHub: ghRef, Notify: notifier.Notify, Log: log.With("component", "runners"),
 		InUse: func() []string { return p.fleet.RunnerVersions() },
 	})
 	// The fleet calls the scheduler only after Run starts.
@@ -225,9 +228,12 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node,
 		AgentFingerprint: fingerprint, Version: version.Version, Repo: version.Repo, PublicKey: update.PublicKey,
 		OnEvent:         func(serverID string, ev sandbox.Event) { p.sched.HandleEvent(serverID, ev) },
-		CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners,
+		CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners, Pools: d.Pools,
 	})
-	jobLogs := joblog.New(joblog.Config{Dir: cfg.LogsDir(), Store: st, Driver: p.fleet.Driver, Log: log.With("component", "joblog")})
+	jobLogs := joblog.New(joblog.Config{
+		Dir: cfg.LogsDir(), Store: st, Log: log.With("component", "joblog"),
+		Driver: func(serverID string) joblog.Driver { return p.fleet.Driver(serverID) },
+	})
 	p.sched = scheduler.New(scheduler.Config{
 		Store: st, Bus: d.Bus, Fleet: schedulerFleet{p.fleet}, GitHub: ghRef, Log: log.With("component", "scheduler"),
 		JobLogs: jobLogs,
@@ -249,28 +255,21 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.pruneDaily("sessions, setup codes, and invites", d.Auth.Prune)
 	p.pruneDaily("server tokens and host samples", p.fleet.Prune)
 
-	if err := p.listenAgents(cert, caches.Proxied()); err != nil {
+	if err := p.listenAgents(cert, caches.ServeAgent); err != nil {
 		return nil, err
 	}
-	opener := shell.Drivers{Store: st, Driver: p.fleet.Driver}
+	opener := shell.Drivers{Store: st, Driver: func(serverID string) shell.Driver { return p.fleet.Driver(serverID) }}
 	if err := p.serveSSH(opener); err != nil {
 		// The debug shell in the browser still works.
 		log.Error("no SSH access to debug shells", "err", err)
 	}
 
-	notifyBg := func(e notify.Event) {
-		p.wg.Go(func() {
-			if err := notifier.Notify(context.Background(), e); err != nil {
-				log.Warn("send notification", "type", e.Type, "err", err)
-			}
-		})
-	}
 	backups := backup.New(backup.Config{
-		Store: st, Box: d.Box, Bus: d.Bus, Dir: cfg.BackupsDir(), Notify: notifyBg, Log: log.With("component", "backup"),
+		Store: st, Box: d.Box, Bus: d.Bus, Dir: cfg.BackupsDir(), Log: log.With("component", "backup"),
 	})
 	p.run(backups.Run)
 	updates := update.NewService(update.Config{
-		Updater: update.New(cfg.KernelPath()), Restart: func() { end(errRestart) }, Store: st, Notify: notifyBg,
+		Updater: update.New(cfg.KernelPath()), Restart: func() { end(errRestart) }, Store: st, Notify: notifier.Notify,
 		Log: log.With("component", "update"),
 	})
 	p.run(updates.Run)
@@ -288,7 +287,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	d.Mirrors = p.fleet
 	d.Backups = backups
 	d.Updater = updates
-	d.Notifier = notifier
+	d.Channels = channels
 	d.Logs = jobLogs
 	d.Shell = opener
 	d.HostChecker = p.fleet
@@ -341,7 +340,7 @@ func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, error) {
 	resolver := cache.NewSandboxResolver(p.st, l.driver.List)
 	space := func() datadisk.Space {
 		st := p.settings.Load()
-		return diskSpace(p.cfg.CacheDir(), datadisk.Settings{CacheMaxGB: st.CacheMaxGB, MinFreePercent: st.MinFreeDiskPercent})
+		return datadisk.Of(p.cfg.CacheDir(), datadisk.Settings{CacheMaxGB: st.CacheMaxGB, MinFreePercent: st.MinFreeDiskPercent})
 	}
 	srv, err := cache.New(cache.Config{
 		Dir: p.cfg.CacheDir(), Store: p.st, Resolver: resolver, Space: space,
@@ -360,13 +359,13 @@ func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, error) {
 	return srv, nil
 }
 
-func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) error {
+func (p *primary) listenAgents(cert tls.Certificate, cache func(http.ResponseWriter, *http.Request, string, string)) error {
 	ln, err := net.Listen("tcp", p.cfg.AgentListen)
 	if err != nil {
 		return fmt.Errorf("listen for agents: %w", err)
 	}
 	l := &agent.Listener{
-		Cert: cert, Authenticate: p.fleet.Authenticate, OnSession: p.fleet.AddSession, CacheHandler: cacheHandler,
+		Cert: cert, Authenticate: p.fleet.Authenticate, OnSession: p.fleet.AddSession, Cache: cache,
 		Logger: p.log.With("component", "agents"),
 	}
 	p.run(func(ctx context.Context) {
@@ -380,7 +379,7 @@ func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) 
 func (p *primary) serveSSH(opener shell.Opener) error {
 	gw, err := shell.New(shell.Config{
 		Addr: p.cfg.SSHListen, HostKeyPath: p.cfg.SSHHostKeyPath(), Opener: opener, Lookup: shell.LookupStore(p.st),
-		AdminKeys: shell.AuthorizedKeysFile(p.cfg.AdminKeysPath(), p.log), Audit: p.st.InsertAudit,
+		AdminKeys: shell.AuthorizedKeysFile(p.cfg.AdminKeysPath(), p.log), Audit: audit.Log{Store: p.st, Logger: p.log}.Record,
 		Log: p.log.With("component", "ssh"),
 	})
 	if err != nil {

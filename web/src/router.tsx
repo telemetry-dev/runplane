@@ -1,7 +1,7 @@
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createRouter } from '@tanstack/react-router'
 import { auditQuery } from './api/audit'
-import { isApiError } from './api/client'
+import { isApiError, retryQuery } from './api/client'
 import { sessionQuery } from './api/session'
 import { RouteError } from './components/route-error'
 import { withGallery } from './dev/gallery-route'
@@ -15,12 +15,7 @@ export function getRouter() {
       // Most changes add an entry to the audit log, which Settings · Members shows.
       onSuccess: () => queryClient.invalidateQueries({ queryKey: auditQuery().queryKey }),
     }),
-    defaultOptions: {
-      queries: {
-        // Retry network and server failures, not answers like 404 or 403.
-        retry: (failures, error) => failures < 2 && !(isApiError(error) && error.status < 500),
-      },
-    },
+    defaultOptions: { queries: { retry: retryQuery } },
   })
 
   const router = createRouter({

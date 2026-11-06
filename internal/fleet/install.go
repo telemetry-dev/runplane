@@ -14,6 +14,8 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/runplane/runplane"
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sshinstall"
 	"github.com/runplane/runplane/internal/sshkey"
@@ -141,13 +143,26 @@ type SSHInstall struct {
 
 // InstallSSH makes a server row in the status installing and installs the
 // agent over SSH in the background. It returns the ID of the new server.
-// The status detail shows the output of the install script.
-func (f *Fleet) InstallSSH(ctx context.Context, base string, req SSHInstall) (string, error) {
+// The status detail shows the output of the install script. A name or a
+// host that is not valid gives field.Problems.
+func (f *Fleet) InstallSSH(ctx context.Context, by audit.Actor, base string, req SSHInstall) (string, error) {
+	name, host := strings.TrimSpace(req.Name), strings.TrimSpace(req.Host)
+	var p field.Problems
+	if name == "" {
+		p.Add("name", "Enter a name.", req.Name)
+	}
+	if host == "" || strings.ContainsAny(host, " /@") {
+		p.Add("host", "Enter a host name or an IP address.", req.Host)
+	}
+	if err := p.Err(); err != nil {
+		return "", err
+	}
+	req.Name, req.Host, req.Port, req.User = name, host, cmp.Or(req.Port, 22), cmp.Or(req.User, "root")
 	signer, _, err := f.sshKey()
 	if err != nil {
 		return "", err
 	}
-	t := sshinstall.Target{Addr: net.JoinHostPort(req.Host, strconv.Itoa(cmp.Or(req.Port, 22))), User: cmp.Or(req.User, "root")}
+	t := sshinstall.Target{Addr: net.JoinHostPort(req.Host, strconv.Itoa(req.Port)), User: req.User}
 	id := ids.New()
 	// Register the install before its row exists: Remove cancels it, and
 	// the start of Run does not mark it as stopped.
@@ -180,6 +195,7 @@ func (f *Fleet) InstallSSH(ctx context.Context, base string, req SSHInstall) (st
 		return "", err
 	}
 	f.publishServer(ctx, id)
+	f.audit.Record(ctx, by, audit.ServerInstall, id, map[string]any{"name": req.Name, "host": req.Host, "port": req.Port, "user": req.User})
 
 	job := installJob{id: id, target: t, signer: signer, primary: f.agentAddr(hostOf(base))}
 	job.command = "sh -s -- " + agentFlags(token, job.primary, f.fp)

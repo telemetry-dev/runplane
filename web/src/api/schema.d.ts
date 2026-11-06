@@ -166,6 +166,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/github/pull-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a pull request that moves jobs to a runplane label
+         * @description The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one.
+         */
+        post: operations["create-github-pull-request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/github/setup": {
         parameters: {
             query?: never;
@@ -1002,9 +1022,22 @@ export interface components {
             name: string;
             password: string;
         };
+        AppPermission: {
+            /** @enum {string} */
+            access: "read" | "write";
+            /** @enum {string} */
+            name: "organization_self_hosted_runners" | "administration" | "actions" | "contents" | "pull_requests" | "workflows" | "metadata";
+        };
+        AppPermissions: {
+            organization: components["schemas"]["AppPermission"][];
+            user: components["schemas"]["AppPermission"][];
+        };
         AuditEntry: {
-            /** @description <object>.<verb>, for example "pool.create". */
-            action: string;
+            /**
+             * @description <object>.<verb>, for example "pool.create".
+             * @enum {string}
+             */
+            action: "setup.done" | "user.update" | "user.delete" | "user.password" | "invite.create" | "invite.link" | "invite.delete" | "pool.create" | "pool.update" | "pool.delete" | "server.token" | "server.install" | "server.update" | "server.delete" | "server.update_agent" | "sandbox.stop" | "sandbox.shell" | "sandbox.ssh" | "cache.delete" | "image.create" | "image.update" | "image.delete" | "image.refresh" | "settings.update" | "job.rerun" | "backup.create" | "backup.download" | "update.apply" | "github.manifest" | "github.app.create" | "github.installation.install" | "github.installation.update" | "github.installation.request" | "github.sync" | "github.pull_request.create" | "github.disconnect" | "notification.create" | "notification.update" | "notification.delete";
             /** Format: date-time */
             at: string;
             /** @description Names and values of the change. pool.update, server.update, and settings.update have changes, with [old, new] for each changed field. settings.update also has keys, with all changed settings keys. Its changes never hold the S3 secret key. The entries of a job or a sandbox have runner_name, job_id, job_name, workflow_file, run_number, and repository where they apply. */
@@ -1084,16 +1117,15 @@ export interface components {
             enabled: boolean;
             /**
              * Format: double
-             * @description Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.
+             * @description Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.
              */
             hit_rate: number | null;
             /**
              * Format: int64
-             * @description The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it. 0 when the cache server is not available.
+             * @description The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it.
              */
             max_bytes: number;
-            /** @description Absent when the mirror stats are not available. */
-            mirror?: components["schemas"]["MirrorStats"];
+            mirror: components["schemas"]["MirrorStats"];
             /** @description The registry_mirror setting. */
             mirror_enabled: boolean;
             /** @description Largest first. */
@@ -1103,25 +1135,30 @@ export interface components {
              * @description Size of all entries and of the files of the unfinished uploads.
              */
             size_bytes: number;
+            /**
+             * Format: int64
+             * @description The hit rates, hits, and misses count the cache lookups of this many last days.
+             */
+            stats_days: number;
         };
         CacheRepository: {
             /** Format: int64 */
             entries: number;
             /**
              * Format: double
-             * @description Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.
+             * @description Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.
              */
             hit_rate: number | null;
             /**
              * Format: int64
-             * @description Of the last 7 days.
+             * @description Of the last stats_days days.
              */
             hits: number;
             /** Format: date-time */
             last_used_at: string | null;
             /**
              * Format: int64
-             * @description Of the last 7 days.
+             * @description Of the last stats_days days.
              */
             misses: number;
             repository: string;
@@ -1201,6 +1238,12 @@ export interface components {
             time_limit_minutes?: number;
             /** Format: int64 */
             vcpu: number;
+        };
+        CreatePullRequestRequest: {
+            /** @description The label of an enabled pool. */
+            label: string;
+            /** @description owner/name of a repository that the GitHub App can access. */
+            repository: string;
         };
         CreatedInvite: {
             invite: components["schemas"]["Invite"];
@@ -1294,6 +1337,8 @@ export interface components {
             owner_login: string;
             /** @description Organization or User. */
             owner_type: string;
+            /** @description Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there. */
+            permissions_url: string;
             /** @description Settings page of the app on GitHub: name, permissions, and keys. */
             settings_url: string;
             slug: string;
@@ -1301,6 +1346,8 @@ export interface components {
         GitHubStatus: {
             /** @description Absent before the manifest flow. */
             app?: components["schemas"]["GitHubApp"];
+            /** @description The permissions that the manifest of a new app asks for. */
+            app_permissions: components["schemas"]["AppPermissions"];
             /** @description An app with at least one installation exists. */
             connected: boolean;
             installations: components["schemas"]["Installation"][];
@@ -1324,6 +1371,7 @@ export interface components {
         HostCheck: {
             /** @enum {string} */
             arch: "x64" | "arm64";
+            /** @description The doctor checks without the mode check: mode has its result. */
             checks: components["schemas"]["Check"][];
             /**
              * Format: int64
@@ -1726,11 +1774,6 @@ export interface components {
              * @description Bytes in the mirror now.
              */
             size_bytes: number;
-            /**
-             * Format: date-time
-             * @description Start of runplane, where the counts start.
-             */
-            started_at: string;
         };
         NotificationChannel: {
             /** Format: date-time */
@@ -1807,12 +1850,12 @@ export interface components {
             median_queue_ms: number | null;
             /**
              * Format: int64
-             * @description vCPUs of the live sandboxes on the online and draining servers.
+             * @description vCPUs of the live sandboxes on the online, draining, and disabled servers.
              */
             vcpu_in_use: number;
             /**
              * Format: int64
-             * @description vCPUs of the online and draining servers.
+             * @description vCPUs of the online, draining, and disabled servers.
              */
             vcpu_total: number;
         };
@@ -1906,19 +1949,40 @@ export interface components {
             placeable_servers: number;
         };
         PoolStats: {
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Of queued, the jobs that GitHub assigned to the scale set of the pool.
+             */
             assigned: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of sandboxes that run a job.
+             */
             busy: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of idle sandboxes.
+             */
             idle: number;
             pool_id: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Jobs of the last 24 hours that wait for a runner.
+             */
             queued: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of sandboxes that start.
+             */
             starting: number;
         };
         PoolsChanged: Record<string, never>;
+        PullRequest: {
+            /** @description Page of the pull request on GitHub. */
+            html_url: string;
+            /** Format: int64 */
+            number: number;
+        };
         Repository: {
             archived: boolean;
             /** @description owner/name */
@@ -2168,6 +2232,9 @@ export interface components {
             /** @description POST /api/servers/{id}/update: the agent is connected, and update_state is available or failed. */
             can_update: boolean;
         };
+        ServerRemoved: {
+            id: string;
+        };
         ServerSummary: {
             /** @description x64 or arm64. Empty until the server reports its facts. */
             arch: string;
@@ -2283,6 +2350,8 @@ export interface components {
             backup_keep: number;
             /** @description Optional upload of each backup to S3. */
             backup_s3: components["schemas"]["BackupS3"];
+            /** @description Time of day in UTC of the daily backup, for example 03:00. Read-only. */
+            backup_time: string;
             /** @description bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only. */
             bandwidth_applies: boolean;
             /**
@@ -2313,8 +2382,8 @@ export interface components {
             domain: string;
             /** @description Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist: string[];
-            /** @description Certificate of the domain. Read-only. Absent when this runplane process cannot report it. */
-            https?: components["schemas"]["HTTPSStatus"];
+            /** @description Certificate of the domain. Read-only. */
+            https: components["schemas"]["HTTPSStatus"];
             /** @description Title in the sidebar. */
             instance_name: string;
             /** Format: int64 */
@@ -2349,11 +2418,8 @@ export interface components {
              * @description vCPUs that sandboxes do not get on each server.
              */
             reserve_vcpu: number;
-            /**
-             * Format: int64
-             * @description Port of the SSH gateway for debug shells. Read-only.
-             */
-            ssh_port: number;
+            /** @description File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only. */
+            secret_key_path: string;
         };
         SettingsPatch: {
             /** @description Contact for the certificate authority. Optional. */
@@ -2450,24 +2516,27 @@ export interface components {
             reason: string;
         };
         Status: {
-            /** @description True when a GitHub App with at least one installation exists. */
-            github_connected: boolean;
             /** @description True when runplane has recorded at least one job. */
             has_jobs: boolean;
             instance_name: string;
             /**
-             * @description Sandbox mode. Empty until the install sets it.
+             * @description Sandbox mode.
              * @enum {string}
              */
-            mode: "container" | "vm" | "dev" | "";
+            mode: "container" | "vm" | "dev";
             /** @description True until the first admin exists. */
             needs_setup: boolean;
-            /**
-             * Format: int64
-             * @description Port of the SSH gateway for debug shells.
-             */
-            ssh_port: number;
+            /** @description The operating systems of a server that install.sh names. */
+            systems: components["schemas"]["System"][];
             /** @description Version of runplane, for example "v1.2.0 (3f2a9c1)". */
+            version: string;
+        };
+        System: {
+            /** @description install.sh installs runplane with a warning, because runplane has no tests on the system. */
+            best_effort: boolean;
+            /** @description For example Ubuntu. */
+            name: string;
+            /** @description For example 24.04. */
             version: string;
         };
         TestChannelRequest: {
@@ -2915,12 +2984,34 @@ export interface operations {
                         /** @description The retry time in milliseconds. */
                         retry?: number;
                     } | {
+                        data: components["schemas"]["ServerRemoved"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "server.removed";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
                         data: components["schemas"]["Server"];
                         /**
                          * @description The event name.
                          * @constant
                          */
                         event: "server.state";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
+                        data: components["schemas"]["Settings"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "settings.changed";
                         /** @description The event ID. */
                         id?: number | string;
                         /** @description The retry time in milliseconds. */
@@ -3046,6 +3137,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ManifestForm"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-github-pull-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePullRequestRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequest"];
                 };
             };
             /** @description Error */

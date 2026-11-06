@@ -28,6 +28,11 @@ type (
 	BackupState   store.Backup
 )
 
+// ServerRemoved has the ID of a removed server. The browser gets it as it is.
+type ServerRemoved struct {
+	ID string `json:"id"`
+}
+
 // HostStats is a new host sample of a server. The browser gets it as it is.
 type HostStats store.ServerStat
 
@@ -44,7 +49,10 @@ type ImageBuildState store.ImageBuild
 
 // PoolStats counts the runners and the waiting jobs of a pool. The browser
 // gets it as it is.
-type PoolStats store.PoolCounts
+type PoolStats struct {
+	PoolID string `json:"pool_id"`
+	store.PoolCounts
+}
 
 // PoolsChanged says that the pools changed, or what they use: a pool, the
 // default image, an image, or a server that a pool names. The browser gets
@@ -56,12 +64,13 @@ type PoolsChanged struct{}
 type GitHubState struct{}
 
 // SettingsChanged has the settings before and after a change. The browser
-// does not get it.
+// gets the API object of the new settings.
 type SettingsChanged struct{ Old, New store.Settings }
 
 func (SandboxState) event()    {}
 func (JobState) event()        {}
 func (ServerState) event()     {}
+func (ServerRemoved) event()   {}
 func (HostStats) event()       {}
 func (RunnerVersion) event()   {}
 func (BackupState) event()     {}

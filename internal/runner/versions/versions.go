@@ -1,8 +1,8 @@
 // Package versions keeps the runner versions of the primary in the
 // runner_bundles rows: the build result of each version and arch, the
 // latest actions/runner release, and the end dates. It warns about a
-// version in use that GitHub stops soon. The fleet makes the newest version
-// of the rows ready on each server.
+// version in use that GitHub stops soon, and it tells the fleet which
+// versions to make ready on a server.
 package versions
 
 import (
@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
@@ -21,6 +22,7 @@ import (
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // GitHub gives the credentials of the GitHub App. A read with a token has a
@@ -35,15 +37,12 @@ type GitHub interface {
 	ReadScope(ctx context.Context) (path string, auth ghrest.Auth, ok bool)
 }
 
-type Notifier interface {
-	Notify(ctx context.Context, e notify.Event) error
-}
-
 type Config struct {
-	Store    *store.Store
-	Bus      *events.Bus
-	GitHub   GitHub
-	Notifier Notifier
+	Store  *store.Store
+	Bus    *events.Bus
+	GitHub GitHub
+	// Notify sends the runner.deprecation alert.
+	Notify func(notify.Event)
 	// InUse returns the runner versions that the servers give new
 	// sandboxes.
 	InUse func() []string
@@ -54,6 +53,9 @@ type Config struct {
 type Service struct {
 	cfg Config
 	log *slog.Logger
+
+	mu     sync.Mutex
+	latest string // the latest actions/runner release of the last check
 }
 
 func New(cfg Config) *Service {
@@ -75,20 +77,48 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// Built records the result of a bundle build on one server, and publishes
-// the row when its status or its error changed. A failure does not change a
-// bundle that is ready, because it can be ready on other servers.
-func (s *Service) Built(ctx context.Context, version, arch string, b runner.Bundle, err error) {
-	row := store.RunnerBundle{Version: version, Arch: arch, SHA256: b.SHA256, Patched: b.Patched, Status: store.BundleReady}
+// Versions returns the runner versions to try on a server of arch, best
+// first: the latest release, then up to two older versions that are ready
+// on other servers of the arch. The latest release is the newer one of the
+// last check and of the rows. Versions returns nil while runplane knows no
+// version.
+func (s *Service) Versions(ctx context.Context, arch string) ([]string, error) {
+	bundles, err := s.cfg.Store.ListRunnerBundles(ctx)
 	if err != nil {
-		row = store.RunnerBundle{Version: version, Arch: arch, Status: store.BundleFailed, Error: err.Error()}
+		return nil, err
 	}
-	before, _ := s.cfg.Store.GetRunnerBundle(ctx, version, arch)
-	if err := s.cfg.Store.SetRunnerBundleBuild(ctx, row, time.Now()); err != nil {
-		s.log.Warn("record runner bundle", "version", version, "arch", arch, "err", err)
+	s.mu.Lock()
+	latest := s.latest
+	s.mu.Unlock()
+	if len(bundles) > 0 && version.Compare(bundles[0].Version, latest) > 0 {
+		latest = bundles[0].Version
+	}
+	if latest == "" {
+		return nil, nil
+	}
+	list := []string{latest}
+	for _, b := range bundles { // newest first
+		if len(list) == 3 {
+			break
+		}
+		if b.Arch == arch && b.Status == store.BundleReady && version.Compare(b.Version, latest) < 0 {
+			list = append(list, b.Version)
+		}
+	}
+	return list, nil
+}
+
+// Built records the build of a bundle on one server: a ready row with its
+// SHA-256, or a failed row with the error. It publishes the row when its
+// status or its error changed. A failure does not change a bundle that is
+// ready, because it can be ready on other servers.
+func (s *Service) Built(ctx context.Context, b store.RunnerBundle) {
+	before, _ := s.cfg.Store.GetRunnerBundle(ctx, b.Version, b.Arch)
+	if err := s.cfg.Store.SetRunnerBundleBuild(ctx, b, time.Now()); err != nil {
+		s.log.Warn("record runner bundle", "version", b.Version, "arch", b.Arch, "err", err)
 		return
 	}
-	after, err := s.cfg.Store.GetRunnerBundle(ctx, version, arch)
+	after, err := s.cfg.Store.GetRunnerBundle(ctx, b.Version, b.Arch)
 	if err != nil || after.Status == before.Status && after.Error == before.Error {
 		return
 	}
@@ -100,6 +130,10 @@ func (s *Service) check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read the latest runner release: %w", err)
 	}
+	s.mu.Lock()
+	s.latest = rel.Version
+	s.mu.Unlock()
+	// The rows of the arches that the servers have show the release.
 	arches, err := s.serverArches(ctx)
 	if err != nil {
 		return err
@@ -211,14 +245,8 @@ func (s *Service) warnEnds(ctx context.Context) error {
 		if warned[version] {
 			continue
 		}
-		settings, err := s.cfg.Store.GetSettings(ctx)
-		if err != nil {
-			return err
-		}
 		s.log.Warn("runner version ends soon", "version", version, "end_date", end)
-		if err := s.cfg.Notifier.Notify(ctx, notify.RunnerDeprecationEvent(settings.DashboardURL(), version, end)); err != nil {
-			return fmt.Errorf("send runner end date warning: %w", err)
-		}
+		s.cfg.Notify(notify.RunnerDeprecationEvent(version, end))
 		if err := s.cfg.Store.SetRunnerBundleWarned(ctx, version); err != nil {
 			return err
 		}

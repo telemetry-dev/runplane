@@ -5,6 +5,7 @@ import { useFormProblems } from '~/api/form-problems'
 import { inviteQuery } from '~/api/invites'
 import { limits } from '~/api/limits'
 import { sessionQuery } from '~/api/session'
+import { FormAlert } from '~/components/app/form-alert'
 import { LoadError } from '~/components/app/load-error'
 import { useElapsed } from '~/components/shell/pending'
 import { SetupColumn } from '~/components/shell/setup'
@@ -12,7 +13,7 @@ import { Button, buttonClassName } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Spinner } from '~/components/ui/spinner'
-import { FormAlert, FormPanel, SetupHeader } from './parts'
+import { FormPanel, SetupHeader } from './parts'
 
 /** The page of an invite link: who invited the visitor, and the form that makes their account. */
 export function InvitePage({ token }: { token: string }) {

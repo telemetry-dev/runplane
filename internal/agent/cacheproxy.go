@@ -13,7 +13,6 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -23,7 +22,7 @@ import (
 // source address of the request and refuses requests from other addresses.
 // Run connects it to the primary.
 type CacheProxy struct {
-	driver    sandbox.Driver
+	driver    Driver
 	proxy     *httputil.ReverseProxy
 	transport *http.Transport
 
@@ -31,7 +30,7 @@ type CacheProxy struct {
 	sess *yamux.Session // nil while the agent has no connection
 }
 
-func NewCacheProxy(driver sandbox.Driver, log *slog.Logger) *CacheProxy {
+func NewCacheProxy(driver Driver, log *slog.Logger) *CacheProxy {
 	p := &CacheProxy{driver: driver}
 	p.transport = &http.Transport{
 		DialContext:         p.dial,
@@ -78,7 +77,7 @@ func rewriteCache(pr *httputil.ProxyRequest) {
 		out.URL.RawPath = cachePath + in.URL.RawPath
 	}
 	out.Host = ""
-	out.Header.Set(cache.SandboxHeader, in.Context().Value(sandboxKey{}).(string))
+	out.Header.Set(sandboxHeader, in.Context().Value(sandboxKey{}).(string))
 	out.Header.Set("X-Forwarded-Host", in.Host)
 	proto := "http"
 	if in.TLS != nil {

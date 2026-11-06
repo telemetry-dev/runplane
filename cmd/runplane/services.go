@@ -23,9 +23,4 @@ func (f schedulerFleet) Online() []scheduler.Host {
 	return hosts
 }
 
-func (f schedulerFleet) Driver(serverID string) scheduler.Driver {
-	if d := f.Fleet.Driver(serverID); d != nil {
-		return d
-	}
-	return nil
-}
+func (f schedulerFleet) Driver(serverID string) scheduler.Driver { return f.Fleet.Driver(serverID) }

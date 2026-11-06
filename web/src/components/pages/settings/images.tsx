@@ -168,16 +168,16 @@ function ImageRows({ image, admin, shown }: ImageRowsProps) {
 function ImageMenu({ image }: { image: Image }) {
   const client = useQueryClient()
   const [removing, setRemoving] = useState(false)
-  const refresh = () => client.invalidateQueries({ queryKey: imagesQuery.queryKey })
   const failed = (action: string) => (error: unknown) =>
     toastManager.add({ title: `Could not ${action} ${image.name}`, description: errorMessage(error) })
 
-  const makeDefault = $api.useMutation('patch', '/api/images/{id}', { onSuccess: refresh, onError: failed('make the default') })
+  const makeDefault = $api.useMutation('patch', '/api/images/{id}', {
+    onSuccess: (changed) => applyChange(client, 'image.state', changed),
+    onError: failed('make the default'),
+  })
+  // The builds change when the servers pull, and their image.state events show it.
   const pull = $api.useMutation('post', '/api/images/{id}/refresh', {
-    onSuccess: () => {
-      toastManager.add({ title: `Pulling ${image.name} again` })
-      return refresh()
-    },
+    onSuccess: () => void toastManager.add({ title: `Pulling ${image.name} again` }),
     onError: failed('pull'),
   })
   const path = { params: { path: { id: image.id } } }

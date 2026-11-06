@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -13,7 +12,6 @@ import (
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/version"
 )
 
 // ServerSummary is the server card of the overview.
@@ -85,7 +83,7 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 	out := make([]Server, len(list))
 	byID := map[string]*Server{}
 	for i, v := range list {
-		f := v.ServerFacts
+		f, a := v.ServerFacts, h.d.Servers.Actions(v)
 		out[i] = Server{
 			ServerSummary: ServerSummary{
 				ID: v.ID, Name: v.Name, Kind: v.Kind, Status: v.Status, StatusDetail: v.StatusDetail, Arch: f.Arch,
@@ -93,15 +91,11 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 			},
 			Address: f.Address, Provider: f.Provider, Region: regions[v.ID], OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
 			DockerVersion: f.DockerVersion, SysboxVersion: f.SysboxVersion, FirecrackerVersion: f.FirecrackerVersion,
-			Version: f.Version, UpdateState: string(fleet.UpdateNone), UpdateError: v.UpdateError,
-			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
-		}
-		if h.d.Servers != nil {
-			out[i].UpdateState = string(h.d.Servers.UpdateState(v))
-			a := h.d.Servers.Actions(v)
-			out[i].Actions = ServerActions{
+			Version: f.Version, UpdateState: string(h.d.Servers.UpdateState(v)), UpdateError: v.UpdateError,
+			Actions: ServerActions{
 				CanDrain: a.Drain, CanResume: a.Resume, CanRemove: a.Remove, CanUpdate: a.Update, CanRunDoctor: a.RunDoctor,
-			}
+			},
+			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
 		}
 		if st, ok := stats[v.ID]; ok {
 			out[i].CPUPercent, out[i].MemoryPercent, out[i].DiskPercent = &st.CPUPercent, &st.MemoryPercent, &st.DiskPercent
@@ -152,22 +146,18 @@ type ServerToken struct {
 }
 
 func (h *Handler) createServerToken(ctx context.Context, in *body[*ServerTokenRequest]) (*body[ServerToken], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	var name string
 	if in.Body != nil {
-		name = strings.TrimSpace(in.Body.Name)
+		name = in.Body.Name
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
-	t, err := h.d.Servers.NewToken(ctx, base, name, currentUser(ctx).ID)
+	t, err := h.d.Servers.NewToken(ctx, actor(ctx), base, name)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "server.token", t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
 	return &body[ServerToken]{ServerToken{ID: t.ID, Token: t.Token, Command: t.Command, ExpiresAt: t.ExpiresAt}}, nil
 }
 
@@ -197,30 +187,15 @@ type SSHInstall struct {
 }
 
 func (h *Handler) installServerSSH(ctx context.Context, in *body[SSHInstall]) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	req := in.Body
-	req.Name, req.Host = strings.TrimSpace(req.Name), strings.TrimSpace(req.Host)
-	var p field.Problems
-	if req.Name == "" {
-		p.Add("name", "Enter a name.", in.Body.Name)
-	}
-	if req.Host == "" || strings.ContainsAny(req.Host, " /@") {
-		p.Add("host", "Enter a host name or an IP address.", in.Body.Host)
-	}
-	if len(p) > 0 {
-		return nil, unprocessable(p)
-	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, err := h.d.Servers.InstallSSH(ctx, base, fleet.SSHInstall{Name: req.Name, Host: req.Host, Port: req.Port, User: req.User})
+	id, err := h.d.Servers.InstallSSH(ctx, actor(ctx), base, fleet.SSHInstall{Name: req.Name, Host: req.Host, Port: req.Port, User: req.User})
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "server.install", id, map[string]any{"name": req.Name, "host": req.Host, "port": req.Port, "user": req.User})
 	v, err := h.d.Store.GetServer(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "The new server is gone.")
@@ -233,12 +208,9 @@ type SSHKey struct {
 }
 
 func (h *Handler) getSSHKey(ctx context.Context, _ *struct{}) (*body[SSHKey], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	key, err := h.d.Servers.SSHPublicKey(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return &body[SSHKey]{SSHKey{PublicKey: key}}, nil
 }
@@ -252,23 +224,17 @@ func (h *Handler) updateServer(ctx context.Context, in *struct {
 	PathID
 	Body UpdateServerRequest
 }) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Changing servers")
-	}
 	v, err := h.d.Servers.UpdateServer(ctx, actor(ctx), in.ID, fleet.ServerChange{Name: in.Body.Name, Status: in.Body.Status})
 	if errors.Is(err, fleet.ErrInstalling) || errors.Is(err, fleet.ErrNotPaused) {
 		return nil, huma.Error409Conflict(field.Sentence(err))
 	}
 	if err != nil {
-		return nil, notFound(changeErr(err), "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
 func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Removing servers")
-	}
 	err := h.d.Servers.RemoveServer(ctx, actor(ctx), in.ID)
 	switch {
 	case errors.Is(err, fleet.ErrLocalServer):
@@ -276,20 +242,17 @@ func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) 
 	case errors.Is(err, store.ErrNotFound):
 		return nil, huma.Error404NotFound("No server has this ID.")
 	case err != nil:
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return nil, nil
 }
 
 func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Agent updates")
-	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	switch err := h.d.Servers.UpdateAgent(ctx, v.ID); {
+	switch err := h.d.Servers.UpdateAgent(ctx, actor(ctx), v.ID); {
 	case errors.Is(err, fleet.ErrUpToDate):
 		return nil, huma.Error409Conflict("The server runs runplane " + v.Version + ", the version of the primary.")
 	case errors.Is(err, fleet.ErrUpdateInProgress):
@@ -299,9 +262,8 @@ func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], e
 	case errors.Is(err, fleet.ErrNotConnected):
 		return nil, huma.Error409Conflict("The server is not connected, so it cannot update.")
 	case err != nil:
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "server.update_agent", v.ID, map[string]any{"name": v.Name, "from": v.Version, "to": version.Version})
 	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
@@ -316,37 +278,37 @@ func (h *Handler) getDoctor(ctx context.Context, in *PathID) (*body[DoctorResult
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	out := DoctorResult{ServerID: v.ID, Checks: []Check{}}
 	r, err := h.d.Store.GetDoctorResult(ctx, v.ID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return &body[DoctorResult]{out}, nil
+		return &body[DoctorResult]{DoctorResult{ServerID: v.ID, Checks: []Check{}}}, nil
 	case err != nil:
 		return nil, err
 	}
-	out.CheckedAt = &r.CheckedAt
+	return &body[DoctorResult]{doctorResult(r)}, nil
+}
+
+func doctorResult(r store.DoctorResult) DoctorResult {
+	out := DoctorResult{ServerID: r.ServerID, CheckedAt: &r.CheckedAt, Checks: []Check{}}
 	for _, c := range r.Checks {
 		out.Checks = append(out.Checks, Check(c))
 	}
-	return &body[DoctorResult]{out}, nil
+	return out
 }
 
 func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("The doctor")
-	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	list, err := h.d.Servers.Doctor(ctx, v.ID)
+	r, err := h.d.Servers.Doctor(ctx, v.ID)
 	if errors.Is(err, fleet.ErrNotConnected) {
 		return nil, huma.Error409Conflict("The server is not connected, so its checks cannot run.")
 	}
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	return reply(h.saveDoctor(ctx, v.ID, checks(list)))
+	return &body[DoctorResult]{doctorResult(r)}, nil
 }
 
 func checks(list []doctor.Check) []Check {
@@ -355,15 +317,4 @@ func checks(list []doctor.Check) []Check {
 		out[i] = Check{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
 	}
 	return out
-}
-
-func (h *Handler) saveDoctor(ctx context.Context, serverID string, checks []Check) (DoctorResult, error) {
-	r := store.DoctorResult{ServerID: serverID, CheckedAt: time.Now().UTC().Truncate(time.Millisecond)}
-	for _, c := range checks {
-		r.Checks = append(r.Checks, store.DoctorCheck(c))
-	}
-	if err := h.d.Store.SaveDoctorResult(ctx, r); err != nil {
-		return DoctorResult{}, err
-	}
-	return DoctorResult{ServerID: serverID, CheckedAt: &r.CheckedAt, Checks: orEmpty(checks)}, nil
 }

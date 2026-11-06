@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -109,7 +110,7 @@ func (h *Handler) createdInvite(ctx context.Context, inv store.Invite, token str
 	if err != nil {
 		return CreatedInvite{}, err
 	}
-	return CreatedInvite{URL: base + "/invite/" + token, Invite: inviteOut(inv)}, nil
+	return CreatedInvite{URL: base + pages.Invite(token), Invite: inviteOut(inv)}, nil
 }
 
 func (h *Handler) deleteInvite(ctx context.Context, in *PathID) (*empty, error) {

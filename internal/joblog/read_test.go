@@ -118,7 +118,7 @@ func TestJobLog(t *testing.T) {
 		"2026-11-04T10:00:01.500Z diag 2026-11-04T10:00:01.4000000Z ##[group]Run make test\n" +
 		"2026-11-04T10:00:02.000Z dockerd API listen on /var/run/docker.sock\n" +
 		"2026-11-04T10:00:02.500Z diag 2026-11-04T10:00:02.4000000Z ok\n"
-	l := New(Config{Dir: dir, Store: st, Driver: func(serverID string) sandbox.Driver {
+	l := New(Config{Dir: dir, Store: st, Driver: func(serverID string) Driver {
 		if serverID != "s1" {
 			return nil
 		}
@@ -162,12 +162,8 @@ func TestJobLog(t *testing.T) {
 	}
 }
 
-// consoleDriver is a driver whose sandboxes all have one console log. Job
-// calls no other method of the driver.
-type consoleDriver struct {
-	sandbox.Driver
-	log string
-}
+// consoleDriver is a driver whose sandboxes all have one console log.
+type consoleDriver struct{ log string }
 
 func (d consoleDriver) Logs(context.Context, string, bool) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(d.log)), nil

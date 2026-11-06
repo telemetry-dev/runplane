@@ -17,9 +17,6 @@ import (
 
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/mirror"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -152,52 +149,52 @@ func (s hostStats) stats() host.Stats {
 	}
 }
 
-type progress struct {
-	Status string `json:"status"`
-	Done   int64  `json:"done"`
-	Total  int64  `json:"total"`
-	Error  string `json:"error,omitempty"`
+// Progress is one step of EnsureImage.
+type Progress struct {
+	Status ImageStatus `json:"status"`
+	Done   int64       `json:"done"`  // bytes, 0 when unknown
+	Total  int64       `json:"total"` // bytes, 0 when unknown
+	Error  string      `json:"error,omitempty"`
 }
 
-// bundle is a runner bundle that is ready on the agent. Its folder is a
-// path on the agent, so the primary does not get it.
-type bundle struct {
+// ImageStatus is the step of EnsureImage that a Progress tells about.
+type ImageStatus string
+
+const (
+	ImagePending    ImageStatus = "pending"
+	ImagePulling    ImageStatus = "pulling"
+	ImageBuilding   ImageStatus = "building"
+	ImageConverting ImageStatus = "converting"
+	ImageReady      ImageStatus = "ready"
+	ImageFailed     ImageStatus = "failed"
+)
+
+// Bundle is a runner bundle that is ready on a server.
+type Bundle struct {
 	Version string `json:"version"`
 	Arch    string `json:"arch"`
-	SHA256  string `json:"sha256"`
-	Patched bool   `json:"patched"`
+	SHA256  string `json:"sha256"` // of the release archive
+	// Patched reports if the runner keeps ACTIONS_RESULTS_URL from its .env
+	// file, so that jobs use the runplane cache server.
+	Patched bool `json:"patched"`
 }
 
-type mirrorStats struct {
+// MirrorStats counts the use of the registry mirror of a server since the
+// start of runplane on the server.
+type MirrorStats struct {
 	Hits      int64 `json:"hits"`
 	Misses    int64 `json:"misses"`
-	HitBytes  int64 `json:"hit_bytes"`
-	MissBytes int64 `json:"miss_bytes"`
-	SizeBytes int64 `json:"size_bytes"`
+	HitBytes  int64 `json:"hit_bytes"`  // bytes sent to clients from the cache
+	MissBytes int64 `json:"miss_bytes"` // bytes fetched from upstream
+	SizeBytes int64 `json:"size_bytes"` // bytes in the cache now
 }
 
-func wireBundle(b runner.Bundle) bundle {
-	return bundle{Version: b.Version, Arch: b.Arch, SHA256: b.SHA256, Patched: b.Patched}
-}
-
-func (b bundle) runnerBundle() runner.Bundle {
-	return runner.Bundle{Version: b.Version, Arch: b.Arch, SHA256: b.SHA256, Patched: b.Patched}
-}
-
-func wireMirror(m mirror.Stats) mirrorStats {
-	return mirrorStats{Hits: m.Hits, Misses: m.Misses, HitBytes: m.HitBytes, MissBytes: m.MissBytes, SizeBytes: m.SizeBytes}
-}
-
-func (m mirrorStats) stats() mirror.Stats {
-	return mirror.Stats{Hits: m.Hits, Misses: m.Misses, HitBytes: m.HitBytes, MissBytes: m.MissBytes, SizeBytes: m.SizeBytes}
-}
-
-func wireProgress(p image.Progress) progress {
-	return progress{Status: string(p.Status), Done: p.Done, Total: p.Total, Error: p.Error}
-}
-
-func (p progress) imageProgress() image.Progress {
-	return image.Progress{Status: image.Status(p.Status), Done: p.Done, Total: p.Total, Error: p.Error}
+func (m *MirrorStats) Add(o MirrorStats) {
+	m.Hits += o.Hits
+	m.Misses += o.Misses
+	m.HitBytes += o.HitBytes
+	m.MissBytes += o.MissBytes
+	m.SizeBytes += o.SizeBytes
 }
 
 const (

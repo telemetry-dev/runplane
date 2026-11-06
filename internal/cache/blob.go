@@ -59,7 +59,7 @@ func (s *Server) mac(perm, id, se string) string {
 
 // serveBlob emulates the Azure Blob calls that the cache clients make on
 // signed URLs: Put Blob, Put Block, Put Block List, and Get Blob with a range.
-func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool) {
+func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, src source) {
 	id := strings.TrimPrefix(r.URL.Path, blobPrefix)
 	perm := "r"
 	switch r.Method {
@@ -84,7 +84,7 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	ident, err := s.identify(r, trusted)
+	ident, err := s.identify(r, src)
 	if err != nil && !errors.Is(err, ErrNoSandbox) {
 		s.cfg.Logger.Error("cache: identify sandbox", "err", err)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")

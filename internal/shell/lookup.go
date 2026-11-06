@@ -54,7 +54,12 @@ func LookupStore(st *store.Store) func(ctx context.Context, name string) (Target
 type Drivers struct {
 	Store *store.Store
 	// Driver returns the driver of a connected server, or nil.
-	Driver func(serverID string) sandbox.Driver
+	Driver func(serverID string) Driver
+}
+
+// Driver is the part of a sandbox driver that the shells use.
+type Driver interface {
+	Shell(ctx context.Context, id string, size sandbox.TermSize) (sandbox.Terminal, error)
 }
 
 func (d Drivers) Open(ctx context.Context, sandboxID string, size sandbox.TermSize) (sandbox.Terminal, error) {

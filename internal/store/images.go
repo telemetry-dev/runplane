@@ -34,7 +34,6 @@ type ImageBuild struct {
 	Status    string    `json:"status"`
 	Error     string    `json:"error"`
 	SizeBytes int64     `json:"size_bytes"`
-	Path      string    `json:"path"` // ext4 root disk in VM mode
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -86,10 +85,10 @@ func (s *Store) DeleteImage(ctx context.Context, id string) error {
 	return exec1(ctx, s.w, "delete image", "DELETE FROM images WHERE id = ?", id)
 }
 
-const imageBuildCols = "image_id, server_id, digest, status, error, size_bytes, path, updated_at"
+const imageBuildCols = "image_id, server_id, digest, status, error, size_bytes, updated_at"
 
 func (b *ImageBuild) cols() []any {
-	return []any{&b.ImageID, &b.ServerID, &b.Digest, &b.Status, &b.Error, &b.SizeBytes, &b.Path, at(&b.UpdatedAt)}
+	return []any{&b.ImageID, &b.ServerID, &b.Digest, &b.Status, &b.Error, &b.SizeBytes, at(&b.UpdatedAt)}
 }
 
 func (s *Store) UpsertImageBuild(ctx context.Context, b ImageBuild) error {

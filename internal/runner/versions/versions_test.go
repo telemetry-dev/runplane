@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestCheck(t *testing.T) {
 			bus := &events.Bus{}
 			notes := &fakeNotifier{}
 			cfg := Config{
-				Store: st, Bus: bus, GitHub: fakeGitHub{}, Notifier: notes, API: ghrest.Client{URL: srv.URL},
+				Store: st, Bus: bus, GitHub: fakeGitHub{}, Notify: notes.notify, API: ghrest.Client{URL: srv.URL},
 				InUse: func() []string { return []string{"2.330.0"} },
 			}
 			published := events.Subscribe[events.RunnerVersion](t.Context(), bus)
@@ -111,6 +112,33 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// On a new install, the first check can run before the primary records the
+// arch of its server. The first runner bundle must not wait for the next
+// check one hour later.
+func TestVersionsBeforeTheServersHaveAnArch(t *testing.T) {
+	ctx := context.Background()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/actions/runner/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"tag_name": "v2.331.0", "published_at": "2026-11-01T12:00:00Z"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	s := New(Config{
+		Store: openStore(t), Bus: &events.Bus{}, GitHub: fakeGitHub{}, Notify: (&fakeNotifier{}).notify, API: ghrest.Client{URL: srv.URL},
+		InUse: func() []string { return nil },
+	})
+
+	if got, err := s.Versions(ctx, "x64"); err != nil || got != nil {
+		t.Errorf("versions before the first check: %v, %v; want none", got, err)
+	}
+	if err := s.check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Versions(ctx, "x64"); err != nil || !slices.Equal(got, []string{"2.331.0"}) {
+		t.Errorf("versions after the check: %v, %v; want the latest release 2.331.0", got, err)
+	}
+}
+
 // The warning names a version that new sandboxes get, also when a newer
 // version is ready on another server.
 func TestWarnNamesTheVersionsInUse(t *testing.T) {
@@ -126,7 +154,7 @@ func TestWarnNamesTheVersionsInUse(t *testing.T) {
 		}
 	}
 	notes := &fakeNotifier{}
-	s := New(Config{Store: st, Bus: &events.Bus{}, Notifier: notes, InUse: func() []string { return []string{"2.330.0"} }})
+	s := New(Config{Store: st, Bus: &events.Bus{}, Notify: notes.notify, InUse: func() []string { return []string{"2.330.0"} }})
 	if err := s.warnEnds(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -142,9 +170,9 @@ func TestBuiltKeepsAReadyBundle(t *testing.T) {
 	published := events.Subscribe[events.RunnerVersion](t.Context(), bus)
 	s := New(Config{Store: st, Bus: bus})
 
-	s.Built(ctx, "2.330.0", "x64", runner.Bundle{Version: "2.330.0", Arch: "x64", SHA256: "9e2f", Patched: true}, nil)
+	s.Built(ctx, store.RunnerBundle{Version: "2.330.0", Arch: "x64", SHA256: "9e2f", Patched: true, Status: store.BundleReady})
 	// Another server cannot download the version.
-	s.Built(ctx, "2.330.0", "x64", runner.Bundle{}, errNotFound)
+	s.Built(ctx, store.RunnerBundle{Version: "2.330.0", Arch: "x64", Status: store.BundleFailed, Error: errNotFound.Error()})
 	b, err := st.GetRunnerBundle(ctx, "2.330.0", "x64")
 	if err != nil || b.Status != store.BundleReady || b.SHA256 != "9e2f" || !b.Patched {
 		t.Errorf("bundle = %+v, %v; want ready with the first build", b, err)
@@ -152,7 +180,7 @@ func TestBuiltKeepsAReadyBundle(t *testing.T) {
 	if n := countEvents(published); n != 1 {
 		t.Errorf("published %d runner.version events, want 1", n)
 	}
-	s.Built(ctx, "2.331.0", "x64", runner.Bundle{}, errNotFound)
+	s.Built(ctx, store.RunnerBundle{Version: "2.331.0", Arch: "x64", Status: store.BundleFailed, Error: errNotFound.Error()})
 	if b, _ := st.GetRunnerBundle(ctx, "2.331.0", "x64"); b.Status != store.BundleFailed || b.Error != errNotFound.Error() {
 		t.Errorf("bundle = %+v, want failed with the error", b)
 	}
@@ -170,10 +198,7 @@ func (fakeGitHub) ReadScope(context.Context) (string, ghrest.Auth, bool) {
 
 type fakeNotifier struct{ sent []notify.Event }
 
-func (f *fakeNotifier) Notify(_ context.Context, e notify.Event) error {
-	f.sent = append(f.sent, e)
-	return nil
-}
+func (f *fakeNotifier) notify(e notify.Event) { f.sent = append(f.sent, e) }
 
 func openStore(t *testing.T) *store.Store {
 	t.Helper()

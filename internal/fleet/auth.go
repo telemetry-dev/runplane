@@ -8,9 +8,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -138,11 +140,13 @@ type Token struct {
 
 // NewToken makes a one-time install token for a new agent. base is the URL
 // of the dashboard, and an empty name means the host name of the agent.
-func (f *Fleet) NewToken(ctx context.Context, base, name, createdBy string) (Token, error) {
-	token, t, err := f.newToken(ctx, name, createdBy, "")
+func (f *Fleet) NewToken(ctx context.Context, by audit.Actor, base, name string) (Token, error) {
+	name = strings.TrimSpace(name)
+	token, t, err := f.newToken(ctx, name, by.UserID, "")
 	if err != nil {
 		return Token{}, err
 	}
+	f.audit.Record(ctx, by, audit.ServerToken, t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
 	return Token{ID: t.ID, Token: token, Command: f.installCommand(base, token), ExpiresAt: t.ExpiresAt}, nil
 }
 

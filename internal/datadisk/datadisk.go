@@ -3,6 +3,8 @@
 // same disk, so the two caches also leave min_free_disk_percent free.
 package datadisk
 
+import "github.com/runplane/runplane/internal/host"
+
 // evictMargin is how far above min_free_disk_percent a cache frees the disk,
 // so that the removal does not run again at each write.
 const evictMargin = 5
@@ -20,6 +22,16 @@ type Space struct {
 
 	total, free int64
 	minFree     float64
+}
+
+// Of returns the room of the caches on the disk of dir now. A disk whose
+// size runplane cannot read gives the caches their room for an unknown disk.
+func Of(dir string, s Settings) Space {
+	total, free, err := host.DiskSpace(dir)
+	if err != nil {
+		return Limits(s, 0, 0)
+	}
+	return Limits(s, total, free)
 }
 
 // Limits returns the room of the caches on a data disk of total bytes with

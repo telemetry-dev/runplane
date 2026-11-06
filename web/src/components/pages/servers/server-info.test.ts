@@ -9,6 +9,7 @@ import {
   serverSize,
   sortServers,
   statusNote,
+  systemsText,
   type Server,
 } from './server-info'
 
@@ -125,6 +126,12 @@ describe('currentUsage', () => {
   test('an unreachable server has no current usage', () => {
     expect(currentUsage({ ...primary, status: 'unreachable' })).toEqual({ cpu: null, memory: null, disk: null })
   })
+
+  // They stay connected and finish their jobs.
+  test('a draining or disabled server keeps its usage', () => {
+    expect(currentUsage({ ...primary, status: 'draining' })).toEqual({ cpu: 52, memory: 38, disk: 34 })
+    expect(currentUsage({ ...primary, status: 'disabled' })).toEqual({ cpu: 52, memory: 38, disk: 34 })
+  })
 })
 
 describe('statusNote', () => {
@@ -183,4 +190,15 @@ describe('commandLines', () => {
       'curl -fsSL https://ci.kestrel.dev/install.sh | sudo sh',
     ])
   })
+})
+
+test('systemsText groups the versions of each system and names the best-effort systems', () => {
+  const systems = [
+    { name: 'Ubuntu', version: '22.04', best_effort: false },
+    { name: 'Ubuntu', version: '24.04', best_effort: false },
+    { name: 'Debian', version: '12', best_effort: true },
+    { name: 'Debian', version: '13', best_effort: true },
+  ]
+  expect(systemsText(systems)).toBe('Ubuntu 22.04 or 24.04, or Debian 12 or 13 (best effort)')
+  expect(systemsText(systems.slice(1, 2))).toBe('Ubuntu 24.04')
 })

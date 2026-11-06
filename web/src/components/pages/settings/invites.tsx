@@ -120,7 +120,7 @@ function InviteForm({ onCreated, members }: InviteFormProps) {
           </p>
         )}
         <p className="text-xs text-pretty text-neutral-7">
-          The link works once, for 7 days. {members}
+          Each link works once, until it expires. {members}
         </p>
       </Form>
     </SettingsCard>

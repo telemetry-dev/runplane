@@ -6,7 +6,7 @@ import { Stat } from '~/components/app/stat'
 import { serverStatusNames } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { agentUpdateNote, currentUsage, serverLocation } from '~/components/pages/servers/server-info'
-import { formatPercent } from '~/lib/format'
+import { formatPercent, formatVersion } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
 import { diskDetail, memoryDetail, sandboxMode, statusDetail, type Server } from './server-format'
 
@@ -41,7 +41,7 @@ export function ServerFacts({ server }: { server: Server }) {
       </KeyValue>
       <KeyValue label="KVM">{reported ? (server.kvm ? 'Yes' : 'No') : <None />}</KeyValue>
       <KeyValue label="runplane">
-        {server.version.replace(/^v/, '') || <None />}
+        {server.version ? formatVersion(server.version) : <None />}
         {update && (
           <span className="text-neutral-7">
             {' · '}

@@ -20,7 +20,7 @@ jobs:
     strategy:
       matrix:
         arch: [x86_64, aarch64]
-    runs-on: ubuntu-24.04
+    runs-on: runplane
     steps:
       - uses: actions/checkout@v7
       - name: Install the build packages

@@ -6,7 +6,9 @@ import { doctorQuery, serverQuery, useDoctor } from '~/api/servers'
 import { useCapabilities } from '~/api/session'
 import { LoadError, LoadErrorRow, NotFound } from '~/components/app/load-error'
 import { SectionHeader } from '~/components/app/section-header'
+import { serverStatusNames } from '~/components/app/status-dot'
 import { LiveRunnersTable } from '~/components/pages/runners/live-runners-table'
+import { statusFacts } from '~/components/pages/servers/server-info'
 import { Skeleton } from '~/components/ui/skeleton'
 import { DoctorSection } from './doctor-section'
 import { ImagesTable } from './images-table'
@@ -60,8 +62,8 @@ function ServerDetail({ server }: { server: Server }) {
           sandboxes={sandboxes.data}
           showServer={false}
           empty={
-            server.status === 'draining'
-              ? 'No runners on this server. This server takes no new runners while it drains.'
+            statusFacts[server.status].connected && !statusFacts[server.status].takesRunners
+              ? `No runners on this server. ${serverStatusNames[server.status]} servers take no new runners.`
               : 'No runners on this server.'
           }
           failed={

@@ -8,6 +8,7 @@ import {
   formatPercent,
   formatRelativeTime,
   formatTimeAgo,
+  formatVersion,
 } from './format'
 
 describe('formatDuration', () => {
@@ -141,5 +142,16 @@ describe('formatPercent', () => {
     [100, '100%'],
   ])('%f is %s', (value, want) => {
     expect(formatPercent(value)).toBe(want)
+  })
+})
+
+describe('formatVersion', () => {
+  test.each([
+    ['v1.2.0 (3f2a9c1)', 'v1.2.0'],
+    ['v1.2.0', 'v1.2.0'],
+    ['1.2.0', 'v1.2.0'],
+    ['dev (3f2a9c1)', 'dev'],
+  ])('%s is %s', (version, want) => {
+    expect(formatVersion(version)).toBe(want)
   })
 })

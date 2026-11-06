@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/auth"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -19,9 +19,9 @@ type fakeCaches struct {
 
 func (f fakeCaches) MaxBytes() int64 { return f.limit }
 
-type fakeMirrors mirror.Stats
+type fakeMirrors agent.MirrorStats
 
-func (f fakeMirrors) MirrorStats(context.Context) mirror.Stats { return mirror.Stats(f) }
+func (f fakeMirrors) MirrorStats(context.Context) agent.MirrorStats { return agent.MirrorStats(f) }
 
 func TestCachesReportTheMirrorsOfAllServers(t *testing.T) {
 	e := newEnv(t, func(d *Deps) {
@@ -30,15 +30,12 @@ func TestCachesReportTheMirrorsOfAllServers(t *testing.T) {
 	var out CacheOverview
 	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/caches", nil, &out).want(t, 200)
 	want := MirrorStats{Hits: 6, Misses: 5, HitBytes: 600, MissBytes: 500, SizeBytes: 1300}
-	if m := out.Mirror; m == nil || m.StartedAt.IsZero() {
-		t.Fatalf("mirror %+v, want the counts since the start", m)
-	}
 	if r := out.Mirror.HitRate; r == nil || *r != 6.0/11 {
 		t.Errorf("mirror hit rate %v, want 6/11", r)
 	}
-	want.StartedAt, want.HitRate = out.Mirror.StartedAt, out.Mirror.HitRate
-	if *out.Mirror != want {
-		t.Errorf("mirror %+v, want %+v", *out.Mirror, want)
+	want.HitRate = out.Mirror.HitRate
+	if out.Mirror != want {
+		t.Errorf("mirror %+v, want %+v", out.Mirror, want)
 	}
 }
 

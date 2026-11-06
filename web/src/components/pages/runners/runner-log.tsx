@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { errorMessage } from '~/api/client'
+import { apiUrl, errorMessage } from '~/api/client'
 import { useFollowedText } from '~/api/followed-text'
 import { followSandboxLog, sandboxQuery } from '~/api/sandboxes'
 import { LogViewer } from '~/components/app/log-viewer'
@@ -71,7 +71,7 @@ function RunnerLog({ id, failed }: { id: string; failed?: string }) {
       // Tells why the log stopped growing.
       meta={log.done && !log.error && log.text && <span role="status">The runner stopped</span>}
       follow={!log.done}
-      downloadUrl={`/api/sandboxes/${id}/log`}
+      downloadUrl={apiUrl('/api/sandboxes/{id}/log', { path: { id } })}
       downloadName={`runner-${id}.log`}
       maxHeight="calc(100dvh - 160px)"
       empty={empty}

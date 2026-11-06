@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
@@ -14,12 +15,17 @@ import (
 func TestInstallToken(t *testing.T) {
 	ctx := t.Context()
 	h := newHarness(t, newFakeNode("arm64"))
-	tok, err := h.f.NewToken(ctx, "https://ci.example.com", "build-1", "")
+	tok, err := h.f.NewToken(ctx, audit.Actor{}, "https://ci.example.com", "build-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(tok.Token, "rp_srv_") || !tok.ExpiresAt.Equal(h.clock.now().Add(time.Hour)) {
 		t.Errorf("token %q expires at %v, want rp_srv_... for one hour", tok.Token, tok.ExpiresAt)
+	}
+	entries, _, err := h.st.ListAudit(ctx, "", 10)
+	if err != nil || len(entries) != 1 || entries[0].Action != "server.token" || entries[0].Target != tok.ID ||
+		string(entries[0].Detail) != `{"expires_at":"2026-11-04T13:00:00Z","name":"build-1"}` {
+		t.Errorf("audit entries %+v, %v; want the server.token of build-1", entries, err)
 	}
 	hello := agent.Hello{
 		Token: tok.Token, Version: version.Version, Mode: sandbox.ModeContainer, Host: newFakeNode("x64").info, Addr: "198.51.100.7",
@@ -67,7 +73,7 @@ func TestInstallToken(t *testing.T) {
 	}
 
 	// A token without a name names the server after its host.
-	unnamed, err := h.f.NewToken(ctx, "https://ci.example.com", "", "")
+	unnamed, err := h.f.NewToken(ctx, audit.Actor{}, "https://ci.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +86,7 @@ func TestInstallToken(t *testing.T) {
 		t.Errorf("server name %q of a token without a name, want the host name node-x64", v.Name)
 	}
 
-	late, err := h.f.NewToken(ctx, "https://ci.example.com", "build-2", "")
+	late, err := h.f.NewToken(ctx, audit.Actor{}, "https://ci.example.com", "build-2")
 	if err != nil {
 		t.Fatal(err)
 	}

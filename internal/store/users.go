@@ -156,8 +156,7 @@ func (s *Store) CreateFirstUser(ctx context.Context, codeHash string, now time.T
 			return ErrSetupDone
 		}
 		err = exec1(ctx, tx, "use setup code",
-			"UPDATE setup_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
-			ms(now), codeHash, ms(now))
+			"UPDATE setup_codes SET used_at = ? WHERE code_hash = ? AND "+openSetupCode, ms(now), codeHash, ms(now))
 		if err != nil {
 			return err
 		}
@@ -200,10 +199,21 @@ func (s *Store) DeleteExpiredAuth(ctx context.Context, now time.Time) error {
 	})
 }
 
+// openSetupCode is the condition of a setup code that is not used and not
+// expired at the time of its parameter.
+const openSetupCode = "used_at IS NULL AND expires_at > ?"
+
 // HasOpenSetupCode reports if a setup code exists that is not used and not expired.
 func (s *Store) HasOpenSetupCode(ctx context.Context, now time.Time) (bool, error) {
 	return queryOne(ctx, s.r, "find setup code", scanValue[bool],
-		"SELECT EXISTS (SELECT 1 FROM setup_codes WHERE used_at IS NULL AND expires_at > ?)", ms(now))
+		"SELECT EXISTS (SELECT 1 FROM setup_codes WHERE "+openSetupCode+")", ms(now))
+}
+
+// SetupCodeOpen reports if the setup code with codeHash is not used and not
+// expired.
+func (s *Store) SetupCodeOpen(ctx context.Context, codeHash string, now time.Time) (bool, error) {
+	return queryOne(ctx, s.r, "find setup code", scanValue[bool],
+		"SELECT EXISTS (SELECT 1 FROM setup_codes WHERE code_hash = ? AND "+openSetupCode+")", codeHash, ms(now))
 }
 
 const sessionCols = "id_hash, user_id, created_at, expires_at, last_seen_at, ip, user_agent"

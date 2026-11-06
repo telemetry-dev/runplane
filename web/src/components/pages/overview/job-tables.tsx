@@ -18,6 +18,7 @@ import { RunnerLabel } from '~/components/app/runner-label'
 import { SectionHeader, SectionLink } from '~/components/app/section-header'
 import { StatusIcon } from '~/components/app/status-icon'
 import { UsageBar } from '~/components/app/usage-bar'
+import { jobOrigin, mutedJob, runTime } from '~/components/pages/jobs/job-format'
 import { formatDuration, formatRelativeTime } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
 import { jobProgress } from './data'
@@ -102,18 +103,11 @@ const jobColumns: Column[] = [
   {
     head: 'Job',
     width: 'grow',
-    cell: (job) => {
-      const workflow = job.workflow_file.split('/').pop()
-      return (
-        <RowLink to="/jobs/$jobId" params={{ jobId: job.id }}>
-          <CellTitle
-            title={job.job_name}
-            detail={workflow ? `${job.repository} · ${workflow}` : job.repository}
-            muted={job.status === 'cancelled'}
-          />
-        </RowLink>
-      )
-    },
+    cell: (job) => (
+      <RowLink to="/jobs/$jobId" params={{ jobId: job.id }}>
+        <CellTitle title={job.job_name} detail={jobOrigin(job)} muted={mutedJob(job.status)} />
+      </RowLink>
+    ),
   },
   { head: 'Branch', width: 200, drop: 1, cell: (job) => <BranchRef branch={job.head_branch} /> },
   { head: 'Runner', width: 150, drop: 1, cell: (job) => (job.pool_label ? <RunnerLabel>{job.pool_label}</RunnerLabel> : <None />) },
@@ -127,9 +121,18 @@ const runningColumns: Column[] = [
     head: 'Progress',
     width: 96,
     drop: 3,
-    cell: (job, now) => <UsageBar value={jobProgress(elapsed(job, now), job.expected_duration_ms)} label="Progress" className="w-full" />,
+    cell: (job, now) => <UsageBar value={progress(job, now)} label="Progress" className="w-full" />,
   },
-  { head: 'Elapsed', width: 56, align: 'end', className: 'whitespace-nowrap', cell: (job, now) => formatDuration(elapsed(job, now)) },
+  {
+    head: 'Elapsed',
+    width: 56,
+    align: 'end',
+    className: 'whitespace-nowrap',
+    cell: (job, now) => {
+      const time = runTime(job, now)
+      return time === null ? <None /> : formatDuration(time)
+    },
+  },
 ]
 
 const recentColumns: Column[] = [
@@ -145,6 +148,7 @@ const recentColumns: Column[] = [
   },
 ]
 
-function elapsed(job: Job, now: number): number {
-  return now - Date.parse(job.started_at ?? job.queued_at)
+function progress(job: Job, now: number): number | null {
+  const time = runTime(job, now)
+  return time === null ? null : jobProgress(time, job.expected_duration_ms)
 }

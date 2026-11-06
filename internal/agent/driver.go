@@ -37,16 +37,6 @@ func (d remoteDriver) Capacity(ctx context.Context) (sandbox.Capacity, error) {
 	return call(ctx, d.s, opCapacity, none{})
 }
 
-// Configure sends the driver settings. The agent keeps the
-// min_free_disk_percent of the last Session.Configure.
-func (d remoteDriver) Configure(ctx context.Context, settings sandbox.Settings) error {
-	d.s.settingsMu.Lock()
-	s := d.s.settings
-	d.s.settingsMu.Unlock()
-	s.Settings = settings
-	return d.s.Configure(ctx, s)
-}
-
 // Events closes its channel when the session ends.
 func (d remoteDriver) Events() <-chan sandbox.Event { return d.s.events }
 
@@ -85,13 +75,6 @@ func (d remoteDriver) Hold(ctx context.Context, id string, until time.Time) erro
 	_, err := call(ctx, d.s, opHold, holdRequest{ID: id, Until: until.UTC()})
 	return err
 }
-
-func (d remoteDriver) Probe(ctx context.Context) error {
-	_, err := call(ctx, d.s, opProbe, none{})
-	return err
-}
-
-func (d remoteDriver) Close() error { return d.s.Close() }
 
 // The shell stream after the upgrade: the agent sends the raw terminal
 // output. The primary sends frames, so that a resize can go on the same

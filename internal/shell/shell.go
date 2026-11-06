@@ -19,9 +19,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sshkey"
-	"github.com/runplane/runplane/internal/store"
 )
 
 // Opener opens a login shell as the runner user in a sandbox.
@@ -86,8 +86,9 @@ type Config struct {
 	// AdminKeys returns the keys that can connect to all debug sandboxes.
 	// Optional.
 	AdminKeys func(ctx context.Context) []ssh.PublicKey
-	// Audit records each shell that opens. Optional. (*store.Store).InsertAudit fits.
-	Audit func(ctx context.Context, e store.AuditEntry) error
+	// Audit records each shell that opens: the Record method of an
+	// audit.Log.
+	Audit func(ctx context.Context, by audit.Actor, action, target string, detail map[string]any)
 	Log   *slog.Logger
 }
 
@@ -115,8 +116,8 @@ const (
 // New loads or makes the host key and listens on cfg.Addr. Call Serve to
 // accept connections.
 func New(cfg Config) (*Server, error) {
-	if cfg.Addr == "" || cfg.Opener == nil || cfg.Lookup == nil || cfg.HostKeyPath == "" {
-		return nil, errors.New("new ssh gateway: Addr, Opener, Lookup, and HostKeyPath are required")
+	if cfg.Addr == "" || cfg.Opener == nil || cfg.Lookup == nil || cfg.HostKeyPath == "" || cfg.Audit == nil {
+		return nil, errors.New("new ssh gateway: Addr, Opener, Lookup, HostKeyPath, and Audit are required")
 	}
 	if cfg.Keys == nil {
 		cfg.Keys = NewGitHubKeys(nil).Keys

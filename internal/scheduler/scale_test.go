@@ -385,12 +385,12 @@ func TestPoolStatsEvent(t *testing.T) {
 	m.Available[2].QueuedAt = start.Add(time.Second)
 	e.scale(sc, m)
 	// The acquired job and the job with no room wait for a runner.
-	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Queued: 2, Assigned: 1}); got != want {
+	if got, want := last(), (events.PoolStats{PoolID: pool.ID, PoolCounts: store.PoolCounts{Queued: 2, Assigned: 1}}); got != want {
 		t.Errorf("after the offer: %+v, want %+v", got, want)
 	}
 
 	e.scale(sc, msg(1))
-	if got, want := last(), (events.PoolStats{PoolID: pool.ID, Starting: 1, Queued: 2, Assigned: 1}); got != want {
+	if got, want := last(), (events.PoolStats{PoolID: pool.ID, PoolCounts: store.PoolCounts{Starting: 1, Queued: 2, Assigned: 1}}); got != want {
 		t.Errorf("after the start: %+v, want %+v", got, want)
 	}
 }

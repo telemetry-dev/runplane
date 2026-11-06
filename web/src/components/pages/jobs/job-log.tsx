@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { errorMessage, type Schemas } from '~/api/client'
+import { apiUrl, errorMessage, type Schemas } from '~/api/client'
 import { useFollowedText } from '~/api/followed-text'
 import { followJobLog, logQuery } from '~/api/jobs'
 import { LogViewer } from '~/components/app/log-viewer'
@@ -46,7 +46,7 @@ export function JobLog({ job, step, now }: JobLogProps) {
       meta={time === null ? undefined : formatDuration(time)}
       follow={live}
       // Without a log, LogViewer disables its download button.
-      downloadUrl={job.log_state === 'stored' || live ? `/api/jobs/${job.id}/log` : undefined}
+      downloadUrl={job.log_state === 'stored' || live ? apiUrl('/api/jobs/{id}/log', { path: { id: job.id } }) : undefined}
       downloadName={`${job.repository.split('/').pop()}-${job.job_name}-${job.run_number}.log`.replace(/[^\w.-]+/g, '-')}
       empty={empty}
     />
@@ -62,13 +62,11 @@ type JobLogText = {
 
 /**
  * The log of a step, or of the whole job for step 0. A stored log loads once; a
- * live log streams while the job runs.
+ * live log streams the whole job while it runs (shownStep).
  */
 function useJobLog(job: Schemas['Job'], step: number): JobLogText {
   const stored = useQuery({ ...logQuery(job.id, step), enabled: job.log_state === 'stored' })
-  // A step that has finished has all its lines, so its stream may end for good.
-  const running = !job.steps.find((item) => item.number === step)?.completed_at
-  const live = useFollowedText(followJobLog(job.id, step), { enabled: job.log_state === 'live', reconnect: running })
+  const live = useFollowedText(followJobLog(job.id), { enabled: job.log_state === 'live', reconnect: true })
   // When a live log ends, its text stays on screen until the stored copy loads.
   if (job.log_state === 'stored' && (stored.data !== undefined || live.text === undefined)) {
     return { text: stored.data, error: stored.error, retry: () => void stored.refetch() }

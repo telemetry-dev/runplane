@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -15,9 +14,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sshkey"
-	"github.com/runplane/runplane/internal/store"
 )
 
 const (
@@ -68,6 +67,13 @@ func newSigner(t *testing.T) ssh.Signer {
 	return signer
 }
 
+// auditEntry is one Record call of the gateway.
+type auditEntry struct {
+	by             audit.Actor
+	action, target string
+	detail         map[string]any
+}
+
 // gateway serves debugID (also by its first 8 characters) to the actor
 // octocat, plainID (not a debug sandbox), expiredID (its hold ended), and
 // noActorID (its job has no actor yet).
@@ -75,13 +81,13 @@ type gateway struct {
 	addr                   string
 	hostKey                ssh.PublicKey
 	opens                  fakeOpener
-	audits                 chan store.AuditEntry
+	audits                 chan auditEntry
 	actor, admin, stranger ssh.Signer
 }
 
 func startGateway(t *testing.T) *gateway {
 	t.Helper()
-	g := &gateway{opens: make(fakeOpener, 4), audits: make(chan store.AuditEntry, 4),
+	g := &gateway{opens: make(fakeOpener, 4), audits: make(chan auditEntry, 4),
 		actor: newSigner(t), admin: newSigner(t), stranger: newSigner(t)}
 	debug := Target{SandboxID: debugID, State: sandbox.StateBusy, Debug: true, Actor: "octocat", Repository: "octo/api", Job: "build"}
 	plain, expired, noActor := debug, debug, debug
@@ -109,9 +115,8 @@ func startGateway(t *testing.T) *gateway {
 			return nil, nil
 		},
 		AdminKeys: func(context.Context) []ssh.PublicKey { return []ssh.PublicKey{g.admin.PublicKey()} },
-		Audit: func(_ context.Context, e store.AuditEntry) error {
-			g.audits <- e
-			return nil
+		Audit: func(_ context.Context, by audit.Actor, action, target string, detail map[string]any) {
+			g.audits <- auditEntry{by, action, target, detail}
 		},
 	})
 	if err != nil {
@@ -244,13 +249,9 @@ func TestShellWithActorKey(t *testing.T) {
 	}
 
 	e := recv(t, g.audits)
-	var detail map[string]any
-	if err := json.Unmarshal(e.Detail, &detail); err != nil {
-		t.Fatal(err)
-	}
-	if e.Action != "sandbox.ssh" || e.Target != debugID || e.IP != "127.0.0.1" || detail["github_login"] != "octocat" ||
-		detail["key"] != ssh.FingerprintSHA256(g.actor.PublicKey()) || detail["job_name"] != "build" || detail["repository"] != "octo/api" {
-		t.Errorf("audit entry %+v with detail %v, want sandbox.ssh on %s for the job build of octo/api by octocat from 127.0.0.1", e, detail, debugID)
+	if e.action != "sandbox.ssh" || e.target != debugID || e.by != (audit.Actor{IP: "127.0.0.1"}) || e.detail["github_login"] != "octocat" ||
+		e.detail["key"] != ssh.FingerprintSHA256(g.actor.PublicKey()) || e.detail["job_name"] != "build" || e.detail["repository"] != "octo/api" {
+		t.Errorf("audit entry %+v, want sandbox.ssh on %s for the job build of octo/api by octocat from 127.0.0.1", e, debugID)
 	}
 }
 
@@ -293,12 +294,7 @@ func TestAdminKeyOpensShellWithoutActor(t *testing.T) {
 	if sh.term.sandboxID != noActorID {
 		t.Errorf("Open got sandbox %q, want %q", sh.term.sandboxID, noActorID)
 	}
-	e := recv(t, g.audits)
-	var detail map[string]any
-	if err := json.Unmarshal(e.Detail, &detail); err != nil {
-		t.Fatal(err)
-	}
-	if detail["admin_key"] != true || detail["github_login"] != nil {
+	if detail := recv(t, g.audits).detail; detail["admin_key"] != true || detail["github_login"] != nil {
 		t.Errorf("audit detail %v, want an admin key and no GitHub login", detail)
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 // LoadOrCreate loads the SSH key from path, or makes a new ed25519 key
@@ -47,26 +49,11 @@ func newKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("encode ssh key: %w", err)
 	}
 	data := pem.EncodeToMemory(block)
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("make ssh key dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".ssh-key-*")
-	if err != nil {
-		return nil, fmt.Errorf("write ssh key: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return nil, fmt.Errorf("write ssh key: %w", err)
-	}
-	// A hard link puts the complete file in place and fails if a key is
-	// already there. If another caller made the key first, use that key.
-	if err := os.Link(tmp.Name(), path); err != nil {
+	// If another caller made the key first, use that key.
+	if err := atomicfile.CreateOnce(path, data, 0o600); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return os.ReadFile(path)
 		}

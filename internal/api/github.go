@@ -5,32 +5,52 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
 type GitHubStatus struct {
-	Connected     bool             `json:"connected" doc:"An app with at least one installation exists."`
-	App           *GitHubApp       `json:"app,omitempty" doc:"Absent before the manifest flow."`
-	Installations []Installation   `json:"installations"`
-	ScaleSets     []ScaleSetStatus `json:"scale_sets" doc:"One for each pool and installation, or for each pool and repository of a personal account."`
+	Connected      bool             `json:"connected" doc:"An app with at least one installation exists."`
+	App            *GitHubApp       `json:"app,omitempty" doc:"Absent before the manifest flow."`
+	Installations  []Installation   `json:"installations"`
+	ScaleSets      []ScaleSetStatus `json:"scale_sets" doc:"One for each pool and installation, or for each pool and repository of a personal account."`
+	AppPermissions AppPermissions   `json:"app_permissions" doc:"The permissions that the manifest of a new app asks for."`
+}
+
+// AppPermissions has the permissions of the app for each account_type of
+// ManifestRequest.
+type AppPermissions struct {
+	Organization []AppPermission `json:"organization"`
+	User         []AppPermission `json:"user"`
+}
+
+type AppPermission struct {
+	Name   string `json:"name" enum:"organization_self_hosted_runners,administration,actions,contents,pull_requests,workflows,metadata"`
+	Access string `json:"access" enum:"read,write"`
 }
 
 type GitHubApp struct {
-	AppID       int64     `json:"app_id"`
-	Slug        string    `json:"slug"`
-	Name        string    `json:"name"`
-	ClientID    string    `json:"client_id"`
-	OwnerLogin  string    `json:"owner_login"`
-	OwnerType   string    `json:"owner_type" doc:"Organization or User."`
-	HTMLURL     string    `json:"html_url" doc:"Public page of the app on GitHub."`
-	SettingsURL string    `json:"settings_url" doc:"Settings page of the app on GitHub: name, permissions, and keys."`
-	InstallURL  string    `json:"install_url" doc:"GitHub page to install the app on more accounts or repositories."`
-	CreatedAt   time.Time `json:"created_at"`
+	AppID          int64     `json:"app_id"`
+	Slug           string    `json:"slug"`
+	Name           string    `json:"name"`
+	ClientID       string    `json:"client_id"`
+	OwnerLogin     string    `json:"owner_login"`
+	OwnerType      string    `json:"owner_type" doc:"Organization or User."`
+	HTMLURL        string    `json:"html_url" doc:"Public page of the app on GitHub."`
+	SettingsURL    string    `json:"settings_url" doc:"Settings page of the app on GitHub: name, permissions, and keys."`
+	PermissionsURL string    `json:"permissions_url" doc:"Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there."`
+	InstallURL     string    `json:"install_url" doc:"GitHub page to install the app on more accounts or repositories."`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type Installation struct {
@@ -79,17 +99,20 @@ type ScaleSetStats struct {
 
 func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 	st := h.d.Store
-	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}}
+	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}, AppPermissions: AppPermissions{
+		Organization: appPermissions(ghrest.Account{Type: ghrest.Organization}),
+		User:         appPermissions(ghrest.Account{Type: ghrest.User}),
+	}}
 	app, err := st.GetGitHubApp(ctx)
 	switch {
 	case err == nil:
-		slug := url.PathEscape(app.Slug)
 		owner := ghrest.Account{Type: app.OwnerType, Login: app.OwnerLogin}
 		out.App = &GitHubApp{
 			AppID: app.AppID, Slug: app.Slug, Name: app.Name, ClientID: app.ClientID, OwnerLogin: app.OwnerLogin,
 			OwnerType: app.OwnerType, HTMLURL: app.HTMLURL, CreatedAt: app.CreatedAt,
-			SettingsURL: owner.SettingsURL(ghrest.Web) + "/apps/" + slug,
-			InstallURL:  ghrest.Web + "/apps/" + slug + "/installations/new",
+			SettingsURL:    owner.AppURL(ghrest.Web, app.Slug),
+			PermissionsURL: owner.AppURL(ghrest.Web, app.Slug) + "/permissions",
+			InstallURL:     ghrest.AppInstallURL(ghrest.Web, app.Slug),
 		}
 	case !errors.Is(err, store.ErrNotFound):
 		return GitHubStatus{}, err
@@ -109,8 +132,7 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 			ID: inst.ID, AccountLogin: inst.AccountLogin, AccountType: inst.AccountType, AvatarURL: inst.AvatarURL,
 			RepositorySelection: inst.RepositorySelection, RepositoryCount: len(repos), Repositories: make([]Repository, len(repos)),
 			Suspended: inst.SuspendedAt != nil, SuspendedAt: inst.SuspendedAt,
-			HTMLURL: ghrest.Account{Type: inst.AccountType, Login: inst.AccountLogin}.SettingsURL(ghrest.Web) +
-				"/installations/" + strconv.FormatInt(inst.ID, 10),
+			HTMLURL: ghrest.Account{Type: inst.AccountType, Login: inst.AccountLogin}.InstallationURL(ghrest.Web, inst.ID),
 		})
 		list := out.Installations[len(out.Installations)-1].Repositories
 		for i, r := range repos {
@@ -145,12 +167,21 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 }
 
 // runnerGroup names the runner group of a scale set. runplane makes its
-// scale sets in the group Default, which has the ID 1.
+// scale sets in the group Default.
 func runnerGroup(id int64) string {
-	if id <= 1 {
+	if id <= ghrest.DefaultRunnerGroup {
 		return "Default"
 	}
 	return "Group " + strconv.FormatInt(id, 10)
+}
+
+func appPermissions(owner ghrest.Account) []AppPermission {
+	list := owner.AppPermissions()
+	out := make([]AppPermission, len(list))
+	for i, p := range list {
+		out[i] = AppPermission(p)
+	}
+	return out
 }
 
 func (h *Handler) getGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {
@@ -186,18 +217,15 @@ func (h *Handler) createManifest(ctx context.Context, in *body[ManifestRequest])
 		}
 		owner = ghrest.Account{Type: ghrest.Organization, Login: b.Organization}
 	}
-	if h.d.GitHub == nil {
-		return nil, unavailable("The GitHub connection")
-	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
 	action, manifest, err := h.d.GitHub.Manifest(ctx, base, owner)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "github.manifest", "", map[string]any{"account_type": b.AccountType, "organization": owner.Login})
+	h.record(ctx, audit.GitHubManifest, "", map[string]any{"account_type": b.AccountType, "organization": owner.Login})
 	return &body[ManifestForm]{ManifestForm{ActionURL: action, Manifest: manifest}}, nil
 }
 
@@ -221,15 +249,12 @@ func (h *Handler) githubCallback(ctx context.Context, in *githubCallbackInput) (
 	if to != "" {
 		return redirect(to), nil
 	}
-	if h.d.GitHub == nil {
-		return redirect(h.githubErrorPage(ctx, "The GitHub connection is not available in this runplane process.")), nil
-	}
 	to, err := h.d.GitHub.Callback(ctx, in.Code, in.State)
 	if err != nil {
 		h.d.Log.Warn("github app manifest callback", "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
 	}
-	h.record(ctx, "github.app.create", "", nil)
+	h.record(ctx, audit.GitHubAppCreate, "", nil)
 	return redirect(to), nil
 }
 
@@ -247,15 +272,12 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 	if to != "" {
 		return redirect(to), nil
 	}
-	if h.d.GitHub == nil {
-		return redirect(h.githubErrorPage(ctx, "The GitHub connection is not available in this runplane process.")), nil
-	}
 	to, err := h.d.GitHub.Setup(ctx, in.InstallationID, in.SetupAction)
 	if err != nil {
 		h.d.Log.Warn("github installation setup", "installation", in.InstallationID, "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
 	}
-	h.record(ctx, "github.installation."+in.SetupAction, strconv.FormatInt(in.InstallationID, 10), nil)
+	h.record(ctx, audit.GitHubInstallation(in.SetupAction), strconv.FormatInt(in.InstallationID, 10), nil)
 	return redirect(to), nil
 }
 
@@ -265,7 +287,7 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 func (h *Handler) browserAdmin(ctx context.Context, self string) (context.Context, string) {
 	u, err := h.d.Auth.UserForToken(ctx, clientOf(ctx).token)
 	if err != nil {
-		return ctx, "/login?" + url.Values{"redirect": {self}}.Encode()
+		return ctx, pages.Login(self)
 	}
 	ctx = context.WithValue(ctx, userKey{}, u)
 	if !auth.CanDo(u.Role, auth.ActionAdmin) {
@@ -274,34 +296,59 @@ func (h *Handler) browserAdmin(ctx context.Context, self string) (context.Contex
 	return ctx, ""
 }
 
-// githubErrorPage is the setup page before GitHub is connected, and the
-// GitHub settings page after.
 func (h *Handler) githubErrorPage(ctx context.Context, msg string) string {
-	page := "/setup/github"
-	if ok, err := h.githubConnected(ctx); err == nil && ok {
-		page = "/settings/github"
-	}
-	return page + "?" + url.Values{"error": {msg}}.Encode()
+	ok, err := h.githubConnected(ctx)
+	return pages.GitHubError(err == nil && ok, msg)
 }
 
 func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {
-	if h.d.GitHub == nil {
-		return nil, unavailable("The GitHub connection")
-	}
 	if err := h.d.GitHub.Sync(ctx); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "github.sync", "", nil)
+	h.record(ctx, audit.GitHubSync, "", nil)
 	return reply(h.gitHubStatus(ctx))
 }
 
+type CreatePullRequestRequest struct {
+	Repository string `json:"repository" maxLength:"140" doc:"owner/name of a repository that the GitHub App can access."`
+	Label      string `json:"label" doc:"The label of an enabled pool."`
+}
+
+type PullRequest struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url" doc:"Page of the pull request on GitHub."`
+}
+
+func (h *Handler) createPullRequest(ctx context.Context, in *body[CreatePullRequestRequest]) (*body[PullRequest], error) {
+	b := in.Body
+	pools, err := h.d.Store.ListPools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(pools, func(p store.Pool) bool { return p.Enabled && p.Label == b.Label }) {
+		return nil, invalid("body.label", "No enabled pool has this label.", b.Label)
+	}
+	base, err := h.baseURL(ctx)
+	if err != nil {
+		return nil, err
+	}
+	number, htmlURL, err := h.d.GitHub.OpenPullRequest(ctx, base, b.Repository, b.Label)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, huma.Error404NotFound("The GitHub App has no access to " + b.Repository + ".")
+	case errors.Is(err, ghrest.ErrNoPullPermissions):
+		return nil, huma.Error403Forbidden(field.Sentence(err))
+	case err != nil:
+		return nil, serviceErr(err)
+	}
+	h.record(ctx, audit.GitHubPullRequest, b.Repository, map[string]any{"repository": b.Repository, "label": b.Label, "number": number})
+	return &body[PullRequest]{PullRequest{Number: number, HTMLURL: htmlURL}}, nil
+}
+
 func (h *Handler) disconnectGitHub(ctx context.Context, _ *struct{}) (*empty, error) {
-	if h.d.GitHub == nil {
-		return nil, unavailable("The GitHub connection")
-	}
 	if err := h.d.GitHub.Disconnect(ctx); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "github.disconnect", "", nil)
+	h.record(ctx, audit.GitHubDisconnect, "", nil)
 	return nil, nil
 }

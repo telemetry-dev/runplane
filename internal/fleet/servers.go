@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/audit"
@@ -25,7 +27,7 @@ import (
 var ErrLocalServer = errors.New("the primary server cannot be removed")
 
 // HostCheck is the doctor report of the server of the primary, for the setup
-// page.
+// page. Mode takes the place of the mode check of the report.
 type HostCheck struct {
 	doctor.Report
 	Mode sandbox.Mode
@@ -326,7 +328,7 @@ func (f *Fleet) UpdateServer(ctx context.Context, by audit.Actor, serverID strin
 		changes["status"] = [2]any{old.Status, v.Status}
 	}
 	if len(changes) > 0 {
-		f.audit.Record(ctx, by, "server.update", v.ID, map[string]any{"name": v.Name, "status": v.Status, "changes": changes})
+		f.audit.Record(ctx, by, audit.ServerUpdate, v.ID, map[string]any{"name": v.Name, "status": v.Status, "changes": changes})
 	}
 	return v, nil
 }
@@ -419,38 +421,55 @@ func (f *Fleet) RemoveServer(ctx context.Context, by audit.Actor, serverID strin
 	if err := f.st.DeleteServer(ctx, v.ID, f.now()); err != nil {
 		return err
 	}
+	f.bus.Publish(events.ServerRemoved{ID: v.ID})
 	f.bus.Publish(events.PoolsChanged{})
-	f.audit.Record(ctx, by, "server.delete", v.ID, map[string]any{"name": v.Name})
+	f.audit.Record(ctx, by, audit.ServerDelete, v.ID, map[string]any{"name": v.Name})
 	return nil
 }
 
-// Doctor runs the doctor checks on a connected server.
-func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]doctor.Check, error) {
+// Doctor runs the doctor checks on a connected server, and keeps them as
+// the last doctor result of the server.
+func (f *Fleet) Doctor(ctx context.Context, serverID string) (store.DoctorResult, error) {
 	n := f.node(serverID)
 	if n == nil {
-		return nil, ErrNotConnected
+		return store.DoctorResult{}, ErrNotConnected
 	}
-	r, err := f.doctor(ctx, n)
-	return r.Checks, err
+	r, err := n.Doctor(ctx)
+	if err != nil {
+		return store.DoctorResult{}, fmt.Errorf("run the doctor: %w", err)
+	}
+	return f.saveDoctor(ctx, serverID, r.Checks)
 }
 
 // Check runs the doctor on the server of the primary, for the setup page.
+// The server page shows the checks as the last doctor result of the
+// primary.
 func (f *Fleet) Check(ctx context.Context) (HostCheck, error) {
-	r, err := f.doctor(ctx, f.local)
+	r, err := f.local.Doctor(ctx)
 	if err != nil {
-		return HostCheck{}, err
+		return HostCheck{}, fmt.Errorf("run the doctor: %w", err)
 	}
+	if local, err := f.st.GetLocalServer(ctx); err == nil {
+		if _, err := f.saveDoctor(ctx, local.ID, r.Checks); err != nil {
+			f.log.Warn("save the doctor result", "server_id", local.ID, "err", err)
+		}
+	}
+	r.Checks = slices.DeleteFunc(r.Checks, func(c doctor.Check) bool { return c.ID == doctor.ModeCheck.ID })
 	return HostCheck{Report: r, Mode: f.local.Driver().Mode()}, nil
 }
 
-func (f *Fleet) doctor(ctx context.Context, n agent.Node) (doctor.Report, error) {
-	st, err := f.st.GetSettings(ctx)
-	if err != nil {
-		return doctor.Report{}, err
+// saveDoctor keeps the checks as the last doctor result of a server. The
+// time has the precision of the store, so that the result is the same as
+// the row that a later read gives.
+func (f *Fleet) saveDoctor(ctx context.Context, serverID string, checks []doctor.Check) (store.DoctorResult, error) {
+	r := store.DoctorResult{ServerID: serverID, CheckedAt: f.now().UTC().Truncate(time.Millisecond), Checks: []store.DoctorCheck{}}
+	for _, c := range checks {
+		r.Checks = append(r.Checks, store.DoctorCheck{
+			ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command,
+		})
 	}
-	r, err := n.Doctor(ctx, st.MinFreeDiskPercent)
-	if err != nil {
-		return doctor.Report{}, fmt.Errorf("run the doctor: %w", err)
+	if err := f.st.SaveDoctorResult(ctx, r); err != nil {
+		return store.DoctorResult{}, err
 	}
 	return r, nil
 }

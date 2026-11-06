@@ -11,7 +11,7 @@ import {
   useFittingColumns,
 } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
-import { StatusDot } from '~/components/app/status-dot'
+import { serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { Spinner } from '~/components/ui/spinner'
 import { ServerMenu } from './server-menu'
@@ -23,6 +23,7 @@ import {
   serverOrigin,
   serverSize,
   sortServers,
+  statusFacts,
   statusNote,
   type Server,
 } from './server-info'
@@ -108,7 +109,7 @@ function ServerRow({ server, shown, admin }: { server: Server; shown: Shown; adm
           <CellTitle
             title={<NameWithUpdate server={server} />}
             detail={noteBelow ? noteText(note) : serverOrigin(server)}
-            muted={server.status === 'unreachable'}
+            muted={statusFacts[server.status].muted}
           />
         </RowLink>
       </DataTableCell>
@@ -146,7 +147,7 @@ function NameWithUpdate({ server }: { server: Server }) {
 
 function ServerUsage({ server, shown }: { server: Server; shown: Shown }) {
   const { cpu, memory } = currentUsage(server)
-  const paused = server.status === 'draining' ? 'Draining' : server.status === 'disabled' ? 'Disabled' : undefined
+  const paused = statusFacts[server.status].takesRunners ? undefined : serverStatusNames[server.status]
   return (
     <>
       {shown.cpu && (

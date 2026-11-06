@@ -321,9 +321,7 @@ func (s *Scheduler) publishPoolStats(ctx context.Context, poolID string) {
 		s.log.Warn("count pool runners and jobs", "err", err)
 		return
 	}
-	p := counts[poolID]
-	p.PoolID = poolID
-	s.bus.Publish(events.PoolStats(p))
+	s.bus.Publish(events.PoolStats{PoolID: poolID, PoolCounts: counts[poolID]})
 }
 
 // timeLimit is the time limit of a job of the pool. A warm sandbox of the

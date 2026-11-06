@@ -3,15 +3,11 @@ package notify
 import (
 	"cmp"
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
-	"slices"
 	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
-	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -27,22 +23,26 @@ const (
 	diskMargin = 5
 )
 
-// Dispatcher sends events to the notification channels that subscribe to
-// them. Other packages give it events through Notify. Run makes the alerts
-// of the bus: one job.failed alert for each failed job, one
-// server.unreachable alert for each outage of a server, and at most one
-// disk.low alert for each server in 6 hours.
+// Dispatcher sends the alerts to the notification channels that subscribe
+// to them. Other packages give it alerts through Notify. Run makes the
+// alerts of the bus: one job.failed alert for each failed job, one
+// server.unreachable alert for each outage of a server, at most one
+// disk.low alert for each server in 6 hours, and one backup.failed alert for
+// each failed backup.
 type Dispatcher struct {
-	st  *store.Store
-	box *secret.Box // opens the channel URLs
-	log *slog.Logger
-	now func() time.Time
+	st       *store.Store
+	channels *Channels
+	log      *slog.Logger
+	now      func() time.Time
 
+	// ctx ends when Run ends. It holds the subscriptions and the sends.
+	ctx      context.Context
+	stop     context.CancelFunc
 	settings <-chan events.SettingsChanged
 	jobs     <-chan events.JobState
 	servers  <-chan events.ServerState
 	stats    <-chan events.HostStats
-	stop     context.CancelFunc // ends the subscriptions
+	backups  <-chan events.BackupState
 
 	due chan string // failed jobs whose wait for run data ended
 	wg  sync.WaitGroup
@@ -57,10 +57,10 @@ type Dispatcher struct {
 }
 
 type Config struct {
-	Store *store.Store
-	Box   *secret.Box
-	Bus   *events.Bus
-	Log   *slog.Logger
+	Store    *store.Store
+	Channels *Channels
+	Bus      *events.Bus
+	Log      *slog.Logger
 }
 
 // New makes a dispatcher. It takes its events from the bus at once, also the
@@ -69,15 +69,18 @@ func New(c Config) *Dispatcher {
 	ctx, stop := context.WithCancel(context.Background())
 	return &Dispatcher{
 		st:       c.Store,
-		box:      c.Box,
+		channels: c.Channels,
 		log:      cmp.Or(c.Log, slog.New(slog.DiscardHandler)),
 		now:      time.Now,
+		ctx:      ctx,
+		stop:     stop,
 		settings: events.Subscribe[events.SettingsChanged](ctx, c.Bus),
 		jobs:     events.Subscribe[events.JobState](ctx, c.Bus),
 		servers:  events.Subscribe[events.ServerState](ctx, c.Bus),
 		stats:    events.Subscribe[events.HostStats](ctx, c.Bus),
-		stop:     stop,
+		backups:  events.Subscribe[events.BackupState](ctx, c.Bus),
 		due:      make(chan string),
+		minFree:  store.DefaultSettings().MinFreeDiskPercent,
 		sent:     map[string]time.Time{},
 		waiting:  map[string]*time.Timer{},
 		down:     map[string]bool{},
@@ -86,55 +89,21 @@ func New(c Config) *Dispatcher {
 	}
 }
 
-// Notify sends e to each enabled channel that subscribes to its type, and
-// records each delivery.
-func (d *Dispatcher) Notify(ctx context.Context, e Event) error {
-	list, err := d.st.ListNotificationChannels(ctx)
-	if err != nil {
-		return err
-	}
-	var wg sync.WaitGroup
-	errs := make([]error, len(list))
-	for i, c := range list {
-		if !c.Enabled || !slices.Contains(c.Events, string(e.Type)) {
-			continue
-		}
-		wg.Go(func() {
-			msg := ""
-			if err := d.send(ctx, c, e); err != nil {
-				msg = err.Error()
-				errs[i] = fmt.Errorf("channel %s: %w", c.Name, err)
-			}
-			if err := d.st.RecordNotificationDelivery(context.WithoutCancel(ctx), c.ID, d.now(), msg); err != nil {
-				d.log.Warn("record notification delivery", "channel", c.Name, "err", err)
-			}
-		})
-	}
-	wg.Wait()
-	return errors.Join(errs...)
-}
-
-// Test sends the test event to a channel: the api Notifier service.
-func (d *Dispatcher) Test(ctx context.Context, base, kind, url string) error {
-	return Send(ctx, kind, url, TestEvent(base))
-}
-
-func (d *Dispatcher) send(ctx context.Context, c store.NotificationChannel, e Event) error {
-	url, err := d.box.Open(c.URLEnc)
-	if err != nil {
-		return fmt.Errorf("open the channel URL: %w", err)
-	}
-	return Send(ctx, c.Kind, string(url), e)
+// Notify sends e in the background to each enabled channel that subscribes
+// to its type, and records each delivery. The link of e goes to the
+// dashboard URL of the settings.
+func (d *Dispatcher) Notify(e Event) {
+	d.notify(func() Event { return e })
 }
 
 // Run makes alerts from the bus until ctx ends.
 func (d *Dispatcher) Run(ctx context.Context) {
 	defer d.stop()
-	st, err := d.st.GetSettings(ctx)
-	if err != nil {
+	if st, err := d.st.GetSettings(ctx); err == nil {
+		d.settingsChanged(st)
+	} else {
 		d.log.Warn("read settings for notifications", "err", err)
 	}
-	d.settingsChanged(st)
 	for {
 		select {
 		case <-ctx.Done():
@@ -143,21 +112,26 @@ func (d *Dispatcher) Run(ctx context.Context) {
 				t.Stop()
 			}
 			d.mu.Unlock()
+			d.stop()
 			d.wg.Wait()
 			return
 		case id := <-d.due:
 			d.mu.Lock()
 			delete(d.waiting, id)
-			d.jobFailed(ctx, id)
+			d.jobFailed(id)
 			d.mu.Unlock()
 		case c := <-d.settings:
 			d.settingsChanged(c.New)
 		case job := <-d.jobs:
-			d.jobDone(ctx, job)
+			d.jobDone(job)
 		case v := <-d.servers:
-			d.serverState(ctx, v)
+			d.serverState(v)
 		case s := <-d.stats:
-			d.hostStats(ctx, s)
+			d.hostStats(s)
+		case b := <-d.backups:
+			if b.Status == store.BackupFailed {
+				d.Notify(BackupFailedEvent(b.Error))
+			}
 		}
 	}
 }
@@ -170,7 +144,7 @@ func (d *Dispatcher) settingsChanged(st store.Settings) {
 
 // serverState sends an alert when a server becomes unreachable, and the
 // next one after the server was online again.
-func (d *Dispatcher) serverState(ctx context.Context, v events.ServerState) {
+func (d *Dispatcher) serverState(v events.ServerState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	switch v.Status {
@@ -183,7 +157,7 @@ func (d *Dispatcher) serverState(ctx context.Context, v events.ServerState) {
 		if v.LastSeenAt != nil {
 			lastSeen = *v.LastSeenAt
 		}
-		d.goNotify(ctx, func(dash string) Event { return ServerUnreachableEvent(dash, v.ID, v.Name, lastSeen) })
+		d.Notify(ServerUnreachableEvent(v.ID, v.Name, lastSeen))
 	case store.ServerOnline:
 		delete(d.down, v.ID)
 	}
@@ -191,7 +165,7 @@ func (d *Dispatcher) serverState(ctx context.Context, v events.ServerState) {
 
 // jobDone sends the alert of a job that failed when its run data is there,
 // or when the wait for the data ends.
-func (d *Dispatcher) jobDone(ctx context.Context, job events.JobState) {
+func (d *Dispatcher) jobDone(job events.JobState) {
 	if job.State != store.JobCompleted || job.Result != store.ResultFailed {
 		return
 	}
@@ -207,12 +181,12 @@ func (d *Dispatcher) jobDone(ctx context.Context, job events.JobState) {
 			t.Stop()
 			delete(d.waiting, job.ID)
 		}
-		d.jobFailed(ctx, job.ID)
+		d.jobFailed(job.ID)
 	case !waits:
 		d.waiting[job.ID] = time.AfterFunc(enrichWait, func() {
 			select {
 			case d.due <- job.ID:
-			case <-ctx.Done():
+			case <-d.ctx.Done():
 			}
 		})
 	}
@@ -220,7 +194,7 @@ func (d *Dispatcher) jobDone(ctx context.Context, job events.JobState) {
 
 // jobFailed sends the alert of a failed job with the job data of the
 // store, one time for each job. d.mu must be held.
-func (d *Dispatcher) jobFailed(ctx context.Context, id string) {
+func (d *Dispatcher) jobFailed(id string) {
 	now := d.now()
 	if _, ok := d.sent[id]; ok {
 		return
@@ -231,13 +205,13 @@ func (d *Dispatcher) jobFailed(ctx context.Context, id string) {
 		}
 	}
 	d.sent[id] = now
-	d.goNotify(ctx, func(dash string) Event {
-		job, err := d.st.GetJob(ctx, id)
+	d.notify(func() Event {
+		job, err := d.st.GetJob(d.ctx, id)
 		if err != nil {
 			d.log.Warn("read the failed job", "job", id, "err", err)
 			job = store.Job{ID: id}
 		}
-		return JobFailedEvent(dash, job)
+		return JobFailedEvent(job)
 	})
 }
 
@@ -245,7 +219,7 @@ func (d *Dispatcher) jobFailed(ctx context.Context, id string) {
 // falls below min_free_disk_percent. The next alert waits until the space
 // rises diskMargin points above the limit and falls again, and at least
 // diskEvery after the last alert of the server.
-func (d *Dispatcher) hostStats(ctx context.Context, s events.HostStats) {
+func (d *Dispatcher) hostStats(s events.HostStats) {
 	free := 100 - s.DiskPercent
 	now := d.now()
 	d.mu.Lock()
@@ -263,24 +237,25 @@ func (d *Dispatcher) hostStats(ctx context.Context, s events.HostStats) {
 	}
 	d.diskSent[s.ServerID] = now
 	d.log.Warn("disk almost full", "server_id", s.ServerID, "free_percent", free)
-	d.goNotify(ctx, func(dash string) Event {
+	d.notify(func() Event {
 		name := s.ServerID
-		if v, err := d.st.GetServer(ctx, s.ServerID); err == nil {
+		if v, err := d.st.GetServer(d.ctx, s.ServerID); err == nil {
 			name = v.Name
 		}
-		return DiskLowEvent(dash, s.ServerID, name, free, minFree)
+		return DiskLowEvent(s.ServerID, name, free, minFree)
 	})
 }
 
-// goNotify builds an event with the dashboard URL and sends it in the background.
-func (d *Dispatcher) goNotify(ctx context.Context, build func(dashboard string) Event) {
+// notify builds an event and sends it in the background, with links to
+// the dashboard URL of the settings.
+func (d *Dispatcher) notify(build func() Event) {
 	d.wg.Go(func() {
-		st, err := d.st.GetSettings(ctx)
+		st, err := d.st.GetSettings(d.ctx)
 		if err != nil {
 			d.log.Warn("read settings for a notification", "err", err)
 		}
-		e := build(st.DashboardURL())
-		if err := d.Notify(ctx, e); err != nil {
+		e := build()
+		if err := d.channels.notify(d.ctx, e, st.DashboardURL()); err != nil {
 			d.log.Warn("send notification", "type", e.Type, "err", err)
 		}
 	})

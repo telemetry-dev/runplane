@@ -39,7 +39,7 @@ type Config struct {
 	// new binary. nil: the caller of Apply restarts runplane.
 	Restart func()
 	// Store and Notify serve Run: the auto_update setting, and the
-	// update.available notification. Notify must not wait for the delivery.
+	// update.available alert.
 	Store  *store.Store
 	Notify func(notify.Event)
 	Log    *slog.Logger     // nil: no log
@@ -169,7 +169,7 @@ func (s *Service) Run(ctx context.Context) {
 		}
 		if told != st.Latest {
 			told = st.Latest
-			s.cfg.Notify(notify.UpdateAvailableEvent(settings.DashboardURL(), st.Current, st.Latest, st.URL))
+			s.cfg.Notify(notify.UpdateAvailableEvent(st.Current, st.Latest, st.URL))
 		}
 	}
 }

@@ -18,7 +18,7 @@ import { toastManager } from '~/components/ui/toast'
 import { formatRelativeTime } from '~/lib/format'
 import { Activity, prefetchActivity } from './activity'
 import { Invites } from './invites'
-import { roles, type Members, type Role } from './member-info'
+import { roleNames, roles, type Members, type Role } from './member-info'
 import { ReadOnlyNote, SettingsColumn, SettingsSection } from './parts'
 
 type User = Schemas['User']
@@ -110,11 +110,14 @@ type UserRowProps = {
 
 function UserRow({ user, me, lastAdmin, capabilities, shown }: UserRowProps) {
   const [dialog, setDialog] = useState<'demote' | 'remove'>()
+  // Kept after the dialog closes, so its text stays while it fades out.
+  const [demoteTo, setDemoteTo] = useState<Role>(user.role)
   const changeRole = useChangeRole()
 
   function pickRole(role: Role) {
     // Taking away your own admin role ends your access to settings, so ask first.
     if (me && !capabilities[role].admin) {
+      setDemoteTo(role)
       setDialog('demote')
       return
     }
@@ -173,10 +176,10 @@ function UserRow({ user, me, lastAdmin, capabilities, shown }: UserRowProps) {
           <ConfirmDialog
             open={dialog === 'demote'}
             onOpenChange={(open) => setDialog(open ? 'demote' : undefined)}
-            title="Make yourself a member?"
+            title={`Make yourself a ${roleNames[demoteTo].toLowerCase()}?`}
             description="You can no longer change settings or manage members. Another admin can make you an admin again."
-            action="Make me a member"
-            onConfirm={() => changeRole.mutateAsync({ user, role: 'member' })}
+            action={`Make me a ${roleNames[demoteTo].toLowerCase()}`}
+            onConfirm={() => changeRole.mutateAsync({ user, role: demoteTo })}
           />
         )}
       </DataTableCell>

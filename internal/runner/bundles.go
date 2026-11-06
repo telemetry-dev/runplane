@@ -50,14 +50,14 @@ func NewBundles(cfg BundleConfig) *Bundles {
 
 // Bundle is a runner that is ready on this server.
 type Bundle struct {
-	Version string `json:"version"`
-	Arch    string `json:"arch"`
-	SHA256  string `json:"sha256"` // of the release archive
+	Version string
+	Arch    string
+	SHA256  string // of the release archive
 	// Patched reports if the runner keeps ACTIONS_RESULTS_URL from its .env
 	// file, so that jobs use the runplane cache server.
-	Patched  bool   `json:"patched"`
-	Dir      string `json:"dir"`
-	Ext4Path string `json:"ext4_path,omitempty"` // VM mode: the read-only drive
+	Patched  bool
+	Dir      string
+	Ext4Path string // VM mode: the read-only drive
 }
 
 // Ensure makes the runner of version and arch ready in the runners folder. It
@@ -65,7 +65,7 @@ type Bundle struct {
 // runner patch (guest.Patch). If the patch does not apply, the bundle stays
 // unpatched and jobs use the GitHub cache.
 func (b *Bundles) Ensure(ctx context.Context, version, arch string) (Bundle, error) {
-	if !versionRE.MatchString(version) || !slices.Contains(arches, arch) {
+	if !versionRE.MatchString(version) || !slices.Contains(Arches, arch) {
 		return Bundle{}, fmt.Errorf("ensure runner: bad version %q or arch %q", version, arch)
 	}
 	bundle := Bundle{Version: version, Arch: arch, Dir: b.dir(version, arch)}
@@ -285,7 +285,7 @@ func (b *Bundles) prune(keep []string) error {
 			continue
 		}
 		version, arch, _ := strings.Cut(e.Name(), "-")
-		if e.IsDir() && versionRE.MatchString(version) && slices.Contains(arches, arch) {
+		if e.IsDir() && versionRE.MatchString(version) && slices.Contains(Arches, arch) {
 			versions[arch] = append(versions[arch], version)
 		}
 	}

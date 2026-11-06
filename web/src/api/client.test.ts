@@ -1,6 +1,27 @@
 import { expect, test } from 'vitest'
-import { toApiError } from './client'
+import { api, apiUrl, toApiError } from './client'
 import { formProblems } from './form-problems'
+
+test('apiUrl encodes the path params and adds the query', () => {
+  expect(apiUrl('/api/sandboxes/{id}/shell', { path: { id: 'a b/c' }, query: { rows: 24, cols: 80 } })).toBe(
+    '/api/sandboxes/a%20b%2Fc/shell?rows=24&cols=80',
+  )
+  expect(apiUrl('/api/events')).toBe('/api/events')
+})
+
+test('an array query param goes as one comma-separated value, as the API reads it', async () => {
+  let url = ''
+  await api.GET('/api/pools/placement', {
+    // Node has no page URL for a relative request.
+    baseUrl: 'http://runplane.test',
+    params: { query: { arch: 'x64', vcpu: 2, memory_mb: 4096, server_ids: ['s1', 's2'] } },
+    fetch: async (request: Request) => {
+      url = request.url
+      return Response.json({ online_servers: 2, placeable_servers: 2, placeable_server_ids: ['s1', 's2'] })
+    },
+  })
+  expect(new URL(url).search).toBe('?arch=x64&vcpu=2&memory_mb=4096&server_ids=s1,s2')
+})
 
 test('a validation problem gives its detail as message and its body fields as form errors', async () => {
   const response = new Response(

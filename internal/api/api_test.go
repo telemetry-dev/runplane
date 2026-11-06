@@ -18,14 +18,18 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/settings"
 	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/tlsutil"
 )
 
 type env struct {
@@ -35,7 +39,9 @@ type env struct {
 	d   Deps
 }
 
-// newEnv starts the API on a new database. with sets services in Deps.
+// newEnv starts the API on a new database. with sets services in Deps. The
+// other services are fakes that do nothing, or that panic in a method that
+// the test does not expect.
 func newEnv(t *testing.T, with ...func(*Deps)) *env {
 	t.Helper()
 	dir := t.TempDir()
@@ -46,14 +52,22 @@ func newEnv(t *testing.T, with ...func(*Deps)) *env {
 	must(t, err)
 	cfg := config.Default()
 	cfg.DataDir, cfg.ConfigDir, cfg.Mode = dir, dir, sandbox.ModeContainer
-	d := Deps{Store: st, Auth: auth.NewService(st, []byte("device key"), nil), Bus: &events.Bus{}, Box: box, Config: cfg}
+	bus := &events.Bus{}
+	d := Deps{
+		Store: st, Auth: auth.NewService(st, []byte("device key"), nil), Channels: notify.NewChannels(st, box, nil),
+		Bus: bus, Box: box, Config: cfg,
+		Scheduler: okScheduler{}, GitHub: struct{ GitHub }{}, Servers: &fakeServers{}, Images: struct{ Images }{},
+		Caches: fakeCaches{}, Mirrors: fakeMirrors{}, Backups: backup.New(backup.Config{Store: st, Box: box, Bus: bus, Dir: cfg.BackupsDir()}),
+		Updater: fakeUpdater{}, Logs: fakeLogs{}, Shell: struct{ Shell }{}, HostChecker: fakeHostChecker{},
+		InstallScript: struct{ InstallScript }{}, HTTPS: fakeHTTPS{},
+	}
 	for _, f := range with {
 		f(&d)
 	}
 	d.Settings = settings.New(settings.Config{
 		Store: st, Bus: d.Bus, Mode: d.Config.Mode, DevInsecure: d.Config.DevInsecure, KVM: func() bool { return false },
 	})
-	d.Pools = pools.New(pools.Config{Store: st, Bus: d.Bus})
+	d.Pools = pools.New(pools.Config{Store: st, Bus: d.Bus, Arch: "x64"})
 	h := New(d)
 	srv := httptest.NewServer(h)
 	t.Cleanup(func() {
@@ -62,6 +76,16 @@ func newEnv(t *testing.T, with ...func(*Deps)) *env {
 	})
 	return &env{t: t, srv: srv, st: st, d: d}
 }
+
+type fakeHostChecker struct{}
+
+func (fakeHostChecker) Check(context.Context) (fleet.HostCheck, error) {
+	return fleet.HostCheck{Mode: sandbox.ModeContainer}, nil
+}
+
+type fakeHTTPS struct{}
+
+func (fakeHTTPS) Status(context.Context) tlsutil.CertStatus { return tlsutil.CertStatus{State: "none"} }
 
 func must(t *testing.T, err error) {
 	t.Helper()
@@ -320,8 +344,7 @@ func TestSetupHostChecksTheCode(t *testing.T) {
 	b := e.browser()
 	b.do("GET", "/api/setup/host?code=AAAA-BBBB-CCCC", nil, nil).want(t, 422)
 	// The code passes without dashes and in lowercase, as it does for setup.
-	// No host checker runs in the test, so a valid code gets 503.
-	b.do("GET", "/api/setup/host?code="+strings.ToLower(strings.ReplaceAll(code, "-", "")), nil, nil).want(t, 503)
+	b.do("GET", "/api/setup/host?code="+strings.ToLower(strings.ReplaceAll(code, "-", "")), nil, nil).want(t, 200)
 }
 
 func TestMutationNeedsCSRFHeader(t *testing.T) {
@@ -362,10 +385,10 @@ func TestRoles(t *testing.T) {
 		{"GET", "/api/users", nil, 403, 401},
 		{"GET", "/api/audit", nil, 403, 401},
 		{"POST", "/api/invites", map[string]any{"email": "eve@example.com", "role": "admin"}, 403, 401},
-		// A member may stop sandboxes and re-run jobs. Without a scheduler
-		// the request passes the role check and gets 503.
-		{"POST", "/api/sandboxes/x/stop", nil, 503, 401},
-		{"POST", "/api/jobs/x/rerun", map[string]any{}, 503, 401},
+		// A member may stop sandboxes and re-run jobs. The request passes the
+		// role check and gets 404 for the unknown ID.
+		{"POST", "/api/sandboxes/x/stop", nil, 404, 401},
+		{"POST", "/api/jobs/x/rerun", map[string]any{}, 404, 401},
 	} {
 		if got := member.do(tc.method, tc.path, tc.body, nil).StatusCode; got != tc.member {
 			t.Errorf("member %s %s: status %d, want %d", tc.method, tc.path, got, tc.member)
@@ -600,15 +623,28 @@ func TestEventsStreamConvertsStoreModels(t *testing.T) {
 	pool := store.Pool{ID: ids.New(), Name: "Default", Label: "runplane", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 20, MaxRunners: 1, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	must(t, e.st.CreatePool(context.Background(), pool))
 	sb := store.Sandbox{ID: "sb1", PoolID: pool.ID, ServerID: "srv", State: sandbox.StateBusy, VCPU: 2, MemoryMB: 4096, CreatedAt: now}
-	e.publish(events.SettingsChanged{}, events.SandboxState(sb))
+	renamed := store.DefaultSettings()
+	renamed.InstanceName = "Acme CI"
+	e.publish(events.SettingsChanged{New: renamed}, events.SandboxState(sb))
 
-	ev := recv(t, ch)
-	if ev.name != "sandbox.state" {
-		t.Fatalf("got event %q with %s; settings.changed must not reach the browser", ev.name, ev.data)
-	}
-	var got Sandbox
-	must(t, json.Unmarshal([]byte(ev.data), &got))
-	if got.ID != "sb1" || got.PoolLabel != "runplane" || got.State != "busy" {
-		t.Fatalf("sandbox.state data = %+v, want sb1 busy in pool runplane", got)
+	for seen := map[string]bool{}; len(seen) < 2; {
+		ev := recv(t, ch)
+		switch ev.name {
+		case "sandbox.state":
+			var got Sandbox
+			must(t, json.Unmarshal([]byte(ev.data), &got))
+			if got.ID != "sb1" || got.PoolLabel != "runplane" || got.State != "busy" {
+				t.Fatalf("sandbox.state data = %+v, want sb1 busy in pool runplane", got)
+			}
+		case "settings.changed":
+			var got Settings
+			must(t, json.Unmarshal([]byte(ev.data), &got))
+			if got.InstanceName != "Acme CI" {
+				t.Fatalf("settings.changed data has the instance name %q, want the new name Acme CI", got.InstanceName)
+			}
+		default:
+			t.Fatalf("got event %q with %s", ev.name, ev.data)
+		}
+		seen[ev.name] = true
 	}
 }

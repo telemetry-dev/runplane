@@ -10,22 +10,23 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"reflect"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/ghrest"
-	"github.com/runplane/runplane/internal/mirror"
+	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
@@ -48,21 +49,22 @@ type Handler struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
-	started time.Time // the start of this process, near enough
+	// streams are the bus events that the browser gets, by their Go type.
+	streams map[reflect.Type]stream
 }
 
-// Deps are the parts that the API uses. Store, Auth, Settings, Pools, Bus,
-// Box, and Config are required. Each other service is optional: without it,
-// its routes answer 503.
+// Deps are the parts that the API uses. All are required, except Log.
 //
-// A service error is shown to the user as the detail of a 500 problem, so
-// services should return errors that make sense to an admin. The problems of
-// a change (field.Problems) are a 422 with one error at each field.
+// A service error that a handler gives to serviceErr is shown to the user as
+// the detail of a 500 problem, so services should return errors that make
+// sense to an admin. The problems of a change (field.Problems) are a 422
+// with one error at each field.
 type Deps struct {
 	Store    *store.Store
 	Auth     *auth.Service
 	Settings *settings.Service
 	Pools    *pools.Service
+	Channels *notify.Channels
 	Bus      *events.Bus
 	Box      *secret.Box
 	Log      *slog.Logger
@@ -76,7 +78,6 @@ type Deps struct {
 	Mirrors       Mirrors
 	Backups       Backups
 	Updater       Updater
-	Notifier      Notifier
 	Logs          Logs
 	Shell         Shell
 	HostChecker   HostChecker
@@ -90,7 +91,7 @@ func New(d Deps) *Handler {
 	if d.Log == nil {
 		d.Log = slog.New(slog.DiscardHandler)
 	}
-	h := &Handler{d: d, audit: audit.Log{Store: d.Store, Logger: d.Log}, done: make(chan struct{}), started: time.Now().UTC()}
+	h := &Handler{d: d, audit: audit.Log{Store: d.Store, Logger: d.Log}, done: make(chan struct{})}
 	mux := http.NewServeMux()
 	h.api = humago.New(mux, humaConfig())
 	h.api.UseMiddleware(h.authorize)
@@ -145,21 +146,30 @@ type GitHub interface {
 	Sync(ctx context.Context) error
 	// Disconnect stops the listeners, deletes the scale sets, and removes the app.
 	Disconnect(ctx context.Context) error
+	// OpenPullRequest opens a pull request in the repository (owner/name)
+	// that sets runs-on to label in each job on a GitHub-hosted Ubuntu
+	// runner. While the pull request of an earlier call is open, it returns
+	// that one. It returns store.ErrNotFound when the app has no access to
+	// the repository, ghrest.ErrNoPullPermissions when the account has not
+	// accepted the permissions, and field.Problems when the repository has
+	// no job to move.
+	OpenPullRequest(ctx context.Context, base, repository, label string) (number int, url string, err error)
 }
 
 // Servers is the fleet of servers: *fleet.Fleet.
 type Servers interface {
 	// NewToken makes a one-time install token for a new agent and the
 	// command that installs the agent with it.
-	NewToken(ctx context.Context, base, name, createdBy string) (fleet.Token, error)
+	NewToken(ctx context.Context, by audit.Actor, base, name string) (fleet.Token, error)
 	// InstallSSH starts an install over SSH and returns the ID of the new
 	// server. The install continues in the background; the server status
-	// and status detail show its progress.
-	InstallSSH(ctx context.Context, base string, req fleet.SSHInstall) (serverID string, err error)
+	// and status detail show its progress. A name or a host that is not
+	// valid gives field.Problems.
+	InstallSSH(ctx context.Context, by audit.Actor, base string, req fleet.SSHInstall) (serverID string, err error)
 	SSHPublicKey(ctx context.Context) (string, error)
-	// Doctor returns fleet.ErrNotConnected for a server without a
-	// connection.
-	Doctor(ctx context.Context, serverID string) ([]doctor.Check, error)
+	// Doctor runs the doctor on a server and keeps the result. It returns
+	// fleet.ErrNotConnected for a server without a connection.
+	Doctor(ctx context.Context, serverID string) (store.DoctorResult, error)
 	// Limits returns the limits of the driver of a connected server.
 	Limits(serverID string) (sandbox.Limits, bool)
 	// UpdateServer renames a server or changes its status. It returns
@@ -173,7 +183,7 @@ type Servers interface {
 	Actions(v store.Server) fleet.Actions
 	// UpdateAgent makes a connected agent install the release of the
 	// primary. The update runs in the background, and UpdateState shows it.
-	UpdateAgent(ctx context.Context, serverID string) error
+	UpdateAgent(ctx context.Context, by audit.Actor, serverID string) error
 }
 
 type Images interface {
@@ -199,12 +209,18 @@ type Caches interface {
 
 type Mirrors interface {
 	// MirrorStats sums the counts of the registry mirrors of all servers.
-	MirrorStats(ctx context.Context) mirror.Stats
+	MirrorStats(ctx context.Context) agent.MirrorStats
 }
 
 type Backups interface {
 	// Create makes a backup now.
 	Create(ctx context.Context) (backupID string, err error)
+	// Available reports if the file of b is on this server.
+	Available(b store.Backup) bool
+	// Open opens the file of the backup id. It returns store.ErrNotFound
+	// for an unknown ID, and backup.ErrNoFile when the file is not on this
+	// server.
+	Open(ctx context.Context, id string) (store.Backup, *os.File, error)
 }
 
 type Updater interface {
@@ -216,10 +232,6 @@ type Updater interface {
 	// returns update.ErrNoUpdate when no newer release exists, and
 	// update.ErrBusy while an update runs.
 	Apply(ctx context.Context) (update.Status, error)
-}
-
-type Notifier interface {
-	Test(ctx context.Context, base, kind, url string) error
 }
 
 // Logs gives the logs of the sandboxes and jobs. Its errors are the errors
@@ -240,7 +252,8 @@ type Shell interface {
 }
 
 type HostChecker interface {
-	// Check runs the doctor on this server for the setup page.
+	// Check runs the doctor on this server for the setup page, and keeps
+	// the result.
 	Check(ctx context.Context) (fleet.HostCheck, error)
 }
 
@@ -250,8 +263,7 @@ type InstallScript interface {
 	Script(host string) []byte
 }
 
-// HTTPS reports the ACME certificate of the domain setting. Without it, the
-// settings have no https field.
+// HTTPS reports the ACME certificate of the domain setting.
 type HTTPS interface {
 	Status(ctx context.Context) tlsutil.CertStatus
 }
@@ -297,6 +309,8 @@ func (h *Handler) routes() {
 	handle(h, public, "GET /api/github/callback", "github-callback", "Finish the manifest flow (browser redirect from GitHub)", h.githubCallback, redirectResponse)
 	handle(h, public, "GET /api/github/setup", "github-setup", "Record an installation (browser redirect from GitHub)", h.githubSetup, redirectResponse)
 	handle(h, auth.ActionAdmin, "POST /api/github/sync", "sync-github", "Sync the installations now", h.syncGitHub)
+	handle(h, auth.ActionAdmin, "POST /api/github/pull-requests", "create-github-pull-request", "Open a pull request that moves jobs to a runplane label", h.createPullRequest,
+		describe("The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one."))
 	handle(h, auth.ActionAdmin, "DELETE /api/github", "disconnect-github", "Disconnect GitHub", h.disconnectGitHub)
 
 	handle(h, auth.ActionRead, "GET /api/pools", "list-pools", "List the pools with live sandbox counts", h.listPools)
@@ -377,19 +391,42 @@ const public = auth.Action(-1)
 
 const actionKey = "runplane.action"
 
-// handle registers a Huma operation. pattern is "METHOD /path". An error that
-// is not a huma.StatusError goes to the log, and the client gets a 500
-// problem without its text.
+// handle registers a Huma operation. pattern is "METHOD /path". problem
+// changes the errors of fn into problems.
 func handle[I, O any](h *Handler, a auth.Action, pattern, id, summary string, fn func(context.Context, *I) (*O, error), opts ...func(*huma.Operation)) {
 	huma.Register(h.api, operation(a, pattern, id, summary, opts...), func(ctx context.Context, in *I) (*O, error) {
 		out, err := fn(ctx, in)
-		var se huma.StatusError
-		if err != nil && !errors.As(err, &se) {
-			h.d.Log.Error("request failed", "err", err)
-			return nil, huma.Error500InternalServerError("Something went wrong. The server log has the details.")
+		if err != nil {
+			return nil, h.problem(err)
 		}
-		return out, err
+		return out, nil
 	})
+}
+
+// problem changes the error of a handler into a problem: field.Problems
+// into a 422 with one error at each field, and store.ErrNotFound into a 404.
+// An error from serviceErr is a 500 with its text. Each other error goes to
+// the log, and the client gets a 500 without its text, so that SQL and
+// paths do not go into responses.
+func (h *Handler) problem(err error) error {
+	var se huma.StatusError
+	var p field.Problems
+	var shown shownError
+	switch {
+	case errors.As(err, &se):
+		return se
+	case errors.As(err, &p):
+		return unprocessable(p)
+	case errors.Is(err, store.ErrNotFound):
+		return huma.Error404NotFound(field.Sentence(err))
+	case errors.Is(err, context.Canceled):
+		return huma.Error503ServiceUnavailable("The request was cancelled.")
+	case errors.As(err, &shown):
+		h.d.Log.Error("service failed", "err", err)
+		return huma.Error500InternalServerError(err.Error())
+	}
+	h.d.Log.Error("request failed", "err", err)
+	return huma.Error500InternalServerError("Something went wrong. The server log has the details.")
 }
 
 func operation(a auth.Action, pattern, id, summary string, opts ...func(*huma.Operation)) huma.Operation {
@@ -427,7 +464,7 @@ func jobLogResponse(op *huma.Operation) {
 	textResponse(op)
 	op.Responses["200"].Headers = map[string]*huma.Param{stepFilterHeader: {
 		Description: "ignored: the log has all steps, because the job runs and its live log has no step marks.",
-		Schema:      &huma.Schema{Type: huma.TypeString, Enum: []any{"ignored"}},
+		Schema:      &huma.Schema{Type: huma.TypeString, Enum: []any{stepFilterIgnored}},
 	}}
 }
 
@@ -458,6 +495,23 @@ func redirectResponse(op *huma.Operation) {
 // parameters only in exported embedded types.
 type PathID struct {
 	ID string `path:"id" maxLength:"100"`
+}
+
+// patchOf is the TransformSchema of a patch request: each key gets the
+// schema of the key of the create request C with the same name, so that the
+// two requests have the same limits. The patch keeps its own docs.
+func patchOf[C any](r huma.Registry, s *huma.Schema) *huma.Schema {
+	create := r.Schema(reflect.TypeFor[C](), false, "")
+	for key, own := range s.Properties {
+		c, ok := create.Properties[key]
+		if !ok {
+			continue
+		}
+		p := *c
+		p.Description, p.Nullable = own.Description, own.Nullable
+		s.Properties[key] = &p
+	}
+	return s
 }
 
 // body is the input or output of an operation with a JSON body.
@@ -530,30 +584,17 @@ func notFound(err error, msg string) error {
 	return err
 }
 
-// serviceErr shows the error of a service to the user.
-func (h *Handler) serviceErr(err error) error {
-	var se huma.StatusError
-	switch {
-	case errors.As(err, &se):
-		return se
-	case errors.Is(err, store.ErrNotFound):
-		return huma.Error404NotFound(err.Error())
-	case errors.Is(err, context.Canceled):
-		return huma.Error503ServiceUnavailable("The request was cancelled.")
+// serviceErr marks the error of a service, so that the user sees its text.
+func serviceErr(err error) error {
+	if err == nil {
+		return nil
 	}
-	h.d.Log.Error("service failed", "err", err)
-	return huma.Error500InternalServerError(err.Error())
+	return shownError{err}
 }
 
-// changeErr maps the problems of a change by a service to a 422 with one
-// error at each field of the body. Other errors stay.
-func changeErr(err error) error {
-	var p field.Problems
-	if errors.As(err, &p) {
-		return unprocessable(p)
-	}
-	return err
-}
+type shownError struct{ error }
+
+func (e shownError) Unwrap() error { return e.error }
 
 func unprocessable(p field.Problems) error {
 	details := make([]error, len(p))
@@ -565,10 +606,6 @@ func unprocessable(p field.Problems) error {
 		msg = p[0].Message
 	}
 	return huma.Error422UnprocessableEntity(msg, details...)
-}
-
-func unavailable(what string) error {
-	return huma.Error503ServiceUnavailable(what + " is not available in this runplane process.")
 }
 
 // invalid returns a 422 problem with one field error. loc is for example "body.label".

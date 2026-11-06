@@ -9,6 +9,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
@@ -20,11 +21,12 @@ type Settings struct {
 	store.Settings
 	BackupS3 BackupS3 `json:"backup_s3" doc:"Optional upload of each backup to S3."`
 
-	SSHPort             int          `json:"ssh_port" doc:"Port of the SSH gateway for debug shells. Read-only."`
-	HTTPS               *HTTPSStatus `json:"https,omitempty" doc:"Certificate of the domain. Read-only. Absent when this runplane process cannot report it."`
-	PublicReposPossible bool         `json:"public_repos_possible" doc:"Jobs of public repositories can run: the mode setting and each server are in VM mode. Read-only."`
-	PublicReposRefusal  string       `json:"public_repos_refusal" doc:"Why jobs of public repositories cannot run. Empty when they can. Read-only."`
-	BandwidthApplies    bool         `json:"bandwidth_applies" doc:"bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only."`
+	BackupTime          string      `json:"backup_time" doc:"Time of day in UTC of the daily backup, for example 03:00. Read-only."`
+	SecretKeyPath       string      `json:"secret_key_path" doc:"File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only."`
+	HTTPS               HTTPSStatus `json:"https" doc:"Certificate of the domain. Read-only."`
+	PublicReposPossible bool        `json:"public_repos_possible" doc:"Jobs of public repositories can run: the mode setting and each server are in VM mode. Read-only."`
+	PublicReposRefusal  string      `json:"public_repos_refusal" doc:"Why jobs of public repositories cannot run. Empty when they can. Read-only."`
+	BandwidthApplies    bool        `json:"bandwidth_applies" doc:"bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only."`
 }
 
 type HTTPSStatus struct {
@@ -51,16 +53,15 @@ func (h *Handler) settingsOut(ctx context.Context, st store.Settings) (Settings,
 	st.Mode = mode
 	st.EgressAllowlist, st.DNSServers = orEmpty(st.EgressAllowlist), orEmpty(st.DNSServers)
 	out := Settings{
-		Settings: st, BackupS3: backupS3Out(st.BackupS3), SSHPort: h.sshPort(),
+		Settings: st, BackupS3: backupS3Out(st.BackupS3),
+		BackupTime: time.Time{}.Add(backup.DailyAt).Format("15:04"), SecretKeyPath: h.d.Config.SecretKeyPath(),
 		PublicReposRefusal: policy.PublicRepos(mode, servers), BandwidthApplies: policy.BandwidthApplies(mode, servers),
 	}
 	out.PublicReposPossible = out.PublicReposRefusal == ""
-	if h.d.HTTPS != nil {
-		s := h.d.HTTPS.Status(ctx)
-		out.HTTPS = &HTTPSStatus{State: s.State, Error: s.Error}
-		if !s.NotAfter.IsZero() {
-			out.HTTPS.NotAfter = &s.NotAfter
-		}
+	s := h.d.HTTPS.Status(ctx)
+	out.HTTPS = HTTPSStatus{State: s.State, Error: s.Error}
+	if !s.NotAfter.IsZero() {
+		out.HTTPS.NotAfter = &s.NotAfter
 	}
 	return out, nil
 }
@@ -117,7 +118,7 @@ func (h *Handler) updateSettings(ctx context.Context, in *struct {
 		return applyPatch(st, in.RawBody, h.d.Box)
 	})
 	if err != nil {
-		return nil, changeErr(err)
+		return nil, err
 	}
 	return reply(h.settingsOut(ctx, next))
 }
