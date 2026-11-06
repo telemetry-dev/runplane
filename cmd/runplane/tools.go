@@ -14,6 +14,7 @@ import (
 
 	"github.com/moby/moby/client"
 
+	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
@@ -22,6 +23,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/localnode"
 	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
@@ -53,32 +55,28 @@ func setupCode(ctx context.Context, args []string) error {
 }
 
 // runDoctor runs the doctor on this server: a primary, or an agent when
-// agent.json exists. It fails when a check fails. An agent, and a primary
-// before its first start, use the default settings: the primary sends its
-// settings only to a running agent.
+// agent.json exists. It fails when a check fails.
 func runDoctor(ctx context.Context, args []string) error {
 	cfg, err := config.Parse(flag.NewFlagSet("doctor", flag.ContinueOnError), args,
 		config.Listen, config.AgentListen, config.ServicePort, config.DataDir, config.Mode, config.SSHListen)
 	if err != nil {
 		return err
 	}
-	agent := exists(cfg.AgentConfigPath())
-	settings := store.DefaultSettings()
-	if !agent && exists(cfg.DBPath()) {
-		if settings, err = readSettings(ctx, cfg); err != nil {
-			return err
-		}
+	isAgent := exists(cfg.AgentConfigPath())
+	settings, node, err := serviceSettings(ctx, cfg, isAgent)
+	if err != nil {
+		return err
 	}
 	mode := policy.Mode(settings, cfg.Mode)
-	opts := doctorOptions(cfg, mode, agent, settings.Domain)
-	opts.MinFreeDiskPercent = settings.MinFreeDiskPercent
+	opts := doctorOptions(cfg, mode, isAgent, settings.Domain)
+	opts.MinFreeDiskPercent = node.MinFreeDiskPercent
 	if profile, ok := probeProfile(mode); ok {
 		docker, err := client.New(client.FromEnv)
 		if err != nil {
 			return fmt.Errorf("connect to Docker: %w", err)
 		}
 		defer docker.Close()
-		probe := sysbox.ProbeOptions{Docker: docker, Profile: profile, DataDir: cfg.DataDir, DNS: fleet.NodeSettings(settings).DNS}
+		probe := sysbox.ProbeOptions{Docker: docker, Profile: profile, DataDir: cfg.DataDir, DNS: node.DNS}
 		opts.Internet = func(ctx context.Context) error { return sysbox.Probe(ctx, probe) }
 	}
 	r := doctor.Run(ctx, opts)
@@ -89,6 +87,25 @@ func runDoctor(ctx context.Context, args []string) error {
 		return errors.New("a check failed")
 	}
 	return nil
+}
+
+// serviceSettings returns the settings of the primary and of the node that
+// the service on this server uses. An agent uses the last node settings that
+// its primary sent. A primary before its first start, and an agent before
+// its first connection, use the default settings.
+func serviceSettings(ctx context.Context, cfg config.Config, isAgent bool) (store.Settings, agent.Settings, error) {
+	settings := store.DefaultSettings()
+	switch {
+	case isAgent && exists(cfg.AgentSettingsPath()):
+		node, err := localnode.ReadSettings(cfg.AgentSettingsPath())
+		return settings, node, err
+	case !isAgent && exists(cfg.DBPath()):
+		var err error
+		if settings, err = readSettings(ctx, cfg); err != nil {
+			return store.Settings{}, agent.Settings{}, err
+		}
+	}
+	return settings, fleet.NodeSettings(settings), nil
 }
 
 // probeProfile returns the profile of the sandbox internet probe of a mode.

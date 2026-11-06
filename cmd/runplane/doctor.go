@@ -42,20 +42,23 @@ func doctorOptions(cfg config.Config, mode sandbox.Mode, agent bool, domain stri
 	return o
 }
 
+// requirements fails the mode check for a mode that serve and the agent
+// refuse.
 func requirements(cfg config.Config, mode sandbox.Mode, agent bool) doctor.Requirements {
+	if err := policy.CheckMode(mode, cfg.DevInsecure); err != nil {
+		modes := "container, vm, or dev"
+		if mode == sandbox.ModeDev {
+			modes = "container or vm"
+		}
+		return doctor.Requirements{Mode: doctor.ModeCheck.Fail(err.Error(), modeFix(cfg, agent, modes))}
+	}
 	switch mode {
 	case sandbox.ModeContainer:
 		return sysbox.Requirements()
 	case sandbox.ModeVM:
 		return firecracker.Requirements(cfg.KernelPath(), cfg.JailDir())
-	case sandbox.ModeDev:
-		return devdocker.Requirements(cfg.ServicePort, modeFix(cfg, agent, "container or vm"))
 	}
-	// config.Parse and the settings accept only the modes above, so the
-	// mode is empty.
-	return doctor.Requirements{
-		Mode: doctor.ModeCheck.Fail(policy.ErrNoMode.Error(), modeFix(cfg, agent, "container, vm, or dev")),
-	}
+	return devdocker.Requirements(cfg.ServicePort, modeFix(cfg, agent, "container or vm"))
 }
 
 // modeFix tells how to give this server one of modes. After the first start
