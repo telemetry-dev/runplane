@@ -20,16 +20,63 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
+// timeout ends the wait for an event that does not come.
+const timeout = 10 * time.Second
+
 // recorder keeps the calls of all fakes in one order.
 type recorder struct {
 	mu    sync.Mutex
 	calls []string
+	added chan struct{} // closed at the next call, for await
 }
 
 func (r *recorder) add(format string, args ...any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, fmt.Sprintf(format, args...))
+	if r.added != nil {
+		close(r.added)
+		r.added = nil
+	}
+}
+
+// await waits for a call that starts with prefix.
+func (r *recorder) await(t *testing.T, prefix string) {
+	t.Helper()
+	limit := time.After(timeout)
+	for {
+		r.mu.Lock()
+		found := slices.ContainsFunc(r.calls, func(c string) bool { return strings.HasPrefix(c, prefix) })
+		if r.added == nil {
+			r.added = make(chan struct{})
+		}
+		added := r.added
+		r.mu.Unlock()
+		if found {
+			return
+		}
+		select {
+		case <-added:
+		case <-limit:
+			t.Fatalf("no call %q in %v", prefix, r.matching(""))
+		}
+	}
+}
+
+// next returns the first event of ch that ok accepts.
+func next[E any](t *testing.T, ch <-chan E, what string, ok func(E) bool) E {
+	t.Helper()
+	limit := time.After(timeout)
+	for {
+		select {
+		case e := <-ch:
+			if ok(e) {
+				return e
+			}
+		case <-limit:
+			t.Fatalf("no event: %s", what)
+		}
+	}
 }
 
 // matching returns the calls that start with prefix.
@@ -45,8 +92,10 @@ func (r *recorder) index(call string) int {
 	return slices.Index(r.calls, call)
 }
 
-// fakeDriver counts a sandbox in its capacity from the moment Start
-// returns, as the real drivers do.
+// fakeDriver counts a sandbox in its capacity only from the moment Start
+// returns, the latest moment that the placement allows. The real drivers
+// count it from the beginning of Start. Like them, it counts the overhead
+// of its Limits for each sandbox.
 type fakeDriver struct {
 	rec  *recorder
 	base sandbox.Capacity
@@ -107,10 +156,17 @@ func (d *fakeDriver) Capacity(ctx context.Context) (sandbox.Capacity, error) {
 	c := d.base
 	for _, spec := range d.running {
 		c.AllocVCPU += spec.VCPU
-		c.AllocMemoryMB += spec.MemoryMB
+		c.AllocMemoryMB += spec.MemoryMB + c.OverheadMB
 		c.Sandboxes++
 	}
 	return c, nil
+}
+
+// run adds a sandbox that operates on the server.
+func (d *fakeDriver) run(spec sandbox.Spec) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.running[spec.ID] = spec
 }
 
 func (d *fakeDriver) Hold(ctx context.Context, id string, until time.Time) error {
@@ -210,19 +266,19 @@ func (c *fakeClient) GenerateJITConfig(ctx context.Context, runnerName string) (
 	return JITConfig{Encoded: "eyJqaXQiOiI" + runnerName, RunnerID: id}, nil
 }
 
-// duringJIT runs fn while the next start of the scale set of client waits
-// for GitHub to answer the JIT request. It returns when the start ends.
-func (e *testEnv) duringJIT(client *fakeClient, fn func()) {
+// duringJIT runs fn while a start of the scale set of sc waits for the
+// answer to its JIT request to client. It returns when Scale returns.
+func (e *testEnv) duringJIT(sc Scaler, client *fakeClient, fn func()) {
+	e.t.Helper()
 	client.jitGate, client.jitEntered = make(chan struct{}), make(chan struct{}, 1)
-	resized := make(chan struct{})
-	go func() {
-		e.s.resizeAll(e.ctx)
-		close(resized)
-	}()
+	scaled := make(chan error, 1)
+	go func() { scaled <- sc.Scale(e.ctx, Message{}) }()
 	<-client.jitEntered
 	fn()
 	close(client.jitGate)
-	<-resized
+	if err := <-scaled; err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 func (c *fakeClient) RemoveRunner(ctx context.Context, runnerID int64) error {
@@ -248,6 +304,7 @@ func (c *fakeClient) ListRunners(ctx context.Context) ([]Runner, error) {
 }
 
 func (c *fakeClient) SetMaxRunners(n int) {
+	c.rec.add("max %d", n)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.max = n
@@ -256,20 +313,19 @@ func (c *fakeClient) SetMaxRunners(n int) {
 type fakeGitHub struct {
 	rec *recorder
 
-	mu         sync.Mutex
-	checks     map[string]JobCheck // by repository; absent: private, no fork
-	checkErrs  map[string]error    // by repository
-	checkCalls int
-	noLog      bool // DownloadLog fails, as for a log that GitHub has not ready yet
-	brokenLog  bool // the log download fails before the end of the log
-	steps      []store.JobStep
-	results    map[int64]string // the result on GitHub of a completed job, by request ID; absent: not completed
+	mu        sync.Mutex
+	checks    map[string]JobCheck // by repository; absent: private, no fork
+	checkErrs map[string]error    // by repository
+	noLog     bool                // DownloadLog fails, as for a log that GitHub has not ready yet
+	brokenLog bool                // the log download fails before the end of the log
+	steps     []store.JobStep
+	results   map[int64]string // the result on GitHub of a completed job, by request ID; absent: not completed
 }
 
 func (g *fakeGitHub) CheckJob(ctx context.Context, repository string, runID int64) (JobCheck, error) {
+	g.rec.add("check %s %d", repository, runID)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.checkCalls++
 	if err := g.checkErrs[repository]; err != nil {
 		return JobCheck{}, err
 	}
@@ -298,10 +354,15 @@ func (g *fakeGitHub) Enrich(ctx context.Context, job store.Job) (Enrichment, err
 	return e, nil
 }
 
+// Steps returns nil for a job with no GitHub job ID, as the github package
+// does.
 func (g *fakeGitHub) Steps(ctx context.Context, job store.Job) ([]store.JobStep, error) {
+	g.rec.add("steps %s", job.ID)
+	if job.GitHubJobID == 0 {
+		return nil, nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.rec.add("steps %s", job.ID)
 	return g.steps, nil
 }
 
@@ -344,16 +405,17 @@ func (c *fakeClock) add(d time.Duration) {
 }
 
 type testEnv struct {
-	t     *testing.T
-	ctx   context.Context
-	st    *store.Store
-	bus   *events.Bus
-	rec   *recorder
-	fleet *fakeFleet
-	gh    *fakeGitHub
-	clock *fakeClock
-	logs  string
-	s     *Scheduler
+	t       *testing.T
+	ctx     context.Context
+	st      *store.Store
+	bus     *events.Bus
+	rec     *recorder
+	fleet   *fakeFleet
+	gh      *fakeGitHub
+	clock   *fakeClock
+	logs    string
+	jobLogs *joblog.Logs
+	s       *Scheduler
 
 	runnerIDs int64
 }
@@ -391,9 +453,25 @@ func newTestEnv(t *testing.T) *testEnv {
 // The download of a job log tries once after each of logWaits; none means
 // the waits of production.
 func (e *testEnv) newScheduler(logWaits ...time.Duration) {
-	logs := joblog.New(joblog.Config{Dir: e.logs, Store: e.st, Waits: logWaits})
-	e.s = New(Config{Store: e.st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, JobLogs: logs, Now: e.clock.now})
+	e.jobLogs = joblog.New(joblog.Config{Dir: e.logs, Store: e.st, Waits: logWaits})
+	e.s = New(Config{Store: e.st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, JobLogs: e.jobLogs, Now: e.clock.now})
 	e.t.Cleanup(e.s.stopBg)
+}
+
+// run runs the scheduler until stop, which returns when Run returns.
+func (e *testEnv) run() (stop func()) {
+	ctx, cancel := context.WithCancel(e.ctx)
+	done := make(chan struct{})
+	go func(s *Scheduler) {
+		s.Run(ctx)
+		close(done)
+	}(e.s)
+	stop = func() {
+		cancel()
+		<-done
+	}
+	e.t.Cleanup(stop)
+	return stop
 }
 
 func (e *testEnv) setSettings(fn func(*store.Settings)) {
@@ -537,6 +615,14 @@ func (e *testEnv) insertSandbox(p store.Pool, set store.ScaleSet, serverID strin
 		e.t.Fatal(err)
 	}
 	return b
+}
+
+// advance moves the row of a sandbox forward to state at t.
+func (e *testEnv) advance(id string, state sandbox.State, reason string, t time.Time) {
+	e.t.Helper()
+	if _, _, err := e.st.AdvanceSandboxState(e.ctx, id, state, reason, t); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // msg makes a listener message with the job messages, and with
