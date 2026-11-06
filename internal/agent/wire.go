@@ -149,6 +149,15 @@ func (s hostStats) stats() host.Stats {
 	}
 }
 
+// Image is an image that is ready on a server.
+type Image struct {
+	sandbox.ImageRef
+	// SizeBytes is the space of the image on the server: its root disk in
+	// VM mode, else its Docker image. An agent of an earlier release sends
+	// no size.
+	SizeBytes int64 `json:"size_bytes"`
+}
+
 // Progress is one step of EnsureImage.
 type Progress struct {
 	Status ImageStatus `json:"status"`

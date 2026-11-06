@@ -305,14 +305,14 @@ func (n *fakeNode) Doctor(context.Context) (doctor.Report, error) {
 }
 func (n *fakeNode) Stats() <-chan host.Stats { return n.stats }
 
-func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(Progress)) (sandbox.ImageRef, error) {
+func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(Progress)) (Image, error) {
 	for _, p := range testProgress {
 		progress(p)
 	}
 	if ref == "missing:latest" {
-		return sandbox.ImageRef{}, errors.New("pull missing:latest: not found")
+		return Image{}, errors.New("pull missing:latest: not found")
 	}
-	return sandbox.ImageRef{Ref: ref, Digest: "sha256:5f1c"}, nil
+	return Image{ImageRef: sandbox.ImageRef{Ref: ref, Digest: "sha256:5f1c"}, SizeBytes: 2147483648}, nil
 }
 
 func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (Bundle, error) {

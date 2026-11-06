@@ -185,7 +185,7 @@ func TestCalls(t *testing.T) {
 	check("doctor", report, err, testReport, []any{"Doctor"})
 	var steps []Progress
 	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p Progress) { steps = append(steps, p) })
-	check("image", ref, err, sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"})
+	check("image", ref, err, Image{ImageRef: sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"}, SizeBytes: 2147483648})
 	check("image progress", steps, nil, testProgress)
 	_, err = s.EnsureImage(ctx, "missing:latest", nil)
 	checkErr("missing image", err, "pull missing:latest: not found")

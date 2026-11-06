@@ -157,7 +157,7 @@ func (n *Node) Doctor(ctx context.Context) (doctor.Report, error) {
 	return doctor.Run(ctx, opts), nil
 }
 
-func (n *Node) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (sandbox.ImageRef, error) {
+func (n *Node) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (agent.Image, error) {
 	var report func(image.Progress)
 	if progress != nil {
 		report = func(p image.Progress) {
@@ -166,9 +166,9 @@ func (n *Node) EnsureImage(ctx context.Context, ref string, progress func(agent.
 	}
 	img, err := n.cfg.Images.Ensure(ctx, ref, report)
 	if err != nil {
-		return sandbox.ImageRef{}, err
+		return agent.Image{}, err
 	}
-	return sandbox.ImageRef{Ref: img.Ref, Digest: img.Digest}, nil
+	return agent.Image{ImageRef: sandbox.ImageRef{Ref: img.Ref, Digest: img.Digest}, SizeBytes: img.Size}, nil
 }
 
 // imageStatus gives the status of the agent protocol for each step of

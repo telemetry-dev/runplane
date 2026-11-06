@@ -135,8 +135,10 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 	if b, _ := h.st.GetImageBuild(ctx, broken, id); !strings.Contains(b.Error, "not found") {
 		t.Errorf("failed build error %q, want the pull error", b.Error)
 	}
-	if b, _ := h.st.GetImageBuild(ctx, app, id); b.Status != store.BuildReady || b.Digest != "sha256:a001" {
-		t.Errorf("pool image build %+v, want ready with its digest", b)
+	// The size is the space of the image on the server, not the bytes of
+	// the download.
+	if b, _ := h.st.GetImageBuild(ctx, app, id); b.Status != store.BuildReady || b.Digest != "sha256:a001" || b.SizeBytes != imageSize {
+		t.Errorf("pool image build %+v, want ready with its digest and size", b)
 	}
 
 	if v, _ := h.f.RunnerVersion(id); v != "2.329.0" {

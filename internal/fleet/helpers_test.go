@@ -341,7 +341,10 @@ func (n *fakeNode) Doctor(context.Context) (doctor.Report, error) {
 	}}, nil
 }
 
-func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (sandbox.ImageRef, error) {
+// imageSize is the size of each image on a fake server.
+const imageSize = 734003200
+
+func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (agent.Image, error) {
 	n.record("EnsureImage", ref)
 	progress(agent.Progress{Status: agent.ImagePulling, Total: 4096})
 	n.mu.Lock()
@@ -351,16 +354,16 @@ func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(ag
 		select {
 		case <-gate:
 		case <-ctx.Done():
-			return sandbox.ImageRef{}, ctx.Err()
+			return agent.Image{}, ctx.Err()
 		}
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	digest, ok := n.digests[ref]
 	if !ok {
-		return sandbox.ImageRef{}, fmt.Errorf("pull %s: not found", ref)
+		return agent.Image{}, fmt.Errorf("pull %s: not found", ref)
 	}
-	return sandbox.ImageRef{Ref: ref, Digest: digest}, nil
+	return agent.Image{ImageRef: sandbox.ImageRef{Ref: ref, Digest: digest}, SizeBytes: imageSize}, nil
 }
 
 func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (agent.Bundle, error) {

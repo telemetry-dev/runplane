@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -214,7 +215,7 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 		f.saveBuild(ctx, &b, store.BuildPending, "")
 	}
 	var total int64
-	ref, err := n.EnsureImage(ctx, img.Ref, func(p agent.Progress) {
+	ready, err := n.EnsureImage(ctx, img.Ref, func(p agent.Progress) {
 		total = max(total, p.Total)
 		if s, ok := buildStatus(p.Status); ok && s != b.Status && !refresh {
 			f.saveBuild(ctx, &b, s, "")
@@ -230,9 +231,9 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 		}
 		return
 	}
-	if ref.Digest != before {
-		b.Digest, b.SizeBytes = ref.Digest, total
-	}
+	// An agent of an earlier release sends no size. Then the largest total
+	// of the steps takes its place, or the size of the last pull.
+	b.Digest, b.SizeBytes = ready.Digest, cmp.Or(ready.SizeBytes, total, b.SizeBytes)
 	f.mu.Lock()
 	dropped := f.dropped[img.ID]
 	f.mu.Unlock()
@@ -245,14 +246,14 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 	r, had = n.images[img.ID]
 	wasReady := had && r.ref == img.Ref
 	if !f.dropped[img.ID] {
-		n.images[img.ID] = readyImage{ref: img.Ref, image: ref, at: f.now()}
+		n.images[img.ID] = readyImage{ref: img.Ref, image: ready.ImageRef, at: f.now()}
 		delete(n.failed, img.ID)
 	}
 	f.mu.Unlock()
 	if !wasReady {
 		f.capacityChanged()
 	}
-	if before != "" && before != ref.Digest {
+	if before != "" && before != ready.Digest {
 		f.gcImages(ctx, n, "")
 	}
 }
