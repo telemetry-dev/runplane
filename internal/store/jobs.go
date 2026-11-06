@@ -316,10 +316,11 @@ func mergeJob(j *Job, m JobMessage, now time.Time) {
 	// the jobs that wait too long, whatever their reject reason, and GitHub
 	// cancels an assignment that no runner takes in time and then offers the
 	// job again (actions/scaleset, Job Reassignment). Such a job opens again,
-	// and the scheduler checks it again.
+	// and the scheduler checks it again. Its wait starts at the new
+	// assignment, because ExpireQueuedJobs measures from it.
 	if j.State == JobCompleted && j.Result == ResultCancelled && !j.Ran() && m.State != JobCompleted {
 		j.State, j.Result, j.ResultGuessed, j.FinishedAt, j.RejectReason = JobQueued, "", false, nil, ""
-		j.LogState, j.FinishPending = LogNone, false
+		j.AssignedAt, j.LogState, j.FinishPending = nil, LogNone, false
 	}
 	// GitHub reports a job as completed one time, and its result replaces a
 	// result that runplane guessed. The finish step runs again, because the

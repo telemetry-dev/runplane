@@ -522,6 +522,17 @@ func TestExpireQueuedJobs(t *testing.T) {
 	if j := upsert(6, JobQueued, 0); j.State != JobCompleted {
 		t.Errorf("cancelled job that ran, after a late offer = %s, want completed", j.State)
 	}
+
+	// GitHub assigns the lost job again. Its wait starts at the new
+	// assignment, so the next cleanup keeps it.
+	if j := assign(4, 4100); j.State != JobAssigned || j.AssignedAt == nil || !j.AssignedAt.Equal(sec(4100)) {
+		t.Errorf("expired job after a new assignment = %s assigned at %v, want assigned at %v", j.State, j.AssignedAt, sec(4100))
+	}
+	got, err = s.ExpireQueuedJobs(ctx, sec(4000), sec(4200))
+	must(t, err)
+	if slices.ContainsFunc(got, func(j Job) bool { return j.ID == lost.ID }) {
+		t.Error("the cleanup closed the new assignment with the time of the first one")
+	}
 }
 
 func TestListRunUsage(t *testing.T) {
