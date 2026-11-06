@@ -224,7 +224,6 @@ func (e *env) login(email, role string) *browser {
 	return b
 }
 
-// addJob records a queued job of repo.
 func (e *env) addJob(requestID int64, repo string, queued time.Time) store.Job {
 	e.t.Helper()
 	j, _, err := e.st.UpsertJob(context.Background(), store.JobMessage{

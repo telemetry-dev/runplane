@@ -465,7 +465,6 @@ type body[T any] struct{ Body T }
 // empty is the output of operations without a response body (204).
 type empty struct{}
 
-// reply returns v as the response body, or err.
 func reply[T any](v T, err error) (*body[T], error) {
 	if err != nil {
 		return nil, err
@@ -490,7 +489,6 @@ func orEmpty[T any](list []T) []T {
 	return list
 }
 
-// set copies *v to dst if v is not nil.
 func set[T any](dst *T, v *T) {
 	if v != nil {
 		*dst = *v
@@ -577,7 +575,6 @@ func invalid(loc, msg string, value any) error {
 	return huma.Error422UnprocessableEntity(msg, &huma.ErrorDetail{Location: loc, Message: msg, Value: value})
 }
 
-// conflict returns a 409 problem with one field error.
 func conflict(loc, msg string) error {
 	return huma.Error409Conflict(msg, &huma.ErrorDetail{Location: loc, Message: msg})
 }
