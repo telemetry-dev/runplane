@@ -295,10 +295,10 @@ Other commands:
 | `sh deploy/test-install.sh` | Dry runs of `install.sh` in Ubuntu, Debian, and Fedora containers |
 | `kernel/build.sh --config-only` | A check of the guest kernel config, without a kernel build |
 
-The tests of netlink, nftables, loop devices, and mounts must have root access on Linux. To do these tests on macOS, use a Linux container:
+The tests of netlink, nftables, loop devices, mounts, and the debug shell of `runplane-init` must have root access on Linux. To do these tests on macOS, use a Linux container:
 
 ```sh
-docker run --rm --privileged -v "$PWD":/src -v "$HOME/go/pkg/mod":/go/pkg/mod -w /src golang:1.27 go test ./internal/...
+docker run --rm --privileged -v "$PWD":/src -v "$HOME/go/pkg/mod":/go/pkg/mod -w /src golang:1.27 go test ./init/... ./internal/...
 ```
 
 ## Release

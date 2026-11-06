@@ -31,9 +31,10 @@ jobs:
       # The non-Linux files must also compile, for development on macOS.
       - run: GOOS=darwin go vet ./...
       - run: go test ./...
-      # Tests of netlink, nftables, loop devices, and mounts skip without root.
+      # Tests of netlink, nftables, loop devices, mounts, and the debug shell
+      # of runplane-init skip without root.
       - name: go test as root
-        run: sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME "$(go env GOROOT)/bin/go" test ./internal/...
+        run: sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME "$(go env GOROOT)/bin/go" test ./init/... ./internal/...
         env:
           GOCACHE: /tmp/go-root-cache
 
@@ -114,6 +115,6 @@ jobs:
           sudo docker build -q -t runplane-test internal/sandbox/sysbox/sysboxtest
           sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME \
             RUNPLANE_TEST_DOCKER=1 RUNPLANE_TEST_IMAGE=runplane-test \
-            "$(go env GOROOT)/bin/go" test -count=1 -p 1 -v -run 'TestContainerMode|TestSandbox' ./internal/sandbox/sysbox/ ./internal/sandbox/devdocker/
+            "$(go env GOROOT)/bin/go" test -count=1 -p 1 -v ./internal/sandbox/sysbox/ ./internal/sandbox/devdocker/
         env:
           GOCACHE: /tmp/go-root-cache
