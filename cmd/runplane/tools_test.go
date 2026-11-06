@@ -33,7 +33,7 @@ func TestSetModeStoresTheMode(t *testing.T) {
 	st.Close()
 
 	for _, bad := range []string{"dev", "kvm"} {
-		if err := setMode(ctx, []string{bad}); err == nil {
+		if err := run(ctx, []string{"set-mode", bad}); err == nil {
 			t.Errorf("set-mode %s has no error", bad)
 		}
 	}
@@ -41,7 +41,7 @@ func TestSetModeStoresTheMode(t *testing.T) {
 		t.Fatalf("a refused set-mode changed the mode to %s", s.Mode)
 	}
 
-	if err := setMode(ctx, []string{"container"}); err != nil {
+	if err := run(ctx, []string{"set-mode", "container"}); err != nil {
 		t.Fatal(err)
 	}
 	// The dashboard refuses to save settings with public repositories on in
@@ -59,7 +59,7 @@ func TestSetDomainStoresTheDomain(t *testing.T) {
 	t.Setenv("RUNPLANE_CONFIG_DIR", dir)
 	t.Setenv("RUNPLANE_DATA_DIR", dir)
 
-	if err := setDomain(ctx, []string{" CI.Example.com "}); err != nil {
+	if err := run(ctx, []string{"set-domain", " CI.Example.com "}); err != nil {
 		t.Fatal(err)
 	}
 	if s := settingsIn(t, dir); s.Domain != "ci.example.com" {
@@ -67,7 +67,7 @@ func TestSetDomainStoresTheDomain(t *testing.T) {
 	}
 
 	for _, bad := range []string{"192.0.2.1", "localhost", "https://ci.example.com"} {
-		if err := setDomain(ctx, []string{bad}); err == nil {
+		if err := run(ctx, []string{"set-domain", bad}); err == nil {
 			t.Errorf("set-domain %s has no error", bad)
 		}
 	}
@@ -75,7 +75,7 @@ func TestSetDomainStoresTheDomain(t *testing.T) {
 		t.Fatalf("a refused set-domain changed the domain to %q", s.Domain)
 	}
 
-	if err := setDomain(ctx, []string{""}); err != nil {
+	if err := run(ctx, []string{"set-domain", ""}); err != nil {
 		t.Fatal(err)
 	}
 	if s := settingsIn(t, dir); s.Domain != "" {
@@ -91,7 +91,7 @@ func TestSetupCodeBeforeTheFirstStart(t *testing.T) {
 	t.Setenv("RUNPLANE_CONFIG_DIR", dir)
 	t.Setenv("RUNPLANE_DATA_DIR", dir)
 
-	if err := setupCode(ctx, nil); err != nil {
+	if err := run(ctx, []string{"setup-code"}); err != nil {
 		t.Fatal(err)
 	}
 	st, err := store.Open(dir + "/runplane.db")
@@ -113,9 +113,9 @@ func TestUpdateRefusesAnAgent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(`{"primary": "203.0.113.5:8485"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{nil, {"-check"}} {
-		if err := updateCmd(context.Background(), args); !errors.Is(err, errAgentUpdate) {
-			t.Errorf("update %v on an agent: %v, want the refusal", args, err)
+	for _, args := range [][]string{{"update"}, {"update", "-check"}} {
+		if err := run(context.Background(), args); !errors.Is(err, errAgentUpdate) {
+			t.Errorf("runplane %v on an agent: %v, want the refusal", args, err)
 		}
 	}
 }
