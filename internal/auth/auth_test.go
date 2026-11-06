@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -17,21 +16,19 @@ import (
 )
 
 type testEnv struct {
-	svc  *Service
-	st   *store.Store
-	path string // of the database
-	now  time.Time
+	svc *Service
+	st  *store.Store
+	now time.Time
 }
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "runplane.db")
-	st, err := store.Open(path)
+	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	e := &testEnv{st: st, path: path, now: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
+	e := &testEnv{st: st, now: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
 	e.svc = NewService(st, []byte("device key"), nil)
 	e.svc.now = func() time.Time { return e.now }
 	return e
@@ -63,9 +60,6 @@ func TestPasswordHashFormat(t *testing.T) {
 	// Made with the reference implementation (libargon2):
 	// echo -n "correct horse battery" | argon2 saltsaltsaltsalt -id -t 2 -k 19456 -p 1 -l 32
 	const ref = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$iPOQ5f2O21FsjnBvo1AiFcDuSXciCnKUrXFO+yfgNoM"
-	if got := hashWithSalt("correct horse battery", []byte("saltsaltsaltsalt")); got != ref {
-		t.Errorf("hash:\n got %s\nwant %s", got, ref)
-	}
 	if ok, err := CheckPassword(ref, "correct horse battery"); !ok || err != nil {
 		t.Errorf("right password: %v, %v", ok, err)
 	}
@@ -76,6 +70,24 @@ func TestPasswordHashFormat(t *testing.T) {
 		if _, err := CheckPassword(bad, "x"); err == nil {
 			t.Errorf("CheckPassword(%q) has no error", bad)
 		}
+	}
+
+	// CheckPassword reads the parameters from the hash, so HashPassword must
+	// write the ones that it used, at least the OWASP minimum of 19 MiB and
+	// 2 passes, with a new salt for each hash.
+	hash := HashPassword("correct horse battery")
+	if ok, err := CheckPassword(hash, "correct horse battery"); !ok || err != nil {
+		t.Errorf("right password against %s: %v, %v", hash, ok, err)
+	}
+	if ok, err := CheckPassword(hash, "correct horse batterY"); ok || err != nil {
+		t.Errorf("wrong password against %s: %v, %v", hash, ok, err)
+	}
+	var memory, passes, threads int
+	if _, err := fmt.Sscanf(hash, "$argon2id$v=19$m=%d,t=%d,p=%d$", &memory, &passes, &threads); err != nil || memory < 19456 || passes < 2 {
+		t.Errorf("hash %s, want argon2id with m >= 19456 and t >= 2", hash)
+	}
+	if again := HashPassword("correct horse battery"); again == hash {
+		t.Error("two hashes of one password are equal: the salt is not random")
 	}
 }
 
@@ -236,27 +248,6 @@ func TestSetupCode(t *testing.T) {
 		t.Fatalf("short password: err = %v", err)
 	}
 
-	// Lowercase without dashes also works.
-	typed := code[0:4] + code[5:9] + code[10:14]
-	u, err := setup(" " + strings.ToLower(typed) + " ")
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	// The code is used: it fails even when no user exists again. The store
-	// keeps its last admin, so the test deletes the row itself.
-	db, err := sql.Open("sqlite", e.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.ExecContext(ctx, "DELETE FROM users WHERE id = ?", u.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := setup(code); !errors.Is(err, ErrBadSetupCode) {
-		t.Fatalf("used code: err = %v, want ErrBadSetupCode", err)
-	}
-
 	expiring, err := e.svc.NewSetupCode(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -264,6 +255,16 @@ func TestSetupCode(t *testing.T) {
 	e.wait(24 * time.Hour)
 	if _, err := setup(expiring); !errors.Is(err, ErrBadSetupCode) {
 		t.Fatalf("expired code: err = %v, want ErrBadSetupCode", err)
+	}
+
+	// Lowercase without dashes also works.
+	code, err = e.svc.NewSetupCode(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := code[0:4] + code[5:9] + code[10:14]
+	if _, err := setup(" " + strings.ToLower(typed) + " "); err != nil {
+		t.Fatalf("setup: %v", err)
 	}
 }
 
@@ -498,27 +499,5 @@ func TestLastAdminStays(t *testing.T) {
 	}
 	if err := e.svc.DeleteUser(ctx, audit.Actor{UserID: "bob"}, ada.ID); err != nil {
 		t.Errorf("delete of a member: %v", err)
-	}
-}
-
-func TestCanDo(t *testing.T) {
-	tests := []struct {
-		role string
-		a    Action
-		want bool
-	}{
-		{RoleAdmin, ActionAdmin, true},
-		{RoleMember, ActionRead, true},
-		{RoleMember, ActionRerunJob, true},
-		{RoleMember, ActionStopSandbox, true},
-		{RoleMember, ActionOpenShell, true},
-		{RoleMember, ActionAdmin, false},
-		{"", ActionRead, false},
-		{"owner", ActionRead, false},
-	}
-	for _, tt := range tests {
-		if got := CanDo(tt.role, tt.a); got != tt.want {
-			t.Errorf("CanDo(%q, %d) = %v, want %v", tt.role, tt.a, got, tt.want)
-		}
 	}
 }

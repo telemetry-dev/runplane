@@ -176,8 +176,9 @@ func TestApplyReplacesTheGuestKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := loadRelease(t).archive
+	// cmd/runplane checks KernelName against the files of kernel/build.sh.
 	kernels := map[string][]byte{"vmlinux-x86_64": []byte("kernel x86_64 6.1.200"), "vmlinux-arm64": []byte("kernel arm64 6.1.200")}
-	want := kernels["vmlinux-"+map[string]string{"amd64": "x86_64", "arm64": "arm64"}[runtime.GOARCH]]
+	want := kernels[KernelName(runtime.GOARCH)]
 	sum := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
 	sums := func(withKernels bool, kernelData []byte) string {
 		lines := sum(archive) + "  runplane_0.5.0_linux_amd64.tar.gz\n" + sum(archive) + "  runplane_0.5.0_linux_arm64.tar.gz\n"

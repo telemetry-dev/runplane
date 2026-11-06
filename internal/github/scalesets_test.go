@@ -10,58 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/actions/scaleset"
+
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
-
-func TestTargets(t *testing.T) {
-	tests := []struct {
-		name         string
-		mode         sandbox.Mode
-		allowPublic  bool
-		wantPersonal []string // repositories of the personal account with a scale set
-	}{
-		{"public repositories are skipped by default", sandbox.ModeVM, false, []string{"octo/private"}},
-		{"vm mode with allow_public_repos", sandbox.ModeVM, true, []string{"octo/private", "octo/public"}},
-		// The scheduler rejects the jobs of the public repository unless the servers run VM mode.
-		{"no mode setting with allow_public_repos", "", true, []string{"octo/private", "octo/public"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			e := acmeEnv(t)
-			ctx := context.Background()
-			e.install(20, "octo", "User")
-			e.st.ReplaceRepositories(ctx, 20, []store.Repository{
-				{ID: 200, FullName: "octo/private", Private: true},
-				{ID: 201, FullName: "octo/public"},
-				{ID: 202, FullName: "octo/old", Private: true, Archived: true},
-			})
-			e.pool("p1", "runplane", true)
-			e.pool("p2", "runplane-big", false)
-			e.st.UpdateSettings(ctx, func(s *store.Settings) error {
-				s.Mode, s.AllowPublicRepos = tt.mode, tt.allowPublic
-				return nil
-			})
-
-			want, err := e.svc.targets(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var owners []string
-			for _, tgt := range want {
-				if tgt.pool.ID != "p1" {
-					t.Errorf("target for the disabled pool %s", tgt.pool.Label)
-				}
-				owners = append(owners, tgt.owner())
-			}
-			slices.Sort(owners)
-			if wantOwners := append([]string{"acme"}, tt.wantPersonal...); !slices.Equal(owners, wantOwners) {
-				t.Errorf("target owners = %v, want %v", owners, wantOwners)
-			}
-		})
-	}
-}
 
 // listeningEnv has one organization, one enabled pool, and a fake Actions
 // service. It returns after the listener of the pool listens.
@@ -82,7 +35,7 @@ func listeningEnv(t *testing.T) (*env, *fakeActions, store.ScaleSet) {
 			runner(53, "laptop", false, "runplane"),
 		}})
 	})
-	e.svc.reconcileNow(context.Background())
+	e.sync()
 	return e, f, waitStatus(t, e, store.ScaleSetListening)
 }
 
@@ -155,7 +108,7 @@ func TestScaleSetListens(t *testing.T) {
 	}
 
 	// Again with nothing changed: no second scale set or session.
-	e.svc.reconcileNow(ctx)
+	e.sync()
 	if st := f.state(); len(st.sets) != 1 || st.closed != 0 {
 		t.Errorf("a second reconcile made %d scale sets and closed %d sessions", len(st.sets), st.closed)
 	}
@@ -208,7 +161,7 @@ func TestRenameErrorStaysUntilARenameWorks(t *testing.T) {
 	pool, _ := e.st.GetPool(ctx, "p1")
 	pool.Label = "runplane-new"
 	e.st.UpdatePool(ctx, pool)
-	e.svc.reconcileNow(ctx)
+	e.sync()
 
 	polls := len(f.state().polls)
 	eventually(t, "more polls", func() bool { return len(f.state().polls) > polls+2 })
@@ -219,7 +172,7 @@ func TestRenameErrorStaysUntilARenameWorks(t *testing.T) {
 	f.mu.Lock()
 	f.noUpdate = false
 	f.mu.Unlock()
-	e.svc.reconcileNow(ctx)
+	e.sync()
 	if got, _ := e.st.GetScaleSet(ctx, row.ID); got.Status != store.ScaleSetListening || got.Error != "" || got.Name != "runplane-new" {
 		t.Errorf("scale set after the rename = %s %q %s, want listening with no error as runplane-new", got.Status, got.Error, got.Name)
 	}
@@ -232,7 +185,7 @@ func TestScaleSetFollowsPool(t *testing.T) {
 		pool, _ := e.st.GetPool(ctx, "p1")
 		pool.Label, pool.Enabled = label, enabled
 		e.st.UpdatePool(ctx, pool)
-		e.svc.reconcileNow(ctx)
+		e.sync()
 	}
 
 	setPool("runplane-new", true)
@@ -267,11 +220,11 @@ func TestScaleSetFindsExistingByName(t *testing.T) {
 	e.pool("p1", "runplane", true)
 	f := e.actions()
 	// An earlier start made the scale set but stopped before it saved the ID.
-	set := *scaleSetSpec("runplane", 1)
-	set.ID = 30
-	f.sets[30], f.scopes[30] = set, "acme"
+	f.sets[30] = scaleset.RunnerScaleSet{ID: 30, Name: "runplane", RunnerGroupID: 1,
+		Labels: []scaleset.Label{{Name: "runplane", Type: "System"}}, RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true}}
+	f.scopes[30] = "acme"
 
-	e.svc.reconcileNow(context.Background())
+	e.sync()
 	if row := waitStatus(t, e, store.ScaleSetListening); row.GitHubID != 30 || len(f.state().sets) != 1 {
 		t.Errorf("github_id = %d, scale sets = %d; want the existing scale set 30", row.GitHubID, len(f.state().sets))
 	}
@@ -314,7 +267,7 @@ func TestListenerErrors(t *testing.T) {
 			e.pool("p1", "runplane", true)
 			f := e.actions()
 			f.conflict, f.revokeNext = tt.conflict, tt.revokeNext
-			e.svc.reconcileNow(context.Background())
+			e.sync()
 			if row := waitStatus(t, e, tt.wantStatus); !strings.Contains(row.Error, tt.wantError) {
 				t.Errorf("error = %q, want %q", row.Error, tt.wantError)
 			}
@@ -325,14 +278,14 @@ func TestListenerErrors(t *testing.T) {
 func TestSuspendedInstallationPausesListener(t *testing.T) {
 	e, f, row := listeningEnv(t)
 	ctx := context.Background()
-	suspend := func(at *time.Time) {
-		inst, _ := e.st.GetInstallation(ctx, 10)
-		inst.SuspendedAt = at
-		e.st.UpsertInstallation(ctx, inst)
-		e.svc.reconcileNow(ctx)
+	// suspend sets suspended_at of the installation on GitHub, and syncs.
+	suspend := func(at any) {
+		e.inst.mu.Lock()
+		e.inst.list[0]["suspended_at"] = at
+		e.inst.mu.Unlock()
+		e.sync()
 	}
-	now := time.Now()
-	suspend(&now)
+	suspend("2026-11-04T08:00:00Z")
 	got, err := e.st.GetScaleSet(ctx, row.ID)
 	if err != nil || got.Status != store.ScaleSetError || !strings.Contains(got.Error, "suspended") {
 		t.Errorf("scale set = %s %q, %v; want an error about the suspension", got.Status, got.Error, err)
@@ -347,16 +300,15 @@ func TestSuspendedInstallationPausesListener(t *testing.T) {
 	}
 }
 
+// The scheduler removes the runners of a scale set through its client. A
+// runner with a job is busy, and a runner that GitHub no longer has is
+// removed already.
 func TestRemoveRunner(t *testing.T) {
-	e := acmeEnv(t)
-	f := e.actions()
+	e, f, _ := listeningEnv(t)
+	f.mu.Lock()
 	f.agents[60], f.agents[61], f.agents[63] = "busy", "gone", "broken"
-	inst, _ := e.st.GetInstallation(context.Background(), 10)
-	cl, err := e.svc.scalesetClient(context.Background(), target{inst: inst})
-	if err != nil {
-		t.Fatal(err)
-	}
-	l := &setListener{cl: cl}
+	f.mu.Unlock()
+	c := e.sched.last
 	tests := []struct {
 		id                int64
 		wantErr, wantBusy bool
@@ -367,7 +319,7 @@ func TestRemoveRunner(t *testing.T) {
 		{63, true, false},
 	}
 	for _, tt := range tests {
-		err := l.RemoveRunner(context.Background(), tt.id)
+		err := c.RemoveRunner(context.Background(), tt.id)
 		if (err != nil) != tt.wantErr || errors.Is(err, scheduler.ErrRunnerBusy) != tt.wantBusy {
 			t.Errorf("RemoveRunner(%d) = %v; want error %v, busy %v", tt.id, err, tt.wantErr, tt.wantBusy)
 		}

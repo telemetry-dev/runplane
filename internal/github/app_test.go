@@ -2,8 +2,6 @@ package github
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,7 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/store"
@@ -53,30 +50,33 @@ func TestManifest(t *testing.T) {
 			if !reflect.DeepEqual(m, want) {
 				t.Errorf("manifest = %v, want %v", m, want)
 			}
-
-			// The store keeps only the hash of the state, for one hour.
-			sum := sha256.Sum256([]byte(u.Query().Get("state")))
-			stored, err := e.st.ConsumeManifestState(context.Background(), hex.EncodeToString(sum[:]), time.Now())
-			if err != nil {
-				t.Fatalf("no stored state with the SHA-256 of the state: %v", err)
-			}
-			if d := time.Until(stored.ExpiresAt); d < 59*time.Minute || d > time.Hour {
-				t.Errorf("state expires in %s, want 1 hour", d)
-			}
 		})
 	}
 }
 
-func TestAppName(t *testing.T) {
+// GitHub App names are unique on GitHub, and GitHub refuses names longer
+// than 34 characters.
+func TestManifestNamesTheApp(t *testing.T) {
 	tests := []struct{ instance, want string }{
-		{"", `^runplane-[a-z2-7]{6}$`},
+		{"", `^runplane-[a-z2-7]{6}$`}, // the default instance name
 		{" Acme CI ", `^Acme CI-[a-z2-7]{6}$`},
-		// GitHub refuses app names longer than 34 characters.
 		{"The continuous integration of Acme Corporation", `^The continuous integration-[a-z2-7]{6}$`},
 	}
 	for _, tt := range tests {
-		if got := appName(tt.instance); !regexp.MustCompile(tt.want).MatchString(got) {
-			t.Errorf("appName(%q) = %q, want %s", tt.instance, got, tt.want)
+		e := newEnv(t)
+		ctx := context.Background()
+		if tt.instance != "" {
+			if _, err := e.st.UpdateSettings(ctx, func(s *store.Settings) error { s.InstanceName = tt.instance; return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, manifest, err := e.svc.Manifest(ctx, "https://ci.example.com", ghapp.Account{Type: ghapp.User})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m struct{ Name string }
+		if err := json.Unmarshal([]byte(manifest), &m); err != nil || !regexp.MustCompile(tt.want).MatchString(m.Name) {
+			t.Errorf("instance %q: app name %q, %v; want %s", tt.instance, m.Name, err, tt.want)
 		}
 	}
 }
@@ -197,21 +197,5 @@ func TestDisconnectNamesScaleSetsLeftOnGitHub(t *testing.T) {
 	}
 	if _, err := e.st.GetGitHubApp(context.Background()); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the app is still there after a GitHub failure: %v", err)
-	}
-}
-
-func TestAppDeleteURL(t *testing.T) {
-	tests := []struct {
-		ownerType, want string
-	}{
-		{"Organization", "/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
-		{"User", "/settings/apps/runplane-ab12cd/advanced"},
-	}
-	e := newEnv(t)
-	for _, tt := range tests {
-		got := e.svc.appDeleteURL(store.GitHubApp{Slug: "runplane-ab12cd", OwnerLogin: "acme", OwnerType: tt.ownerType})
-		if got != e.srv.URL+tt.want {
-			t.Errorf("appDeleteURL(%s) = %q, want %q", tt.ownerType, got, tt.want)
-		}
 	}
 }

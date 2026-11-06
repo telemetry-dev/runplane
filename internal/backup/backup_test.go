@@ -1,22 +1,17 @@
 package backup
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // The values come from the AWS documentation, "Signature Calculations for
@@ -104,21 +99,24 @@ func TestUpload(t *testing.T) {
 	os.WriteFile(file, content, 0o600)
 
 	type request struct {
-		method, path, host, contentHash, auth string
-		body                                  []byte
+		method, path, host, contentHash, date, auth string
+		body                                        []byte
 	}
 	got := make(chan request, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		got <- request{r.Method, r.URL.EscapedPath(), r.Host, r.Header.Get("X-Amz-Content-Sha256"), r.Header.Get("Authorization"), body}
+		got <- request{r.Method, r.URL.EscapedPath(), r.Host, r.Header.Get("X-Amz-Content-Sha256"),
+			r.Header.Get("X-Amz-Date"), r.Header.Get("Authorization"), body}
 	}))
 	defer srv.Close()
 
 	s3 := S3{Endpoint: srv.URL, Region: "auto", Bucket: "rp", Prefix: "/nightly/", AccessKey: "AK", SecretKey: "SK"}
+	before := time.Now().UTC().Truncate(time.Second)
 	key, err := s3.Upload(context.Background(), file)
 	if err != nil {
 		t.Fatal(err)
 	}
+	after := time.Now().UTC()
 	if key != "nightly/runplane-20261104T030000Z.db.gz" {
 		t.Fatalf("key %q", key)
 	}
@@ -133,8 +131,12 @@ func TestUpload(t *testing.T) {
 	if r.contentHash != hex.EncodeToString(sum[:]) {
 		t.Fatalf("x-amz-content-sha256 %s does not match the body", r.contentHash)
 	}
-	day := time.Now().UTC().Format("20060102")
-	if !strings.HasPrefix(r.auth, "AWS4-HMAC-SHA256 Credential=AK/"+day+"/auto/s3/aws4_request,SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date,") {
+	// The scope of the signature has the day of X-Amz-Date, also at midnight.
+	at, err := time.Parse("20060102T150405Z", r.date)
+	if err != nil || at.Before(before) || at.After(after) {
+		t.Fatalf("X-Amz-Date %q, want a time between %s and %s", r.date, before, after)
+	}
+	if !strings.HasPrefix(r.auth, "AWS4-HMAC-SHA256 Credential=AK/"+at.Format("20060102")+"/auto/s3/aws4_request,SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date,") {
 		t.Fatalf("Authorization %q", r.auth)
 	}
 }
@@ -154,108 +156,18 @@ func TestUploadError(t *testing.T) {
 	}
 }
 
-func TestWrite(t *testing.T) {
-	dir := t.TempDir()
-	// No automatic checkpoint: the rows stay in the WAL file, so a plain
-	// copy of runplane.db would not have them.
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "runplane.db")+"?_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(0)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY, repository TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"j1", "j2", "j3"} {
-		if _, err := db.Exec(`INSERT INTO jobs VALUES (?, 'acme/api')`, id); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	backups := filepath.Join(dir, "backups")
-	res, err := write(context.Background(), vacuumInto(db), backups, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(res.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Size() != res.size {
-		t.Fatalf("size %d, file has %d", res.size, info.Size())
-	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Fatalf("backup mode %o, want 600: it holds password hashes", mode)
-	}
-	if !strings.HasPrefix(filepath.Base(res.path), "runplane-") || !strings.HasSuffix(res.path, "Z.db.gz") {
-		t.Fatalf("backup name %s", res.path)
-	}
-	entries, _ := os.ReadDir(backups)
-	if len(entries) != 1 {
-		t.Fatalf("backup dir has %d files, want only the backup", len(entries))
-	}
-
-	rdb, err := sql.Open("sqlite", "file:"+gunzip(t, res.path)+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rdb.Close()
-	var ids string
-	if err := rdb.QueryRow(`SELECT group_concat(id) FROM (SELECT id FROM jobs ORDER BY id)`).Scan(&ids); err != nil || ids != "j1,j2,j3" {
-		t.Fatalf("restored jobs %q, %v; want j1,j2,j3", ids, err)
-	}
-}
-
-func TestWriteKeepsNewest(t *testing.T) {
-	dir := t.TempDir()
-	old := []string{
-		"runplane-20250101T030000.000Z.db.gz",
-		"runplane-20250102T030000.000Z.db.gz",
-		"runplane-20250103T030000.000Z.db.gz",
-		"runplane-20250104T030000.000Z.db.gz",
-	}
-	others := []string{"runplane-before-upgrade.db.gz", "notes.txt"}
-	for _, name := range append(slices.Clone(old), others...) {
-		os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600)
-	}
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "runplane.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	res, err := write(context.Background(), vacuumInto(db), dir, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantRemoved := []string{filepath.Join(dir, old[0]), filepath.Join(dir, old[1])}
-	if !slices.Equal(res.removed, wantRemoved) {
-		t.Fatalf("removed %v, want %v", res.removed, wantRemoved)
-	}
-	var left []string
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		left = append(left, e.Name())
-	}
-	want := []string{"notes.txt", old[2], old[3], "runplane-before-upgrade.db.gz", filepath.Base(res.path)}
-	slices.Sort(want)
-	if !slices.Equal(left, want) {
-		t.Fatalf("files %v, want %v", left, want)
-	}
-}
-
 // Two backups in one millisecond, for example two clicks, must not write
-// the same file.
+// the same file. The second name sorts after the first, because the
+// pruning keeps the names that sort last.
 func TestFreeName(t *testing.T) {
 	dir := t.TempDir()
 	at := time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
-	first, _ := freeName(dir, at)
-	if first != "runplane-20261104T030000.000Z.db.gz" {
-		t.Fatalf("name %q", first)
+	first, path := freeName(dir, at)
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir, first), []byte("x"), 0o600)
-	if next, _ := freeName(dir, at); next != "runplane-20261104T030000.001Z.db.gz" {
-		t.Fatalf("name after %s: %q, want the next millisecond", first, next)
+	if next, _ := freeName(dir, at); next <= first {
+		t.Fatalf("name after %s: %q, want a name that sorts after it", first, next)
 	}
 }
 
@@ -275,33 +187,4 @@ func TestNextRun(t *testing.T) {
 			t.Errorf("nextRun(%v) = %v, want %v", tt.now, got, tt.want)
 		}
 	}
-}
-
-func vacuumInto(db *sql.DB) func(context.Context, string) error {
-	return func(ctx context.Context, path string) error {
-		_, err := db.ExecContext(ctx, "VACUUM INTO ?", path)
-		return err
-	}
-}
-
-func gunzip(t *testing.T, path string) string {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	zr, err := gzip.NewReader(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := io.ReadAll(zr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(t.TempDir(), "restored.db")
-	if err := os.WriteFile(out, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return out
 }

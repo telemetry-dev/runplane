@@ -297,7 +297,9 @@ func TestSetupMakesAdminWithSession(t *testing.T) {
 		t.Fatalf("setup user = %+v, want admin ada@example.com", u)
 	}
 	cookie := res.Header.Get("Set-Cookie")
-	for _, part := range []string{"runplane_session=", "Path=/", "Max-Age=2592000", "HttpOnly", "SameSite=Lax"} {
+	// The cookie lives as long as the session that it holds.
+	maxAge := fmt.Sprintf("Max-Age=%d", int(auth.SessionTTL.Seconds()))
+	for _, part := range []string{"runplane_session=", "Path=/", maxAge, "HttpOnly", "SameSite=Lax"} {
 		if !strings.Contains(cookie, part) {
 			t.Errorf("Set-Cookie %q has no %q", cookie, part)
 		}
