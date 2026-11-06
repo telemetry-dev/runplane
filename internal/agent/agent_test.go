@@ -140,7 +140,6 @@ func TestNewSessionClosesOldSessionOfServer(t *testing.T) {
 func TestCalls(t *testing.T) {
 	a, node, s := connect(t)
 	ctx := t.Context()
-	// check compares the result of a call and the calls that the node got.
 	check := func(name string, got any, err error, want any, calls ...[]any) {
 		t.Helper()
 		if err != nil || !reflect.DeepEqual(got, want) {

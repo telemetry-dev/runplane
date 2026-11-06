@@ -243,7 +243,6 @@ func (q *hostQuery) parse(_ string, v url.Values) error {
 	return nil
 }
 
-// route is the method and the path of an operation with the request In.
 type route[In any] struct {
 	method, path string
 }
@@ -314,7 +313,6 @@ func (s stream[In]) handler(a *agent) http.HandlerFunc {
 	}
 }
 
-// request makes the request of a call with in.
 func (rt route[In]) request(ctx context.Context, in In) (*http.Request, error) {
 	path, query := rt.path, url.Values(nil)
 	if a, ok := any(in).(urlArgs); ok {
@@ -348,7 +346,6 @@ func (rt route[In]) request(ctx context.Context, in In) (*http.Request, error) {
 	return req, nil
 }
 
-// read reads the request of a call on the agent.
 func (rt route[In]) read(w http.ResponseWriter, r *http.Request) (In, error) {
 	var in In
 	if rt.method == http.MethodPost {
@@ -364,7 +361,6 @@ func (rt route[In]) read(w http.ResponseWriter, r *http.Request) (In, error) {
 	return in, nil
 }
 
-// call runs the operation o with in on the agent of s.
 func call[In, Out any](ctx context.Context, s *Session, o op[In, Out], in In) (Out, error) {
 	var out Out
 	resp, err := open(ctx, s, o.route, in)
@@ -381,8 +377,6 @@ func call[In, Out any](ctx context.Context, s *Session, o op[In, Out], in In) (O
 	return out, nil
 }
 
-// open sends the request of a call with in on the agent of s, and returns
-// the answer.
 func open[In any](ctx context.Context, s *Session, rt route[In], in In) (*http.Response, error) {
 	req, err := rt.request(ctx, in)
 	if err != nil {

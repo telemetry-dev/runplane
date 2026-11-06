@@ -13,10 +13,8 @@ import (
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
-// remoteDriver is the sandbox driver of an agent, through its session.
 type remoteDriver struct{ s *Session }
 
-// Mode is the mode that the agent sent in its hello.
 func (d remoteDriver) Mode() sandbox.Mode { return d.s.hello.Mode }
 
 // Start is the only call that sends the JIT config of a sandbox to the
@@ -49,12 +47,11 @@ func (d remoteDriver) Configure(ctx context.Context, settings sandbox.Settings) 
 	return d.s.Configure(ctx, s)
 }
 
-// Events delivers the driver events of the agent. It closes when the
-// session ends.
+// Events closes its channel when the session ends.
 func (d remoteDriver) Events() <-chan sandbox.Event { return d.s.events }
 
-// Logs streams the log of a sandbox. With follow, the stream stays open
-// until ctx ends, the reader closes, or the session ends.
+// With follow, Logs keeps the stream open until ctx ends, the reader
+// closes, or the session ends.
 func (d remoteDriver) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
 	resp, err := open(ctx, d.s, opLogs.route, logsRequest{ID: id, Follow: follow})
 	if err != nil {
@@ -94,7 +91,6 @@ func (d remoteDriver) Probe(ctx context.Context) error {
 	return err
 }
 
-// Close ends the session of the agent.
 func (d remoteDriver) Close() error { return d.s.Close() }
 
 // The shell stream after the upgrade: the agent sends the raw terminal
@@ -148,7 +144,6 @@ func (t *remoteTerminal) frame(kind byte, payload []byte) error {
 	return err
 }
 
-// readFrames passes the frames from r to term until r ends.
 func readFrames(r io.Reader, term sandbox.Terminal) error {
 	var hdr [3]byte
 	buf := make([]byte, maxFrame)

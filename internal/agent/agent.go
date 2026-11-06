@@ -114,7 +114,6 @@ type agent struct {
 	updated    chan struct{}
 }
 
-// connect dials the primary, runs the handshake, and starts yamux.
 func (a *agent) connect(ctx context.Context) (*yamux.Session, error) {
 	info, err := a.Node.Facts(ctx)
 	if err != nil {
@@ -288,7 +287,6 @@ func (o *outbox) setStats(st host.Stats) {
 	o.signal()
 }
 
-// putBack returns an event that did not go out to the front of the queue.
 func (o *outbox) putBack(it streamItem) {
 	if it.Event == nil {
 		return

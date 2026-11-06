@@ -124,7 +124,6 @@ func (a *testAgent) result(t *testing.T) error {
 	return a.err
 }
 
-// connect starts a primary and a registered agent.
 func connect(t *testing.T) (*testAgent, *fakeNode, *Session) {
 	t.Helper()
 	p := startPrimary(t, nil)
@@ -163,7 +162,6 @@ func waitClosed[T any](t *testing.T, ch <-chan T) {
 	}
 }
 
-// readFull reads n bytes from r. A read error comes back as the text.
 func readFull(t *testing.T, r io.Reader, n int) string {
 	t.Helper()
 	ch := make(chan string, 1)
@@ -280,7 +278,6 @@ func newFakeNode() *fakeNode {
 	}
 }
 
-// record adds a call, and returns nil as the result of the call.
 func (n *fakeNode) record(call ...any) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()

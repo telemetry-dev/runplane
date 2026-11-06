@@ -219,7 +219,6 @@ func yamuxConfig(log *slog.Logger) *yamux.Config {
 	return cfg
 }
 
-// streamClient sends each HTTP request on a stream of sess.
 func streamClient(sess *yamux.Session) *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		DialContext:         func(context.Context, string, string) (net.Conn, error) { return sess.Open() },

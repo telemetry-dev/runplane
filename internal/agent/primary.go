@@ -100,7 +100,6 @@ func (l *Listener) accept(ctx context.Context, conn net.Conn) {
 	l.OnSession(s)
 }
 
-// open runs the agent handshake and starts yamux.
 func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
@@ -229,8 +228,7 @@ func (s *Session) Close() error {
 	return nil
 }
 
-// Stats delivers the host samples of the agent. It closes when the session
-// ends.
+// Stats closes its channel when the session ends.
 func (s *Session) Stats() <-chan host.Stats { return s.stats }
 
 func (s *Session) Configure(ctx context.Context, settings Settings) error {
@@ -341,7 +339,6 @@ func (s *Session) closedOr(err error) error {
 	return err
 }
 
-// handleEvents reads the event stream of the agent.
 func (s *Session) handleEvents(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	for {
@@ -390,7 +387,6 @@ func (s *Session) finish() {
 	s.client.CloseIdleConnections()
 }
 
-// cacheHandler serves the cache requests of one agent.
 func cacheHandler(h http.Handler, serverID string) http.Handler {
 	if h == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

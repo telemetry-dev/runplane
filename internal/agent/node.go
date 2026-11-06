@@ -30,7 +30,6 @@ type Node interface {
 	// nodes are agents.
 	Local() bool
 	Driver() sandbox.Driver
-	// Configure applies the settings that the primary gives each server.
 	Configure(ctx context.Context, s Settings) error
 	Facts(ctx context.Context) (host.Info, error)
 	// Doctor runs the doctor on the server. minFreeDiskPercent is the
