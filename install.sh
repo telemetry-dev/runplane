@@ -89,8 +89,8 @@ main() {
 	esac
 	install_runplane
 	write_config
-	write_units
 	stop_service
+	write_units
 	store_mode
 	store_domain
 	make_setup_code
@@ -739,9 +739,10 @@ EOF
 
 # stop_service stops a running primary before the next steps open its
 # database with the new binary. The binary applies the migrations of its
-# release, and the old serve must not operate on the new schema. The
-# sandboxes continue (KillMode=process), and start_service starts the
-# primary again.
+# release, and the old serve must not operate on the new schema. The stop
+# comes before write_units, because systemctl warns about a changed unit
+# file until start_service reloads the units. The sandboxes continue
+# (KillMode=process), and start_service starts the primary again.
 stop_service() {
 	[ "$ROLE" = primary ] || return 0
 	systemctl is-active --quiet "$SERVICE.service" 2>/dev/null || return 0

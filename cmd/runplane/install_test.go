@@ -346,10 +346,12 @@ check_base_image`)
 
 // install.sh stops a running primary before the first command that opens
 // the database, because the new binary applies the migrations of its
-// release, and the old serve must not operate on the new schema. The start
-// at the end starts the primary again, and it makes the setup code before
-// the first start. In this test, the steps that need the host or the
-// network do nothing.
+// release, and the old serve must not operate on the new schema. The stop
+// also comes before the new unit file, because systemctl warns about a
+// changed unit file until the start reloads the units. The start at the end
+// starts the primary again, and it makes the setup code before the first
+// start. In this test, the steps that need the host or the network do
+// nothing.
 func TestInstallStopsThePrimaryBeforeTheDatabaseCommands(t *testing.T) {
 	bin := installVars(t, "BIN")["BIN"]
 	for _, tt := range []struct {
@@ -359,12 +361,14 @@ func TestInstallStopsThePrimaryBeforeTheDatabaseCommands(t *testing.T) {
 	}{
 		{"update of a running primary", true, []string{
 			"+ systemctl stop runplane.service",
+			"+ write runplane.service (mode 0644)",
 			"+ " + bin + " set-mode container",
 			"+ " + bin + " set-domain ci.example.com",
 			"+ " + bin + " setup-code",
 			"+ systemctl restart runplane.service",
 		}},
 		{"new install", false, []string{
+			"+ write runplane.service (mode 0644)",
 			"+ " + bin + " set-mode container",
 			"+ " + bin + " set-domain ci.example.com",
 			"+ " + bin + " setup-code",
@@ -390,8 +394,9 @@ systemctl() { `+active+`; }
 main --dry-run --mode container --domain ci.example.com`)
 			var got []string
 			for line := range strings.Lines(out) {
-				line = strings.TrimSuffix(line, "\n")
-				if strings.HasPrefix(line, "+ systemctl stop ") || strings.HasPrefix(line, "+ systemctl restart ") || strings.HasPrefix(line, "+ "+bin+" ") {
+				line = strings.ReplaceAll(strings.TrimSuffix(line, "\n"), dir+"/", "")
+				if strings.HasPrefix(line, "+ systemctl stop ") || strings.HasPrefix(line, "+ systemctl restart ") || strings.HasPrefix(line, "+ "+bin+" ") ||
+					line == "+ write runplane.service (mode 0644)" {
 					got = append(got, line)
 				}
 			}
