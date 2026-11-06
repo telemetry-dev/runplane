@@ -69,8 +69,8 @@ func TestDiskLifecycle(t *testing.T) {
 	if err := Detach(mnt); err != nil {
 		t.Fatal(err)
 	}
-	if src, _ := mountSource(mnt); src != "" {
-		t.Fatalf("%s is still mounted from %s", mnt, src)
+	if _, err := os.Stat(filepath.Join(mnt, "work")); !os.IsNotExist(err) {
+		t.Fatalf("%s still shows the files of the disk after Detach: %v", mnt, err)
 	}
 	if loops := loopsAfterRelease(t, disk); len(loops) > 0 {
 		t.Fatalf("loop devices %v still use the disk after Detach", loops)
