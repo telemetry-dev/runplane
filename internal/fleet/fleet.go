@@ -155,6 +155,8 @@ type node struct {
 	// image, and gcImages holds the write lock. Thus a GC keeps each image
 	// that a pull made.
 	gcMu sync.RWMutex
+	// settingsMu makes the settings sends to the server one at a time.
+	settingsMu sync.Mutex
 
 	// Guarded by Fleet.mu.
 	name         string

@@ -156,20 +156,20 @@ func adminStatus(status string) bool {
 	return status == store.ServerDraining || status == store.ServerDisabled
 }
 
-// sendSettings gives a server the settings of the store.
+// sendSettings gives a server the settings of the store. A send waits for
+// the send before it to the same server, and then reads the settings, so
+// that the last send has the newest settings.
 func (f *Fleet) sendSettings(ctx context.Context, n *node) {
+	n.settingsMu.Lock()
+	defer n.settingsMu.Unlock()
 	st, err := f.st.GetSettings(ctx)
 	if err != nil {
 		f.log.Warn("read settings for a server", "server_id", n.id, "err", err)
 		return
 	}
-	f.configure(ctx, n, NodeSettings(st))
-}
-
-func (f *Fleet) configure(ctx context.Context, n *node, s agent.Settings) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	if err := n.Configure(ctx, s); err != nil {
+	if err := n.Configure(ctx, NodeSettings(st)); err != nil {
 		f.log.Warn("send settings to a server", "server_id", n.id, "err", err)
 	}
 }
@@ -472,8 +472,7 @@ func (f *Fleet) saveDoctor(ctx context.Context, serverID string, checks []doctor
 }
 
 func (f *Fleet) settingsChanged(c events.SettingsChanged) {
-	s := NodeSettings(c.New)
-	if reflect.DeepEqual(NodeSettings(c.Old), s) {
+	if reflect.DeepEqual(NodeSettings(c.Old), NodeSettings(c.New)) {
 		return
 	}
 	f.mu.Lock()
@@ -481,7 +480,7 @@ func (f *Fleet) settingsChanged(c events.SettingsChanged) {
 	nodes := slices.Collect(maps.Values(f.nodes))
 	f.mu.Unlock()
 	for _, n := range nodes {
-		f.goBg(func(ctx context.Context) { f.configure(ctx, n, s) })
+		f.goBg(func(ctx context.Context) { f.sendSettings(ctx, n) })
 	}
 }
 
