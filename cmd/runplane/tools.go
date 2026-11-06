@@ -139,7 +139,7 @@ func updateCmd(ctx context.Context, args []string) error {
 		return nil
 	}
 	// try-restart restarts the unit only if it runs.
-	out, err := exec.CommandContext(ctx, "systemctl", "try-restart", "runplane.service").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "systemctl", "try-restart", primaryUnit+".service").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("restart runplane: %w: %s", err, out)
 	}

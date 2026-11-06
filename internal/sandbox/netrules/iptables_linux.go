@@ -19,12 +19,6 @@ import (
 	"github.com/google/nftables"
 )
 
-const (
-	dockerUser = "DOCKER-USER"
-	// ruleComment marks the iptables rules that runplane owns.
-	ruleComment = "runplane"
-)
-
 // iptablesRules returns the runplane rules of each chain of the iptables
 // filter table, in order.
 //
@@ -71,7 +65,7 @@ func iptablesRules(cfg Config, taps netip.Prefix, links map[string]link) map[str
 	rules := map[string][][]string{"INPUT": input, "FORWARD": forward, dockerUser: docker}
 	for _, chain := range rules {
 		for i := range chain {
-			chain[i] = append(chain[i], "-m", "comment", "--comment", ruleComment)
+			chain[i] = append(chain[i], "-m", "comment", "--comment", RuleComment)
 		}
 	}
 	return rules
@@ -207,7 +201,7 @@ func (b iptables) inSync(ctx context.Context, want map[string][][]string) bool {
 // With a nil want, that is each of them, to remove the rules.
 func (b iptables) managed(want map[string][][]string) []string {
 	var list []string
-	for _, chain := range []string{"INPUT", "FORWARD", dockerUser} {
+	for _, chain := range RuleChains {
 		if _, ok := want[chain]; (ok || want == nil) && slices.Contains(b.chains, chain) {
 			list = append(list, chain)
 		}
@@ -229,7 +223,7 @@ func (b iptables) rules(ctx context.Context, chain string) ([]string, error) {
 			continue
 		}
 		fields := strings.Fields(rule)
-		if i := slices.Index(fields, "--comment"); i >= 0 && i+1 < len(fields) && strings.Trim(fields[i+1], `"`) == ruleComment {
+		if i := slices.Index(fields, "--comment"); i >= 0 && i+1 < len(fields) && strings.Trim(fields[i+1], `"`) == RuleComment {
 			rules = append(rules, rule)
 		}
 	}

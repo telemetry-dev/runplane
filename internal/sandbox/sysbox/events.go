@@ -30,7 +30,7 @@ func (d *Driver) watchDocker(ctx context.Context) {
 		res := d.docker.Events(streamCtx, client.EventsListOptions{
 			Filters: d.owned(client.Filters{}.
 				Add("type", string(events.ContainerEventType)).
-				Add("label", labelSandbox).
+				Add("label", LabelSandbox).
 				Add("event", string(events.ActionDie), string(events.ActionDestroy))),
 		})
 		d.sweep(streamCtx)
@@ -97,7 +97,7 @@ func (d *Driver) sweep(ctx context.Context) {
 	}
 	res, err := d.docker.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: d.owned(client.Filters{}.Add("label", labelSandbox)),
+		Filters: d.owned(client.Filters{}.Add("label", LabelSandbox)),
 	})
 	if err != nil {
 		if ctx.Err() == nil {

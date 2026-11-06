@@ -50,7 +50,7 @@ func DropChains() []string {
 			continue
 		}
 		family := map[nftables.TableFamily]string{nftables.TableFamilyINet: "inet", nftables.TableFamilyIPv4: "ip"}[ch.Table.Family]
-		if family == "" || ch.Table.Name == tableName || family == "ip" && ch.Table.Name == "filter" {
+		if family == "" || ch.Table.Name == TableName || family == "ip" && ch.Table.Name == "filter" {
 			continue
 		}
 		out = append(out, family+" "+ch.Table.Name+" "+ch.Name)

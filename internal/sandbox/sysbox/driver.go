@@ -54,7 +54,7 @@ type Profile struct {
 var (
 	// Container is the profile of container mode.
 	Container = Profile{
-		mode: sandbox.ModeContainer, runtime: "sysbox-runc", loopScratch: true, cgroupParent: "runplane.slice",
+		mode: sandbox.ModeContainer, runtime: "sysbox-runc", loopScratch: true, cgroupParent: Slice,
 		firewall: true, watchdog: true,
 	}
 	// Dev is the profile of dev mode: plain Docker, with each sandbox root on
@@ -64,14 +64,17 @@ var (
 	}
 )
 
-// labelSandbox marks the containers and volumes of runplane sandboxes with
+// LabelSandbox marks the containers and volumes of runplane sandboxes with
 // their sandbox ID. The driver changes only objects with this label.
-const labelSandbox = "dev.runplane.sandbox"
+const LabelSandbox = "dev.runplane.sandbox"
 
 // labelData marks the containers and volumes of a driver with its data
 // folder, so that two runplane processes on one Docker leave each other's
 // sandboxes alone.
 const labelData = "dev.runplane.data"
+
+// Slice holds the containers of container mode. install.sh writes its unit.
+const Slice = "runplane.slice"
 
 type Options struct {
 	Docker           *client.Client

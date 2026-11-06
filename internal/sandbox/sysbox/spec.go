@@ -92,7 +92,7 @@ func (d *Driver) createOptions(spec sandbox.Spec, m mounts, dns []netip.Addr) cl
 			Image:      spec.Image.Digest,
 			Hostname:   guest.Hostname(spec.ID),
 			Entrypoint: []string{guestInit},
-			Labels:     map[string]string{labelSandbox: spec.ID, labelData: d.opts.DataDir},
+			Labels:     map[string]string{LabelSandbox: spec.ID, labelData: d.opts.DataDir},
 		},
 		HostConfig: hostConfig,
 		NetworkingConfig: &network.NetworkingConfig{

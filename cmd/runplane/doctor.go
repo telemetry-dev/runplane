@@ -18,16 +18,23 @@ import (
 	"github.com/runplane/runplane/internal/version"
 )
 
+// The systemd services of the primary and of an agent, which install.sh
+// writes.
+const (
+	primaryUnit = "runplane"
+	agentUnit   = "runplane-agent"
+)
+
 // doctorOptions returns the doctor options of this server in mode: of an
 // agent, or of the primary, whose domain adds the ports of HTTPS. The
 // caller adds the internet check and the min_free_disk_percent setting.
 func doctorOptions(cfg config.Config, mode sandbox.Mode, agent bool, domain string) doctor.Options {
 	o := doctor.Options{
-		DataDir: cfg.DataDir, EnvFile: cfg.EnvFilePath(), Unit: "runplane", Listen: primaryAddrs(cfg, domain),
+		DataDir: cfg.DataDir, EnvFile: cfg.EnvFilePath(), Unit: primaryUnit, Listen: primaryAddrs(cfg, domain),
 		Requirements: requirements(cfg, mode), Docker: dockerFacts, BaseImage: baseImage,
 	}
 	if agent {
-		o.Unit, o.Listen = "runplane-agent", []string{servicePortAddr(cfg)}
+		o.Unit, o.Listen = agentUnit, []string{servicePortAddr(cfg)}
 	}
 	return o
 }

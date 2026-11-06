@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	slice      = "runplane.slice"
+	// Slice holds the scopes of the VMs. install.sh writes its unit.
+	Slice      = "runplane.slice"
 	unitPrefix = "runplane-vm-"
 )
 
@@ -32,7 +33,7 @@ func serviceUnit(cgroup []byte) string {
 }
 
 func (d *Driver) scopeDir(id string) string {
-	return filepath.Join(d.cgroupRoot, slice, unitName(id)+".scope")
+	return filepath.Join(d.cgroupRoot, Slice, unitName(id)+".scope")
 }
 
 // scopeAlive reports if a process operates in the scope of a VM.
@@ -43,7 +44,7 @@ func (d *Driver) scopeAlive(id string) bool {
 
 // scopeIDs returns the sandbox IDs of the VM scopes in the runplane slice.
 func (d *Driver) scopeIDs() []string {
-	entries, err := os.ReadDir(filepath.Join(d.cgroupRoot, slice))
+	entries, err := os.ReadDir(filepath.Join(d.cgroupRoot, Slice))
 	if err != nil && !os.IsNotExist(err) {
 		d.log.Warn("read the VM scopes", "err", err)
 	}

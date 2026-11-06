@@ -45,7 +45,7 @@ func (d *Driver) jailerCommand(id string, uid, gid int) *exec.Cmd {
 	unit := unitName(id)
 	args := []string{
 		"--scope", "--quiet", "--collect",
-		"--slice=" + slice,
+		"--slice=" + Slice,
 		"--unit=" + unit,
 		"--description=runplane sandbox " + id,
 		// The metrics read memory.current of the scope.
@@ -67,7 +67,7 @@ func (d *Driver) jailerCommand(id string, uid, gid int) *exec.Cmd {
 		// With cgroup v2 and no --cgroup values, the jailer only moves
 		// itself to this cgroup: the scope that it is in already.
 		"--cgroup-version", "2",
-		"--parent-cgroup", slice+"/"+unit+".scope",
+		"--parent-cgroup", Slice+"/"+unit+".scope",
 		"--",
 		"--api-sock", "/"+apiSocket,
 	)

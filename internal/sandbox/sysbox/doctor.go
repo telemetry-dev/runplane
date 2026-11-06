@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	// minSysbox is the first Sysbox that starts containers with Docker
+	// MinVersion is the first Sysbox that starts containers with Docker
 	// dockerTimeNS and newer, which put containers in time namespaces.
-	minSysbox    = "0.7.1"
+	MinVersion   = "0.7.1"
 	dockerTimeNS = "29.5"
 	sysboxUnit   = "sysbox"
 )
@@ -83,15 +83,15 @@ func (h containerHost) kvmCheck() doctor.Check {
 
 func (h containerHost) sysboxCheck() doctor.Check {
 	c := doctor.Check{ID: "sysbox", Name: "Sysbox"}
-	install := "Install Sysbox " + minSysbox + " or newer from github.com/nestybox/sysbox/releases."
+	install := "Install Sysbox " + MinVersion + " or newer from github.com/nestybox/sysbox/releases."
 	_, listed := h.Docker.Runtimes[Container.runtime]
 	switch {
 	case h.SysboxVersion == "":
 		return c.Fail("Sysbox is not installed", install)
-	case !doctor.AtLeast(h.SysboxVersion, minSysbox) && doctor.AtLeast(h.Docker.Version, dockerTimeNS):
+	case !doctor.AtLeast(h.SysboxVersion, MinVersion) && doctor.AtLeast(h.Docker.Version, dockerTimeNS):
 		return c.Fail(fmt.Sprintf("Sysbox %s cannot start containers with Docker %s, which uses time namespaces", h.SysboxVersion, h.Docker.Version), install)
-	case !doctor.AtLeast(h.SysboxVersion, minSysbox):
-		return c.Warn(fmt.Sprintf("Sysbox %s: Docker %s and newer need Sysbox %s", h.SysboxVersion, dockerTimeNS, minSysbox), install)
+	case !doctor.AtLeast(h.SysboxVersion, MinVersion):
+		return c.Warn(fmt.Sprintf("Sysbox %s: Docker %s and newer need Sysbox %s", h.SysboxVersion, dockerTimeNS, MinVersion), install)
 	case h.sysboxUnit != "" && h.sysboxUnit != "active":
 		return c.Fail("The sysbox service is "+h.sysboxUnit, "Start the sysbox service.").WithCommand("sudo systemctl enable --now " + sysboxUnit)
 	case h.Docker.Version != "" && !listed:
