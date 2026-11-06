@@ -280,6 +280,7 @@ check_base_image`)
 		}
 		agree(t, "the programs that install.sh installs", installed, map[string]string{"firecracker": firecracker.Binary, "jailer": firecracker.JailerBinary},
 			"install.sh", "internal/sandbox/firecracker/doctor.go")
+		agree(t, "the firecracker whose version install.sh reads", match(t, script, `\$\((\S*firecracker) --version`), firecracker.Binary, "install.sh", "internal/sandbox/firecracker/doctor.go")
 		agree(t, "the jailer that install.sh looks for", match(t, script, `\[ -x (/\S+) \]`), firecracker.JailerBinary, "install.sh", "internal/sandbox/firecracker/doctor.go")
 		// The guest kernel uses the guest config of this Firecracker release.
 		agree(t, "RUNPLANE_FIRECRACKER_VERSION of install.sh", installVars(t, "RUNPLANE_FIRECRACKER_VERSION")["RUNPLANE_FIRECRACKER_VERSION"],
