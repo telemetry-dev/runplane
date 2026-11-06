@@ -7,14 +7,19 @@
 # The arm64 builds use the ubuntu-24.04-arm runners. For a private repository
 # without these runners, change the runner to ubuntu-24.04 and add
 # docker/setup-qemu-action (the arm64 build is then much slower).
+#
+# The build context is the images folder, and images/.dockerignore keeps
+# only the Dockerfile in it. A change to images.go, its test, or the README
+# does not change an image, so it starts no build. A new image changes this
+# file too, because the matrices must name it.
 name: Images
 
 on:
   push:
     branches: [main]
-    paths: ['images/**', '.github/workflows/images.yml']
+    paths: ['images/Dockerfile', 'images/.dockerignore', '.github/workflows/images.yml']
   pull_request:
-    paths: ['images/**', '.github/workflows/images.yml']
+    paths: ['images/Dockerfile', 'images/.dockerignore', '.github/workflows/images.yml']
   schedule:
     - cron: '23 4 * * 1'
   workflow_dispatch:
