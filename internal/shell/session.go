@@ -2,7 +2,6 @@ package shell
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -13,9 +12,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/store"
 )
 
 // client is an authenticated connection.
@@ -189,9 +187,6 @@ func banner(t Target, now time.Time) string {
 }
 
 func (s *Server) audit(ctx context.Context, c client, t Target) {
-	if s.cfg.Audit == nil {
-		return
-	}
 	detail := map[string]any{"key": c.key}
 	if c.login != "" {
 		detail["github_login"] = c.login
@@ -201,11 +196,5 @@ func (s *Server) audit(ctx context.Context, c client, t Target) {
 	if t.Job != "" {
 		detail["job_name"], detail["repository"] = t.Job, t.Repository
 	}
-	raw, _ := json.Marshal(detail) // a map of strings and bools always encodes
-	err := s.cfg.Audit(context.WithoutCancel(ctx), store.AuditEntry{
-		ID: ids.New(), At: time.Now(), Action: "sandbox.ssh", Target: c.sandboxID, Detail: raw, IP: c.ip,
-	})
-	if err != nil {
-		s.cfg.Log.Error("write audit entry", "action", "sandbox.ssh", "target", c.sandboxID, "err", err)
-	}
+	s.cfg.Audit(ctx, audit.Actor{IP: c.ip}, "sandbox.ssh", c.sandboxID, detail)
 }

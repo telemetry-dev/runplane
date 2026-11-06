@@ -17,6 +17,7 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/api"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/cache"
@@ -379,7 +380,7 @@ func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) 
 func (p *primary) serveSSH(opener shell.Opener) error {
 	gw, err := shell.New(shell.Config{
 		Addr: p.cfg.SSHListen, HostKeyPath: p.cfg.SSHHostKeyPath(), Opener: opener, Lookup: shell.LookupStore(p.st),
-		AdminKeys: shell.AuthorizedKeysFile(p.cfg.AdminKeysPath(), p.log), Audit: p.st.InsertAudit,
+		AdminKeys: shell.AuthorizedKeysFile(p.cfg.AdminKeysPath(), p.log), Audit: audit.Log{Store: p.st, Logger: p.log}.Record,
 		Log: p.log.With("component", "ssh"),
 	})
 	if err != nil {
