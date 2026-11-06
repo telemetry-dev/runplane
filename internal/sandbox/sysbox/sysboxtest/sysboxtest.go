@@ -1,5 +1,5 @@
 // Package sysboxtest has the helpers of the sandbox tests that start real
-// containers: a fake runner bundle, an event watcher, and runplane-init.
+// containers: a fake runner bundle and an event watcher.
 package sysboxtest
 
 import (
@@ -8,9 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -74,25 +72,6 @@ func (b Bundle) Signal(t *testing.T, name, id string) {
 	if err := os.WriteFile(filepath.Join(b.Dir, name+"-jit-"+id), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// Init returns runplane-init for linux/goarch: the file in
-// RUNPLANE_TEST_INIT, or a new build.
-func Init(t *testing.T, dir, goarch string) string {
-	t.Helper()
-	if p := os.Getenv("RUNPLANE_TEST_INIT"); p != "" {
-		return p
-	}
-	if goarch == "" {
-		goarch = runtime.GOARCH
-	}
-	path := filepath.Join(dir, "runplane-init")
-	cmd := exec.Command("go", "build", "-o", path, "github.com/runplane/runplane/init")
-	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goarch, "CGO_ENABLED=0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build runplane-init: %v\n%s", err, out)
-	}
-	return path
 }
 
 // Watcher keeps the events of a driver.

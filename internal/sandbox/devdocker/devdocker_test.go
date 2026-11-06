@@ -18,6 +18,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/initbin"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/devdocker"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
@@ -44,6 +45,7 @@ func TestDoctorChecksTheControlPort(t *testing.T) {
 // It uses the image in RUNPLANE_TEST_IMAGE, such as the image of
 // sysboxtest/Dockerfile, by default the local build of the base image:
 // docker build -t runplane/runner-ubuntu-24.04:local --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images
+// The sandboxes run the runplane-init of make init.
 func TestSandbox(t *testing.T) {
 	if os.Getenv("RUNPLANE_TEST_DOCKER") != "1" {
 		t.Skip("set RUNPLANE_TEST_DOCKER=1 to start sandboxes on Docker")
@@ -53,10 +55,6 @@ func TestSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	info, err := docker.Info(ctx, client.InfoOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	ref := os.Getenv("RUNPLANE_TEST_IMAGE")
 	if ref == "" {
 		ref = "runplane/runner-ubuntu-24.04:local"
@@ -67,8 +65,6 @@ func TestSandbox(t *testing.T) {
 	}
 
 	work := t.TempDir()
-	goarch := map[string]string{"aarch64": "arm64", "x86_64": "amd64"}[info.Info.Architecture]
-	initPath := sysboxtest.Init(t, work, goarch)
 	bundle := sysboxtest.NewBundle(t, filepath.Join(work, "runner"))
 	data := filepath.Join(work, "data")
 	opts := sysbox.Options{
@@ -78,7 +74,7 @@ func TestSandbox(t *testing.T) {
 		ScratchTemplates: filepath.Join(data, "scratch-templates"),
 		ServicePort:      freePort(t) - 1,
 		Runner:           bundle.Runner,
-		InitPath:         func() (string, error) { return initPath, nil },
+		InitPath:         initbin.Path,
 		Settings:         sandbox.Settings{DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, ActionsCache: true},
 		Logger:           sysboxtest.Logger(t),
 	}

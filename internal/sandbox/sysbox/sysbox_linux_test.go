@@ -20,6 +20,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/initbin"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 	"github.com/runplane/runplane/internal/sandbox/sysbox/sysboxtest"
@@ -31,6 +32,7 @@ import (
 // Docker has it, else runc without the watchdog. RUNPLANE_TEST_IMAGE must
 // name an image with bash, curl, a user "runner", and the label
 // dev.runplane.managed=true, such as the image of sysboxtest/Dockerfile.
+// The sandboxes run the runplane-init of make init.
 func TestContainerMode(t *testing.T) {
 	if os.Getenv("RUNPLANE_TEST_DOCKER") != "1" || os.Getuid() != 0 {
 		t.Skip("set RUNPLANE_TEST_DOCKER=1 and run as root")
@@ -61,7 +63,6 @@ func TestContainerMode(t *testing.T) {
 	work := t.TempDir()
 	log := sysboxtest.Logger(t)
 	bundle := sysboxtest.NewBundle(t, filepath.Join(work, "runner"))
-	initPath := sysboxtest.Init(t, work, "")
 	rules := netrules.New(log, netip.Prefix{})
 	defer rules.Teardown()
 	data := filepath.Join(work, "data")
@@ -73,7 +74,7 @@ func TestContainerMode(t *testing.T) {
 		ServicePort:      8486,
 		Profile:          profile,
 		Runner:           bundle.Runner,
-		InitPath:         func() (string, error) { return initPath, nil },
+		InitPath:         initbin.Path,
 		NetRules:         rules,
 		Settings:         sandbox.Settings{DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, ActionsCache: true},
 		Logger:           log,
