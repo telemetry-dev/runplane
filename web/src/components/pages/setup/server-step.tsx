@@ -5,11 +5,12 @@ import { $api, isApiError } from '~/api/client'
 import { formProblems } from '~/api/form-problems'
 import { limits } from '~/api/limits'
 import { sessionQuery, statusQuery } from '~/api/session'
+import { FormAlert } from '~/components/app/form-alert'
 import { Button } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { HostCheck, useHostCheck } from './host-check'
-import { FormAlert, FormPanel, SetupHeader } from './parts'
+import { FormPanel, SetupHeader } from './parts'
 
 const fields = ['code', 'name', 'email', 'password'] as const
 const setupLimits = limits.SetupRequest

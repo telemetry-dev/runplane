@@ -35,6 +35,9 @@
               "organization_self_hosted_runners",
               "administration",
               "actions",
+              "contents",
+              "pull_requests",
+              "workflows",
               "metadata"
             ],
             "type": "string"
@@ -108,6 +111,7 @@
               "github.installation.update",
               "github.installation.request",
               "github.sync",
+              "github.pull_request.create",
               "github.disconnect",
               "notification.create",
               "notification.update",
@@ -694,6 +698,25 @@
         ],
         "type": "object"
       },
+      "CreatePullRequestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "description": "The label of an enabled pool.",
+            "type": "string"
+          },
+          "repository": {
+            "description": "owner/name of a repository that the GitHub App can access.",
+            "maxLength": 140,
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "label"
+        ],
+        "type": "object"
+      },
       "CreatedInvite": {
         "additionalProperties": false,
         "properties": {
@@ -916,6 +939,10 @@
             "description": "Organization or User.",
             "type": "string"
           },
+          "permissions_url": {
+            "description": "Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there.",
+            "type": "string"
+          },
           "settings_url": {
             "description": "Settings page of the app on GitHub: name, permissions, and keys.",
             "type": "string"
@@ -933,6 +960,7 @@
           "owner_type",
           "html_url",
           "settings_url",
+          "permissions_url",
           "install_url",
           "created_at"
         ],
@@ -2531,6 +2559,24 @@
       },
       "PoolsChanged": {
         "additionalProperties": false,
+        "type": "object"
+      },
+      "PullRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "html_url": {
+            "description": "Page of the pull request on GitHub.",
+            "type": "string"
+          },
+          "number": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "number",
+          "html_url"
+        ],
         "type": "object"
       },
       "Repository": {
@@ -5255,6 +5301,53 @@
           }
         ],
         "summary": "Start the GitHub App manifest flow",
+        "tags": [
+          "github"
+        ]
+      }
+    },
+    "/api/github/pull-requests": {
+      "post": {
+        "description": "The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one.",
+        "operationId": "create-github-pull-request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePullRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequest"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Open a pull request that moves jobs to a runplane label",
         "tags": [
           "github"
         ]

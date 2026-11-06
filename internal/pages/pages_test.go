@@ -22,6 +22,7 @@ func TestLinksOpenPagesOfTheWebRouter(t *testing.T) {
 		// search is the file that declares the search params of the page.
 		search string
 	}{
+		{url: Jobs},
 		{url: Job("$")},
 		{url: Server("$")},
 		{url: Invite("$")},

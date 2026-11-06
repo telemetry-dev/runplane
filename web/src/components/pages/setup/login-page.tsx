@@ -4,12 +4,13 @@ import { useRef } from 'react'
 import { $api } from '~/api/client'
 import { useFormProblems } from '~/api/form-problems'
 import { sessionQuery } from '~/api/session'
+import { FormAlert } from '~/components/app/form-alert'
 import { SetupColumn } from '~/components/shell/setup'
 import { Button } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { safeRedirectPath } from '~/lib/redirect'
-import { FormAlert, FormPanel, SetupHeader } from './parts'
+import { FormPanel, SetupHeader } from './parts'
 
 const fields = ['email', 'password'] as const
 

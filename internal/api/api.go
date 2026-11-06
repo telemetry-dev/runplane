@@ -146,6 +146,14 @@ type GitHub interface {
 	Sync(ctx context.Context) error
 	// Disconnect stops the listeners, deletes the scale sets, and removes the app.
 	Disconnect(ctx context.Context) error
+	// OpenPullRequest opens a pull request in the repository (owner/name)
+	// that sets runs-on to label in each job on a GitHub-hosted Ubuntu
+	// runner. While the pull request of an earlier call is open, it returns
+	// that one. It returns store.ErrNotFound when the app has no access to
+	// the repository, ghrest.ErrNoPullPermissions when the account has not
+	// accepted the permissions, and field.Problems when the repository has
+	// no job to move.
+	OpenPullRequest(ctx context.Context, base, repository, label string) (number int, url string, err error)
 }
 
 // Servers is the fleet of servers: *fleet.Fleet.
@@ -301,6 +309,8 @@ func (h *Handler) routes() {
 	handle(h, public, "GET /api/github/callback", "github-callback", "Finish the manifest flow (browser redirect from GitHub)", h.githubCallback, redirectResponse)
 	handle(h, public, "GET /api/github/setup", "github-setup", "Record an installation (browser redirect from GitHub)", h.githubSetup, redirectResponse)
 	handle(h, auth.ActionAdmin, "POST /api/github/sync", "sync-github", "Sync the installations now", h.syncGitHub)
+	handle(h, auth.ActionAdmin, "POST /api/github/pull-requests", "create-github-pull-request", "Open a pull request that moves jobs to a runplane label", h.createPullRequest,
+		describe("The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one."))
 	handle(h, auth.ActionAdmin, "DELETE /api/github", "disconnect-github", "Disconnect GitHub", h.disconnectGitHub)
 
 	handle(h, auth.ActionRead, "GET /api/pools", "list-pools", "List the pools with live sandbox counts", h.listPools)

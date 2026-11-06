@@ -77,6 +77,7 @@ func TestDockerBuildsBuiltinRootDisk(t *testing.T) {
 	ext4test.Check(t, img.Path)
 	ext4test.Debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
 	ext4test.Debugfs(t, img.Path, "stat /.dockerenv", "File not found")
+	ext4test.Debugfs(t, img.Path, "cat /etc/runplane/environ", "RUNNER_TOOL_CACHE=/opt/hostedtoolcache\x00")
 }
 
 func vmManager(t *testing.T, docker *client.Client) *Manager {

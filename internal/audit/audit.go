@@ -47,6 +47,7 @@ const (
 	GitHubManifest    = "github.manifest"
 	GitHubAppCreate   = "github.app.create"
 	GitHubSync        = "github.sync"
+	GitHubPullRequest = "github.pull_request.create"
 	GitHubDisconnect  = "github.disconnect"
 	ChannelCreate     = "notification.create"
 	ChannelUpdate     = "notification.update"
@@ -67,7 +68,7 @@ var Actions = []string{
 	ImageCreate, ImageUpdate, ImageDelete, ImageRefresh,
 	SettingsUpdate, JobRerun, BackupCreate, BackupDownload, UpdateApply,
 	GitHubManifest, GitHubAppCreate, GitHubInstallation("install"), GitHubInstallation("update"), GitHubInstallation("request"),
-	GitHubSync, GitHubDisconnect,
+	GitHubSync, GitHubPullRequest, GitHubDisconnect,
 	ChannelCreate, ChannelUpdate, ChannelDelete,
 }
 

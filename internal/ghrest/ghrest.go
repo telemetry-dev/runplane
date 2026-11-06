@@ -1,10 +1,12 @@
 // Package ghrest calls the GitHub REST API and downloads files from GitHub.
 // It sends the headers that GitHub asks for, tries again after network
 // errors and rate limits, and reads all pages of a list. It also gives the
-// GitHub account types and the web pages of an account.
+// GitHub account types, the permissions of the runplane app, and the web
+// pages of an account.
 package ghrest
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -43,6 +45,7 @@ type Client struct {
 type Call struct {
 	Method     string
 	Path       string
+	Body       any           // sent as JSON if not nil
 	Auth       Auth          // nil for an anonymous call
 	Timeout    time.Duration // of one attempt with its body; 0 for 30 seconds
 	NoRedirect bool          // Do returns a redirect and does not follow it
@@ -199,6 +202,14 @@ func (c Client) send(ctx context.Context, cl Call, authorization string) (*http.
 	if strings.HasPrefix(u, "/") {
 		u = c.url() + u
 	}
+	var body io.Reader
+	if cl.Body != nil {
+		b, err := json.Marshal(cl.Body)
+		if err != nil {
+			return nil, fmt.Errorf("encode request %s %s: %w", cl.Method, callPath(cl.Path), err)
+		}
+		body = bytes.NewReader(b)
+	}
 	var actx context.Context
 	var cancel context.CancelFunc
 	if cl.download {
@@ -206,10 +217,13 @@ func (c Client) send(ctx context.Context, cl Call, authorization string) (*http.
 	} else {
 		actx, cancel = context.WithTimeout(ctx, cmp.Or(cl.Timeout, callTimeout))
 	}
-	req, err := http.NewRequestWithContext(actx, cl.Method, u, nil)
+	req, err := http.NewRequestWithContext(actx, cl.Method, u, body)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("make request %s %s: %w", cl.Method, callPath(cl.Path), err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("User-Agent", "runplane/"+version.Version)
 	if !cl.download {

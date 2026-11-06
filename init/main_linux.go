@@ -61,6 +61,9 @@ func main() {
 			log.Error("set up the VM", "err", err)
 			powerOff(true, 1)
 		}
+		if err := setImageEnv(guest.ImageEnvFile); err != nil {
+			log.Warn("set the environment of the image", "err", err)
+		}
 	} else if _, err := os.Stat(guest.CtlDir); err != nil {
 		log.Error("no VM and no control socket folder: is this a runplane sandbox?", "err", err)
 		os.Exit(1)

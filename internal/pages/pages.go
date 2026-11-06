@@ -1,12 +1,14 @@
 // Package pages gives the paths of the dashboard pages that runplane links
-// to from outside the dashboard: notifications, invites, and the ends of the
-// GitHub flows. The web router declares the pages in web/src/routes, and the
-// test of this package finds each path in web/src/routeTree.gen.ts.
+// to from outside the dashboard: notifications, invites, pull requests, and
+// the ends of the GitHub flows. The web router declares the pages in
+// web/src/routes, and the test of this package finds each path in
+// web/src/routeTree.gen.ts.
 package pages
 
 import "net/url"
 
 const (
+	Jobs                 = "/jobs"
 	GeneralSettings      = "/settings/general"
 	GitHubSettings       = "/settings/github"
 	NotificationSettings = "/settings/notifications"

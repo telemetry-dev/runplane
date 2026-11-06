@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ func TestGitHubLinks(t *testing.T) {
 	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/github", nil, &gh).want(t, 200)
 	for _, c := range []struct{ name, got, want string }{
 		{"app settings", gh.App.SettingsURL, "https://github.com/organizations/acme/settings/apps/runplane-acme"},
+		{"app permissions", gh.App.PermissionsURL, "https://github.com/organizations/acme/settings/apps/runplane-acme/permissions"},
 		{"app install", gh.App.InstallURL, "https://github.com/apps/runplane-acme/installations/new"},
 		{"organization installation", gh.Installations[0].HTMLURL, "https://github.com/organizations/acme/settings/installations/77"},
 		{"personal installation", gh.Installations[1].HTMLURL, "https://github.com/settings/installations/78"},
@@ -40,6 +42,43 @@ func TestGitHubLinks(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
 		}
+	}
+}
+
+// fakeGitHub opens pull requests. The tests use no other GitHub method.
+type fakeGitHub struct {
+	GitHub
+	opened []string // "repository label" of each call
+}
+
+func (f *fakeGitHub) OpenPullRequest(_ context.Context, _, repository, label string) (int, string, error) {
+	f.opened = append(f.opened, repository+" "+label)
+	return 12, "https://github.com/" + repository + "/pull/12", nil
+}
+
+// A pull request must move jobs to a label that an enabled pool serves, or
+// the jobs never start. Only an admin can write to repositories.
+func TestCreatePullRequest(t *testing.T) {
+	gh := &fakeGitHub{}
+	e := newEnv(t, func(d *Deps) { d.GitHub = gh })
+	now := time.Now()
+	for _, p := range []store.Pool{
+		{ID: "p1", Name: "big", Label: "big", Arch: "x64", VCPU: 4, MemoryMB: 8192, DiskGB: 64, MaxRunners: 2, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "p2", Name: "off", Label: "off", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 64, MaxRunners: 2, CreatedAt: now, UpdatedAt: now},
+	} {
+		must(t, e.st.CreatePool(context.Background(), p))
+	}
+	const path = "/api/github/pull-requests"
+	e.login("bob@example.com", auth.RoleMember).do("POST", path, map[string]any{"repository": "acme/web", "label": "big"}, nil).want(t, 403)
+	admin := e.login("ada@example.com", auth.RoleAdmin)
+	for _, label := range []string{"off", "gone"} {
+		admin.do("POST", path, map[string]any{"repository": "acme/web", "label": label}, nil).wantField(t, 422, "body.label")
+	}
+
+	var pr PullRequest
+	admin.do("POST", path, map[string]any{"repository": "acme/web", "label": "big"}, &pr).want(t, 200)
+	if pr.Number != 12 || pr.HTMLURL != "https://github.com/acme/web/pull/12" || !slices.Equal(gh.opened, []string{"acme/web big"}) {
+		t.Errorf("pull request = %+v after the calls %q, want number 12 from one call for acme/web with big", pr, gh.opened)
 	}
 }
 

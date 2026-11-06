@@ -5,11 +5,15 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
@@ -31,21 +35,22 @@ type AppPermissions struct {
 }
 
 type AppPermission struct {
-	Name   string `json:"name" enum:"organization_self_hosted_runners,administration,actions,metadata"`
+	Name   string `json:"name" enum:"organization_self_hosted_runners,administration,actions,contents,pull_requests,workflows,metadata"`
 	Access string `json:"access" enum:"read,write"`
 }
 
 type GitHubApp struct {
-	AppID       int64     `json:"app_id"`
-	Slug        string    `json:"slug"`
-	Name        string    `json:"name"`
-	ClientID    string    `json:"client_id"`
-	OwnerLogin  string    `json:"owner_login"`
-	OwnerType   string    `json:"owner_type" doc:"Organization or User."`
-	HTMLURL     string    `json:"html_url" doc:"Public page of the app on GitHub."`
-	SettingsURL string    `json:"settings_url" doc:"Settings page of the app on GitHub: name, permissions, and keys."`
-	InstallURL  string    `json:"install_url" doc:"GitHub page to install the app on more accounts or repositories."`
-	CreatedAt   time.Time `json:"created_at"`
+	AppID          int64     `json:"app_id"`
+	Slug           string    `json:"slug"`
+	Name           string    `json:"name"`
+	ClientID       string    `json:"client_id"`
+	OwnerLogin     string    `json:"owner_login"`
+	OwnerType      string    `json:"owner_type" doc:"Organization or User."`
+	HTMLURL        string    `json:"html_url" doc:"Public page of the app on GitHub."`
+	SettingsURL    string    `json:"settings_url" doc:"Settings page of the app on GitHub: name, permissions, and keys."`
+	PermissionsURL string    `json:"permissions_url" doc:"Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there."`
+	InstallURL     string    `json:"install_url" doc:"GitHub page to install the app on more accounts or repositories."`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type Installation struct {
@@ -105,8 +110,9 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 		out.App = &GitHubApp{
 			AppID: app.AppID, Slug: app.Slug, Name: app.Name, ClientID: app.ClientID, OwnerLogin: app.OwnerLogin,
 			OwnerType: app.OwnerType, HTMLURL: app.HTMLURL, CreatedAt: app.CreatedAt,
-			SettingsURL: owner.AppURL(ghrest.Web, app.Slug),
-			InstallURL:  ghrest.AppInstallURL(ghrest.Web, app.Slug),
+			SettingsURL:    owner.AppURL(ghrest.Web, app.Slug),
+			PermissionsURL: owner.AppURL(ghrest.Web, app.Slug) + "/permissions",
+			InstallURL:     ghrest.AppInstallURL(ghrest.Web, app.Slug),
 		}
 	case !errors.Is(err, store.ErrNotFound):
 		return GitHubStatus{}, err
@@ -301,6 +307,42 @@ func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStat
 	}
 	h.record(ctx, audit.GitHubSync, "", nil)
 	return reply(h.gitHubStatus(ctx))
+}
+
+type CreatePullRequestRequest struct {
+	Repository string `json:"repository" maxLength:"140" doc:"owner/name of a repository that the GitHub App can access."`
+	Label      string `json:"label" doc:"The label of an enabled pool."`
+}
+
+type PullRequest struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url" doc:"Page of the pull request on GitHub."`
+}
+
+func (h *Handler) createPullRequest(ctx context.Context, in *body[CreatePullRequestRequest]) (*body[PullRequest], error) {
+	b := in.Body
+	pools, err := h.d.Store.ListPools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(pools, func(p store.Pool) bool { return p.Enabled && p.Label == b.Label }) {
+		return nil, invalid("body.label", "No enabled pool has this label.", b.Label)
+	}
+	base, err := h.baseURL(ctx)
+	if err != nil {
+		return nil, err
+	}
+	number, htmlURL, err := h.d.GitHub.OpenPullRequest(ctx, base, b.Repository, b.Label)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return nil, huma.Error404NotFound("The GitHub App has no access to " + b.Repository + ".")
+	case errors.Is(err, ghrest.ErrNoPullPermissions):
+		return nil, huma.Error403Forbidden(field.Sentence(err))
+	case err != nil:
+		return nil, serviceErr(err)
+	}
+	h.record(ctx, audit.GitHubPullRequest, b.Repository, map[string]any{"repository": b.Repository, "label": b.Label, "number": number})
+	return &body[PullRequest]{PullRequest{Number: number, HTMLURL: htmlURL}}, nil
 }
 
 func (h *Handler) disconnectGitHub(ctx context.Context, _ *struct{}) (*empty, error) {

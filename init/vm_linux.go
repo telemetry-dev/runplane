@@ -106,6 +106,23 @@ func setupVM() error {
 	return unix.Setrlimit(unix.RLIMIT_NOFILE, &unix.Rlimit{Cur: 65536, Max: 65536})
 }
 
+// setImageEnv sets the environment of the image config from file, as
+// Docker does for the first process of a container. Without it, jobs do not
+// get variables such as RUNNER_TOOL_CACHE, and setup actions download the
+// tools that the image has.
+func setImageEnv(file string) error {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	for k, v := range guest.DecodeImageEnv(b) {
+		if err := os.Setenv(k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func pivot(root string) error {
 	if err := unix.Chdir(root); err != nil {
 		return err

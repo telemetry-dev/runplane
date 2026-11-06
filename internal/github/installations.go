@@ -19,12 +19,13 @@ type account struct {
 }
 
 type installation struct {
-	ID                  int64      `json:"id"`
-	AppID               int64      `json:"app_id"`
-	Account             account    `json:"account"`
-	RepositorySelection string     `json:"repository_selection"`
-	SuspendedAt         *time.Time `json:"suspended_at"`
-	CreatedAt           time.Time  `json:"created_at"`
+	ID                  int64             `json:"id"`
+	AppID               int64             `json:"app_id"`
+	Account             account           `json:"account"`
+	RepositorySelection string            `json:"repository_selection"`
+	Permissions         map[string]string `json:"permissions"` // that the account accepted, as "contents": "write"
+	SuspendedAt         *time.Time        `json:"suspended_at"`
+	CreatedAt           time.Time         `json:"created_at"`
 }
 
 // Setup records the installation that GitHub sends the browser back with,
@@ -46,10 +47,9 @@ func (s *Service) Setup(ctx context.Context, installationID int64, setupAction s
 		return pages.GitHubRequested(connected), nil
 	}
 
-	var inst installation
-	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/app/installations/%d", installationID), Auth: appAuth{s}}, &inst)
+	inst, err := s.readInstallation(ctx, installationID)
 	if err != nil {
-		return "", fmt.Errorf("read the installation: %w", err)
+		return "", err
 	}
 	if inst.AppID != c.app.AppID {
 		return "", fmt.Errorf("installation %d belongs to a different GitHub App", installationID)
@@ -125,6 +125,15 @@ func (s *Service) syncInstallations(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (s *Service) readInstallation(ctx context.Context, id int64) (installation, error) {
+	var inst installation
+	err := s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/app/installations/%d", id), Auth: appAuth{s}}, &inst)
+	if err != nil {
+		return installation{}, fmt.Errorf("read the installation: %w", err)
+	}
+	return inst, nil
 }
 
 func (s *Service) saveInstallation(ctx context.Context, inst installation) error {

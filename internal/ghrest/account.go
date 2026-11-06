@@ -1,7 +1,9 @@
 package ghrest
 
 import (
+	"errors"
 	"net/url"
+	"slices"
 	"strconv"
 )
 
@@ -36,8 +38,18 @@ func (a Account) AppPermissions() []Permission {
 	if a.Type == Organization {
 		runners = Permission{"organization_self_hosted_runners", "write"}
 	}
-	return []Permission{runners, {"actions", "write"}, {"metadata", "read"}}
+	return slices.Concat([]Permission{runners, {"actions", "write"}}, PullPermissions, []Permission{{"metadata", "read"}})
 }
+
+// PullPermissions let runplane open the pull request that moves the jobs of
+// a repository to runplane. A change in .github/workflows needs workflows
+// next to contents.
+var PullPermissions = []Permission{{"contents", "write"}, {"pull_requests", "write"}, {"workflows", "write"}}
+
+// ErrNoPullPermissions tells that the account of an installation has not
+// accepted PullPermissions. An app from before runplane asked for them gets
+// them in its settings on GitHub.
+var ErrNoPullPermissions = errors.New("the GitHub App needs read and write access to Contents, Pull requests, and Workflows")
 
 // SettingsURL is the settings page of the account on the web host web. The
 // pages of its apps and of its installations are below it.

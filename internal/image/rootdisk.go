@@ -52,6 +52,10 @@ func (m *Manager) ensureRootDisk(ctx context.Context, src source, r *reporter) (
 	if err != nil {
 		return Image{}, fmt.Errorf("digest of %s: %w", src.ref, err)
 	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return Image{}, fmt.Errorf("config of %s: %w", src.ref, err)
+	}
 	out := Image{Ref: src.ref, Digest: digest.String()}
 	if out.Path, err = m.rootDiskPath(out.Digest); err != nil {
 		return Image{}, err
@@ -73,7 +77,7 @@ func (m *Manager) ensureRootDisk(ctx context.Context, src source, r *reporter) (
 
 	r.status(StatusConverting)
 	out.Size, err = ext4.Write(out.Path, func(w io.Writer) error {
-		return rootfs(w, mutate.Extract(layersImage{img, layers}), init.bin)
+		return rootfs(w, mutate.Extract(layersImage{img, layers}), init.bin, cfg.Config.Env)
 	})
 	if err != nil {
 		return Image{}, err
@@ -89,11 +93,15 @@ func (m *Manager) buildRootDisk(ctx context.Context, src source, init []byte, r 
 	if err := m.build(ctx, src.builtin, tag); err != nil {
 		return Image{}, err
 	}
-	out, err := m.inspect(ctx, tag)
+	info, err := m.cfg.Docker.ImageInspect(ctx, tag)
 	if err != nil {
-		return Image{}, err
+		return Image{}, fmt.Errorf("inspect %s: %w", tag, err)
 	}
-	size := out.Size
+	var env []string
+	if info.Config != nil {
+		env = info.Config.Env
+	}
+	out := Image{Ref: tag, Digest: info.ID}
 	if out.Path, err = m.rootDiskPath(out.Digest); err != nil {
 		return Image{}, err
 	}
@@ -121,10 +129,10 @@ func (m *Manager) buildRootDisk(ctx context.Context, src source, init []byte, r 
 	var read int64
 	counted := &counter{ctx: ctx, r: files, add: func(n int64) {
 		read += n
-		r.bytes(StatusConverting, read, size)
+		r.bytes(StatusConverting, read, info.Size)
 	}}
 	out.Size, err = ext4.Write(out.Path, func(w io.Writer) error {
-		return rootfs(w, readCloser{counted, files}, init)
+		return rootfs(w, readCloser{counted, files}, init, env)
 	})
 	if err != nil {
 		return Image{}, err
@@ -258,10 +266,11 @@ func (i layersImage) Layers() ([]v1.Layer, error) {
 	return out, nil
 }
 
-// rootfs copies the tar of a flat file system from src to w, and adds
-// runplane-init and the mount points. The ext4 writer cannot write through
-// a symlink, so rootfs follows symlinks such as /sbin -> usr/sbin.
-func rootfs(w io.Writer, src io.ReadCloser, init []byte) error {
+// rootfs copies the tar of a flat file system from src to w, and adds the
+// mount points, runplane-init, and the image environment env. The ext4
+// writer cannot write through a symlink, so rootfs follows symlinks such as
+// /sbin -> usr/sbin.
+func rootfs(w io.Writer, src io.ReadCloser, init []byte, env []string) error {
 	defer src.Close()
 	tr := tar.NewReader(src)
 	tw := tar.NewWriter(w)
@@ -299,12 +308,22 @@ func rootfs(w io.Writer, src io.ReadCloser, init []byte) error {
 			return err
 		}
 	}
-	hdr := &tar.Header{Typeflag: tar.TypeReg, Name: resolve(strings.TrimPrefix(guest.InitPath, "/"), links), Mode: 0o755, Size: int64(len(init))}
-	if err := tw.WriteHeader(hdr); err != nil {
-		return err
+	files := []struct {
+		path string
+		mode int64
+		data []byte
+	}{
+		{guest.InitPath, 0o755, init},
+		{guest.ImageEnvFile, 0o644, guest.EncodeImageEnv(env)},
 	}
-	if _, err := tw.Write(init); err != nil {
-		return err
+	for _, f := range files {
+		hdr := &tar.Header{Typeflag: tar.TypeReg, Name: resolve(strings.TrimPrefix(f.path, "/"), links), Mode: f.mode, Size: int64(len(f.data))}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if _, err := tw.Write(f.data); err != nil {
+			return err
+		}
 	}
 	return tw.Close()
 }

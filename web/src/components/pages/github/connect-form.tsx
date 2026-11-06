@@ -19,6 +19,9 @@ const permissionNames: Record<Permission['name'], string> = {
   organization_self_hosted_runners: 'Self-hosted runners',
   administration: 'Administration',
   actions: 'Actions',
+  contents: 'Contents',
+  pull_requests: 'Pull requests',
+  workflows: 'Workflows',
   metadata: 'Metadata',
 }
 

@@ -107,6 +107,7 @@ const changes: Record<Action, (detail: Detail) => string> = {
   'github.installation.update': () => 'changed the GitHub App installation',
   'github.installation.request': () => 'asked an owner to install the GitHub App',
   'github.sync': () => 'checked GitHub for new installations',
+  'github.pull_request.create': (d) => `opened a pull request in ${d.text('repository')}`,
   'github.disconnect': () => 'disconnected GitHub',
   'notification.create': (d) => `added the ${nameIn(channelKinds, d.text('kind')) ?? 'notification'} channel ${d.text('name')}`,
   'notification.update': (d) => `changed the channel ${d.text('name')}`,

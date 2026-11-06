@@ -3,30 +3,46 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import type { Schemas } from '~/api/client'
 import { githubQuery } from '~/api/github'
 import { poolsQuery } from '~/api/pools'
+import { useCapabilities } from '~/api/session'
+import { settingsQuery } from '~/api/settings'
 import { CodeBlock } from '~/components/app/code-block'
 import { JobWait, LabelTable, suggestedLabel, workflowDiff } from '~/components/pages/first-job/first-job'
+import { jobRepositories } from '~/components/pages/github/links'
 import { ExternalTextLink, Loading } from '~/components/pages/github/parts'
+import { PullRequestForm } from '~/components/pages/github/pull-request-form'
 import { GithubIcon } from '~/components/ui/icons'
 import { formatCount } from '~/lib/format'
 import { SetupHeader } from './parts'
 
 export function prefetch(client: QueryClient) {
-  return Promise.all([client.ensureQueryData(githubQuery), client.ensureQueryData(poolsQuery)])
+  return Promise.all([client.ensureQueryData(githubQuery), client.ensureQueryData(poolsQuery), client.ensureQueryData(settingsQuery)])
 }
 
-/** Setup step 3, the "Setup · First job" design: the change to a workflow, the labels, and the wait for the first job. */
+/**
+ * Setup step 3, the "Setup · First job" design: the change to a workflow, the
+ * pull request form for admins, the labels, and the wait for the first job.
+ */
 export function FirstJobStep() {
   const navigate = useNavigate()
-  const { installations } = useSuspenseQuery(githubQuery).data
+  const { admin } = useCapabilities()
+  const { app, installations } = useSuspenseQuery(githubQuery).data
   const pools = useSuspenseQuery(poolsQuery).data
+  const settings = useSuspenseQuery(settingsQuery).data
   const labels = pools.filter((pool) => pool.enabled)
   const label = suggestedLabel(pools)
+  const repositories = jobRepositories(installations, settings)
 
   return (
     <>
       <Header />
       <ConnectedAccounts installations={installations} />
       {label && <CodeBlock title=".github/workflows/ci.yml" code={workflowDiff(label)} copyable />}
+      {label && admin && repositories.length > 0 && (
+        <section className="flex flex-col gap-xs">
+          <h2 className="text-s font-medium text-neutral-10">Open a pull request</h2>
+          <PullRequestForm repositories={repositories} labels={[label]} defaultLabel={label} permissionsUrl={app?.permissions_url} />
+        </section>
+      )}
       <LabelTable pools={labels} />
       <JobWait onJob={() => void navigate({ to: '/' })} />
     </>

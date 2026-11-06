@@ -25,9 +25,11 @@ func TestManifest(t *testing.T) {
 		wantPermissions map[string]any
 	}{
 		{ghrest.Account{Type: ghrest.Organization, Login: "acme"}, "/organizations/acme/settings/apps/new",
-			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read",
+				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 		{ghrest.Account{Type: ghrest.User}, "/settings/apps/new",
-			map[string]any{"administration": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"administration": "write", "actions": "write", "metadata": "read",
+				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.owner.Type, func(t *testing.T) {

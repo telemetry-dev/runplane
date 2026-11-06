@@ -166,6 +166,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/github/pull-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a pull request that moves jobs to a runplane label
+         * @description The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one.
+         */
+        post: operations["create-github-pull-request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/github/setup": {
         parameters: {
             query?: never;
@@ -1006,7 +1026,7 @@ export interface components {
             /** @enum {string} */
             access: "read" | "write";
             /** @enum {string} */
-            name: "organization_self_hosted_runners" | "administration" | "actions" | "metadata";
+            name: "organization_self_hosted_runners" | "administration" | "actions" | "contents" | "pull_requests" | "workflows" | "metadata";
         };
         AppPermissions: {
             organization: components["schemas"]["AppPermission"][];
@@ -1017,7 +1037,7 @@ export interface components {
              * @description <object>.<verb>, for example "pool.create".
              * @enum {string}
              */
-            action: "setup.done" | "user.update" | "user.delete" | "user.password" | "invite.create" | "invite.link" | "invite.delete" | "pool.create" | "pool.update" | "pool.delete" | "server.token" | "server.install" | "server.update" | "server.delete" | "server.update_agent" | "sandbox.stop" | "sandbox.shell" | "sandbox.ssh" | "cache.delete" | "image.create" | "image.update" | "image.delete" | "image.refresh" | "settings.update" | "job.rerun" | "backup.create" | "backup.download" | "update.apply" | "github.manifest" | "github.app.create" | "github.installation.install" | "github.installation.update" | "github.installation.request" | "github.sync" | "github.disconnect" | "notification.create" | "notification.update" | "notification.delete";
+            action: "setup.done" | "user.update" | "user.delete" | "user.password" | "invite.create" | "invite.link" | "invite.delete" | "pool.create" | "pool.update" | "pool.delete" | "server.token" | "server.install" | "server.update" | "server.delete" | "server.update_agent" | "sandbox.stop" | "sandbox.shell" | "sandbox.ssh" | "cache.delete" | "image.create" | "image.update" | "image.delete" | "image.refresh" | "settings.update" | "job.rerun" | "backup.create" | "backup.download" | "update.apply" | "github.manifest" | "github.app.create" | "github.installation.install" | "github.installation.update" | "github.installation.request" | "github.sync" | "github.pull_request.create" | "github.disconnect" | "notification.create" | "notification.update" | "notification.delete";
             /** Format: date-time */
             at: string;
             /** @description Names and values of the change. pool.update, server.update, and settings.update have changes, with [old, new] for each changed field. settings.update also has keys, with all changed settings keys. Its changes never hold the S3 secret key. The entries of a job or a sandbox have runner_name, job_id, job_name, workflow_file, run_number, and repository where they apply. */
@@ -1219,6 +1239,12 @@ export interface components {
             /** Format: int64 */
             vcpu: number;
         };
+        CreatePullRequestRequest: {
+            /** @description The label of an enabled pool. */
+            label: string;
+            /** @description owner/name of a repository that the GitHub App can access. */
+            repository: string;
+        };
         CreatedInvite: {
             invite: components["schemas"]["Invite"];
             /** @description Link for the new user. It works one time, for 7 days. */
@@ -1311,6 +1337,8 @@ export interface components {
             owner_login: string;
             /** @description Organization or User. */
             owner_type: string;
+            /** @description Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there. */
+            permissions_url: string;
             /** @description Settings page of the app on GitHub: name, permissions, and keys. */
             settings_url: string;
             slug: string;
@@ -1949,6 +1977,12 @@ export interface components {
             starting: number;
         };
         PoolsChanged: Record<string, never>;
+        PullRequest: {
+            /** @description Page of the pull request on GitHub. */
+            html_url: string;
+            /** Format: int64 */
+            number: number;
+        };
         Repository: {
             archived: boolean;
             /** @description owner/name */
@@ -3103,6 +3137,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ManifestForm"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-github-pull-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePullRequestRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequest"];
                 };
             };
             /** @description Error */
