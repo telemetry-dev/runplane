@@ -1,7 +1,7 @@
 import { useQuery, type QueryClient } from '@tanstack/react-query'
 import { Check, X } from 'lucide-react'
 import type { Schemas } from '~/api/client'
-import { useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { limits } from '~/api/limits'
 import { domainDNSQuery, settingsQuery } from '~/api/settings'
 import { LoadError } from '~/components/app/load-error'
@@ -20,7 +20,7 @@ export function prefetch(client: QueryClient) {
 
 /** Settings · General: instance, HTTPS, data retention, and for admins updates and backups. */
 export function GeneralSettings() {
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   const { data: settings, error, refetch, isFetching } = useQuery({
     ...settingsQuery,
     // No event reports the certificate, so ask until the request ends.

@@ -6,7 +6,7 @@ import { Button } from '~/components/ui/button'
 import { Spinner } from '~/components/ui/spinner'
 import { formatTimeAgo } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
-import { canRunDoctor, type Server } from './server-format'
+import type { Server } from './server-format'
 
 type DoctorSectionProps = {
   server: Server
@@ -45,7 +45,7 @@ export function DoctorSection({ server, admin, doctor }: DoctorSectionProps) {
               <span className="inline-flex flex-col items-center gap-m">
                 Run the doctor to check this server.
                 {admin && (
-                  <Button disabled={!canRunDoctor(server)} onClick={doctor.run}>
+                  <Button disabled={!server.actions.can_run_doctor} onClick={doctor.run}>
                     Run doctor
                   </Button>
                 )}

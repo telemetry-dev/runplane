@@ -42,7 +42,7 @@ export function putHostStats(client: QueryClient, stats: Schemas['HostStats']) {
   )
 }
 
-type Sampled = Pick<Server, 'kind' | 'cpu_percent' | 'memory_percent' | 'disk_percent' | 'last_seen_at'> & Partial<Pick<Server, 'stats_at'>>
+type Sampled = Pick<Server, 'kind' | 'cpu_percent' | 'memory_percent' | 'disk_percent' | 'stats_at' | 'last_seen_at'>
 
 /**
  * The server with the usage of a host sample, unless it holds a newer one. A
@@ -57,7 +57,7 @@ export function withHostStats<T extends Sampled>(server: T, stats: Schemas['Host
     cpu_percent: stats.cpu_percent,
     memory_percent: stats.memory_percent,
     disk_percent: stats.disk_percent,
-    ...(server.stats_at !== undefined ? { stats_at: stats.at } : {}),
+    stats_at: stats.at,
     ...(seen ? { last_seen_at: stats.at } : {}),
   }
 }

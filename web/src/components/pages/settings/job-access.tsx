@@ -5,9 +5,8 @@ import { SwitchSetting } from './setting-controls'
 
 /** The "Job access" switches of Settings · GitHub. */
 export function JobAccess({ settings, admin }: { settings: Schemas['Settings']; admin: boolean }) {
-  // Container mode refuses public repositories whatever the setting says.
-  const container = settings.mode === 'container'
-  const publicRepos = settings.allow_public_repos && !container
+  // The setting has no effect while jobs of public repositories cannot run.
+  const publicRepos = settings.allow_public_repos && settings.public_repos_possible
   // Dev mode runs jobs in Docker containers too.
   const sandbox = settings.mode === 'vm' ? 'virtual machine' : 'container'
 
@@ -18,13 +17,9 @@ export function JobAccess({ settings, admin }: { settings: Schemas['Settings']; 
         <SwitchSetting
           name="allow_public_repos"
           label="Run jobs from public repositories"
-          description={
-            container
-              ? 'Container mode always refuses jobs from public repositories. Switch to VM mode to run them.'
-              : 'Anyone who opens a pull request could run code on your servers.'
-          }
+          description={settings.public_repos_refusal || 'Anyone who opens a pull request could run code on your servers.'}
           checked={publicRepos}
-          disabled={!admin || container}
+          disabled={!admin || !settings.public_repos_possible}
         />
         <SwitchSetting
           name="allow_fork_prs"

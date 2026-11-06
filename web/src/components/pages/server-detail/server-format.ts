@@ -41,11 +41,6 @@ export function diskDetail(server: Server, percent: number | null): string {
   return [used, server.disk_kind].filter(Boolean).join(' · ')
 }
 
-/** The doctor needs a server that answers and has finished its install. */
-export function canRunDoctor(server: Server): boolean {
-  return server.status !== 'unreachable' && server.status !== 'installing'
-}
-
 /** "sha256:4be1c0d9e2a1" from a full image digest. */
 export function shortDigest(digest: string): string {
   const [algorithm, hex] = digest.split(':')

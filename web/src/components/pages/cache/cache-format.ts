@@ -23,21 +23,15 @@ export function cacheStats(cache: CacheOverview): Stats {
   return {
     size: cache.size_bytes === 0 ? '0' : (cache.size_bytes / gb).toFixed(1),
     limit: `${Math.round(cache.max_bytes / gb)} GB`,
-    hitRate: cache.hit_rate === null ? null : formatPercent(cache.hit_rate * 100),
+    hitRate: hitRate(cache.hit_rate),
     entries: formatCount(cache.repositories.reduce((sum, repo) => sum + repo.entries, 0)),
     mirrorSaved: mirror && mirror.hits > 0 ? formatBytes(mirror.hit_bytes) : null,
   }
 }
 
-/** The hit rate of a repository, or null without hits and misses. */
-export function repositoryHitRate(repo: CacheRepository): string | null {
-  return repo.hit_rate === null ? null : formatPercent(repo.hit_rate * 100)
-}
-
-/** The mirror's hit rate since runplane started, or null before its first pull. */
-export function mirrorHitRate(mirror: Schemas['MirrorStats']): string | null {
-  const pulls = mirror.hits + mirror.misses
-  return pulls === 0 ? null : formatPercent((mirror.hits / pulls) * 100)
+/** A hit rate of the API as "92%", or null when the API has no data for it. */
+export function hitRate(rate: number | null): string | null {
+  return rate === null ? null : formatPercent(rate * 100)
 }
 
 /** "since runplane started 2h ago", or "… on Oct 2" a week or more later. The mirror counts start over at each start. */

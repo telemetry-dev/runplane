@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { Ellipsis, ScrollText, Square } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { useCapabilities } from '~/api/session'
 import {
   CellTitle,
   DataTable,
@@ -44,6 +45,7 @@ type LiveRunnersTableProps = {
  */
 export function LiveRunnersTable({ sandboxes, showServer = true, empty, failed }: LiveRunnersTableProps) {
   const now = useNow(1000)
+  const { stop_sandboxes: canStop } = useCapabilities()
   // The log drawer and the stop dialog keep their runner outside the rows: the
   // log stays open after the runner leaves the list, and the dialog closes with
   // its animation.
@@ -87,7 +89,7 @@ export function LiveRunnersTable({ sandboxes, showServer = true, empty, failed }
               shown={shown}
               now={now}
               onViewLog={() => setLog({ open: true, sandbox })}
-              onStop={() => setStop({ open: true, sandbox })}
+              onStop={canStop ? () => setStop({ open: true, sandbox }) : undefined}
             />
           ))
         )}
@@ -172,10 +174,11 @@ function RunnerRow({ sandbox, shown, now, onViewLog, onStop }: RunnerRowProps) {
 
 type RunnerMenuProps = {
   onViewLog: () => void
-  onStop: () => void
+  /** Undefined when the user cannot stop runners. */
+  onStop: (() => void) | undefined
 }
 
-/** View log and Stop runner. Members may do both. */
+/** View log, and Stop runner for a user who can stop runners. */
 function RunnerMenu({ sandbox, onViewLog, onStop }: { sandbox: Sandbox } & RunnerMenuProps) {
   return (
     <Menu>
@@ -186,9 +189,11 @@ function RunnerMenu({ sandbox, onViewLog, onStop }: { sandbox: Sandbox } & Runne
         <MenuItem icon={<ScrollText />} onClick={onViewLog}>
           View log
         </MenuItem>
-        <MenuItem icon={<Square />} danger disabled={sandbox.state === 'stopping'} onClick={onStop}>
-          Stop runner
-        </MenuItem>
+        {onStop && (
+          <MenuItem icon={<Square />} danger disabled={sandbox.state === 'stopping'} onClick={onStop}>
+            Stop runner
+          </MenuItem>
+        )}
       </MenuPopup>
     </Menu>
   )

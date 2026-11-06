@@ -6,7 +6,7 @@ import { $api, type Schemas } from '~/api/client'
 import { useFormProblems } from '~/api/form-problems'
 import { imagesQuery } from '~/api/images'
 import { limits } from '~/api/limits'
-import { placementQuery, putPool, refreshRunners } from '~/api/pools'
+import { placementQuery, putPool } from '~/api/pools'
 import { serversQuery } from '~/api/servers'
 import { settingsQuery } from '~/api/settings'
 import { LoadError } from '~/components/app/load-error'
@@ -103,7 +103,6 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
 
   function saved(result: Pool) {
     putPool(client, result)
-    void refreshRunners(client)
     toastManager.add({ title: `Saved ${result.label}` })
     onSaved()
   }

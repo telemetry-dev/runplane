@@ -3,8 +3,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Ellipsis, RefreshCw, Star, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, errorMessage, type Schemas } from '~/api/client'
+import { applyChange } from '~/api/events'
 import { useFormProblems } from '~/api/form-problems'
-import { dropImage, imagesQuery, putImage } from '~/api/images'
+import { imagesQuery, putImage } from '~/api/images'
 import { limits } from '~/api/limits'
 import {
   DataTable,
@@ -218,7 +219,7 @@ function RemoveImage({ image, open, onOpenChange }: { image: Image; open: boolea
       description="Each server deletes the image. Runner labels that use it change to the default image."
       action="Remove image"
       onConfirm={() => api.DELETE('/api/images/{id}', { params: { path: { id: image.id } } })}
-      onDone={() => void dropImage(client, image.id)}
+      onDone={() => void applyChange(client, 'image.removed', { id: image.id })}
     />
   )
 }

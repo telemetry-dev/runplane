@@ -3,7 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ExternalLink, Plus, RefreshCw } from 'lucide-react'
 import { errorMessage, type Schemas } from '~/api/client'
 import { githubQuery, useSyncGitHub } from '~/api/github'
-import { useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { settingsQuery } from '~/api/settings'
 import { SectionHeader } from '~/components/app/section-header'
 import { GitHubAppCard, GitHubCard, ListenerStatus } from '~/components/pages/github/app-card'
@@ -26,7 +26,7 @@ export function GitHubSettings({ search: { error, requested } }: { search: Callb
   const navigate = useNavigate()
   const { app, installations, scale_sets } = useSuspenseQuery(githubQuery).data
   const settings = useSuspenseQuery(settingsQuery).data
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   const dismiss = () => void navigate({ to: '/settings/github', search: {}, replace: true })
 
   return (

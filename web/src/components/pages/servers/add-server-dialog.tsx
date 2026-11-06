@@ -16,7 +16,7 @@ import { Form } from '~/components/ui/form'
 import { Spinner } from '~/components/ui/spinner'
 import { Tab, Tabs, TabsList, TabsPanel } from '~/components/ui/tabs'
 import { InstallProgress } from './install-progress'
-import { commandLines, installState } from './server-info'
+import { commandLines, installState, supportedSystems } from './server-info'
 
 type AddServerDialogProps = {
   /** The element that opens the dialog. The default is the primary "Add server" button of the Servers page. */
@@ -86,8 +86,8 @@ function AddServer({ onDone }: { onDone: () => void }) {
         </TabsList>
         <TabsPanel value="script" className="mt-l">
           <DialogDescription>
-            Run this on a fresh Ubuntu 22.04+ or Debian 12 server. It installs Docker and the runplane agent, then connects to{' '}
-            <PublicHost />.
+            Run this on a fresh server with {supportedSystems}. It installs the runplane agent, and Docker for container mode, then
+            connects to <PublicHost />.
           </DialogDescription>
           <InstallCommand script={script} />
         </TabsPanel>
@@ -212,8 +212,8 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
   return (
     <>
       <DialogDescription>
-        Add this key to <code className="font-code text-xs">~/.ssh/authorized_keys</code> on a fresh Ubuntu 22.04+ or Debian 12 server.
-        runplane then installs Docker and the agent over SSH.
+        Add this key to <code className="font-code text-xs">~/.ssh/authorized_keys</code> on a fresh server with {supportedSystems}.
+        runplane then installs the agent over SSH, and Docker for container mode.
       </DialogDescription>
       {key.data ? (
         <CodeBlock code={key.data.public_key} copyable wrap />

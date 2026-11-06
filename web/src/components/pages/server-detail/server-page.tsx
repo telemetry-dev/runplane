@@ -3,7 +3,7 @@ import { isApiError } from '~/api/client'
 import { imagesQuery } from '~/api/images'
 import { sandboxesQuery } from '~/api/sandboxes'
 import { doctorQuery, serverQuery, useDoctor } from '~/api/servers'
-import { useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { LoadError, LoadErrorRow, NotFound } from '~/components/app/load-error'
 import { SectionHeader } from '~/components/app/section-header'
 import { LiveRunnersTable } from '~/components/pages/runners/live-runners-table'
@@ -43,7 +43,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
 }
 
 function ServerDetail({ server }: { server: Server }) {
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   const sandboxes = useQuery(sandboxesQuery(server.id))
   const images = useQuery(imagesQuery)
   const doctor = useDoctor(server.id)

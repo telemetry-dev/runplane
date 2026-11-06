@@ -38,6 +38,7 @@ import { UsageBar } from '~/components/app/usage-bar'
 import { workflowDiff } from '~/components/pages/first-job/first-job'
 import { clock } from '~/components/pages/jobs/job-format'
 import { defaultRange, rangeOptions, statusOptions, type JobsRange, type JobsStatus } from '~/components/pages/jobs/jobs-search'
+import { supportedSystems } from '~/components/pages/servers/server-info'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup, AlertDialogTrigger } from '~/components/ui/alert-dialog'
 import { Avatar } from '~/components/ui/avatar'
 import { Button, IconButton } from '~/components/ui/button'
@@ -373,8 +374,8 @@ function Overlays() {
               </TabsList>
               <TabsPanel value="script">
                 <DialogDescription>
-                  Run this on a fresh Ubuntu 22.04+ or Debian 12 server. It installs Docker and the runplane agent, then connects to
-                  ci.kestrel.dev.
+                  Run this on a fresh server with {supportedSystems}. It installs the runplane agent, and Docker for container mode,
+                  then connects to ci.kestrel.dev.
                 </DialogDescription>
                 <CodeBlock copyable code={['curl -fsSL https://ci.kestrel.dev/install.sh | sudo sh -s -- \\', '  --token rp_srv_8Fq2nL7xVb3kR9tW']} />
                 <p className="text-xs text-neutral-7">The token works once and expires in 1 hour.</p>

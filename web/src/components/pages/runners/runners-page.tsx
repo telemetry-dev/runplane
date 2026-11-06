@@ -5,7 +5,7 @@ import { imagesQuery } from '~/api/images'
 import { poolsQuery } from '~/api/pools'
 import { sandboxesQuery } from '~/api/sandboxes'
 import { serversQuery } from '~/api/servers'
-import { useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { settingsQuery } from '~/api/settings'
 import { SectionHeader } from '~/components/app/section-header'
 import { Button } from '~/components/ui/button'
@@ -27,7 +27,7 @@ export function prefetch(client: QueryClient) {
 export function RunnersPage({ marked }: { marked: string | undefined }) {
   const { data: pools } = useSuspenseQuery(poolsQuery)
   const { data: sandboxes } = useSuspenseQuery(sandboxesQuery())
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   // The pool stays while the dialog closes, so its content does not change during the animation.
   const [dialog, setDialog] = useState<{ open: boolean; pool?: Pool }>({ open: false })
 

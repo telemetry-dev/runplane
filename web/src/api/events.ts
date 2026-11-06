@@ -3,7 +3,7 @@ import { useEffect, useEffectEvent } from 'react'
 import { backupsQuery } from './backups'
 import type { Schemas } from './client'
 import { putGitHub } from './github'
-import { imagesQuery } from './images'
+import { dropImage, imagesQuery } from './images'
 import { jobQuery, jobsQuery, metricsQuery } from './jobs'
 import { overviewQuery, putOverviewHostStats } from './overview'
 import { poolsQuery, putPoolStats } from './pools'
@@ -43,7 +43,8 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
     putPoolStats(client, stats)
     return []
   },
-  'pools.changed': () => [poolsQuery.queryKey],
+  // An image counts the pools that use it.
+  'pools.changed': () => [poolsQuery.queryKey, imagesQuery.queryKey],
   'server.state': (client, server) => (putServer(client, server) ? serverCounts() : [serversQuery.queryKey, ...serverCounts()]),
   'host.stats': (client, stats) => {
     putHostStats(client, stats)
@@ -52,7 +53,10 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
   },
   'runner.version': () => [runnerVersionsQuery.queryKey],
   'image.state': () => [imagesQuery.queryKey],
-  'image.removed': () => [imagesQuery.queryKey],
+  'image.removed': (client, { id }) => {
+    dropImage(client, id)
+    return []
+  },
   'github.state': (client, status) => {
     putGitHub(client, status)
     return []

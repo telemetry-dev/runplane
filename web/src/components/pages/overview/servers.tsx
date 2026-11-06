@@ -1,5 +1,5 @@
 import type { Schemas } from '~/api/client'
-import { useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { CellTitle, DataTable, DataTableCell, DataTableRow, RowLink, useFittingColumns } from '~/components/app/data-table'
 import { SectionButton, SectionHeader, SectionLink } from '~/components/app/section-header'
 import { serverStatusNames, StatusDot } from '~/components/app/status-dot'
@@ -38,7 +38,7 @@ export function ServersCard({ servers }: { servers: readonly Server[] }) {
 
 /** The servers under "No jobs yet", where the next step may be to add one. */
 export function ServerList({ servers }: { servers: readonly Server[] }) {
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   const fit = useFittingColumns({ status: 16, server: 'grow', cpu: { width: 132, drop: 1 }, jobs: 56 })
   return (
     <section className="flex flex-col gap-s">

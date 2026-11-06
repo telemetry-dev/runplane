@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { cacheStats, mirrorHitRate, mirrorSince, repositoryHitRate, type CacheOverview, type CacheRepository } from './cache-format'
+import { cacheStats, hitRate, mirrorSince, type CacheOverview, type CacheRepository } from './cache-format'
 
 // GET /api/caches of the seeded instance, with mirror stats.
 const web: CacheRepository = {
@@ -48,16 +48,10 @@ describe('cacheStats', () => {
   })
 })
 
-describe('hit rates', () => {
-  test('a repository without lookups has no hit rate, not 0%', () => {
-    expect(repositoryHitRate(docs)).toBeNull()
-    expect(repositoryHitRate(web)).toBe('92%')
-  })
-
-  test('the mirror rate comes from its pulls', () => {
-    expect(mirrorHitRate(cache.mirror!)).toBe('94%')
-    expect(mirrorHitRate({ ...cache.mirror!, hits: 0, misses: 0 })).toBeNull()
-  })
+test('a hit rate without lookups is no rate, not 0%', () => {
+  expect(hitRate(docs.hit_rate)).toBeNull()
+  expect(hitRate(web.hit_rate)).toBe('92%')
+  expect(hitRate(0)).toBe('0%')
 })
 
 test.each([

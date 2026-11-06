@@ -68,7 +68,7 @@ function OverviewBody({ overview }: { overview: Overview }) {
       <OverviewStats overview={overview} />
       <RunningJobs jobs={overview.running} />
       <div className="flex flex-col gap-xl xl:flex-row">
-        <JobsChart range={overview.range} buckets={overview.buckets} />
+        <JobsChart overview={overview} />
         <ServersCard servers={overview.servers} />
       </div>
       <RecentJobs jobs={overview.recent} />
