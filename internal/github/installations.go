@@ -18,12 +18,13 @@ type account struct {
 }
 
 type installation struct {
-	ID                  int64      `json:"id"`
-	AppID               int64      `json:"app_id"`
-	Account             account    `json:"account"`
-	RepositorySelection string     `json:"repository_selection"`
-	SuspendedAt         *time.Time `json:"suspended_at"`
-	CreatedAt           time.Time  `json:"created_at"`
+	ID                  int64             `json:"id"`
+	AppID               int64             `json:"app_id"`
+	Account             account           `json:"account"`
+	RepositorySelection string            `json:"repository_selection"`
+	Permissions         map[string]string `json:"permissions"` // that the account accepted, as "contents": "write"
+	SuspendedAt         *time.Time        `json:"suspended_at"`
+	CreatedAt           time.Time         `json:"created_at"`
 }
 
 // Setup records the installation that GitHub sends the browser back with,

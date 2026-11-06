@@ -24,9 +24,11 @@ func TestManifest(t *testing.T) {
 		wantPermissions  map[string]any
 	}{
 		{"organization", "acme", "/organizations/acme/settings/apps/new",
-			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read",
+				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 		{"user", "", "/settings/apps/new",
-			map[string]any{"administration": "write", "actions": "write", "metadata": "read"}},
+			map[string]any{"administration": "write", "actions": "write", "metadata": "read",
+				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.accountType, func(t *testing.T) {

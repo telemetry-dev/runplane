@@ -60,9 +60,13 @@ func (s *Service) Manifest(ctx context.Context, base, accountType, organization 
 
 // permissions are the GitHub App permissions of an account type. An
 // organization uses organization runners; a personal account can only
-// use repository runners, which need administration.
+// use repository runners, which need administration. The pullPermissions
+// let runplane open the pull request that moves jobs to its labels.
 func permissions(accountType string) map[string]string {
 	p := map[string]string{"actions": "write", "metadata": "read"}
+	for _, name := range pullPermissions {
+		p[name] = "write"
+	}
 	if accountType == "organization" {
 		p["organization_self_hosted_runners"] = "write"
 	} else {

@@ -10,7 +10,11 @@ import { callbackSearch } from '~/components/pages/github/callback'
 import { DisconnectGitHub } from '~/components/pages/github/disconnect'
 import { InstallationList } from '~/components/pages/github/installation-list'
 import { JobAccess } from '~/components/pages/github/job-access'
+import { jobRepositories } from '~/components/pages/github/links'
 import { CallbackError, InstallRequested, Loading } from '~/components/pages/github/parts'
+import { PullRequestForm } from '~/components/pages/github/pull-request-form'
+import { suggestedLabel } from '~/components/pages/overview/no-jobs'
+import { poolsQuery } from '~/components/pages/runners/queries'
 import { settingsQuery } from '~/components/pages/settings/settings-api'
 import { buttonClassName, IconButton } from '~/components/ui/button'
 import { GithubIcon } from '~/components/ui/icons'
@@ -20,7 +24,11 @@ import { pageHead } from '~/lib/head'
 export const Route = createFileRoute('/_app/settings/github')({
   validateSearch: callbackSearch,
   loader: ({ context: { queryClient } }) =>
-    Promise.all([queryClient.ensureQueryData(githubQuery), queryClient.ensureQueryData(settingsQuery)]),
+    Promise.all([
+      queryClient.ensureQueryData(githubQuery),
+      queryClient.ensureQueryData(settingsQuery),
+      queryClient.ensureQueryData(poolsQuery),
+    ]),
   head: () => pageHead('GitHub settings'),
   pendingComponent: () => (
     <Column>
@@ -62,6 +70,7 @@ function GithubSettings() {
         )}
       </section>
       {app && <Installations app={app} installations={installations} isAdmin={isAdmin} />}
+      {app && isAdmin && <PullRequests app={app} installations={installations} settings={settings} />}
       <JobAccess settings={settings} canEdit={isAdmin} />
       {app && isAdmin && <DisconnectGitHub appName={app.name} />}
     </Column>
@@ -110,6 +119,33 @@ function Installations({ app, installations, isAdmin }: InstallationsProps) {
           {errorMessage(sync.error)}
         </p>
       )}
+    </section>
+  )
+}
+
+type PullRequestsProps = {
+  app: Schemas['GitHubApp']
+  installations: Schemas['Installation'][]
+  settings: Schemas['Settings']
+}
+
+/** "Open a pull request": moves the jobs of one more repository to runplane at any time after the setup. */
+function PullRequests({ app, installations, settings }: PullRequestsProps) {
+  const pools = useSuspenseQuery(poolsQuery).data
+  const labels = pools.filter((pool) => pool.enabled).map((pool) => pool.label)
+  const label = suggestedLabel(pools)
+  const repositories = jobRepositories(installations, settings)
+  if (!label || repositories.length === 0) return null
+
+  return (
+    <section className="flex flex-col gap-s">
+      <SectionHeader title="Open a pull request" />
+      <PullRequestForm
+        repositories={repositories}
+        labels={labels}
+        defaultLabel={label}
+        permissionsUrl={`${app.settings_url}/permissions`}
+      />
     </section>
   )
 }

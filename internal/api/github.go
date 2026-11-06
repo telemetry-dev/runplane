@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"time"
 
@@ -317,6 +318,40 @@ func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStat
 	}
 	h.audit(ctx, "github.sync", "", nil)
 	return reply(h.gitHubStatus(ctx))
+}
+
+type CreatePullRequestRequest struct {
+	Repository string `json:"repository" maxLength:"140" doc:"owner/name of a repository that the GitHub App can access."`
+	Label      string `json:"label" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes" doc:"The label of an enabled pool."`
+}
+
+type PullRequest struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url" doc:"Page of the pull request on GitHub."`
+}
+
+func (h *Handler) createPullRequest(ctx context.Context, in *body[CreatePullRequestRequest]) (*body[PullRequest], error) {
+	b := in.Body
+	if h.d.GitHub == nil {
+		return nil, unavailable("The GitHub connection")
+	}
+	pools, err := h.d.Store.ListPools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(pools, func(p store.Pool) bool { return p.Enabled && p.Label == b.Label }) {
+		return nil, invalid("body.label", "No enabled pool has this label.", b.Label)
+	}
+	base, err := h.baseURL(ctx)
+	if err != nil {
+		return nil, err
+	}
+	number, htmlURL, err := h.d.GitHub.OpenPullRequest(ctx, base, b.Repository, b.Label)
+	if err != nil {
+		return nil, h.serviceErr(err)
+	}
+	h.audit(ctx, "github.pull_request.create", b.Repository, map[string]any{"label": b.Label, "number": number})
+	return &body[PullRequest]{PullRequest{Number: number, HTMLURL: htmlURL}}, nil
 }
 
 func (h *Handler) disconnectGitHub(ctx context.Context, _ *struct{}) (*empty, error) {
