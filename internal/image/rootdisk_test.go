@@ -84,6 +84,7 @@ func TestEnsureRootDisk(t *testing.T) {
 	debugfs(t, got.Path, "stat /tmp", "Mode:  01777")
 	debugfs(t, got.Path, "stat /mnt/scratch", "Type: directory")
 	debugfs(t, got.Path, "stat /proc", "Mode:  0711")
+	debugfs(t, got.Path, "cat /etc/runplane/environ", "PATH=/usr/sbin:/usr/bin\x00GOFLAGS=-tags=vm\x00")
 
 	steps = nil
 	again, err := m.Ensure(ctx, ref, func(p Progress) { steps = append(steps, p) })
@@ -186,8 +187,8 @@ func TestWriteExt4LeavesNothingOnError(t *testing.T) {
 	}
 }
 
-// testImage has a base layer with /sbin -> usr/sbin, and an upper layer
-// that removes /etc/gone and changes /etc/kept.
+// testImage has a base layer with /sbin -> usr/sbin, an upper layer that
+// removes /etc/gone and changes /etc/kept, and two variables in its config.
 func testImage(t *testing.T, arch string) v1.Image {
 	t.Helper()
 	base := tarLayer(t,
@@ -213,6 +214,7 @@ func testImage(t *testing.T, arch string) v1.Image {
 	}
 	cfg = cfg.DeepCopy()
 	cfg.OS, cfg.Architecture = "linux", arch
+	cfg.Config.Env = []string{"PATH=/usr/sbin:/usr/bin", "GOFLAGS=-tags=vm"}
 	img, err = mutate.ConfigFile(img, cfg)
 	if err != nil {
 		t.Fatal(err)
