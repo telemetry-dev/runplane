@@ -18,6 +18,7 @@ One `Dockerfile` in this folder builds the two images. Its build args `UBUNTU` a
 - The libraries of the GitHub Actions runner (ICU, OpenSSL, Kerberos, LTTng)
 - The tool cache in `/opt/hostedtoolcache` with Node.js 22, 24, and 26, Python 3.11 to 3.14, and Go 1.27
 - Node.js 24 from the tool cache as `node`, `npm`, `npx`, and `corepack` in `/usr/local/bin`
+- rustup in the home folder of `runner`, with no Rust toolchain. `PATH` has `/home/runner/.cargo/bin`. A job installs the toolchain of its `rust-toolchain.toml` (`rustup toolchain install`), or runs `rustup default stable`
 - The user `runner` (UID 1001) with sudo access without a password, in the `docker` group
 - The locales `C.UTF-8` and `en_US.UTF-8`
 
@@ -36,6 +37,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends postgresql-client openjdk-21-jdk-headless \
  && rm -rf /var/lib/apt/lists/*
 ```
+
+rustup and its toolchains belong to `runner`. To add a toolchain, run rustup as `runner`, for example `RUN runuser -u runner -- env HOME=/home/runner rustup default stable`.
 
 To add a tool version to the tool cache, put it in `/opt/hostedtoolcache/<tool>/<version>/<arch>/`, and make the empty file `/opt/hostedtoolcache/<tool>/<version>/<arch>.complete`. The arch is `x64` or `arm64`. Then run `chown -R runner:runner /opt/hostedtoolcache`.
 
@@ -73,4 +76,4 @@ docker build -t runner-ubuntu-24.04 --build-arg UBUNTU=24.04 --build-arg IMAGE_O
 
 The Dockerfile installs the latest release of each tool version in `NODE_VERSIONS`, `PYTHON_VERSIONS`, and `GO_VERSIONS`. To change the versions, use `--build-arg`, for example `--build-arg NODE_VERSIONS="24 26"`.
 
-The `images.yml` workflow builds the two images each week and fails if an image uses more than 3 GB.
+The `images.yml` workflow builds the two images each week. It fails if an image uses more than 3 GB, or if `runner` cannot use rustup.
