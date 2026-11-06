@@ -297,6 +297,12 @@ func (f *Fleet) UpdateServer(ctx context.Context, by audit.Actor, serverID strin
 	if err != nil {
 		return store.Server{}, err
 	}
+	newStatus := c.Status != nil && *c.Status != old.Status
+	if newStatus {
+		if err := statusChange(old.Status, *c.Status); err != nil {
+			return store.Server{}, err
+		}
+	}
 	now := f.now()
 	if c.Name != nil {
 		name := strings.TrimSpace(*c.Name)
@@ -311,10 +317,7 @@ func (f *Fleet) UpdateServer(ctx context.Context, by audit.Actor, serverID strin
 			}
 		}
 	}
-	if c.Status != nil && *c.Status != old.Status {
-		if err := statusChange(old.Status, *c.Status); err != nil {
-			return store.Server{}, err
-		}
+	if newStatus {
 		if err := f.st.SetServerStatus(ctx, old.ID, *c.Status, "", now); err != nil {
 			return store.Server{}, err
 		}

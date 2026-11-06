@@ -259,8 +259,16 @@ func TestUpdateServer(t *testing.T) {
 	status := func(s string) ServerChange { return ServerChange{Status: &s} }
 	by := audit.Actor{UserID: "u1", IP: "192.0.2.7"}
 
-	if _, err := h.f.UpdateServer(ctx, by, "new", status(store.ServerDraining)); !errors.Is(err, ErrInstalling) {
+	// A refused change writes nothing: no event and no audit entry would
+	// tell about it.
+	refused := status(store.ServerDraining)
+	newName := "fsn1-b"
+	refused.Name = &newName
+	if _, err := h.f.UpdateServer(ctx, by, "new", refused); !errors.Is(err, ErrInstalling) {
 		t.Errorf("drain of an installing server: %v, want ErrInstalling", err)
+	}
+	if v := h.server("new"); v.Name != "new" {
+		t.Errorf("name %q after a refused change, want new", v.Name)
 	}
 
 	change := status(store.ServerDraining)
