@@ -95,7 +95,7 @@ var (
 )
 
 // validDomain accepts a lowercase host name with at least two labels, not an
-// IP address.
+// IP address. install.sh has a copy of this rule for --domain.
 func validDomain(d string) bool {
 	labels := strings.Split(d, ".")
 	if len(d) > 253 || len(labels) < 2 || net.ParseIP(d) != nil {

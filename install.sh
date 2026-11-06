@@ -172,10 +172,7 @@ parse_flags() {
 	if [ -n "$KERNEL" ] && [ ! -f "$KERNEL" ]; then
 		die "--kernel: $KERNEL does not exist"
 	fi
-	case $DOMAIN in
-	'' | *.*) only_chars "$DOMAIN" 'a-z0-9.-' || die "--domain must be a domain name such as ci.example.com" ;;
-	*) die "--domain must be a domain name such as ci.example.com" ;;
-	esac
+	[ -z "$DOMAIN" ] || valid_domain "$DOMAIN" || die "--domain must be a domain name such as ci.example.com"
 
 	ROLE=primary
 	SERVICE=runplane
@@ -1071,6 +1068,30 @@ version_ge() {
 # only_chars reports if $1 has only the characters of the tr set $2.
 only_chars() {
 	[ -z "$(printf '%s' "$1" | tr -d "$2")" ]
+}
+
+# valid_domain reports if $1 is a domain that "runplane set-domain" accepts:
+# a lowercase host name with at least two labels, not an IP address. The
+# rule is validDomain in internal/settings/clean.go.
+valid_domain() {
+	only_chars "$1" 'a-z0-9.-' || return 1
+	[ ${#1} -le 253 ] || return 1
+	labels=0
+	numbers=0
+	rest=$1.
+	while [ -n "$rest" ]; do
+		label=${rest%%.*}
+		rest=${rest#*.}
+		[ ${#label} -le 63 ] || return 1
+		case $label in
+		'' | -* | *-) return 1 ;;
+		0 | [1-9] | [1-9][0-9] | 1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) numbers=$((numbers + 1)) ;;
+		esac
+		labels=$((labels + 1))
+	done
+	[ "$labels" -ge 2 ] || return 1
+	# net.ParseIP reads four numbers of 0 to 255 as an IPv4 address.
+	[ "$labels" -ne 4 ] || [ "$numbers" -ne 4 ]
 }
 
 os_field() {
