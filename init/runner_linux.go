@@ -55,13 +55,13 @@ func (g *guestInit) prepareRunnerDir(bundle string, acct account) error {
 			return err
 		}
 	}
-	if !g.cfg.ActionsCache {
+	if g.cfg.CacheURL == "" {
 		if err := guest.Unpatch(guest.RunnerHome); err != nil {
 			return fmt.Errorf("give the runner the GitHub results URL: %w", err)
 		}
 	}
 	envFile := filepath.Join(guest.RunnerHome, ".env")
-	if err := writeEnvFile(envFile, g.cfg.Env, g.log); err != nil {
+	if err := os.WriteFile(envFile, guest.RunnerEnv(g.cfg.CacheURL), 0o644); err != nil {
 		return fmt.Errorf("write runner .env: %w", err)
 	}
 	return os.Lchown(envFile, int(acct.uid), int(acct.gid))

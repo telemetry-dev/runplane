@@ -10,14 +10,14 @@ import (
 
 // Config is the job config that runplane-init gets one time at start.
 type Config struct {
-	SandboxID string            `json:"sandbox_id"`
-	Hostname  string            `json:"hostname"`
-	JITConfig string            `json:"jit_config"`
-	RunnerDir string            `json:"runner_dir"` // read-only runner bundle in the guest
-	Env       map[string]string `json:"env"`        // written to the runner .env
-	// ActionsCache tells that Env sends the cache calls of the job to the
-	// cache server of runplane. Without it, init removes the runner patch.
-	ActionsCache     bool         `json:"actions_cache"`
+	SandboxID string `json:"sandbox_id"`
+	Hostname  string `json:"hostname"`
+	JITConfig string `json:"jit_config"`
+	RunnerDir string `json:"runner_dir"` // read-only runner bundle in the guest
+	// CacheURL is the cache server of runplane for the cache calls of the
+	// job (RunnerEnv). Empty: init removes the runner patch, and the job
+	// uses the GitHub cache.
+	CacheURL         string       `json:"cache_url"`
 	DNS              []netip.Addr `json:"dns"`
 	RegistryMirror   string       `json:"registry_mirror"` // http://<service-ip>:<port>, empty = none
 	TimeLimitSeconds int          `json:"time_limit_seconds"`
@@ -29,14 +29,12 @@ type Config struct {
 // bundle in the guest, and patched tells if the bundle has the runner patch
 // (Patch).
 func NewConfig(spec sandbox.Spec, s sandbox.Settings, serviceURL, runnerDir string, patched bool) Config {
+	var cache, mirror string
 	// An unpatched runner overwrites ACTIONS_RESULTS_URL with the GitHub
 	// value, so the cache server works only with a patched runner.
-	cache := s.ActionsCache && patched
-	var env map[string]string
-	if cache {
-		env = cacheEnv(serviceURL)
+	if s.ActionsCache && patched {
+		cache = serviceURL
 	}
-	var mirror string
 	if s.RegistryMirror {
 		mirror = serviceURL
 	}
@@ -45,8 +43,7 @@ func NewConfig(spec sandbox.Spec, s sandbox.Settings, serviceURL, runnerDir stri
 		Hostname:         Hostname(spec.ID),
 		JITConfig:        spec.JITConfig,
 		RunnerDir:        runnerDir,
-		Env:              env,
-		ActionsCache:     cache,
+		CacheURL:         cache,
 		DNS:              s.DNS,
 		RegistryMirror:   mirror,
 		TimeLimitSeconds: int(spec.TimeLimit / time.Second),
@@ -59,13 +56,14 @@ func NewConfig(spec sandbox.Spec, s sandbox.Settings, serviceURL, runnerDir stri
 // the same second share.
 func Hostname(id string) string { return "runplane-" + id[max(len(id)-8, 0):] }
 
-// cacheEnv is the runner .env that sends the cache calls of a patched runner
-// to the cache server at serviceURL, for example http://10.0.0.1:8486. The
-// cache server must be at the root path: @actions/cache drops the path of
-// ACTIONS_RESULTS_URL.
-func cacheEnv(serviceURL string) map[string]string {
-	return map[string]string{
-		resultsURLVar:              strings.TrimRight(serviceURL, "/") + "/",
-		"ACTIONS_CACHE_SERVICE_V2": "true",
+// RunnerEnv is the runner .env file of a sandbox. It sends the cache calls of
+// a patched runner to the cache server at cacheURL, for example
+// http://10.0.0.1:8486. The cache server must be at the root path:
+// @actions/cache drops the path of ACTIONS_RESULTS_URL. Without a cache
+// server, the file is empty.
+func RunnerEnv(cacheURL string) []byte {
+	if cacheURL == "" {
+		return nil
 	}
+	return []byte("ACTIONS_CACHE_SERVICE_V2=true\n" + resultsURLVar + "=" + strings.TrimRight(cacheURL, "/") + "/\n")
 }

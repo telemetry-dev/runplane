@@ -1,7 +1,6 @@
 package guest
 
 import (
-	"maps"
 	"net/netip"
 	"slices"
 	"testing"
@@ -18,8 +17,7 @@ func TestNewConfig(t *testing.T) {
 		name       string
 		settings   sandbox.Settings
 		patched    bool
-		wantEnv    map[string]string
-		wantCache  bool
+		wantCache  string
 		wantMirror string
 		wantDNS    []netip.Addr
 	}{
@@ -27,28 +25,25 @@ func TestNewConfig(t *testing.T) {
 			name:       "cache and mirror",
 			settings:   sandbox.Settings{ActionsCache: true, RegistryMirror: true, DNS: dns},
 			patched:    true,
-			wantEnv:    map[string]string{"ACTIONS_RESULTS_URL": "http://10.214.0.13:8486/", "ACTIONS_CACHE_SERVICE_V2": "true"},
-			wantCache:  true,
+			wantCache:  url,
 			wantMirror: url,
 			wantDNS:    dns,
 		},
 		{
 			name:     "unpatched runner keeps the GitHub cache",
 			settings: sandbox.Settings{ActionsCache: true},
-			wantEnv:  map[string]string{},
 		},
 		{
 			name:     "cache off",
 			settings: sandbox.Settings{},
 			patched:  true,
-			wantEnv:  map[string]string{},
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := NewConfig(spec, c.settings, url, "/.runplane/runner", c.patched)
-			if !maps.Equal(got.Env, c.wantEnv) || got.ActionsCache != c.wantCache {
-				t.Errorf("env %v, actions cache %v; want %v, %v", got.Env, got.ActionsCache, c.wantEnv, c.wantCache)
+			if got.CacheURL != c.wantCache {
+				t.Errorf("cache URL %q, want %q", got.CacheURL, c.wantCache)
 			}
 			if got.RegistryMirror != c.wantMirror {
 				t.Errorf("registry mirror %q, want %q", got.RegistryMirror, c.wantMirror)
@@ -63,6 +58,18 @@ func TestNewConfig(t *testing.T) {
 				t.Errorf("config %+v", got)
 			}
 		})
+	}
+}
+
+// @actions/cache drops the path of ACTIONS_RESULTS_URL and adds its own after
+// a slash.
+func TestRunnerEnv(t *testing.T) {
+	want := "ACTIONS_CACHE_SERVICE_V2=true\nACTIONS_RESULTS_URL=http://10.214.0.13:8486/\n"
+	if got := string(RunnerEnv("http://10.214.0.13:8486")); got != want {
+		t.Errorf("RunnerEnv = %q, want %q", got, want)
+	}
+	if got := RunnerEnv(""); len(got) != 0 {
+		t.Errorf("RunnerEnv without a cache = %q, want an empty file", got)
 	}
 }
 
