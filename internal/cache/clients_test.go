@@ -36,7 +36,6 @@ func TestActionsCacheClient(t *testing.T) {
 	f := newFixture(t, 0, func(c *Config) { c.Now = time.Now })
 	var blocks, blockLists atomic.Int64
 	var sandboxID atomic.Value // of the next client run
-	proxied := f.srv.Proxied()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("comp") {
 		case "block":
@@ -44,8 +43,7 @@ func TestActionsCacheClient(t *testing.T) {
 		case "blocklist":
 			blockLists.Add(1)
 		}
-		r.Header.Set(SandboxHeader, sandboxID.Load().(string))
-		proxied.ServeHTTP(w, r)
+		f.srv.ServeAgent(w, r, "agent-1", sandboxID.Load().(string))
 	}))
 	defer server.Close()
 

@@ -249,7 +249,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.pruneDaily("sessions, setup codes, and invites", d.Auth.Prune)
 	p.pruneDaily("server tokens and host samples", p.fleet.Prune)
 
-	if err := p.listenAgents(cert, caches.Proxied()); err != nil {
+	if err := p.listenAgents(cert, caches.ServeAgent); err != nil {
 		return nil, err
 	}
 	opener := shell.Drivers{Store: st, Driver: p.fleet.Driver}
@@ -360,13 +360,13 @@ func (p *primary) serveCaches(key []byte, l *local) (*cache.Server, error) {
 	return srv, nil
 }
 
-func (p *primary) listenAgents(cert tls.Certificate, cacheHandler http.Handler) error {
+func (p *primary) listenAgents(cert tls.Certificate, cache func(http.ResponseWriter, *http.Request, string, string)) error {
 	ln, err := net.Listen("tcp", p.cfg.AgentListen)
 	if err != nil {
 		return fmt.Errorf("listen for agents: %w", err)
 	}
 	l := &agent.Listener{
-		Cert: cert, Authenticate: p.fleet.Authenticate, OnSession: p.fleet.AddSession, CacheHandler: cacheHandler,
+		Cert: cert, Authenticate: p.fleet.Authenticate, OnSession: p.fleet.AddSession, Cache: cache,
 		Logger: p.log.With("component", "agents"),
 	}
 	p.run(func(ctx context.Context) {

@@ -112,6 +112,9 @@ const (
 	// cachePath and the paths under it take the Actions cache requests of
 	// the sandboxes on the agent.
 	cachePath = "/v1/cache"
+	// sandboxHeader names the sandbox of a cache request. The agent finds
+	// the sandbox at the source address of the request.
+	sandboxHeader = "X-Runplane-Sandbox"
 )
 
 // Settings are the settings that a server gets from the primary: the

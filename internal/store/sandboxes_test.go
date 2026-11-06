@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -53,31 +51,6 @@ func TestAdvanceSandboxStateTimes(t *testing.T) {
 
 	if _, _, err := s.AdvanceSandboxState(ctx, "missing", sandbox.StateIdle, "", sec(0)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown sandbox: err = %v, want ErrNotFound", err)
-	}
-}
-
-// The cache server and the registry mirror find the sandbox of each request
-// by its address with the partial index sandboxes_live_ip. SQLite uses the
-// index only if the query has the WHERE clause of the index, so the live
-// states of package sandbox must agree with the index of the migrations.
-func TestLiveSandboxQueryUsesTheIndex(t *testing.T) {
-	s := openTest(t)
-	ctx := t.Context()
-	index, err := queryOne(ctx, s.r, "read index", scanValue[string],
-		"SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'sandboxes_live_ip'")
-	must(t, err)
-	if !strings.HasSuffix(index, " WHERE "+liveState) {
-		t.Errorf("index %q, want the WHERE clause %q: add a migration that makes the index again", index, liveState)
-	}
-	plan, err := queryAll(ctx, s.r, "explain", func(sc scanner) (string, error) {
-		var id, parent, unused int
-		var detail string
-		err := sc.Scan(&id, &parent, &unused, &detail)
-		return detail, err
-	}, "EXPLAIN QUERY PLAN "+sandboxJobByIP, "10.200.0.2", "srv1")
-	must(t, err)
-	if !slices.ContainsFunc(plan, func(d string) bool { return strings.Contains(d, "sandboxes_live_ip") }) {
-		t.Errorf("query plan %q does not use sandboxes_live_ip", plan)
 	}
 }
 

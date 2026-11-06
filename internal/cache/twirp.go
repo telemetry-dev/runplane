@@ -107,9 +107,9 @@ type request struct {
 	base string // scheme and host for signed URLs
 }
 
-func (s *Server) serveTwirp(w http.ResponseWriter, r *http.Request, trusted bool) {
+func (s *Server) serveTwirp(w http.ResponseWriter, r *http.Request, src source) {
 	method := strings.TrimPrefix(r.URL.Path, twirpPrefix)
-	resp, err := s.twirp(r, method, trusted)
+	resp, err := s.twirp(r, method, src)
 	if err != nil {
 		var te *twirpError
 		if !errors.As(err, &te) {
@@ -122,7 +122,7 @@ func (s *Server) serveTwirp(w http.ResponseWriter, r *http.Request, trusted bool
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) twirp(r *http.Request, method string, trusted bool) (any, error) {
+func (s *Server) twirp(r *http.Request, method string, src source) (any, error) {
 	if r.Method != http.MethodPost {
 		return nil, twirpErr("bad_route", "use POST")
 	}
@@ -144,7 +144,7 @@ func (s *Server) twirp(r *http.Request, method string, trusted bool) (any, error
 		return nil, twirpErr("malformed", "read request: %v", err)
 	}
 
-	ident, err := s.identify(r, trusted)
+	ident, err := s.identify(r, src)
 	if errors.Is(err, ErrNoSandbox) {
 		denied := "cache write denied"
 		if method == "GetCacheEntryDownloadURL" {
@@ -155,7 +155,7 @@ func (s *Server) twirp(r *http.Request, method string, trusted bool) (any, error
 	if err != nil {
 		return nil, fmt.Errorf("identify sandbox: %w", err)
 	}
-	req := request{Identity: ident, base: baseURL(r, trusted)}
+	req := request{Identity: ident, base: baseURL(r, src)}
 
 	ctx := r.Context()
 	switch body := body.(type) {

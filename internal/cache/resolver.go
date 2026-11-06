@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/netip"
 	"strings"
-	"sync"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -17,33 +15,42 @@ import (
 // the primary, and the repository and the refs of its job, in the store.
 type SandboxResolver struct {
 	st *store.Store
-	// local lists the sandboxes of the primary's own driver. It finds a
-	// sandbox whose address the sandboxes table does not have yet.
+	// local lists the sandboxes of the primary's own driver.
 	local func(ctx context.Context) ([]sandbox.Sandbox, error)
-
-	mu      sync.Mutex
-	localID string
 }
 
 func NewSandboxResolver(st *store.Store, local func(ctx context.Context) ([]sandbox.Sandbox, error)) *SandboxResolver {
 	return &SandboxResolver{st: st, local: local}
 }
 
-// Sandbox finds a sandbox of the primary by the source address of the
-// request. A request through the agent tunnel names its sandbox in
-// SandboxHeader instead; the agent can name only a sandbox of its own
-// server, which the primary sets in ServerHeader.
-func (r *SandboxResolver) Sandbox(ctx context.Context, remoteIP string, header http.Header) (Identity, error) {
-	var b store.SandboxJob
-	var err error
-	if id := header.Get(SandboxHeader); id != "" {
-		b, err = r.st.LiveSandboxJob(ctx, id)
-		if err == nil && b.ServerID != header.Get(ServerHeader) {
-			err = fmt.Errorf("sandbox %s is on another server: %w", id, store.ErrNotFound)
-		}
-	} else {
-		b, err = r.byIP(ctx, remoteIP)
+// SandboxAt finds the sandbox of the primary at addr in the list of its
+// driver. It reads the list each time, because an address can belong to a
+// new sandbox a short time after a different sandbox stops.
+func (r *SandboxResolver) SandboxAt(ctx context.Context, addr netip.Addr) (Identity, error) {
+	list, err := r.local(ctx)
+	if err != nil {
+		return Identity{}, fmt.Errorf("list sandboxes: %w", err)
 	}
+	s, ok := sandbox.FindByIP(list, addr)
+	if !ok {
+		return Identity{}, fmt.Errorf("no sandbox has address %s: %w", addr, ErrNoSandbox)
+	}
+	return found(r.st.LiveSandboxJob(ctx, s.ID))
+}
+
+// SandboxOn finds a sandbox that an agent names. The agent can name only a
+// sandbox of its own server.
+func (r *SandboxResolver) SandboxOn(ctx context.Context, serverID, id string) (Identity, error) {
+	b, err := r.st.LiveSandboxJob(ctx, id)
+	if err == nil && b.ServerID != serverID {
+		err = fmt.Errorf("sandbox %s is on another server: %w", id, store.ErrNotFound)
+	}
+	return found(b, err)
+}
+
+// found gives the Identity of a live sandbox row, and ErrNoSandbox when no
+// live sandbox has the row.
+func found(b store.SandboxJob, err error) (Identity, error) {
 	if errors.Is(err, store.ErrNotFound) {
 		return Identity{}, fmt.Errorf("%w: %w", ErrNoSandbox, err)
 	}
@@ -85,46 +92,4 @@ func identity(b store.SandboxJob) Identity {
 		}
 	}
 	return id
-}
-
-func (r *SandboxResolver) byIP(ctx context.Context, remoteIP string) (store.SandboxJob, error) {
-	addr, err := netip.ParseAddr(remoteIP)
-	if err != nil {
-		return store.SandboxJob{}, fmt.Errorf("source address %q: %w", remoteIP, store.ErrNotFound)
-	}
-	ip := addr.Unmap().String()
-	serverID, err := r.localServer(ctx)
-	if err != nil {
-		return store.SandboxJob{}, err
-	}
-	b, err := r.st.LiveSandboxJobByIP(ctx, serverID, ip)
-	if !errors.Is(err, store.ErrNotFound) {
-		return b, err
-	}
-	list, err := r.local(ctx)
-	if err != nil {
-		return store.SandboxJob{}, fmt.Errorf("list sandboxes: %w", err)
-	}
-	s, ok := sandbox.FindByIP(list, addr)
-	if !ok {
-		return store.SandboxJob{}, fmt.Errorf("no sandbox has address %s: %w", ip, store.ErrNotFound)
-	}
-	if err := r.st.SetSandboxIP(ctx, serverID, s.ID, ip); err != nil {
-		return store.SandboxJob{}, err
-	}
-	return r.st.LiveSandboxJob(ctx, s.ID)
-}
-
-func (r *SandboxResolver) localServer(ctx context.Context) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.localID != "" {
-		return r.localID, nil
-	}
-	v, err := r.st.GetLocalServer(ctx)
-	if err != nil {
-		return "", err
-	}
-	r.localID = v.ID
-	return v.ID, nil
 }

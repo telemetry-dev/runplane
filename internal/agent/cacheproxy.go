@@ -13,7 +13,6 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -78,7 +77,7 @@ func rewriteCache(pr *httputil.ProxyRequest) {
 		out.URL.RawPath = cachePath + in.URL.RawPath
 	}
 	out.Host = ""
-	out.Header.Set(cache.SandboxHeader, in.Context().Value(sandboxKey{}).(string))
+	out.Header.Set(sandboxHeader, in.Context().Value(sandboxKey{}).(string))
 	out.Header.Set("X-Forwarded-Host", in.Host)
 	proto := "http"
 	if in.TLS != nil {

@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -197,17 +198,6 @@ func TestRepositoryIsolation(t *testing.T) {
 		t.Errorf("download from another repository: %d, want 403", status)
 	}
 
-	t.Run("only a trusted proxy can name the sandbox", func(t *testing.T) {
-		spoof := client{t: t, url: f.url, header: http.Header{SandboxHeader: {"sb-other"}}}
-		spoof.save("spoofed", version, []byte("x"))
-		e, err := f.st.GetCacheEntryByKey(context.Background(), "acme/app", "refs/heads/main", "spoofed", version)
-		if err != nil {
-			t.Fatalf("entry not saved for the sandbox of the source IP: %v", err)
-		}
-		if e.Repository != "acme/app" {
-			t.Errorf("repository = %q", e.Repository)
-		}
-	})
 }
 
 func TestRequestsWithoutIdentity(t *testing.T) {
@@ -479,11 +469,11 @@ func TestDelete(t *testing.T) {
 }
 
 func TestResultsProxy(t *testing.T) {
-	type call struct{ path, body, auth, sandbox string }
+	type call struct{ path, body, auth string }
 	calls := make(chan call, 10)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		calls <- call{r.URL.Path, string(b), r.Header.Get("Authorization"), r.Header.Get(SandboxHeader)}
+		calls <- call{r.URL.Path, string(b), r.Header.Get("Authorization")}
 		w.WriteHeader(http.StatusTeapot)
 		io.WriteString(w, `{"ok":true}`)
 	}))
@@ -494,38 +484,32 @@ func TestResultsProxy(t *testing.T) {
 	const path = "/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact"
 	req, _ := http.NewRequest(http.MethodPost, f.proxied+path, strings.NewReader(`{"name":"dist"}`))
 	req.Header.Set("Authorization", "Bearer job-token")
-	req.Header.Set(SandboxHeader, "sb-1")
+	req.Header.Set(agentSandbox, "sb-1")
 	resp := client{t: t}.do(req)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusTeapot || string(body) != `{"ok":true}` {
 		t.Errorf("response %d %q", resp.StatusCode, body)
 	}
-	if got, want := <-calls, (call{path, `{"name":"dist"}`, "Bearer job-token", ""}); got != want {
+	if got, want := <-calls, (call{path, `{"name":"dist"}`, "Bearer job-token"}); got != want {
 		t.Errorf("upstream got %+v, want %+v", got, want)
 	}
 
-	// The service port listens on all addresses. Only sandboxes and the host
-	// itself may send requests to GitHub through it, else anyone could hide
-	// behind the server.
+	// The service port listens on all addresses. Only sandboxes may send
+	// requests to GitHub through it, else anyone could hide behind the
+	// server.
 	tests := []struct {
 		name   string
 		remote string
-		header http.Header
 		want   int
 	}{
-		{"sandbox without a job", "10.213.0.5:40000", nil, http.StatusTeapot},
-		{"this host", "127.0.0.1:40000", nil, http.StatusTeapot},
-		{"internet host", "203.0.113.9:40000", nil, http.StatusForbidden},
-		{"internet host that names a sandbox", "203.0.113.9:40000", http.Header{SandboxHeader: {"10.213.0.5"}}, http.StatusForbidden},
+		{"sandbox without a job", "10.213.0.5:40000", http.StatusTeapot},
+		{"internet host", "203.0.113.9:40000", http.StatusForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
 			req.RemoteAddr = tt.remote
-			for k, v := range tt.header {
-				req.Header[k] = v
-			}
 			rec := httptest.NewRecorder()
 			f.srv.ServeHTTP(rec, req)
 			if rec.Code != tt.want {
@@ -545,11 +529,15 @@ func TestResultsProxy(t *testing.T) {
 // with GitHub, which sends the job message after the job starts.
 type lateJob struct{ linked atomic.Bool }
 
-func (l *lateJob) Sandbox(context.Context, string, http.Header) (Identity, error) {
+func (l *lateJob) SandboxAt(context.Context, netip.Addr) (Identity, error) {
 	if !l.linked.Load() {
 		return Identity{SandboxID: "sb-1"}, nil
 	}
 	return acme("sb-1", "refs/heads/main", ""), nil
+}
+
+func (l *lateJob) SandboxOn(ctx context.Context, _, _ string) (Identity, error) {
+	return l.SandboxAt(ctx, netip.Addr{})
 }
 
 // The first cache step of a job runs before runplane knows the job of the
@@ -570,7 +558,7 @@ func TestCacheRequestWaitsForTheJob(t *testing.T) {
 			if tt.linkIn > 0 {
 				time.AfterFunc(tt.linkIn, func() { r.linked.Store(true) })
 			}
-			ident, err := s.identify(httptest.NewRequest("POST", "/twirp/x", nil), false)
+			ident, err := s.identify(httptest.NewRequest("POST", "/twirp/x", nil), source{})
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err %v, want %v", err, tt.wantErr)
 			}

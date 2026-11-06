@@ -43,7 +43,7 @@ type testPrimary struct {
 	sessions chan *Session
 }
 
-func startPrimary(t *testing.T, cache http.Handler) *testPrimary {
+func startPrimary(t *testing.T, cache func(http.ResponseWriter, *http.Request, string, string)) *testPrimary {
 	cert, fp, err := tlsutil.AgentCert(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -71,9 +71,9 @@ func startPrimary(t *testing.T, cache http.Handler) *testPrimary {
 			}
 			return "", "", errors.New("unknown server")
 		},
-		OnSession:    func(s *Session) { p.sessions <- s },
-		CacheHandler: cache,
-		Logger:       p.logs.logger("primary"),
+		OnSession: func(s *Session) { p.sessions <- s },
+		Cache:     cache,
+		Logger:    p.logs.logger("primary"),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

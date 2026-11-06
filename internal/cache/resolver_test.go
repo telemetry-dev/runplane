@@ -3,7 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
-	"net/http"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -51,11 +51,10 @@ func TestResolver(t *testing.T) {
 		return Identity{SandboxID: id, Repository: "acme/web", Ref: "refs/pull/5/merge", BaseRef: "refs/heads/trunk"}
 	}
 	sandboxes := []store.Sandbox{
-		{ID: "busy", ServerID: "local", State: sandbox.StateBusy, IP: "10.213.0.5", JobID: jobs[0]},
-		{ID: "idle", ServerID: "local", State: sandbox.StateIdle, IP: "10.213.0.6"},
-		{ID: "old", ServerID: "local", State: sandbox.StateGone, IP: "10.213.0.7", JobID: jobs[0]},
+		{ID: "busy", ServerID: "local", State: sandbox.StateBusy, JobID: jobs[0]},
+		{ID: "idle", ServerID: "local", State: sandbox.StateIdle},
+		{ID: "old", ServerID: "local", State: sandbox.StateGone, JobID: jobs[0]},
 		{ID: "agent", ServerID: "remote", State: sandbox.StateBusy, IP: "10.213.0.8", JobID: jobs[1]},
-		{ID: "new", ServerID: "local", State: sandbox.StateBusy, JobID: jobs[1]},
 	}
 	for _, b := range sandboxes {
 		b.PoolID, b.Mode, b.VCPU, b.MemoryMB, b.CreatedAt = "pool", sandbox.ModeContainer, 2, 4096, t0
@@ -63,39 +62,39 @@ func TestResolver(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The driver knows the address of the newest sandbox before the table does.
+	// The driver of the primary knows the addresses. It still lists old,
+	// which the scheduler has recorded as gone.
 	r := NewSandboxResolver(st, func(context.Context) ([]sandbox.Sandbox, error) {
-		return []sandbox.Sandbox{{ID: "busy", IP: "10.213.0.5"}, {ID: "new", IP: "10.213.0.9"}}, nil
+		return []sandbox.Sandbox{
+			{ID: "busy", State: sandbox.StateBusy, IP: "10.213.0.5"},
+			{ID: "idle", State: sandbox.StateIdle, IP: "10.213.0.6"},
+			{ID: "old", State: sandbox.StateBusy, IP: "10.213.0.7"},
+		}, nil
 	})
 
-	tunnel := func(sandboxID, serverID string) http.Header {
-		h := http.Header{}
-		h.Set(SandboxHeader, sandboxID)
-		if serverID != "" {
-			h.Set(ServerHeader, serverID)
-		}
-		return h
+	at := func(ip string) func() (Identity, error) {
+		return func() (Identity, error) { return r.SandboxAt(ctx, netip.MustParseAddr(ip)) }
+	}
+	on := func(serverID, id string) func() (Identity, error) {
+		return func() (Identity, error) { return r.SandboxOn(ctx, serverID, id) }
 	}
 	tests := []struct {
-		name   string
-		ip     string
-		header http.Header
-		want   Identity // zero: ErrNoSandbox
+		name string
+		find func() (Identity, error)
+		want Identity // zero: ErrNoSandbox
 	}{
-		{"sandbox address", "10.213.0.5", nil, api},
-		{"IPv4 in IPv6 form", "::ffff:10.213.0.5", nil, api},
-		{"sandbox without a job", "10.213.0.6", nil, Identity{SandboxID: "idle"}},
-		{"address from the driver", "10.213.0.9", nil, web("new")},
-		{"stopped sandbox", "10.213.0.7", nil, Identity{}},
-		{"address of an agent sandbox", "10.213.0.8", nil, Identity{}},
-		{"unknown address", "192.0.2.1", nil, Identity{}},
-		{"agent names its sandbox", "203.0.113.4", tunnel("agent", "remote"), web("agent")},
-		{"agent names a sandbox of the primary", "203.0.113.4", tunnel("busy", "remote"), Identity{}},
-		{"sandbox header without a server", "10.213.0.5", tunnel("agent", ""), Identity{}},
+		{"sandbox address", at("10.213.0.5"), api},
+		{"IPv4 in IPv6 form", at("::ffff:10.213.0.5"), api},
+		{"sandbox without a job", at("10.213.0.6"), Identity{SandboxID: "idle"}},
+		{"stopped sandbox", at("10.213.0.7"), Identity{}},
+		{"address of an agent sandbox", at("10.213.0.8"), Identity{}},
+		{"unknown address", at("192.0.2.1"), Identity{}},
+		{"agent names its sandbox", on("remote", "agent"), web("agent")},
+		{"agent names a sandbox of the primary", on("remote", "busy"), Identity{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := r.Sandbox(ctx, tt.ip, tt.header)
+			got, err := tt.find()
 			if tt.want == (Identity{}) {
 				if !errors.Is(err, ErrNoSandbox) {
 					t.Fatalf("got %+v, %v; want ErrNoSandbox", got, err)
@@ -106,10 +105,6 @@ func TestResolver(t *testing.T) {
 				t.Fatalf("got %+v, %v; want %+v", got, err, tt.want)
 			}
 		})
-	}
-
-	if b, err := st.GetSandbox(ctx, "new"); err != nil || b.IP != "10.213.0.9" {
-		t.Errorf("the table did not get the address from the driver: %+v, %v", b, err)
 	}
 }
 

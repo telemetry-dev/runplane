@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/runner"
@@ -340,15 +339,16 @@ func TestDisconnectEndsSession(t *testing.T) {
 
 func TestCacheProxy(t *testing.T) {
 	type cacheCall struct {
-		uri, body string
-		header    http.Header
+		serverID, sandboxID string
+		uri, body           string
+		header              http.Header
 	}
 	calls := make(chan cacheCall, 4)
-	p := startPrimary(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p := startPrimary(t, func(w http.ResponseWriter, r *http.Request, serverID, sandboxID string) {
 		body, _ := io.ReadAll(r.Body)
-		calls <- cacheCall{r.URL.RequestURI(), string(body), r.Header}
+		calls <- cacheCall{serverID, sandboxID, r.URL.RequestURI(), string(body), r.Header}
 		io.WriteString(w, `{"ok":true}`)
-	}))
+	})
 	node := newFakeNode()
 	node.put(sandbox.Sandbox{ID: "sb-here", State: sandbox.StateBusy, IP: "127.0.0.1"})
 	proxy := NewCacheProxy(node.Driver(), p.logs.logger("cache"))
@@ -362,8 +362,7 @@ func TestCacheProxy(t *testing.T) {
 	post := func() (int, string) {
 		req, _ := http.NewRequest(http.MethodPost, svc.URL+"/twirp/CacheService/CreateCacheEntry?v=2", strings.NewReader(`{"key":"npm-linux"}`))
 		// A sandbox must not choose its identity.
-		req.Header.Set(cache.SandboxHeader, "sb-other")
-		req.Header.Set(cache.ServerHeader, "other-server")
+		req.Header.Set(sandboxHeader, "sb-other")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -380,9 +379,12 @@ func TestCacheProxy(t *testing.T) {
 	if call.uri != "/twirp/CacheService/CreateCacheEntry?v=2" || call.body != `{"key":"npm-linux"}` {
 		t.Errorf("primary got %q with body %q", call.uri, call.body)
 	}
+	if call.serverID != testServer || call.sandboxID != "sb-here" {
+		t.Errorf("primary got the request of server %q and sandbox %q, want %s and sb-here", call.serverID, call.sandboxID, testServer)
+	}
+	// The cache server must not send the header of the protocol on to GitHub.
 	wantHeaders := map[string]string{
-		cache.SandboxHeader: "sb-here",
-		cache.ServerHeader:  testServer,
+		sandboxHeader:       "",
 		"X-Forwarded-Host":  svc.Listener.Addr().String(),
 		"X-Forwarded-Proto": "http",
 	}

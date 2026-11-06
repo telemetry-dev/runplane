@@ -16,7 +16,6 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
@@ -39,11 +38,11 @@ type Listener struct {
 	// OnSession gets each new session. If the server already has a
 	// session, the Listener closes the old one first.
 	OnSession func(*Session)
-	// CacheHandler serves the Actions cache requests that agents send, with
-	// /v1/cache cut from the path: the Proxied handler of the cache server.
-	// Nil answers 503.
-	CacheHandler http.Handler
-	Logger       *slog.Logger
+	// Cache serves an Actions cache request that the agent serverID sends
+	// for its sandbox sandboxID, with /v1/cache cut from the path: the
+	// ServeAgent method of the cache server. Nil answers 503.
+	Cache  func(w http.ResponseWriter, r *http.Request, serverID, sandboxID string)
+	Logger *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -129,7 +128,7 @@ func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 		return nil, fmt.Errorf("start yamux: %w", err)
 	}
 	hello.ServerID, hello.Token, hello.Secret = id, "", ""
-	return newSession(sess, hello, l.CacheHandler, l.Logger.With("server_id", id)), nil
+	return newSession(sess, hello, l.Cache, l.Logger.With("server_id", id)), nil
 }
 
 // add keeps s as the session of its server and returns the old session.
@@ -188,7 +187,7 @@ type Session struct {
 	settings   Settings // of the last Configure
 }
 
-func newSession(sess *yamux.Session, hello Hello, cache http.Handler, log *slog.Logger) *Session {
+func newSession(sess *yamux.Session, hello Hello, cache func(http.ResponseWriter, *http.Request, string, string), log *slog.Logger) *Session {
 	s := &Session{
 		hello:  hello,
 		sess:   sess,
@@ -387,15 +386,18 @@ func (s *Session) finish() {
 	s.client.CloseIdleConnections()
 }
 
-func cacheHandler(h http.Handler, serverID string) http.Handler {
-	if h == nil {
+// cacheHandler gives the cache requests of the agent serverID to serve. It
+// removes sandboxHeader, so that the cache server does not send it on to
+// GitHub.
+func cacheHandler(serve func(http.ResponseWriter, *http.Request, string, string), serverID string) http.Handler {
+	if serve == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "the Actions cache is not available", http.StatusServiceUnavailable)
 		})
 	}
-	h = http.StripPrefix(cachePath, h)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set(cache.ServerHeader, serverID)
-		h.ServeHTTP(w, r)
-	})
+	return http.StripPrefix(cachePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sandboxID := r.Header.Get(sandboxHeader)
+		r.Header.Del(sandboxHeader)
+		serve(w, r, serverID, sandboxID)
+	}))
 }
