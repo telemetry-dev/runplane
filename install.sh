@@ -90,6 +90,7 @@ main() {
 	install_runplane
 	write_config
 	write_units
+	stop_service
 	store_mode
 	store_domain
 	make_setup_code
@@ -739,6 +740,18 @@ IOWeight=20
 EOF
 }
 
+# stop_service stops a running primary before the next steps open its
+# database with the new binary. The binary applies the migrations of its
+# release, and the old serve must not operate on the new schema. The
+# sandboxes continue (KillMode=process), and start_service starts the
+# primary again.
+stop_service() {
+	[ "$ROLE" = primary ] || return 0
+	systemctl is-active --quiet "$SERVICE.service" 2>/dev/null || return 0
+	step "Stop $SERVICE"
+	run systemctl stop "$SERVICE.service"
+}
+
 # store_mode writes --mode into the settings of an installed primary,
 # because the settings win over RUNPLANE_MODE after the first start.
 store_mode() {
@@ -746,7 +759,8 @@ store_mode() {
 		return 0
 	fi
 	step "Write the mode to the settings"
-	run "$BIN" set-mode "$MODE" || die "runplane cannot write $MODE mode to its settings"
+	run "$BIN" set-mode "$MODE" ||
+		die "runplane cannot write $MODE mode to its settings. Correct the problem and run this script again. Until then, runplane does not run."
 }
 
 # store_domain writes --domain into the settings of the primary. On a new
@@ -756,20 +770,16 @@ store_domain() {
 		return 0
 	fi
 	step "Write the domain to the settings"
-	run "$BIN" set-domain "$DOMAIN" || die "runplane cannot write the domain $DOMAIN to its settings"
+	run "$BIN" set-domain "$DOMAIN" ||
+		die "runplane cannot write the domain $DOMAIN to its settings. Correct the problem and run this script again. Until then, runplane does not run."
 }
 
 # make_setup_code makes the setup code of the first admin before the start.
-# serve then keeps this code and logs no different code.
+# serve then keeps this code and logs no different code. On a primary with
+# an admin, setup-code makes no code and fails.
 make_setup_code() {
 	SETUP_CODE=
 	[ "$ROLE" = primary ] || return 0
-	# setup-code applies the migrations of the new release to the database.
-	# A running primary that has an admin needs no code, and it must not get
-	# the migrations before its restart.
-	if status=$(api_status) && ! needs_setup "$status"; then
-		return 0
-	fi
 	step "Make the setup code"
 	if [ "$DRY_RUN" = 1 ]; then
 		say "+ $BIN setup-code"

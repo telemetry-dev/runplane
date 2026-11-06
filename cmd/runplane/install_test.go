@@ -344,31 +344,61 @@ check_base_image`)
 	})
 }
 
-// install.sh makes the setup code before runplane starts. It runs no
-// setup-code while a primary with an admin runs, because setup-code applies
-// the migrations of the new release before the restart.
-func TestInstallMakesTheSetupCode(t *testing.T) {
+// install.sh stops a running primary before the first command that opens
+// the database, because the new binary applies the migrations of its
+// release, and the old serve must not operate on the new schema. The start
+// at the end starts the primary again, and it makes the setup code before
+// the first start. In this test, the steps that need the host or the
+// network do nothing.
+func TestInstallStopsThePrimaryBeforeTheDatabaseCommands(t *testing.T) {
+	bin := installVars(t, "BIN")["BIN"]
 	for _, tt := range []struct {
-		name   string
-		status *api.Status // the answer of the running primary, nil for none
-		want   bool
+		name    string
+		running bool
+		want    []string
 	}{
-		{"new install", nil, true},
-		{"primary without an admin", &api.Status{NeedsSetup: true}, true},
-		{"primary with an admin", &api.Status{}, false},
+		{"update of a running primary", true, []string{
+			"+ systemctl stop runplane.service",
+			"+ " + bin + " set-mode container",
+			"+ " + bin + " set-domain ci.example.com",
+			"+ " + bin + " setup-code",
+			"+ systemctl restart runplane.service",
+		}},
+		{"new install", false, []string{
+			"+ " + bin + " set-mode container",
+			"+ " + bin + " set-domain ci.example.com",
+			"+ " + bin + " setup-code",
+			"+ systemctl restart runplane.service",
+		}},
 	} {
-		curl := "curl() { return 7; }"
-		if tt.status != nil {
-			b, err := json.Marshal(tt.status)
-			if err != nil {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "runplane.db"), nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			curl = "curl() { printf '%s\\n' '" + string(b) + "'; }"
-		}
-		out := installtest.Run(t, "parse_flags --dry-run\n"+curl+"\nmake_setup_code")
-		if got := strings.Contains(out, "setup-code"); got != tt.want {
-			t.Errorf("%s: install.sh runs setup-code: %v, want %v:\n%s", tt.name, got, tt.want, out)
-		}
+			active := "return 3"
+			if tt.running {
+				active = `[ "$*" = "is-active --quiet runplane.service" ]`
+			}
+			out := installtest.Run(t, "DATA_DIR="+dir+"\nENV_FILE="+dir+"/runplane.env\nAGENT_FILE="+dir+"/agent.json\nUNIT_DIR="+dir+`
+check_host() { :; }
+select_mode() { :; }
+fetch_runplane() { :; }
+setup_container() { :; }
+finish() { :; }
+systemctl() { `+active+`; }
+main --dry-run --mode container --domain ci.example.com`)
+			var got []string
+			for line := range strings.Lines(out) {
+				line = strings.TrimSuffix(line, "\n")
+				if strings.HasPrefix(line, "+ systemctl stop ") || strings.HasPrefix(line, "+ systemctl restart ") || strings.HasPrefix(line, "+ "+bin+" ") {
+					got = append(got, line)
+				}
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("install.sh runs\n%s\nwant\n%s\nfull output:\n%s", strings.Join(got, "\n"), strings.Join(tt.want, "\n"), out)
+			}
+		})
 	}
 }
 
