@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,7 +49,34 @@ func jobSteps() []store.JobStep {
 	}
 }
 
-func TestStepLines(t *testing.T) {
+// The finish step stores the GitHub log, and the job page reads one step
+// of it, or all of it with step 0.
+func TestStoredLogOfAStep(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	l := New(Config{Dir: t.TempDir(), Store: st, Waits: []time.Duration{0}})
+	job, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted, Repository: "acme/api"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{Steps: jobSteps()}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	l.Fetch(ctx, job.ID, func(context.Context) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(jobLog)), nil
+	})
+	read := func(step int) string {
+		t.Helper()
+		rc, err := l.Job(ctx, job.ID, step, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return readAll(t, rc)
+	}
+	if got := read(0); got != jobLog {
+		t.Errorf("step 0:\n got %q\nwant the whole log %q", got, jobLog)
+	}
+
 	tests := []struct {
 		step int
 		want []string // texts after the time
@@ -63,9 +89,8 @@ func TestStepLines(t *testing.T) {
 		{6, []string{"Cleaning up orphan processes"}},
 	}
 	for _, tt := range tests {
-		got := readAll(t, filterLines(io.NopCloser(strings.NewReader(jobLog)), stepLines(jobSteps(), tt.step)))
 		var texts []string
-		for line := range strings.Lines(got) {
+		for line := range strings.Lines(read(tt.step)) {
 			line = strings.TrimSuffix(line, "\n")
 			stamp, text, _ := strings.Cut(line, " ")
 			if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
@@ -82,7 +107,6 @@ func TestStepLines(t *testing.T) {
 func TestJobLog(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
-	dir := t.TempDir()
 	newJob := func(id int64, state, logState, sandboxID string) store.Job {
 		t.Helper()
 		j, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: state, Repository: "acme/api"}, time.Now())
@@ -99,13 +123,6 @@ func TestJobLog(t *testing.T) {
 		}
 		return j
 	}
-	stored := newJob(1, store.JobCompleted, store.LogStored, "")
-	if err := st.SetJobEnrichment(ctx, stored.ID, store.JobEnrichment{Steps: jobSteps()}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, stored.ID+".log"), []byte(jobLog), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if err := st.InsertSandbox(ctx, store.Sandbox{ID: "box", PoolID: "p", ServerID: "s1", Mode: sandbox.ModeDev,
 		State: sandbox.StateBusy, VCPU: 1, MemoryMB: 1024, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -118,25 +135,17 @@ func TestJobLog(t *testing.T) {
 		"2026-11-04T10:00:01.500Z diag 2026-11-04T10:00:01.4000000Z ##[group]Run make test\n" +
 		"2026-11-04T10:00:02.000Z dockerd API listen on /var/run/docker.sock\n" +
 		"2026-11-04T10:00:02.500Z diag 2026-11-04T10:00:02.4000000Z ok\n"
-	l := New(Config{Dir: dir, Store: st, Driver: func(serverID string) Driver {
+	l := New(Config{Dir: t.TempDir(), Store: st, Driver: func(serverID string) Driver {
 		if serverID != "s1" {
 			return nil
 		}
 		return consoleDriver{log: console}
 	}})
 
-	rc, err := l.Job(ctx, stored.ID, 3, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := readAll(t, rc); !strings.HasPrefix(got, "2026-11-04T10:00:05.4000000Z ##[group]Run make test\n") || strings.Contains(got, "checkout") {
-		t.Errorf("step 3 of the stored log:\n%s", got)
-	}
-
 	// The live log has no step marks, so a step gives the whole log.
 	want := "2026-11-04T10:00:01.4000000Z ##[group]Run make test\n2026-11-04T10:00:02.4000000Z ok\n"
 	for _, step := range []int{0, 2} {
-		rc, err = l.Job(ctx, running.ID, step, true)
+		rc, err := l.Job(ctx, running.ID, step, true)
 		if err != nil {
 			t.Fatal(err)
 		}
