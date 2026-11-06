@@ -53,7 +53,6 @@ type fakeDriver struct {
 
 	mu       sync.Mutex
 	running  map[string]sandbox.Spec
-	ips      map[string]string // addresses by sandbox ID
 	specs    []sandbox.Spec
 	holds    map[string]time.Time
 	startErr error
@@ -97,7 +96,7 @@ func (d *fakeDriver) List(ctx context.Context) ([]sandbox.Sandbox, error) {
 	defer d.mu.Unlock()
 	var list []sandbox.Sandbox
 	for id, spec := range d.running {
-		list = append(list, sandbox.Sandbox{ID: id, PoolID: spec.PoolID, State: sandbox.StateIdle, IP: d.ips[id], Spec: spec})
+		list = append(list, sandbox.Sandbox{ID: id, PoolID: spec.PoolID, State: sandbox.StateIdle, Spec: spec})
 	}
 	return list, nil
 }
@@ -399,9 +398,9 @@ func (e *testEnv) addServer(name string, c sandbox.Capacity) (string, *fakeDrive
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	d := &fakeDriver{rec: e.rec, base: c, running: map[string]sandbox.Spec{}, ips: map[string]string{}, holds: map[string]time.Time{}}
+	d := &fakeDriver{rec: e.rec, base: c, running: map[string]sandbox.Spec{}, holds: map[string]time.Time{}}
 	e.fleet.mu.Lock()
-	e.fleet.hosts = append(e.fleet.hosts, Host{ServerID: id, Name: name, Arch: c.Arch, Driver: d})
+	e.fleet.hosts = append(e.fleet.hosts, Host{ServerID: id, Arch: c.Arch, Driver: d})
 	e.fleet.mu.Unlock()
 	return id, d
 }

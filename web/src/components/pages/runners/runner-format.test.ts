@@ -11,7 +11,6 @@ const busy: Sandbox = {
   server_name: 'hel1-cax41',
   state: 'busy',
   runner_name: 'runplane-4cpu-arm-gay6dh',
-  ip: '172.30.2.31',
   job_id: '01m6je8hcjjmjtmpvjwe8qaf3j',
   job_name: 'lint',
   job_repository: 'kestrel-hq/mobile',

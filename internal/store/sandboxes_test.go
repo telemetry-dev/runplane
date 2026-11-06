@@ -77,11 +77,10 @@ func TestLinkJobSandbox(t *testing.T) {
 }
 
 // The runners page shows the runners of each pool and its jobs that wait
-// for a runner: queued or assigned in the last 24 hours, and not rejected.
+// for a runner: queued or assigned, and not rejected.
 func TestPoolCounts(t *testing.T) {
 	s := openTest(t)
 	ctx := t.Context()
-	now := sec(48 * 3600)
 	for i, b := range []struct {
 		pool  string
 		state sandbox.State
@@ -94,22 +93,20 @@ func TestPoolCounts(t *testing.T) {
 	}
 	for i, j := range []struct {
 		pool, state, reject string
-		queuedAgo           time.Duration
 	}{
-		{"p1", JobQueued, "", time.Hour},
-		{"p1", JobQueued, "Public repository: the setting allow_public_repos is off.", time.Hour},
-		{"p1", JobAssigned, "", time.Hour},
-		{"p1", JobRunning, "", time.Hour},
-		{"p1", JobQueued, "", 25 * time.Hour},
-		{"p2", JobQueued, "", time.Minute},
+		{"p1", JobQueued, ""},
+		{"p1", JobQueued, "Public repository: the setting allow_public_repos is off."},
+		{"p1", JobAssigned, ""},
+		{"p1", JobRunning, ""},
+		{"p2", JobQueued, ""},
 	} {
-		job := addJob(t, s, JobMessage{RunnerRequestID: int64(i + 1), State: j.state, PoolID: j.pool, QueuedAt: now.Add(-j.queuedAgo)})
+		job := addJob(t, s, JobMessage{RunnerRequestID: int64(i + 1), State: j.state, PoolID: j.pool, QueuedAt: sec(i)})
 		if j.reject != "" {
 			must(t, s.SetJobRejectReason(ctx, job.ID, j.reject))
 		}
 	}
 
-	got, err := s.PoolCounts(ctx, now)
+	got, err := s.PoolCounts(ctx)
 	must(t, err)
 	want := map[string]PoolCounts{
 		"p1": {Idle: 2, Busy: 1, Starting: 1, Queued: 2, Assigned: 1},

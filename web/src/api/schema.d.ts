@@ -1601,7 +1601,7 @@ export interface components {
              * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
              * @enum {string}
              */
-            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
             steps: components["schemas"]["JobStep"][];
             /**
              * Format: int64
@@ -1706,7 +1706,7 @@ export interface components {
              * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
              * @enum {string}
              */
-            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
             /** @description For example ".github/workflows/ci.yml". */
             workflow_file: string;
             /** @description Empty until runplane reads the run from GitHub. */
@@ -1917,7 +1917,7 @@ export interface components {
             placeable_servers: number;
             /**
              * Format: int64
-             * @description Jobs of the last 24 hours that wait for a runner.
+             * @description Jobs that wait for a runner.
              */
             queued: number;
             /** @description Servers that may run the sandboxes. Empty: all servers with the arch of the pool. */
@@ -1969,7 +1969,7 @@ export interface components {
             pool_id: string;
             /**
              * Format: int64
-             * @description Jobs of the last 24 hours that wait for a runner.
+             * @description Jobs that wait for a runner.
              */
             queued: number;
             /**
@@ -2074,7 +2074,6 @@ export interface components {
             id: string;
             /** Format: date-time */
             idle_at: string | null;
-            ip: string;
             /** @description Empty until the runner gets a job. */
             job_id: string;
             job_name: string;
@@ -3568,7 +3567,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description The status of the jobs. */
-                status?: "running" | "queued" | "succeeded" | "failed" | "cancelled";
+                status?: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
                 repository?: string;
                 pool_id?: string;
                 server_id?: string;

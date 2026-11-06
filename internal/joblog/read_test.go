@@ -149,8 +149,13 @@ func TestJobLog(t *testing.T) {
 		t.Errorf("log of an expired job: %v, want ErrExpired", err)
 	}
 
-	// GitHub has no log for a completed job only after its finish step.
-	finishing := newJob(4, store.JobCompleted, store.LogNone, "")
+	// GitHub has no log for a completed job only after its finish step. The
+	// debug sandbox that runplane holds after the job does not give its log.
+	if err := st.InsertSandbox(ctx, store.Sandbox{ID: "held", PoolID: "p", ServerID: "s1", Mode: sandbox.ModeDev,
+		State: sandbox.StateStopping, Debug: true, VCPU: 1, MemoryMB: 1024, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	finishing := newJob(4, store.JobCompleted, store.LogNone, "held")
 	if _, _, err := l.Job(ctx, finishing.ID, 0, false); !errors.Is(err, ErrNotYet) {
 		t.Errorf("log of a job in its finish step: %v, want ErrNotYet", err)
 	}

@@ -178,7 +178,7 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		"UpdateStatus.state":                         strs(update.Idle, update.Applying, update.Restarting),
 		"UpdateUserRequest.role":                     roles,
 		"User.role":                                  roles,
-		"get /api/jobs status":                       {store.StatusRunning, store.StatusQueued, store.ResultSucceeded, store.ResultFailed, store.ResultCancelled},
+		"get /api/jobs status":                       jobStatuses,
 		"get /api/jobs range":                        rangeKeys,
 		"get /api/jobs/{id}/log " + stepFilterHeader: {stepFilterIgnored},
 		"get /api/overview range":                    rangeKeys,

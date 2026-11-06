@@ -76,10 +76,6 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 	if err != nil {
 		return nil, err
 	}
-	regions, err := h.d.Store.ServerRegions(ctx)
-	if err != nil {
-		return nil, err
-	}
 	out := make([]Server, len(list))
 	byID := map[string]*Server{}
 	for i, v := range list {
@@ -89,7 +85,7 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 				ID: v.ID, Name: v.Name, Kind: v.Kind, Status: v.Status, StatusDetail: v.StatusDetail, Arch: f.Arch,
 				Mode: string(f.Mode), VCPU: f.VCPU, MemoryMB: f.MemoryMB, DiskBytes: f.DiskBytes, LastSeenAt: v.LastSeenAt,
 			},
-			Address: f.Address, Provider: f.Provider, Region: regions[v.ID], OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
+			Address: f.Address, Provider: f.Provider, Region: f.Region, OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
 			DockerVersion: f.DockerVersion, SysboxVersion: f.SysboxVersion, FirecrackerVersion: f.FirecrackerVersion,
 			Version: f.Version, UpdateState: string(h.d.Servers.UpdateState(v)), UpdateError: v.UpdateError,
 			Actions: ServerActions{

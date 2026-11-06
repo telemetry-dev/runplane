@@ -30,7 +30,7 @@ type JobSummary struct {
 	ServerID     string     `json:"server_id" doc:"Empty until the job has a sandbox."`
 	ServerName   string     `json:"server_name"`
 	State        string     `json:"state" enum:"queued,assigned,running,completed"`
-	Status       string     `json:"status" enum:"queued,running,succeeded,failed,cancelled,skipped" doc:"queued until a runner starts the job, also when GitHub assigned it, then running, and then the result."`
+	Status       jobStatus  `json:"status" doc:"queued until a runner starts the job, also when GitHub assigned it, then running, and then the result."`
 	Result       *string    `json:"result" enum:"succeeded,failed,cancelled,skipped" doc:"Null until the job completes."`
 	Debug        bool       `json:"debug" doc:"The sandbox stays after the job for a debug shell."`
 	RejectReason string     `json:"reject_reason" doc:"Why runplane does not take this queued job. Empty if it takes it."`
@@ -70,6 +70,17 @@ type Job struct {
 	SizeAdvice    SizeAdvice `json:"size_advice" doc:"Whether the pool fits the CPU and memory use of the last 10 completed runs of this job (same repository, workflow file, and job name)."`
 }
 
+// jobStatus is a store.Job status, with the enum store.JobStatuses.
+type jobStatus string
+
+func (jobStatus) Schema(huma.Registry) *huma.Schema {
+	s := &huma.Schema{Type: huma.TypeString}
+	for _, v := range store.JobStatuses {
+		s.Enum = append(s.Enum, v)
+	}
+	return s
+}
+
 // JobStep is one step from the GitHub jobs API.
 type JobStep struct {
 	Number      int        `json:"number"`
@@ -95,7 +106,7 @@ func jobSummary(j store.Job, r refs, now time.Time) JobSummary {
 		ID: j.ID, JobName: j.JobName, WorkflowName: j.WorkflowName, WorkflowFile: j.WorkflowFile,
 		Repository: j.Repository, RunNumber: j.RunNumber, HeadBranch: j.HeadBranch, HeadSHA: j.HeadSHA,
 		PoolID: j.PoolID, PoolLabel: r.pools[j.PoolID].Label, ServerID: j.ServerID, ServerName: r.servers[j.ServerID].Name,
-		State: j.State, Status: j.Status(), Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
+		State: j.State, Status: jobStatus(j.Status()), Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
 		QueueMS: queueMS(j, now), DurationMS: durationMS(j, now),
 		QueuedAt: j.QueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
 	}
@@ -155,14 +166,14 @@ func (h *Handler) jobSummaries(ctx context.Context, jobs []store.Job) ([]JobSumm
 }
 
 type listJobsInput struct {
-	Status     string `query:"status" enum:"running,queued,succeeded,failed,cancelled" doc:"The status of the jobs."`
-	Repository string `query:"repository" maxLength:"200"`
-	PoolID     string `query:"pool_id" maxLength:"100"`
-	ServerID   string `query:"server_id" maxLength:"100"`
-	Q          string `query:"q" maxLength:"200" doc:"Text in the job, workflow, repository, or branch name, or the start of a commit SHA."`
-	Range      string `query:"range" enum:"24h,7d,30d" doc:"Only the jobs queued in this time. All jobs if absent."`
-	Cursor     string `query:"cursor" maxLength:"200" doc:"next_cursor of the previous page."`
-	Limit      int    `query:"limit" minimum:"1" maximum:"200" default:"50"`
+	Status     jobStatus `query:"status" doc:"The status of the jobs."`
+	Repository string    `query:"repository" maxLength:"200"`
+	PoolID     string    `query:"pool_id" maxLength:"100"`
+	ServerID   string    `query:"server_id" maxLength:"100"`
+	Q          string    `query:"q" maxLength:"200" doc:"Text in the job, workflow, repository, or branch name, or the start of a commit SHA."`
+	Range      string    `query:"range" enum:"24h,7d,30d" doc:"Only the jobs queued in this time. All jobs if absent."`
+	Cursor     string    `query:"cursor" maxLength:"200" doc:"next_cursor of the previous page."`
+	Limit      int       `query:"limit" minimum:"1" maximum:"200" default:"50"`
 }
 
 // ranges are the time ranges of the job list and the overview, in buckets
@@ -178,7 +189,7 @@ var ranges = map[string]struct {
 
 func (h *Handler) listJobs(ctx context.Context, in *listJobsInput) (*body[JobPage], error) {
 	f := store.JobFilter{
-		Status: in.Status, Repository: in.Repository, PoolID: in.PoolID, ServerID: in.ServerID,
+		Status: string(in.Status), Repository: in.Repository, PoolID: in.PoolID, ServerID: in.ServerID,
 		Q: in.Q, Cursor: in.Cursor, Limit: in.Limit,
 	}
 	if rg, ok := ranges[in.Range]; ok {

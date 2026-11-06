@@ -48,7 +48,7 @@ func (l *Logs) Job(ctx context.Context, jobID string, step int, follow bool) (_ 
 		}
 		return f, false, nil
 	}
-	if job.SandboxID != "" {
+	if job.LogState == store.LogLive {
 		// The sandbox log fails for a sandbox that stopped.
 		if b, err := l.cfg.Store.GetSandbox(ctx, job.SandboxID); err == nil {
 			if rc, err := l.sandbox(ctx, b, follow); err == nil {

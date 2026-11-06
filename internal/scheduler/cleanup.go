@@ -266,9 +266,10 @@ func (s *Scheduler) resumeFinish(ctx context.Context) {
 	}
 }
 
-// closeUnclaimedJobs closes the jobs that wait in queued for longer than
-// unclaimedJobAfter: runplane had no room for them, or GitHub gave them to
-// another runner.
+// closeUnclaimedJobs closes the jobs that wait for a runner for longer than
+// unclaimedJobAfter: runplane had no room for them, GitHub gave them to
+// another runner, or runplane did not get the message that ended their
+// assignment.
 func (s *Scheduler) closeUnclaimedJobs(ctx context.Context) {
 	now := s.now()
 	jobs, err := s.st.ExpireQueuedJobs(ctx, now.Add(-unclaimedJobAfter), now)

@@ -133,7 +133,6 @@ type Fleet interface {
 // Host is one online server and its driver.
 type Host struct {
 	ServerID string
-	Name     string
 	Arch     string // "x64" or "arm64"
 	Driver   Driver
 }

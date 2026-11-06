@@ -1625,8 +1625,8 @@
           "status": {
             "description": "queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.",
             "enum": [
-              "queued",
               "running",
+              "queued",
               "succeeded",
               "failed",
               "cancelled",
@@ -1936,8 +1936,8 @@
           "status": {
             "description": "queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.",
             "enum": [
-              "queued",
               "running",
+              "queued",
               "succeeded",
               "failed",
               "cancelled",
@@ -2438,7 +2438,7 @@
             "type": "integer"
           },
           "queued": {
-            "description": "Jobs of the last 24 hours that wait for a runner.",
+            "description": "Jobs that wait for a runner.",
             "format": "int64",
             "type": "integer"
           },
@@ -2545,7 +2545,7 @@
             "type": "string"
           },
           "queued": {
-            "description": "Jobs of the last 24 hours that wait for a runner.",
+            "description": "Jobs that wait for a runner.",
             "format": "int64",
             "type": "integer"
           },
@@ -2843,9 +2843,6 @@
               "null"
             ]
           },
-          "ip": {
-            "type": "string"
-          },
           "job_id": {
             "description": "Empty until the runner gets a job.",
             "type": "string"
@@ -2912,7 +2909,6 @@
           "server_name",
           "state",
           "runner_name",
-          "ip",
           "job_id",
           "job_name",
           "job_repository",
@@ -5925,7 +5921,8 @@
                 "queued",
                 "succeeded",
                 "failed",
-                "cancelled"
+                "cancelled",
+                "skipped"
               ],
               "type": "string"
             }

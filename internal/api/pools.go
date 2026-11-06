@@ -61,7 +61,7 @@ func (h *Handler) pools(ctx context.Context, list []store.Pool) ([]Pool, error) 
 			defaultImage = img.Name
 		}
 	}
-	counts, err := h.d.Store.PoolCounts(ctx, time.Now())
+	counts, err := h.d.Store.PoolCounts(ctx)
 	if err != nil {
 		return nil, err
 	}

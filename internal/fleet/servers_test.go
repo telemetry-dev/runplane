@@ -153,9 +153,8 @@ func TestConnectedAgents(t *testing.T) {
 	agentA, idA := h.connectAgent("arm-1", a)
 	h.connectAgent("amd-1", b)
 
-	regions, err := h.st.ServerRegions(ctx)
-	if err != nil || regions[h.localID()] != "fsn1" || regions[idA] != "nbg1" {
-		t.Errorf("regions %v, %v; want fsn1 for the primary and nbg1 for the agent", regions, err)
+	if local, v := h.server(h.localID()), h.server(idA); local.Region != "fsn1" || v.Region != "nbg1" {
+		t.Errorf("regions %q and %q, want fsn1 for the primary and nbg1 for the agent", local.Region, v.Region)
 	}
 	if v := h.server(idA); v.Provider != "Hetzner" {
 		t.Errorf("provider %q, want Hetzner without the region", v.Provider)

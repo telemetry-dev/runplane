@@ -203,7 +203,7 @@ export const limits = {
       "enum": ["queued", "assigned", "running", "completed"]
     },
     "status": {
-      "enum": ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
+      "enum": ["running", "queued", "succeeded", "failed", "cancelled", "skipped"]
     }
   },
   "JobSummary": {
@@ -214,7 +214,7 @@ export const limits = {
       "enum": ["queued", "assigned", "running", "completed"]
     },
     "status": {
-      "enum": ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
+      "enum": ["running", "queued", "succeeded", "failed", "cancelled", "skipped"]
     }
   },
   "LoginRequest": {
@@ -639,7 +639,7 @@ export const queryLimits = {
   },
   "get /api/jobs": {
     "status": {
-      "enum": ["running", "queued", "succeeded", "failed", "cancelled"]
+      "enum": ["running", "queued", "succeeded", "failed", "cancelled", "skipped"]
     },
     "repository": {
       "maxLength": 200

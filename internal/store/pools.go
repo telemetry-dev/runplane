@@ -76,19 +76,15 @@ type PoolCounts struct {
 	Idle     int `json:"idle" doc:"Live count of idle sandboxes."`
 	Busy     int `json:"busy" doc:"Live count of sandboxes that run a job."`
 	Starting int `json:"starting" doc:"Live count of sandboxes that start."`
-	Queued   int `json:"queued" doc:"Jobs of the last 24 hours that wait for a runner."`
+	Queued   int `json:"queued" doc:"Jobs that wait for a runner."`
 	Assigned int `json:"assigned" doc:"Of queued, the jobs that GitHub assigned to the scale set of the pool."`
 }
 
-// A job waits for a runner when its status is queued, it has no reject
-// reason, and it was queued in the last waitWindow.
-const waitWindow = 24 * time.Hour
-
-// PoolCounts returns the counts of each pool by pool ID at now. A pool with
-// no runners and no waiting jobs has no entry. Queued counts the jobs that
-// wait for a runner, and Assigned counts the jobs of Queued that GitHub
-// assigned to the scale set.
-func (s *Store) PoolCounts(ctx context.Context, now time.Time) (map[string]PoolCounts, error) {
+// PoolCounts returns the counts of each pool by pool ID. A pool with no
+// runners and no waiting jobs has no entry. Queued counts the jobs that wait
+// for a runner: their status is queued, and they have no reject reason.
+// Assigned counts the jobs of Queued that GitHub assigned to the scale set.
+func (s *Store) PoolCounts(ctx context.Context) (map[string]PoolCounts, error) {
 	const op = "count pool runners and jobs"
 	out := map[string]PoolCounts{}
 	type count struct {
@@ -106,8 +102,7 @@ func (s *Store) PoolCounts(ctx context.Context, now time.Time) (map[string]PoolC
 		return nil, err
 	}
 	jobs, err := queryAll(ctx, s.r, op, scan, `SELECT pool_id, state, count(*) FROM jobs
-		WHERE `+stateTerm(statusStates[StatusQueued])+` AND reject_reason = '' AND queued_at >= ? GROUP BY pool_id, state`,
-		ms(now.Add(-waitWindow)))
+		WHERE `+stateTerm(statusStates[StatusQueued])+` AND reject_reason = '' GROUP BY pool_id, state`)
 	if err != nil {
 		return nil, err
 	}

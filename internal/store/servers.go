@@ -41,6 +41,7 @@ type Server struct {
 type ServerFacts struct {
 	Address            string       `json:"address"`
 	Provider           string       `json:"provider"`
+	Region             string       `json:"region"` // of the cloud provider, for example fsn1
 	OS                 string       `json:"os"`
 	Kernel             string       `json:"kernel"`
 	Arch               string       `json:"arch"` // x64 | arm64
@@ -92,7 +93,7 @@ type DoctorResult struct {
 	Checks    []DoctorCheck
 }
 
-const factCols = `address, provider, os, kernel, arch, mode, vcpu, memory_mb, disk_bytes, disk_kind, kvm,
+const factCols = `address, provider, region, os, kernel, arch, mode, vcpu, memory_mb, disk_bytes, disk_kind, kvm,
 	docker_version, sysbox_version, firecracker_version, version`
 
 const serverCols = "id, name, kind, status, status_detail, " + factCols +
@@ -105,7 +106,7 @@ func (v *Server) cols() []any {
 
 // cols returns the fields in the order of factCols.
 func (f *ServerFacts) cols() []any {
-	return []any{&f.Address, &f.Provider, &f.OS, &f.Kernel, &f.Arch, &f.Mode, &f.VCPU, &f.MemoryMB, &f.DiskBytes,
+	return []any{&f.Address, &f.Provider, &f.Region, &f.OS, &f.Kernel, &f.Arch, &f.Mode, &f.VCPU, &f.MemoryMB, &f.DiskBytes,
 		&f.DiskKind, &f.KVM, &f.DockerVersion, &f.SysboxVersion, &f.FirecrackerVersion, &f.Version}
 }
 
@@ -166,21 +167,6 @@ func (s *Store) TouchServer(ctx context.Context, id string, seen time.Time) erro
 func (s *Store) SetServerSecretHash(ctx context.Context, id, hash string, now time.Time) error {
 	return exec1(ctx, s.w, "set server secret", "UPDATE servers SET secret_hash = ?, updated_at = ? WHERE id = ?",
 		nullStr(hash), ms(now), id)
-}
-
-// SetServerRegion records the cloud region of a server. It reports whether
-// the region changed.
-func (s *Store) SetServerRegion(ctx context.Context, id, region string) (bool, error) {
-	return changed(ctx, s.w, "set server region", "UPDATE servers SET region = ? WHERE id = ? AND region != ?",
-		region, id, region)
-}
-
-func (s *Store) ServerRegions(ctx context.Context) (map[string]string, error) {
-	return queryMap(ctx, s.r, "list server regions", func(sc scanner) (string, string, error) {
-		var id, region string
-		err := sc.Scan(&id, &region)
-		return id, region, err
-	}, "SELECT id, region FROM servers WHERE region != ''")
 }
 
 // DeleteServer also deletes its image builds and host samples, and removes
