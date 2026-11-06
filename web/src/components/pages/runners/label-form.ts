@@ -91,7 +91,7 @@ export function poolUpdate(pool: Pool, initial: Draft, after: PoolRequest, serve
 }
 
 /** The fields of `after` that differ from `before`, for PATCH /api/pools/{id}. */
-export function poolChanges(before: PoolRequest, after: PoolRequest): Schemas['UpdatePoolRequest'] {
+function poolChanges(before: PoolRequest, after: PoolRequest): Schemas['UpdatePoolRequest'] {
   const changes: Record<string, unknown> = {}
   for (const key of Object.keys(after) as (keyof PoolRequest)[]) {
     if (!sameValue(before[key], after[key])) changes[key] = after[key]

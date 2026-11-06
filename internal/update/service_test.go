@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,7 @@ func TestServiceCheck(t *testing.T) {
 // restarts. A second update during the first gets ErrBusy.
 func TestServiceAppliesOneUpdate(t *testing.T) {
 	downloading, release := make(chan struct{}), make(chan struct{})
+	var downloads atomic.Int32
 	files := serve(t, loadRelease(t))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -63,12 +65,19 @@ func TestServiceAppliesOneUpdate(t *testing.T) {
 			w.Write([]byte(`{"tag_name":"v0.5.0","html_url":"https://github.com/acme/runplane/releases/tag/v0.5.0"}`))
 			return
 		case "/acme/runplane/releases/download/v0.5.0/SHA256SUMS":
+			// The first update waits here. A second one must not get here.
+			if downloads.Add(1) > 1 {
+				http.Error(w, "a second update downloads", http.StatusConflict)
+				return
+			}
 			close(downloading)
 			<-release
 		}
 		files.Config.Handler.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
+	releaseFirst := sync.OnceFunc(func() { close(release) })
+	defer releaseFirst() // before srv.Close, which waits for the first update
 	exe := filepath.Join(t.TempDir(), "runplane")
 	if err := os.WriteFile(exe, []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
@@ -95,7 +104,7 @@ func TestServiceAppliesOneUpdate(t *testing.T) {
 	if _, err := s.Apply(ctx); !errors.Is(err, ErrBusy) {
 		t.Fatalf("a second update during the first: %v, want ErrBusy", err)
 	}
-	close(release)
+	releaseFirst()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}

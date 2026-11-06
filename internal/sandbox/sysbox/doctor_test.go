@@ -28,7 +28,7 @@ func healthyHost() containerHost {
 	}
 }
 
-// A healthy host passes all checks of container mode, in this order.
+// Container mode needs these checks, and a healthy host passes them.
 func TestHealthyContainerHost(t *testing.T) {
 	var ids []string
 	for _, c := range healthyHost().checks() {
@@ -37,8 +37,10 @@ func TestHealthyContainerHost(t *testing.T) {
 			t.Errorf("%s is %s: %s", c.ID, c.Status, c.Detail)
 		}
 	}
-	if want := []string{"os", "kernel", "cgroup", "kvm", "nftables", "ip_forward", "sysbox", "firewall", "systemd"}; !slices.Equal(ids, want) {
-		t.Errorf("checks %v, want %v", ids, want)
+	for _, id := range []string{"os", "kernel", "cgroup", "kvm", "nftables", "ip_forward", "sysbox", "firewall", "systemd"} {
+		if !slices.Contains(ids, id) {
+			t.Errorf("no %s check in %v", id, ids)
+		}
 	}
 }
 

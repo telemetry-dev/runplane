@@ -50,8 +50,10 @@ func TestRealRunnerBundle(t *testing.T) {
 		t.Errorf("%d matches are left", n)
 	}
 	t.Logf("Runner.Worker.dll: %d bytes, %d patches", len(dll), bytes.Count(dll, utf16Bytes("ACTIONS_RESULTS_ORL")))
-	ext4test.Check(t, bundle.Ext4Path)
-	ext4test.Debugfs(t, bundle.Ext4Path, "ls -l /bin/", "Runner.Worker.dll")
+	t.Run("ext4", func(t *testing.T) {
+		ext4test.Check(t, bundle.Ext4Path)
+		ext4test.Debugfs(t, bundle.Ext4Path, "ls -l /bin/", "Runner.Worker.dll")
+	})
 }
 
 // baseImage is the base image that "make runner-smoke" tests. Build it with:
@@ -71,7 +73,7 @@ func TestRealRunnerInBaseImage(t *testing.T) {
 	defer cancel()
 	docker := dockerClient(t)
 	if _, err := docker.ImageInspect(ctx, baseImage); err != nil {
-		t.Skipf("no image %s: %v", baseImage, err)
+		t.Skipf("needs the local image %s; the comment of baseImage gives the docker build command: %v", baseImage, err)
 	}
 	rel, err := Releases{}.Latest(ctx)
 	if err != nil {

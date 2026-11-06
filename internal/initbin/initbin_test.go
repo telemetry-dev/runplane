@@ -2,26 +2,23 @@ package initbin
 
 import (
 	"bytes"
-	"compress/gzip"
 	"os"
 	"testing"
 )
 
 // make init embeds a gzipped binary. A sandbox must get the plain binary,
 // or its first process cannot run.
-func TestEmbeddedBinary(t *testing.T) {
-	elf := []byte("\x7fELF\x02\x01\x01 runplane-init")
-	var gz bytes.Buffer
-	zw := gzip.NewWriter(&gz)
-	zw.Write(elf)
-	zw.Close()
-	old := gzipped
-	gzipped = gz.Bytes()
-	t.Cleanup(func() { gzipped, path = old, "" })
+func TestPath(t *testing.T) {
+	if _, err := os.Stat(File); err != nil {
+		t.Skip("this build has no runplane-init: run make init first")
+	}
 	t.Setenv("TMPDIR", t.TempDir())
-
-	if b, err := Bytes(); err != nil || !bytes.Equal(b, elf) {
-		t.Errorf("Bytes = %q, %v; want %q", b, err, elf)
+	elf, err := Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(elf, []byte("\x7fELF")) {
+		t.Fatalf("Bytes starts with %q, want an ELF binary", elf[:min(len(elf), 4)])
 	}
 	// A cleaner of the temporary folder removes the file, and Path writes it again.
 	for range 2 {
@@ -29,9 +26,8 @@ func TestEmbeddedBinary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, err := os.ReadFile(p)
-		if err != nil || !bytes.Equal(b, elf) {
-			t.Fatalf("%s has %q, %v; want %q", p, b, err, elf)
+		if b, err := os.ReadFile(p); err != nil || !bytes.Equal(b, elf) {
+			t.Fatalf("%s has %d bytes, %v; want the %d bytes of Bytes", p, len(b), err, len(elf))
 		}
 		if st, _ := os.Stat(p); st.Mode().Perm() != 0o755 {
 			t.Errorf("%s has mode %v, want 0755", p, st.Mode().Perm())

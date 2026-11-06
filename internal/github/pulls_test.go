@@ -17,27 +17,47 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-func TestMoveJobs(t *testing.T) {
+// The pull request sets runs-on to the label of the pool on each line with
+// one GitHub-hosted label of the default image. The other lines stay as
+// they are, and a workflow with no such line is no pull request.
+func TestPullRequestMovesTheJobs(t *testing.T) {
 	tests := []struct {
-		name, in, want string
-		jobs           int
+		name, in, want string // want == in: no job moves
 	}{
-		{"ubuntu-latest", "    runs-on: ubuntu-latest\n", "    runs-on: big\n", 1},
-		{"quoted ubuntu-24.04 with a comment", "    runs-on: 'ubuntu-24.04'   # pinned\n", "    runs-on: 'big'   # pinned\n", 1},
-		{"CRLF line ends", "jobs:\r\n  a:\r\n    runs-on: ubuntu-latest\r\n", "jobs:\r\n  a:\r\n    runs-on: big\r\n", 1},
-		{"matrix entry", "        - runs-on: ubuntu-latest\n", "        - runs-on: big\n", 1},
-		{"two jobs", "  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ubuntu-24.04", "  a:\n    runs-on: big\n  b:\n    runs-on: big", 2},
-		{"other release", "    runs-on: ubuntu-22.04\n", "    runs-on: ubuntu-22.04\n", 0},
-		{"larger runner", "    runs-on: ubuntu-latest-8-cores\n", "    runs-on: ubuntu-latest-8-cores\n", 0},
-		{"expression", "    runs-on: ${{ matrix.os }}\n", "    runs-on: ${{ matrix.os }}\n", 0},
-		{"label list", "    runs-on: [ubuntu-latest]\n", "    runs-on: [ubuntu-latest]\n", 0},
-		{"other key", "        os: ubuntu-latest\n", "        os: ubuntu-latest\n", 0},
+		{"ubuntu-latest", "    runs-on: ubuntu-latest\n", "    runs-on: big\n"},
+		{"quoted ubuntu-24.04 with a comment", "    runs-on: 'ubuntu-24.04'   # pinned\n", "    runs-on: 'big'   # pinned\n"},
+		{"CRLF line ends", "jobs:\r\n  a:\r\n    runs-on: ubuntu-latest\r\n", "jobs:\r\n  a:\r\n    runs-on: big\r\n"},
+		{"matrix entry", "        - runs-on: ubuntu-latest\n", "        - runs-on: big\n"},
+		{"two jobs", "  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ubuntu-24.04", "  a:\n    runs-on: big\n  b:\n    runs-on: big"},
+		{"other release", "    runs-on: ubuntu-22.04\n", "    runs-on: ubuntu-22.04\n"},
+		{"larger runner", "    runs-on: ubuntu-latest-8-cores\n", "    runs-on: ubuntu-latest-8-cores\n"},
+		{"expression", "    runs-on: ${{ matrix.os }}\n", "    runs-on: ${{ matrix.os }}\n"},
+		{"label list", "    runs-on: [ubuntu-latest]\n", "    runs-on: [ubuntu-latest]\n"},
+		{"other key", "        os: ubuntu-latest\n", "        os: ubuntu-latest\n"},
 	}
 	for _, tt := range tests {
-		got, jobs := moveJobs(tt.in, "big")
-		if got != tt.want || jobs != tt.jobs {
-			t.Errorf("%s: moveJobs = %q, %d; want %q, %d", tt.name, got, jobs, tt.want, tt.jobs)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			e := acmeEnv(t)
+			f := e.repo()
+			f.workflows = map[string]string{"ci.yml": tt.in}
+			_, _, err := e.svc.OpenPullRequest(context.Background(), "https://ci.example.com", "acme/web", "big")
+			w := f.written()
+			if tt.want == tt.in {
+				if errorKind(err) != "repository problem" || len(w) != 0 {
+					t.Errorf("err = %v, writes = %v; want the repository problem and no writes", err, w)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]any{"base_tree": "t1", "tree": []any{map[string]any{
+				"path": ".github/workflows/ci.yml", "mode": "100644", "type": "blob", "content": tt.want,
+			}}}
+			if got := w["POST /git/trees"]; !reflect.DeepEqual(got, want) {
+				t.Errorf("tree = %v, want %v", got, want)
+			}
+		})
 	}
 }
 

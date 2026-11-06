@@ -2,6 +2,7 @@ import { QueryClient, QueryObserver, type QueryKey } from '@tanstack/react-query
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { backupsQuery } from './backups'
 import { cachesQuery } from './caches'
+import type { Schemas } from './client'
 import { createEventHandler, reconnectDelay } from './events'
 import { githubQuery } from './github'
 import { imagesQuery } from './images'
@@ -34,12 +35,13 @@ describe('createEventHandler', () => {
     vi.useRealTimers()
   })
 
-  test('job.state merges into the cached job and refetches only that job, its metrics, job lists, and the status', async () => {
+  test('job.state merges into the cached job and refetches only that job, its metrics, job lists, the overview, and the status', async () => {
     client.setQueryData(jobKey('j1'), { id: 'j1', state: 'running', steps: [{ name: 'Checkout' }] })
     client.setQueryData(jobKey('j2'), { id: 'j2', state: 'queued' })
     client.setQueryData(metricsKey('j1'), { samples: [] })
     client.setQueryData(metricsKey('j2'), { samples: [] })
     client.setQueryData(jobListKey, { items: [] })
+    client.setQueryData(overviewKey, {})
     client.setQueryData(serverListKey, [])
     client.setQueryData(statusQuery.queryKey, { has_jobs: false })
     const handle = createEventHandler(client)
@@ -58,6 +60,7 @@ describe('createEventHandler', () => {
     expect(invalidated(jobKey('j1'))).toBe(true)
     expect(invalidated(metricsKey('j1'))).toBe(true)
     expect(invalidated(jobListKey)).toBe(true)
+    expect(invalidated(overviewKey)).toBe(true)
     // The first-job step of the setup waits for has_jobs.
     expect(invalidated(statusQuery.queryKey)).toBe(true)
     expect(invalidated(jobKey('j2'))).toBe(false)
@@ -75,13 +78,14 @@ describe('createEventHandler', () => {
     expect(invalidated(statusQuery.queryKey)).toBe(false)
   })
 
-  test('sandbox.state refetches that sandbox, the server list and its server, and the job it runs', async () => {
+  test('sandbox.state refetches that sandbox, the pools, the server list and its server, and the job it runs', async () => {
     const sandboxKey = (id: string) => sandboxQuery(id).queryKey
     for (const key of [sandboxKey('sb1'), sandboxKey('sb2'), serverKey('s1'), serverKey('s2'), jobKey('j1'), jobKey('j2')]) {
       client.setQueryData(key, {})
     }
     client.setQueryData(sandboxesQuery().queryKey, [])
     client.setQueryData(sandboxesQuery('s1').queryKey, [])
+    client.setQueryData(poolsQuery.queryKey, [])
     client.setQueryData(serverListKey, [])
     const handle = createEventHandler(client)
 
@@ -90,6 +94,8 @@ describe('createEventHandler', () => {
 
     expect(invalidated(sandboxesQuery().queryKey)).toBe(true)
     expect(invalidated(sandboxesQuery('s1').queryKey)).toBe(true)
+    // The pools count their runners.
+    expect(invalidated(poolsQuery.queryKey)).toBe(true)
     expect(invalidated(serverListKey)).toBe(true)
     expect(invalidated(sandboxKey('sb1'))).toBe(true)
     expect(invalidated(serverKey('s1'))).toBe(true)
@@ -190,21 +196,28 @@ describe('createEventHandler', () => {
     expect(invalidated(jobListKey)).toBe(false)
   })
 
-  test('github.state replaces the cached GitHub status and backup.state refetches the backups', async () => {
+  test('github.state replaces the cached GitHub status', async () => {
     const status = { installations: [{ id: 7, account_login: 'kestrel-hq' }], scale_sets: [] }
     client.setQueryData(githubQuery.queryKey, { installations: [], scale_sets: [] })
+    const handle = createEventHandler(client)
+
+    handle('github.state', status)
+
+    expect(client.getQueryData(githubQuery.queryKey)).toEqual(status)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(invalidated(githubQuery.queryKey)).toBe(false)
+  })
+
+  test('backup.state refetches the backups', async () => {
     client.setQueryData(backupsQuery.queryKey, [])
     client.setQueryData(serverListKey, [])
     const handle = createEventHandler(client)
 
-    handle('github.state', status)
     handle('backup.state', { id: 'bk1', status: 'running' })
-
-    expect(client.getQueryData(githubQuery.queryKey)).toEqual(status)
     await vi.advanceTimersByTimeAsync(300)
-    expect(client.getQueryState(backupsQuery.queryKey)?.isInvalidated).toBe(true)
-    expect(client.getQueryState(githubQuery.queryKey)?.isInvalidated).toBe(false)
-    expect(client.getQueryState(serverListKey)?.isInvalidated).toBe(false)
+
+    expect(invalidated(backupsQuery.queryKey)).toBe(true)
+    expect(invalidated(serverListKey)).toBe(false)
   })
 
   test('a burst of events refetches an active list once', async () => {
@@ -234,7 +247,7 @@ describe('createEventHandler', () => {
     ])
     const handle = createEventHandler(client)
 
-    handle('pool.stats', { pool_id: 'p1', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 1 })
+    handle('pool.stats', { pool_id: 'p1', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 1 } satisfies Schemas['PoolStats'])
 
     expect(client.getQueryData(poolsQuery.queryKey)).toEqual([
       { id: 'p1', label: 'runplane-4cpu', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 1 },
@@ -267,7 +280,7 @@ describe('createEventHandler', () => {
 
   describe('host.stats', () => {
     // A sample 10 seconds after the one of drainingServer.
-    const sample = { server_id: 's1', cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, at: '2026-11-04T12:00:10Z' }
+    const sample: Schemas['HostStats'] = { server_id: 's1', cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, at: '2026-11-04T12:00:10Z' }
     const sampled = { cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, stats_at: '2026-11-04T12:00:10Z', last_seen_at: '2026-11-04T12:00:10Z' }
     const other = { ...drainingServer, id: 's2', name: 'fsn1-ax52-b' }
 
@@ -325,7 +338,7 @@ describe('createEventHandler', () => {
 })
 
 // A server.state payload (the Server API object) of an agent that an admin drains.
-const drainingServer = {
+const drainingServer: Schemas['Server'] = {
   id: 's1',
   name: 'fsn1-ax52-a',
   kind: 'agent',
@@ -356,13 +369,16 @@ const drainingServer = {
   firecracker_version: '1.13.1',
   version: 'v0.4.2',
   update_state: 'updating',
+  update_error: '',
+  wait_reason: '',
+  actions: { can_drain: false, can_resume: true, can_remove: true, can_update: false, can_run_doctor: true },
   stats_at: '2026-11-04T12:00:00Z',
   created_at: '2026-10-02T11:14:00Z',
   updated_at: '2026-11-04T12:00:00Z',
 }
 
 // A sandbox.state payload (the Sandbox API object) of a debug sandbox stopped before its hold time.
-const stoppedDebugSandbox = {
+const stoppedDebugSandbox: Schemas['Sandbox'] = {
   id: 'sb1',
   state: 'gone',
   debug: true,

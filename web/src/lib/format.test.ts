@@ -102,7 +102,8 @@ describe('formatTimeAgo', () => {
   })
 })
 
-test('formatCount groups thousands with commas in every browser locale', () => {
+// The tests run in a German locale, which groups with dots (vitest.config.ts).
+test('formatCount groups thousands with commas, also in a locale that groups with dots', () => {
   expect(formatCount(1284)).toBe('1,284')
   expect(formatCount(1_250_000)).toBe('1,250,000')
 })

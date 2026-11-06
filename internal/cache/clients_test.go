@@ -21,7 +21,7 @@ import (
 // server. It needs Node, npm, and network access for npm install.
 func TestActionsCacheClient(t *testing.T) {
 	if os.Getenv("RUNPLANE_CACHE_NODE_TEST") == "" {
-		t.Skip("set RUNPLANE_CACHE_NODE_TEST=1 to run @actions/cache against the server")
+		t.Skip("set RUNPLANE_CACHE_NODE_TEST=1 to run @actions/cache against the server; the test needs node, npm, and network access")
 	}
 	modules := t.TempDir()
 	run(t, modules, "npm", "init", "-y")
@@ -161,7 +161,7 @@ func TestActionsCacheClient(t *testing.T) {
 // network access for the module download.
 func TestBuildKitClient(t *testing.T) {
 	if os.Getenv("RUNPLANE_CACHE_BUILDKIT_TEST") == "" {
-		t.Skip("set RUNPLANE_CACHE_BUILDKIT_TEST=1 to run BuildKit's cache client against the server")
+		t.Skip("set RUNPLANE_CACHE_BUILDKIT_TEST=1 to run BuildKit's cache client against the server; the test needs network access for the Go module download")
 	}
 	mod := t.TempDir()
 	src, err := os.ReadFile(filepath.Join("testdata", "buildkit", "main.go"))

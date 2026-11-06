@@ -17,7 +17,7 @@ import (
 // console as the reason, and its console is in the sandbox log.
 func TestConsoleOfAFailedVM(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("Go polls FIFOs on Linux only")
+		t.Skip("needs Linux, where Go polls FIFOs")
 	}
 	root := shortTempDir(t)
 	writeVM(t, root, "vm1", 7, sandbox.StateStarting, time.Now().UTC())

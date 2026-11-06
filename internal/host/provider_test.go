@@ -59,7 +59,8 @@ func TestEC2UUID(t *testing.T) {
 }
 
 // metadataServer answers like the provider services: requests without the
-// right headers get 401.
+// right headers get 401. Other paths answer "unknown path", so a region from
+// a wrong path shows.
 func metadataServer(t *testing.T) string {
 	mux := http.NewServeMux()
 	need := func(header, value, body string) http.HandlerFunc {
@@ -79,6 +80,9 @@ func metadataServer(t *testing.T) string {
 	mux.HandleFunc("GET /computeMetadata/v1/instance/zone", need("Metadata-Flavor", "Google", "projects/123456/zones/europe-west1-b"))
 	mux.HandleFunc("GET /metadata/instance/compute/location", need("Metadata", "true", "westeurope"))
 	mux.HandleFunc("GET /hetzner/v1/metadata/availability-zone", need("", "", "fsn1-dc14\n"))
+	mux.HandleFunc("GET /metadata/v1/region", need("", "", "nyc3"))
+	mux.HandleFunc("GET /v1/region/regioncode", need("", "", "FRA"))
+	mux.HandleFunc("/", need("", "", "unknown path"))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
@@ -87,13 +91,14 @@ func metadataServer(t *testing.T) string {
 func TestRegion(t *testing.T) {
 	base := metadataServer(t)
 	tests := map[string]string{
-		ProviderEC2:     "eu-central-1",
-		ProviderLinode:  "us-iad",
-		ProviderGCE:     "europe-west1-b",
-		ProviderAzure:   "westeurope",
-		ProviderHetzner: "fsn1-dc14",
-		ProviderVultr:   "", // 404 from this server
-		ProviderContabo: "", // no metadata service
+		ProviderEC2:          "eu-central-1",
+		ProviderLinode:       "us-iad",
+		ProviderGCE:          "europe-west1-b",
+		ProviderAzure:        "westeurope",
+		ProviderHetzner:      "fsn1-dc14",
+		ProviderDigitalOcean: "nyc3",
+		ProviderVultr:        "FRA",
+		ProviderContabo:      "", // no metadata service
 	}
 	for provider, want := range tests {
 		if got := region(context.Background(), base, provider); got != want {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -144,13 +145,36 @@ type token string
 
 func (t token) Header(context.Context) (string, error) { return "Bearer " + string(t), nil }
 
-func TestNextLink(t *testing.T) {
-	h := `<https://api.github.com/app/installations?page=1>; rel="prev", <https://api.github.com/app/installations?page=3>; rel="next", <https://api.github.com/app/installations?page=5>; rel="last"`
-	if got := nextLink(h); got != "https://api.github.com/app/installations?page=3" {
-		t.Errorf("nextLink = %q", got)
-	}
-	if got := nextLink(`<https://api.github.com/x?page=1>; rel="first"`); got != "" {
-		t.Errorf("nextLink on the last page = %q, want empty", got)
+// List follows the rel="next" link of each page, and the Link header of
+// GitHub also has the prev, first, and last pages.
+func TestList(t *testing.T) {
+	var srv *httptest.Server
+	calls := 0
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		page := func(n int) string { return "<" + srv.URL + "/repos?per_page=2&page=" + strconv.Itoa(n) + ">" }
+		if calls > 3 { // a List that does not stop
+			writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
+			return
+		}
+		switch r.URL.Query().Get("page") {
+		case "", "1":
+			w.Header().Set("Link", page(2)+`; rel="next", `+page(3)+`; rel="last"`)
+			writeJSON(w, http.StatusOK, map[string]any{"total_count": 5, "items": []string{"a", "b"}})
+		case "2":
+			w.Header().Set("Link", page(1)+`; rel="prev", `+page(3)+`; rel="next", `+page(3)+`; rel="last", `+page(1)+`; rel="first"`)
+			writeJSON(w, http.StatusOK, map[string]any{"total_count": 5, "items": []string{"c", "d"}})
+		case "3":
+			w.Header().Set("Link", page(2)+`; rel="prev", `+page(1)+`; rel="first"`)
+			writeJSON(w, http.StatusOK, map[string]any{"total_count": 5, "items": []string{"e"}})
+		default:
+			writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
+		}
+	}))
+	defer srv.Close()
+	got, err := List[string](context.Background(), Client{URL: srv.URL}, token("ghs_x"), "/repos?per_page=2", "items")
+	if err != nil || !slices.Equal(got, []string{"a", "b", "c", "d", "e"}) || calls != 3 {
+		t.Errorf("List = %q, %v after %d calls; want a to e from 3 pages", got, err, calls)
 	}
 }
 

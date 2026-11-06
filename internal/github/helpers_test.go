@@ -27,6 +27,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
@@ -61,7 +62,8 @@ type env struct {
 	srv      *httptest.Server
 	svc      *Service
 	sched    *fakeScheduler
-	tokens   atomic.Int32 // installation tokens that the fake made
+	inst     *fakeInstallations // the installations that Sync reads
+	tokens   atomic.Int32       // installation tokens that the fake made
 	tokenTTL time.Duration
 }
 
@@ -87,13 +89,24 @@ func newEnv(t *testing.T) *env {
 			"expires_at": time.Now().Add(e.tokenTTL),
 		})
 	})
+	e.inst = e.installations()
 	e.svc = New(Config{Store: st, Box: box, Bus: e.bus, Log: slog.New(slog.DiscardHandler), Scheduler: e.sched})
-	e.svc.web, e.svc.api.URL = e.srv.URL, e.srv.URL+"/api/v3"
+	// Config has no option for the GitHub hosts, so the test sets them.
+	e.svc.web = e.srv.URL
+	e.svc.api = ghrest.Client{URL: e.srv.URL + "/api/v3", RetryWait: time.Millisecond}
 	t.Cleanup(func() {
 		e.svc.stop()
 		e.svc.stopListeners()
 	})
 	return e
+}
+
+// sync reads the installations of the fake and makes the scale sets agree.
+func (e *env) sync() {
+	e.t.Helper()
+	if err := e.svc.Sync(context.Background()); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // connect stores the GitHub App, as the manifest flow does.
@@ -116,6 +129,8 @@ func acmeEnv(t *testing.T) *env {
 	return e
 }
 
+// install records the installation in the store, and in the fake, so that
+// a Sync keeps it.
 func (e *env) install(id int64, login, accountType string) {
 	e.t.Helper()
 	err := e.st.UpsertInstallation(context.Background(), store.Installation{
@@ -124,6 +139,10 @@ func (e *env) install(id int64, login, accountType string) {
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	e.inst.mu.Lock()
+	e.inst.list = append(e.inst.list, map[string]any{"id": id, "app_id": testAppID, "suspended_at": nil,
+		"account": map[string]any{"login": login, "id": id, "type": accountType}})
+	e.inst.mu.Unlock()
 }
 
 func (e *env) pool(id, label string, enabled bool) {
@@ -136,10 +155,21 @@ func (e *env) pool(id, label string, enabled bool) {
 	}
 }
 
+// checkJWT accepts only an app JWT that GitHub accepts: RS256 with the key
+// of the app and the client ID as the issuer, an issue time that is not in
+// the future, and at most 10 minutes from the issue time to the expiry.
 func (e *env) checkJWT(r *http.Request) {
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	_, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },
-		jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(testClientID))
+	var claims jwt.RegisteredClaims
+	_, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },
+		jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(testClientID), jwt.WithIssuedAt(), jwt.WithExpirationRequired())
+	switch {
+	case err != nil:
+	case claims.IssuedAt == nil:
+		err = fmt.Errorf("no iat")
+	case claims.ExpiresAt.Sub(claims.IssuedAt.Time) > 10*time.Minute:
+		err = fmt.Errorf("iat %s and exp %s are more than 10 minutes apart", claims.IssuedAt, claims.ExpiresAt)
+	}
 	if err != nil {
 		e.t.Errorf("%s %s: bad app JWT: %v", r.Method, r.URL.Path, err)
 	}

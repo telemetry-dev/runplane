@@ -47,7 +47,7 @@ export function useElementWidth(ref: RefObject<HTMLElement | null>): number {
 }
 
 /** The round number (1, 2, 2.5, or 5 times a power of ten) closest to `rough`. */
-export function niceStep(rough: number): number {
+function niceStep(rough: number): number {
   if (!(rough > 0)) return 1
   const power = 10 ** Math.floor(Math.log10(rough))
   const candidates = [1, 2, 2.5, 5, 10].map((factor) => factor * power)

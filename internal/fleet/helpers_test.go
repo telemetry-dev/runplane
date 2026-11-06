@@ -43,6 +43,8 @@ type harness struct {
 	cfg      config.Config
 	version  string // of runplane on the primary and on the agents that start
 	log      *slog.Logger
+	// stop ends Fleet.Run and waits for it.
+	stop func()
 }
 
 // newHarness makes the harness. The primary runs the version "dev", and
@@ -100,12 +102,16 @@ func (h *harness) run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- h.f.Run(ctx) }()
-	h.t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			h.t.Errorf("Run: %v", err)
-		}
-	})
+	var once sync.Once
+	h.stop = func() {
+		once.Do(func() {
+			cancel()
+			if err := <-done; err != nil {
+				h.t.Errorf("Run: %v", err)
+			}
+		})
+	}
+	h.t.Cleanup(h.stop)
 	waitFor(h.t, "the local server", func() bool {
 		v, err := h.st.GetLocalServer(context.Background())
 		return err == nil && h.f.Driver(v.ID) != nil
@@ -201,6 +207,16 @@ func (a *testAgent) start() {
 	a.h.t.Cleanup(a.stop)
 }
 
+// restart stops the agent, waits until the fleet drops its session, and
+// starts the agent with the version.
+func (a *testAgent) restart(version string) {
+	a.stop()
+	id := a.file()["server_id"]
+	waitFor(a.h.t, "the end of the session", func() bool { return a.h.f.Driver(id) == nil })
+	a.version = version
+	a.start()
+}
+
 func (a *testAgent) file() map[string]string {
 	var file map[string]string
 	b, err := os.ReadFile(a.path)
@@ -267,8 +283,9 @@ type fakeNode struct {
 	gates     map[string]chan struct{} // pulls of these refs wait until the channel closes
 	updateErr error
 	calls     []call
-	// configureGate, if not nil, makes Configure wait until it closes.
-	configureGate chan struct{}
+	// configureGate and updateGate, if not nil, make Configure and Update
+	// wait until they close.
+	configureGate, updateGate chan struct{}
 }
 
 type call struct {
@@ -391,21 +408,33 @@ func (n *fakeNode) Configure(ctx context.Context, s agent.Settings) error {
 	n.mu.Lock()
 	gate := n.configureGate
 	n.mu.Unlock()
-	if gate != nil {
-		select {
-		case <-gate:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
+	return wait(ctx, gate)
 }
 
-func (n *fakeNode) Update(_ context.Context, version string) error {
+func (n *fakeNode) Update(ctx context.Context, version string) error {
 	n.record("Update", version)
+	n.mu.Lock()
+	gate := n.updateGate
+	n.mu.Unlock()
+	if err := wait(ctx, gate); err != nil {
+		return err
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.updateErr
+}
+
+// wait waits until gate closes, if it is not nil.
+func wait(ctx context.Context, gate chan struct{}) error {
+	if gate == nil {
+		return nil
+	}
+	select {
+	case <-gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // fakeDriver leaves out the driver methods that the fleet does not call.

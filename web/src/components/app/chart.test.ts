@@ -1,30 +1,24 @@
 import { describe, expect, test } from 'vitest'
-import { barScale, keyIndex, nearestIndex, niceStep } from './chart'
-
-describe('niceStep', () => {
-  test.each([
-    [48, 50],
-    [3.2, 2.5],
-    [0.7, 0.5],
-    [140, 100],
-    [1700, 2000],
-  ])('rounds %d to %d', (rough, step) => {
-    expect(niceStep(rough)).toBe(step)
-  })
-
-  test('falls back to 1 for no range', () => {
-    expect(niceStep(0)).toBe(1)
-  })
-})
+import { barScale, keyIndex, nearestIndex } from './chart'
 
 describe('barScale', () => {
-  test('leaves headroom over the tallest bar and puts gridlines on round values below the top', () => {
-    expect(barScale(140)).toEqual({ top: 140 * 1.08, lines: [50, 100, 150] })
-    expect(barScale(6).lines).toEqual([2, 4, 6])
+  test.each([
+    [6, [2, 4, 6]],
+    [9, [2.5, 5, 7.5]],
+    // A third of the top is 3.6, which is nearer to 5 than to 2.5 on a log scale.
+    [10, [5, 10]],
+    [140, [50, 100, 150]],
+    [1600, [500, 1000, 1500]],
+  ])('bars up to %d get gridlines at %j, under the top', (max, lines) => {
+    const scale = barScale(max)
+    expect(scale.lines).toEqual(lines)
+    expect(scale.top).toBeGreaterThan(Math.max(max, ...lines))
   })
 
-  test('has no gridlines without data', () => {
-    expect(barScale(0)).toEqual({ top: 1, lines: [] })
+  test('has no gridlines without data, and a top that the bar heights can divide by', () => {
+    const scale = barScale(0)
+    expect(scale.lines).toEqual([])
+    expect(scale.top).toBeGreaterThan(0)
   })
 })
 

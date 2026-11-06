@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -18,42 +19,98 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-// A backup over backup_keep loses its file and its row together, so the
-// dashboard lists no backup that cannot download.
-func TestBackupsRemoveTheRowsOfPrunedFiles(t *testing.T) {
+// A backup is the database in a gzip file, as the restore steps of the
+// README expect. Only root can read it, because it holds password hashes.
+func TestCreateWritesTheDatabase(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	dir := t.TempDir()
-	if _, err := st.UpdateSettings(ctx, func(s *store.Settings) error { s.BackupKeep = 1; return nil }); err != nil {
+	if err := st.CreateUser(ctx, store.User{ID: "u1", Email: "ada@example.com", Name: "Ada", PasswordHash: "hash",
+		Role: store.RoleAdmin, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	old := filepath.Join(dir, "runplane-20200101T000000.000Z.db.gz")
-	if err := os.WriteFile(old, []byte("old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateBackup(ctx, store.Backup{ID: "old", CreatedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
-		Path: old, SizeBytes: 3, Status: store.BackupDone}); err != nil {
-		t.Fatal(err)
-	}
-	b := New(Config{Store: st, Bus: &events.Bus{}, Dir: dir})
-
-	id, err := b.Create(ctx)
+	id, err := New(Config{Store: st, Bus: &events.Bus{}, Dir: dir}).Create(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	row, err := st.GetBackup(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(row.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != store.BackupDone || row.SizeBytes != info.Size() {
+		t.Errorf("backup row %+v, want done with the size %d of the file", row, info.Size())
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("backup mode %o, want 600", mode)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("the backups folder has %d files, want only the backup", len(entries))
+	}
+	restored, err := store.Open(gunzip(t, row.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if u, err := restored.GetUserByEmail(ctx, "ada@example.com"); err != nil || u.ID != "u1" {
+		t.Errorf("user of the restored database: %+v, %v; want u1", u, err)
+	}
+}
+
+// Create keeps the newest backup_keep backups. An older backup loses its
+// file and its row together, so the dashboard lists no backup that cannot
+// download. Other files in the folder stay.
+func TestCreateKeepsTheNewest(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	dir := t.TempDir()
+	if _, err := st.UpdateSettings(ctx, func(s *store.Settings) error { s.BackupKeep = 2; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	others := []string{"notes.txt", "runplane-before-upgrade.db.gz"}
+	for _, name := range others {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := New(Config{Store: st, Bus: &events.Bus{}, Dir: dir})
+	var ids []string
+	for range 3 {
+		id, err := b.Create(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+
 	list, err := st.ListBackups(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != id || list[0].Status != store.BackupDone || list[0].SizeBytes == 0 {
-		t.Fatalf("backups: %+v, want only the new one, done", list)
+	var kept []string
+	files := slices.Clone(others)
+	for _, row := range list {
+		kept = append(kept, row.ID)
+		files = append(files, filepath.Base(row.Path))
 	}
-	if _, err := os.Stat(list[0].Path); err != nil {
-		t.Errorf("the new backup file: %v", err)
+	if !sameSet(kept, ids[1:]) {
+		t.Errorf("backup rows %v, want the two newest %v", kept, ids[1:])
 	}
-	if _, err := os.Stat(old); !os.IsNotExist(err) {
-		t.Errorf("the old backup file is still there: %v", err)
+	var left []string
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		left = append(left, e.Name())
 	}
+	if !sameSet(left, files) {
+		t.Errorf("files %v, want %v", left, files)
+	}
+}
+
+func sameSet(a, b []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 
 // The settings page follows a backup through backup.state events, also the
@@ -177,4 +234,27 @@ func openStore(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	return st
+}
+
+// gunzip writes the database of a backup to a new file, and returns its path.
+func gunzip(t *testing.T, path string) string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "runplane.db")
+	if err := os.WriteFile(out, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
