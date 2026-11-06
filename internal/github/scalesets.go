@@ -22,10 +22,6 @@ import (
 	"github.com/runplane/runplane/internal/version"
 )
 
-// defaultRunnerGroup is the ID of the "Default" runner group. A free
-// organization can only use this group, and a repository has only this one.
-const defaultRunnerGroup = 1
-
 // target is one scale set that runplane wants on GitHub. An organization
 // has one for each pool, and a personal account one for each pool and
 // repository.

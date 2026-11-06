@@ -31,7 +31,7 @@ func (f *Fleet) CreateImage(ctx context.Context, by audit.Actor, imgName, ref st
 	if err := f.st.CreateImage(ctx, img); err != nil {
 		return store.Image{}, err
 	}
-	f.audit.Record(ctx, by, "image.create", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
+	f.audit.Record(ctx, by, audit.ImageCreate, img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
 	f.bus.Publish(events.ImageState(img))
 	f.pullEverywhere(img)
 	return img, nil
@@ -87,7 +87,7 @@ func (f *Fleet) UpdateImage(ctx context.Context, by audit.Actor, imageID string,
 		// The pools without an image use the default image.
 		f.bus.Publish(events.PoolsChanged{})
 	}
-	f.audit.Record(ctx, by, "image.update", img.ID, map[string]any{"name": img.Name, "ref": img.Ref, "is_default": c.Default})
+	f.audit.Record(ctx, by, audit.ImageUpdate, img.ID, map[string]any{"name": img.Name, "ref": img.Ref, "is_default": c.Default})
 	f.bus.Publish(events.ImageState(img))
 	f.kick()
 	if refChanged {
@@ -125,7 +125,7 @@ func (f *Fleet) RemoveImage(ctx context.Context, by audit.Actor, imageID string)
 	}
 	f.bus.Publish(events.PoolsChanged{})
 	f.bus.Publish(events.ImageRemoved{ID: img.ID})
-	f.audit.Record(ctx, by, "image.delete", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
+	f.audit.Record(ctx, by, audit.ImageDelete, img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
 	return nil
 }
 
@@ -136,7 +136,7 @@ func (f *Fleet) RefreshImage(ctx context.Context, by audit.Actor, imageID string
 		return err
 	}
 	f.pullEverywhere(img)
-	f.audit.Record(ctx, by, "image.refresh", img.ID, map[string]any{"ref": img.Ref})
+	f.audit.Record(ctx, by, audit.ImageRefresh, img.ID, map[string]any{"ref": img.Ref})
 	return nil
 }
 

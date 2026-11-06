@@ -140,7 +140,7 @@ func (s *Service) Callback(ctx context.Context, code, state string) (string, err
 	s.dropCreds()
 	s.changed()
 	s.log.Info("made GitHub App", "slug", app.Slug, "owner", app.OwnerLogin)
-	return s.web + "/apps/" + url.PathEscape(app.Slug) + "/installations/new", nil
+	return ghrest.AppInstallURL(s.web, app.Slug), nil
 }
 
 // Disconnect stops the listeners, deletes the scale sets and their runners
@@ -166,7 +166,7 @@ func (s *Service) Disconnect(ctx context.Context) error {
 // appDeleteURL is the GitHub page with the "Delete GitHub App" button.
 func (s *Service) appDeleteURL(app store.GitHubApp) string {
 	owner := ghrest.Account{Type: app.OwnerType, Login: app.OwnerLogin}
-	return owner.SettingsURL(s.web) + "/apps/" + url.PathEscape(app.Slug) + "/advanced"
+	return owner.AppURL(s.web, app.Slug) + "/advanced"
 }
 
 // removeApp deletes all scale sets on GitHub and all app rows. A scale set

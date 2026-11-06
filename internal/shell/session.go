@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -203,9 +204,9 @@ func (s *Server) audit(ctx context.Context, c client, t Target) {
 	}
 	raw, _ := json.Marshal(detail) // a map of strings and bools always encodes
 	err := s.cfg.Audit(context.WithoutCancel(ctx), store.AuditEntry{
-		ID: ids.New(), At: time.Now(), Action: "sandbox.ssh", Target: c.sandboxID, Detail: raw, IP: c.ip,
+		ID: ids.New(), At: time.Now(), Action: audit.SandboxSSH, Target: c.sandboxID, Detail: raw, IP: c.ip,
 	})
 	if err != nil {
-		s.cfg.Log.Error("write audit entry", "action", "sandbox.ssh", "target", c.sandboxID, "err", err)
+		s.cfg.Log.Error("write audit entry", "action", audit.SandboxSSH, "target", c.sandboxID, "err", err)
 	}
 }

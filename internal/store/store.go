@@ -40,8 +40,9 @@ var migrations embed.FS
 // Store has one writer connection, so writes never wait on each other inside
 // SQLite, and a pool of reader connections. All writes go to the writer.
 type Store struct {
-	w *sql.DB
-	r *sql.DB
+	path string
+	w    *sql.DB
+	r    *sql.DB
 }
 
 const pragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
@@ -63,15 +64,13 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	w.SetMaxOpenConns(1)
-	s := &Store{w: w}
+	s := &Store{path: path, w: w}
 	if err := s.migrate(context.Background()); err != nil {
 		w.Close()
 		return nil, err
 	}
 
-	// The readers are not query_only, because VACUUM INTO needs write access
-	// to its target file.
-	s.r, err = sql.Open("sqlite", path+"?"+pragmas)
+	s.r, err = sql.Open("sqlite", path+"?"+pragmas+"&_pragma=query_only(1)")
 	if err != nil {
 		w.Close()
 		return nil, fmt.Errorf("open database: %w", err)
@@ -86,8 +85,21 @@ func (s *Store) Close() error {
 	return errors.Join(s.r.Close(), s.w.Close())
 }
 
-// DB returns the reader pool for VACUUM INTO, which then does not stop writes.
-func (s *Store) DB() *sql.DB { return s.r }
+// VacuumInto writes a copy of the database to path. The copy includes the
+// WAL, and writes do not wait for it. It fails if path exists.
+func (s *Store) VacuumInto(ctx context.Context, path string) error {
+	// A connection of its own: the readers are query_only, and the writer
+	// would stop all writes during the copy.
+	db, err := sql.Open("sqlite", s.path+"?"+pragmas)
+	if err != nil {
+		return fmt.Errorf("vacuum into: %w", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", path); err != nil {
+		return fmt.Errorf("vacuum into: %w", err)
+	}
+	return nil
+}
 
 func (s *Store) migrate(ctx context.Context) error {
 	// Each file name starts with its number. The numbers start at 1 and have no gaps.

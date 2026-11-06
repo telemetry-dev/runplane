@@ -70,7 +70,7 @@ func TestCheck(t *testing.T) {
 			bus := &events.Bus{}
 			notes := &fakeNotifier{}
 			cfg := Config{
-				Store: st, Bus: bus, GitHub: fakeGitHub{}, Notifier: notes, API: ghrest.Client{URL: srv.URL},
+				Store: st, Bus: bus, GitHub: fakeGitHub{}, Notify: notes.notify, API: ghrest.Client{URL: srv.URL},
 				InUse: func() []string { return []string{"2.330.0"} },
 			}
 			published := events.Subscribe[events.RunnerVersion](t.Context(), bus)
@@ -126,7 +126,7 @@ func TestWarnNamesTheVersionsInUse(t *testing.T) {
 		}
 	}
 	notes := &fakeNotifier{}
-	s := New(Config{Store: st, Bus: &events.Bus{}, Notifier: notes, InUse: func() []string { return []string{"2.330.0"} }})
+	s := New(Config{Store: st, Bus: &events.Bus{}, Notify: notes.notify, InUse: func() []string { return []string{"2.330.0"} }})
 	if err := s.warnEnds(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -170,10 +170,7 @@ func (fakeGitHub) ReadScope(context.Context) (string, ghrest.Auth, bool) {
 
 type fakeNotifier struct{ sent []notify.Event }
 
-func (f *fakeNotifier) Notify(_ context.Context, e notify.Event) error {
-	f.sent = append(f.sent, e)
-	return nil
-}
+func (f *fakeNotifier) notify(e notify.Event) { f.sent = append(f.sent, e) }
 
 func openStore(t *testing.T) *store.Store {
 	t.Helper()

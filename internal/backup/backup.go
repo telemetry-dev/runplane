@@ -6,7 +6,6 @@ package backup
 import (
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -31,22 +30,21 @@ const (
 	filePattern = "runplane-????????T??????.???Z.db.gz"
 )
 
-// write copies the database to dir/runplane-<UTC time>.db.gz and removes
-// the oldest backups so that keep files stay. If keep is 0 or less, write
-// removes no backups.
-func write(ctx context.Context, db *sql.DB, dir string, keep int) (result, error) {
+// write copies the database with vacuumInto to dir/runplane-<UTC time>.db.gz
+// and removes the oldest backups so that keep files stay. If keep is 0 or
+// less, write removes no backups.
+func write(ctx context.Context, vacuumInto func(ctx context.Context, path string) error, dir string, keep int) (result, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return result{}, fmt.Errorf("make backup dir: %w", err)
 	}
 	name, path := freeName(dir, time.Now().UTC())
 
-	// VACUUM INTO writes a consistent copy that includes the WAL, and it
-	// does not block writers. It fails if the target file exists.
+	// VACUUM INTO fails if the target file exists.
 	snapshot := filepath.Join(dir, "."+name+".db")
 	os.Remove(snapshot)
 	defer os.Remove(snapshot)
-	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", snapshot); err != nil {
-		return result{}, fmt.Errorf("vacuum into snapshot: %w", err)
+	if err := vacuumInto(ctx, snapshot); err != nil {
+		return result{}, err
 	}
 
 	size, err := gzipFile(snapshot, path)
@@ -128,7 +126,10 @@ func prune(dir string, keep int) ([]string, error) {
 	return removed, nil
 }
 
-// daily calls job each day at 03:00 UTC until ctx ends.
+// DailyAt is the time of day in UTC of the daily backup.
+const DailyAt = 3 * time.Hour
+
+// daily calls job each day at DailyAt until ctx ends.
 func daily(ctx context.Context, job func(context.Context)) {
 	for {
 		t := time.NewTimer(time.Until(nextRun(time.Now())))
@@ -142,10 +143,10 @@ func daily(ctx context.Context, job func(context.Context)) {
 	}
 }
 
-// nextRun returns the first 03:00 UTC after now.
+// nextRun returns the first DailyAt after now.
 func nextRun(now time.Time) time.Time {
 	now = now.UTC()
-	next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, time.UTC)
+	next := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(DailyAt)
 	if !next.After(now) {
 		next = next.AddDate(0, 0, 1)
 	}

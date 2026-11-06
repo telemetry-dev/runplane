@@ -57,7 +57,7 @@ export function Backups({ settings }: { settings: Schemas['Settings'] }) {
         <SwitchSetting
           name="backup_enabled"
           label="Back up every day"
-          description="At 03:00 UTC runplane saves its database on this server. A restore also needs /etc/runplane/secret.key, which backups do not contain: keep a copy of it in a safe place."
+          description={`At ${settings.backup_time} UTC runplane saves its database on this server. A restore also needs ${settings.secret_key_path}, which backups do not contain: keep a copy of it in a safe place.`}
           checked={settings.backup_enabled}
         />
         <NumberSetting

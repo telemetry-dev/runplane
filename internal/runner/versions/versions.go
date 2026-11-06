@@ -35,15 +35,12 @@ type GitHub interface {
 	ReadScope(ctx context.Context) (path string, auth ghrest.Auth, ok bool)
 }
 
-type Notifier interface {
-	Notify(ctx context.Context, e notify.Event) error
-}
-
 type Config struct {
-	Store    *store.Store
-	Bus      *events.Bus
-	GitHub   GitHub
-	Notifier Notifier
+	Store  *store.Store
+	Bus    *events.Bus
+	GitHub GitHub
+	// Notify sends the runner.deprecation alert.
+	Notify func(notify.Event)
 	// InUse returns the runner versions that the servers give new
 	// sandboxes.
 	InUse func() []string
@@ -211,14 +208,8 @@ func (s *Service) warnEnds(ctx context.Context) error {
 		if warned[version] {
 			continue
 		}
-		settings, err := s.cfg.Store.GetSettings(ctx)
-		if err != nil {
-			return err
-		}
 		s.log.Warn("runner version ends soon", "version", version, "end_date", end)
-		if err := s.cfg.Notifier.Notify(ctx, notify.RunnerDeprecationEvent(settings.DashboardURL(), version, end)); err != nil {
-			return fmt.Errorf("send runner end date warning: %w", err)
-		}
+		s.cfg.Notify(notify.RunnerDeprecationEvent(version, end))
 		if err := s.cfg.Store.SetRunnerBundleWarned(ctx, version); err != nil {
 			return err
 		}

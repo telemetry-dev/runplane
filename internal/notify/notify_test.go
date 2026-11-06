@@ -3,7 +3,6 @@ package notify
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -20,7 +20,7 @@ var at = time.Date(2026, 11, 4, 9, 30, 0, 0, time.UTC)
 
 func failedJob() Event {
 	started, finished := at.Add(-192500*time.Millisecond), at
-	return JobFailedEvent("https://rp.example.com/", store.Job{
+	return JobFailedEvent(store.Job{
 		ID:           "01jbq3x",
 		Repository:   "acme/api",
 		WorkflowName: "CI",
@@ -64,36 +64,38 @@ func newReceiver(t *testing.T, statuses ...int) *receiver {
 
 func TestPayloads(t *testing.T) {
 	const jobText = "acme/api · CI #42 · branch main · by octo · after 3m13s"
+	const dashboard = "https://rp.example.com/"
 	tests := []struct {
-		name string
-		kind string
-		ev   Event
-		want string
+		name      string
+		kind      string
+		ev        Event
+		dashboard string
+		want      string
 	}{
-		{"slack", Slack, failedJob(), `{
+		{"slack", Slack, failedJob(), dashboard, `{
 			"text": "*<https://rp.example.com/jobs/01jbq3x|Job failed: test (ubuntu)>*\n` + jobText + `",
 			"unfurl_links": false, "unfurl_media": false}`},
 		{"slack escapes markup", Slack,
-			Event{Type: JobFailed, Title: "Job failed: <!channel> & co", Text: "x > y", URL: "https://rp.example.com/jobs/1"}, `{
+			Event{Type: JobFailed, Title: "Job failed: <!channel> & co", Text: "x > y", Path: "/jobs/1"}, dashboard, `{
 			"text": "*<https://rp.example.com/jobs/1|Job failed: &lt;!channel&gt; &amp; co>*\nx &gt; y",
 			"unfurl_links": false, "unfurl_media": false}`},
-		{"discord", Discord, failedJob(), `{
+		{"discord", Discord, failedJob(), dashboard, `{
 			"embeds": [{"title": "Job failed: test (ubuntu)", "description": "` + jobText + `",
 				"url": "https://rp.example.com/jobs/01jbq3x", "color": 14232864, "timestamp": "2026-11-04T09:30:00Z"}],
 			"allowed_mentions": {"parse": []}}`},
 		// Discord rejects an empty url and fields over its limits.
-		{"discord truncates", Discord, BackupFailedEvent("", errors.New(strings.Repeat("é", 5000))), `{
+		{"discord truncates", Discord, BackupFailedEvent(strings.Repeat("é", 5000)), "", `{
 			"embeds": [{"title": "Database backup failed", "description": "` + strings.Repeat("é", 4095) + `…",
 				"color": 14232864, "timestamp": "2026-11-04T09:30:00Z"}],
 			"allowed_mentions": {"parse": []}}`},
-		{"webhook", Webhook, failedJob(), `{
+		{"webhook", Webhook, failedJob(), dashboard, `{
 			"event": "job.failed", "title": "Job failed: test (ubuntu)", "text": "` + jobText + `",
 			"url": "https://rp.example.com/jobs/01jbq3x",
 			"data": {"job_id": "01jbq3x", "repository": "acme/api", "workflow": "CI", "job_name": "test (ubuntu)",
 				"branch": "main", "actor": "octo", "run_number": 42, "duration_ms": 192500,
 				"github_url": "https://github.com/acme/api/actions/runs/1/job/2"},
 			"at": "2026-11-04T09:30:00Z"}`},
-		{"webhook without data", Webhook, TestEvent(""), `{
+		{"webhook without data", Webhook, TestEvent(), "", `{
 			"event": "test", "title": "Test notification from runplane",
 			"text": "This channel receives runplane notifications.", "url": "", "data": {}, "at": "2026-11-04T09:30:00Z"}`},
 	}
@@ -101,7 +103,7 @@ func TestPayloads(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := newReceiver(t, http.StatusOK)
 			tt.ev.At = at
-			if err := Send(context.Background(), tt.kind, r.URL+"/hook", tt.ev); err != nil {
+			if err := send(context.Background(), tt.kind, r.URL+"/hook", tt.dashboard, tt.ev); err != nil {
 				t.Fatal(err)
 			}
 			body := <-r.bodies
@@ -138,7 +140,7 @@ func TestSendRetries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := newReceiver(t, tt.statuses...)
-			err := Send(context.Background(), Webhook, r.URL, TestEvent(""))
+			err := send(context.Background(), Webhook, r.URL, "", TestEvent())
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, want error %v", err, tt.wantErr)
 			}
@@ -159,8 +161,8 @@ func TestSendRetries(t *testing.T) {
 		defer srv.Close()
 		defer close(release)
 		start := time.Now()
-		if err := Send(context.Background(), Webhook, srv.URL, TestEvent("")); err == nil {
-			t.Fatal("Send to a receiver that never answers succeeded")
+		if err := send(context.Background(), Webhook, srv.URL, "", TestEvent()); err == nil {
+			t.Fatal("a send to a receiver that never answers succeeded")
 		}
 		// Three attempts of 200ms each.
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
@@ -171,25 +173,27 @@ func TestSendRetries(t *testing.T) {
 
 func TestEventLinks(t *testing.T) {
 	end := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	const dashboard = "https://rp.example.com/"
 	tests := []struct {
 		ev   Event
+		base string
 		want string
 	}{
-		{ServerUnreachableEvent("https://rp.example.com/", "srv1", "edge-1", at), "https://rp.example.com/servers/srv1"},
-		{DiskLowEvent("https://rp.example.com", "srv1", "edge-1", 9.6, 15), "https://rp.example.com/servers/srv1"},
-		{RunnerDeprecationEvent("https://rp.example.com", "2.329.0", end), "https://rp.example.com/settings/runners"},
-		{UpdateAvailableEvent("https://rp.example.com", "v0.4.2", "v0.5.0", ""), "https://rp.example.com/settings/general"},
-		{BackupFailedEvent("https://rp.example.com", errors.New("disk full")), "https://rp.example.com/settings/general"},
-		{JobFailedEvent("", store.Job{ID: "j1"}), ""},
+		{ServerUnreachableEvent("srv1", "edge-1", at), dashboard, "https://rp.example.com/servers/srv1"},
+		{DiskLowEvent("srv1", "edge-1", 9.6, 15), "https://rp.example.com", "https://rp.example.com/servers/srv1"},
+		{RunnerDeprecationEvent("2.329.0", end), dashboard, "https://rp.example.com/settings/runners"},
+		{UpdateAvailableEvent("v0.4.2", "v0.5.0", ""), dashboard, "https://rp.example.com/settings/general"},
+		{BackupFailedEvent("disk full"), dashboard, "https://rp.example.com/settings/general"},
+		{JobFailedEvent(store.Job{ID: "j1"}), "", ""},
 	}
 	for _, tt := range tests {
-		if tt.ev.URL != tt.want {
-			t.Errorf("%s: URL %q, want %q", tt.ev.Type, tt.ev.URL, tt.want)
+		if got := tt.ev.link(tt.base); got != tt.want {
+			t.Errorf("%s: link %q, want %q", tt.ev.Type, got, tt.want)
 		}
 	}
 }
 
-func TestValidate(t *testing.T) {
+func TestCheckTarget(t *testing.T) {
 	tests := []struct {
 		kind, url string
 		wantErr   bool
@@ -202,8 +206,9 @@ func TestValidate(t *testing.T) {
 		{Webhook, "ftp://example.com", true},
 	}
 	for _, tt := range tests {
-		if err := validate(tt.kind, tt.url); (err != nil) != tt.wantErr {
-			t.Errorf("%s %s: err = %v, want error %v", tt.kind, tt.url, err, tt.wantErr)
+		var errs field.Problems
+		if checkTarget(&errs, tt.kind, tt.url); (len(errs) > 0) != tt.wantErr {
+			t.Errorf("%s %s: problems %v, want some %v", tt.kind, tt.url, errs, tt.wantErr)
 		}
 	}
 }

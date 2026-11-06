@@ -17,7 +17,8 @@ import (
 	"github.com/runplane/runplane/internal/ghrest"
 )
 
-var arches = []string{"x64", "arm64"}
+// Arches are the runner names of the CPU architectures that runplane runs.
+var Arches = []string{"x64", "arm64"}
 
 var versionRE = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
@@ -63,7 +64,7 @@ func (r Releases) read(ctx context.Context, path string) (Release, error) {
 	if !versionRE.MatchString(rel.Version) {
 		return Release{}, fmt.Errorf("runner release %s has the tag %q, not a version", path, body.TagName)
 	}
-	for _, arch := range arches {
+	for _, arch := range Arches {
 		sum := markedSHA(body.Body, "linux-"+arch)
 		if sum == "" {
 			// GitHub also gives the digest of each asset.

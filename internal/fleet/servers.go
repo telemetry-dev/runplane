@@ -325,7 +325,7 @@ func (f *Fleet) UpdateServer(ctx context.Context, by audit.Actor, serverID strin
 		changes["status"] = [2]any{old.Status, v.Status}
 	}
 	if len(changes) > 0 {
-		f.audit.Record(ctx, by, "server.update", v.ID, map[string]any{"name": v.Name, "status": v.Status, "changes": changes})
+		f.audit.Record(ctx, by, audit.ServerUpdate, v.ID, map[string]any{"name": v.Name, "status": v.Status, "changes": changes})
 	}
 	return v, nil
 }
@@ -419,7 +419,7 @@ func (f *Fleet) RemoveServer(ctx context.Context, by audit.Actor, serverID strin
 		return err
 	}
 	f.bus.Publish(events.PoolsChanged{})
-	f.audit.Record(ctx, by, "server.delete", v.ID, map[string]any{"name": v.Name})
+	f.audit.Record(ctx, by, audit.ServerDelete, v.ID, map[string]any{"name": v.Name})
 	return nil
 }
 

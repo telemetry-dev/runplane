@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
-	"errors"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/runplane/runplane/internal/auth"
@@ -39,31 +42,35 @@ func TestNewInviteLinkReplacesTheOldOne(t *testing.T) {
 	b.do("POST", "/api/invites/"+first.Invite.ID+"/link", nil, nil).want(t, 404)
 }
 
-// fakeNotifier records the tests and fails for URLs that contain "broken".
-type fakeNotifier struct{ sent []string }
-
-func (f *fakeNotifier) Test(_ context.Context, _, kind, url string) error {
-	f.sent = append(f.sent, kind+" "+url)
-	if strings.Contains(url, "broken") {
-		return errors.New("receiver answered 404 Not Found")
-	}
-	return nil
-}
-
+// A test message goes to the receiver of the channel, and the delivery of
+// a saved channel shows in the list.
 func TestNotificationTests(t *testing.T) {
-	n := &fakeNotifier{}
-	e := newEnv(t, func(d *Deps) { d.Notifier = n })
+	var mu sync.Mutex
+	var paths []string
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if strings.Contains(r.URL.Path, "broken") {
+			http.Error(w, "no such hook", http.StatusNotFound)
+		}
+	}))
+	defer receiver.Close()
+	e := newEnv(t)
 	b := e.login("ada@example.com", auth.RoleAdmin)
 
 	b.do("POST", "/api/notifications/test", map[string]string{"kind": "slack", "url": "http://hooks.slack.com/x"}, nil).want(t, 422)
-	b.do("POST", "/api/notifications/test", map[string]string{"kind": "webhook", "url": "http://10.0.0.2/hook"}, nil).want(t, 204)
-	if len(n.sent) != 1 || n.sent[0] != "webhook http://10.0.0.2/hook" {
-		t.Fatalf("sent %q, want one test to the unsaved webhook", n.sent)
+	b.do("POST", "/api/notifications/test", map[string]string{"kind": "webhook", "url": receiver.URL + "/hook"}, nil).want(t, 204)
+	mu.Lock()
+	sent := slices.Clone(paths)
+	mu.Unlock()
+	if !slices.Equal(sent, []string{"/hook"}) {
+		t.Fatalf("receiver got %q, want one test to the unsaved webhook", sent)
 	}
 
 	var c NotificationChannel
 	b.do("POST", "/api/notifications", map[string]any{
-		"name": "ops", "kind": "webhook", "url": "https://example.com/broken", "events": []string{"job.failed"},
+		"name": "ops", "kind": "webhook", "url": receiver.URL + "/broken", "events": []string{"job.failed"},
 	}, &c).want(t, 200)
 	if c.LastSentAt != nil {
 		t.Fatalf("new channel has last_sent_at %v", c.LastSentAt)
@@ -75,12 +82,13 @@ func TestNotificationTests(t *testing.T) {
 		t.Fatalf("after a failed test: last_sent_at %v, last_error %q", list[0].LastSentAt, list[0].LastError)
 	}
 
-	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"url": "https://example.com/fixed"}, nil).want(t, 200)
+	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"url": receiver.URL + "/fixed"}, nil).want(t, 200)
 	b.do("POST", "/api/notifications/"+c.ID+"/test", nil, nil).want(t, 204)
 	b.do("GET", "/api/notifications", nil, &list).want(t, 200)
 	if list[0].LastError != "" {
 		t.Fatalf("after a good test: last_error %q, want none", list[0].LastError)
 	}
+	b.do("POST", "/api/notifications/nope/test", nil, nil).want(t, 404)
 }
 
 // fakeUpdater is an updater in a state, whose Apply returns err.

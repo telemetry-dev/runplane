@@ -1003,8 +1003,11 @@ export interface components {
             password: string;
         };
         AuditEntry: {
-            /** @description <object>.<verb>, for example "pool.create". */
-            action: string;
+            /**
+             * @description <object>.<verb>, for example "pool.create".
+             * @enum {string}
+             */
+            action: "setup.done" | "user.update" | "user.delete" | "user.password" | "invite.create" | "invite.link" | "invite.delete" | "pool.create" | "pool.update" | "pool.delete" | "server.token" | "server.install" | "server.update" | "server.delete" | "server.update_agent" | "sandbox.stop" | "sandbox.shell" | "sandbox.ssh" | "cache.delete" | "image.create" | "image.update" | "image.delete" | "image.refresh" | "settings.update" | "job.rerun" | "backup.create" | "backup.download" | "update.apply" | "github.manifest" | "github.app.create" | "github.installation.install" | "github.installation.update" | "github.installation.request" | "github.sync" | "github.disconnect" | "notification.create" | "notification.update" | "notification.delete";
             /** Format: date-time */
             at: string;
             /** @description Names and values of the change. pool.update, server.update, and settings.update have changes, with [old, new] for each changed field. settings.update also has keys, with all changed settings keys. Its changes never hold the S3 secret key. The entries of a job or a sandbox have runner_name, job_id, job_name, workflow_file, run_number, and repository where they apply. */
@@ -1084,16 +1087,15 @@ export interface components {
             enabled: boolean;
             /**
              * Format: double
-             * @description Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.
+             * @description Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.
              */
             hit_rate: number | null;
             /**
              * Format: int64
-             * @description The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it. 0 when the cache server is not available.
+             * @description The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it.
              */
             max_bytes: number;
-            /** @description Absent when the mirror stats are not available. */
-            mirror?: components["schemas"]["MirrorStats"];
+            mirror: components["schemas"]["MirrorStats"];
             /** @description The registry_mirror setting. */
             mirror_enabled: boolean;
             /** @description Largest first. */
@@ -1103,25 +1105,30 @@ export interface components {
              * @description Size of all entries and of the files of the unfinished uploads.
              */
             size_bytes: number;
+            /**
+             * Format: int64
+             * @description The hit rates, hits, and misses count the cache lookups of this many last days.
+             */
+            stats_days: number;
         };
         CacheRepository: {
             /** Format: int64 */
             entries: number;
             /**
              * Format: double
-             * @description Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.
+             * @description Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.
              */
             hit_rate: number | null;
             /**
              * Format: int64
-             * @description Of the last 7 days.
+             * @description Of the last stats_days days.
              */
             hits: number;
             /** Format: date-time */
             last_used_at: string | null;
             /**
              * Format: int64
-             * @description Of the last 7 days.
+             * @description Of the last stats_days days.
              */
             misses: number;
             repository: string;
@@ -1711,11 +1718,6 @@ export interface components {
              * @description Bytes in the mirror now.
              */
             size_bytes: number;
-            /**
-             * Format: date-time
-             * @description Start of runplane, where the counts start.
-             */
-            started_at: string;
         };
         NotificationChannel: {
             /** Format: date-time */
@@ -2268,6 +2270,8 @@ export interface components {
             backup_keep: number;
             /** @description Optional upload of each backup to S3. */
             backup_s3: components["schemas"]["BackupS3"];
+            /** @description Time of day in UTC of the daily backup, for example 03:00. Read-only. */
+            backup_time: string;
             /** @description bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only. */
             bandwidth_applies: boolean;
             /**
@@ -2298,8 +2302,8 @@ export interface components {
             domain: string;
             /** @description Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist: string[];
-            /** @description Certificate of the domain. Read-only. Absent when this runplane process cannot report it. */
-            https?: components["schemas"]["HTTPSStatus"];
+            /** @description Certificate of the domain. Read-only. */
+            https: components["schemas"]["HTTPSStatus"];
             /** @description Title in the sidebar. */
             instance_name: string;
             /** Format: int64 */
@@ -2334,6 +2338,8 @@ export interface components {
              * @description vCPUs that sandboxes do not get on each server.
              */
             reserve_vcpu: number;
+            /** @description File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only. */
+            secret_key_path: string;
             /**
              * Format: int64
              * @description Port of the SSH gateway for debug shells. Read-only.
@@ -2441,10 +2447,10 @@ export interface components {
             has_jobs: boolean;
             instance_name: string;
             /**
-             * @description Sandbox mode. Empty until the install sets it.
+             * @description Sandbox mode.
              * @enum {string}
              */
-            mode: "container" | "vm" | "dev" | "";
+            mode: "container" | "vm" | "dev";
             /** @description True until the first admin exists. */
             needs_setup: boolean;
             /**

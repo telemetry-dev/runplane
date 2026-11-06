@@ -65,7 +65,7 @@ type Bundle struct {
 // runner patch (guest.Patch). If the patch does not apply, the bundle stays
 // unpatched and jobs use the GitHub cache.
 func (b *Bundles) Ensure(ctx context.Context, version, arch string) (Bundle, error) {
-	if !versionRE.MatchString(version) || !slices.Contains(arches, arch) {
+	if !versionRE.MatchString(version) || !slices.Contains(Arches, arch) {
 		return Bundle{}, fmt.Errorf("ensure runner: bad version %q or arch %q", version, arch)
 	}
 	bundle := Bundle{Version: version, Arch: arch, Dir: b.dir(version, arch)}
@@ -285,7 +285,7 @@ func (b *Bundles) prune(keep []string) error {
 			continue
 		}
 		version, arch, _ := strings.Cut(e.Name(), "-")
-		if e.IsDir() && versionRE.MatchString(version) && slices.Contains(arches, arch) {
+		if e.IsDir() && versionRE.MatchString(version) && slices.Contains(Arches, arch) {
 			versions[arch] = append(versions[arch], version)
 		}
 	}

@@ -14,7 +14,7 @@ import (
 type Status struct {
 	NeedsSetup      bool   `json:"needs_setup" doc:"True until the first admin exists."`
 	Version         string `json:"version" doc:"Version of runplane, for example \"v1.2.0 (3f2a9c1)\"."`
-	Mode            string `json:"mode" enum:"container,vm,dev," doc:"Sandbox mode. Empty until the install sets it."`
+	Mode            string `json:"mode" enum:"container,vm,dev" doc:"Sandbox mode."`
 	InstanceName    string `json:"instance_name"`
 	GitHubConnected bool   `json:"github_connected" doc:"True when a GitHub App with at least one installation exists."`
 	HasJobs         bool   `json:"has_jobs" doc:"True when runplane has recorded at least one job."`
@@ -109,12 +109,9 @@ func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*body[H
 	if !ok {
 		return nil, invalid("query.code", field.Sentence(auth.ErrBadSetupCode), nil)
 	}
-	if h.d.HostChecker == nil {
-		return nil, unavailable("The host check")
-	}
 	c, err := h.d.HostChecker.Check(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	i := c.Info
 	hc := HostCheck{

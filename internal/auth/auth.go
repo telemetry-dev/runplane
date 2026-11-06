@@ -40,6 +40,9 @@ const (
 	RoleMember = store.RoleMember
 )
 
+// Roles are all roles.
+var Roles = []string{RoleAdmin, RoleMember}
+
 type Action int
 
 const (
@@ -51,20 +54,21 @@ const (
 )
 
 var (
-	ErrSetupDone     = store.ErrSetupDone
-	ErrLastAdmin     = store.ErrLastAdmin
-	ErrOwnAccount    = errors.New("you cannot delete your own account")
-	ErrBadSetupCode  = errors.New("the setup code is wrong, used, or expired")
-	ErrBadLogin      = errors.New("the email or password is wrong")
-	ErrBadPassword   = errors.New("the current password is wrong")
-	ErrRateLimited   = errors.New("too many failed attempts, try again later")
-	ErrNoSession     = errors.New("no valid session")
-	ErrShortPassword = fmt.Errorf("the password must have at least %d characters", MinPasswordLen)
-	ErrBadEmail      = errors.New("the email address is not valid")
-	ErrBadName       = errors.New("enter a name")
-	ErrBadRole       = errors.New("the role must be admin or member")
-	ErrBadInvite     = errors.New("the invite is wrong, used, or expired")
-	ErrEmailTaken    = errors.New("a user with this email exists")
+	ErrSetupDone         = store.ErrSetupDone
+	ErrLastAdmin         = store.ErrLastAdmin
+	ErrOwnAccount        = errors.New("you cannot delete your own account")
+	ErrBadSetupCode      = errors.New("the setup code is wrong, used, or expired")
+	ErrBadLogin          = errors.New("the email or password is wrong")
+	ErrBadPassword       = errors.New("the current password is wrong")
+	ErrNoCurrentPassword = errors.New("enter your current password")
+	ErrRateLimited       = errors.New("too many failed attempts, try again later")
+	ErrNoSession         = errors.New("no valid session")
+	ErrShortPassword     = fmt.Errorf("the password must have at least %d characters", MinPasswordLen)
+	ErrBadEmail          = errors.New("the email address is not valid")
+	ErrBadName           = errors.New("enter a name")
+	ErrBadRole           = errors.New("the role must be admin or member")
+	ErrBadInvite         = errors.New("the invite is wrong, used, or expired")
+	ErrEmailTaken        = errors.New("a user with this email exists")
 )
 
 type Service struct {
@@ -146,21 +150,14 @@ func (s *Service) Setup(ctx context.Context, code, name, email, password, ip, us
 	case err != nil:
 		return store.User{}, "", err
 	}
-	s.audit.Record(ctx, audit.Actor{UserID: u.ID, IP: ip}, "setup.done", u.ID, map[string]any{"email": u.Email})
+	s.audit.Record(ctx, audit.Actor{UserID: u.ID, IP: ip}, audit.SetupDone, u.ID, map[string]any{"email": u.Email})
 	return u, token, nil
 }
 
 // SetupCodeValid reports whether code is an unused setup code that has not
 // expired. Unlike Setup, it does not use the code.
 func (s *Service) SetupCodeValid(ctx context.Context, code string) (bool, error) {
-	var n int
-	err := s.store.DB().QueryRowContext(ctx,
-		"SELECT count(*) FROM setup_codes WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
-		hashCode(code), s.now().UnixMilli()).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("check setup code: %w", err)
-	}
-	return n > 0, nil
+	return s.store.SetupCodeOpen(ctx, hashCode(code), s.now())
 }
 
 // Login checks the password and returns the user and a new session token.
@@ -286,14 +283,14 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, next, ip,
 	if err := s.store.CreateSession(ctx, sess); err != nil {
 		return "", err
 	}
-	s.audit.Record(ctx, audit.Actor{UserID: u.ID, IP: ip}, "user.password", u.ID, nil)
+	s.audit.Record(ctx, audit.Actor{UserID: u.ID, IP: ip}, audit.UserPassword, u.ID, nil)
 	return token, nil
 }
 
 // UpdateMe changes the name or the password of a user, for the user, and
-// returns the user. A nil name or next keeps it. A new password works as in
-// ChangePassword, and the token is "" without one. A refused name changes
-// nothing.
+// returns the user. A nil name or next keeps it. A new password needs the
+// current one (ErrNoCurrentPassword), works as in ChangePassword, and the
+// token is "" without one. A refused name changes nothing.
 func (s *Service) UpdateMe(ctx context.Context, userID string, name, current, next *string, ip, userAgent string) (store.User, string, error) {
 	var newName string
 	if name != nil {
@@ -304,6 +301,9 @@ func (s *Service) UpdateMe(ctx context.Context, userID string, name, current, ne
 	}
 	var token string
 	if next != nil {
+		if current == nil || *current == "" {
+			return store.User{}, "", ErrNoCurrentPassword
+		}
 		var err error
 		if token, err = s.ChangePassword(ctx, userID, *current, *next, ip, userAgent); err != nil {
 			return store.User{}, "", err
@@ -320,7 +320,7 @@ func (s *Service) UpdateMe(ctx context.Context, userID string, name, current, ne
 // SetRole gives a user a role, and returns the user. It returns ErrLastAdmin
 // for the only admin, because runplane needs one.
 func (s *Service) SetRole(ctx context.Context, by audit.Actor, userID, role string) (store.User, error) {
-	if role != RoleAdmin && role != RoleMember {
+	if !slices.Contains(Roles, role) {
 		return store.User{}, ErrBadRole
 	}
 	u, err := s.store.SetUserRole(ctx, userID, role)
@@ -329,7 +329,7 @@ func (s *Service) SetRole(ctx context.Context, by audit.Actor, userID, role stri
 	}
 	if u.Role != role {
 		u.Role = role
-		s.audit.Record(ctx, by, "user.update", u.ID, map[string]any{"email": u.Email, "role": u.Role})
+		s.audit.Record(ctx, by, audit.UserUpdate, u.ID, map[string]any{"email": u.Email, "role": u.Role})
 	}
 	return u, nil
 }
@@ -344,7 +344,7 @@ func (s *Service) DeleteUser(ctx context.Context, by audit.Actor, userID string)
 	if err != nil {
 		return err
 	}
-	s.audit.Record(ctx, by, "user.delete", u.ID, map[string]any{"email": u.Email})
+	s.audit.Record(ctx, by, audit.UserDelete, u.ID, map[string]any{"email": u.Email})
 	return nil
 }
 
@@ -371,7 +371,7 @@ func (s *Service) CreateInvite(ctx context.Context, by audit.Actor, email, role 
 	if err != nil {
 		return store.Invite{}, "", err
 	}
-	s.audit.Record(ctx, by, "invite.create", inv.ID, map[string]any{"email": inv.Email, "role": inv.Role})
+	s.audit.Record(ctx, by, audit.InviteCreate, inv.ID, map[string]any{"email": inv.Email, "role": inv.Role})
 	return inv, token, nil
 }
 
@@ -391,7 +391,7 @@ func (s *Service) NewInviteLink(ctx context.Context, by audit.Actor, id string) 
 	if err != nil {
 		return store.Invite{}, "", err
 	}
-	s.audit.Record(ctx, by, "invite.link", inv.ID, map[string]any{"email": inv.Email, "old_id": id})
+	s.audit.Record(ctx, by, audit.InviteLink, inv.ID, map[string]any{"email": inv.Email, "old_id": id})
 	return inv, token, nil
 }
 
@@ -400,7 +400,7 @@ func (s *Service) DeleteInvite(ctx context.Context, by audit.Actor, id string) e
 	if err != nil {
 		return err
 	}
-	s.audit.Record(ctx, by, "invite.delete", inv.ID, map[string]any{"email": inv.Email, "role": inv.Role})
+	s.audit.Record(ctx, by, audit.InviteDelete, inv.ID, map[string]any{"email": inv.Email, "role": inv.Role})
 	return nil
 }
 
@@ -409,7 +409,7 @@ func (s *Service) invite(ctx context.Context, by audit.Actor, email, role string
 	if !validEmail(email) {
 		return store.Invite{}, "", ErrBadEmail
 	}
-	if role != RoleAdmin && role != RoleMember {
+	if !slices.Contains(Roles, role) {
 		return store.Invite{}, "", ErrBadRole
 	}
 	_, err := s.store.GetUserByEmail(ctx, email)

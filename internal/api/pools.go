@@ -7,6 +7,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -100,12 +102,18 @@ func (h *Handler) getPool(ctx context.Context, in *PathID) (*body[Pool], error) 
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
+// PoolSize is the size of the sandboxes of a pool. The pool requests and the
+// placement query have it, with the same limits.
+type PoolSize struct {
+	VCPU     int `json:"vcpu" query:"vcpu" required:"true" minimum:"1" maximum:"64"`
+	MemoryMB int `json:"memory_mb" query:"memory_mb" required:"true" minimum:"512" maximum:"262144"`
+}
+
 type CreatePoolRequest struct {
-	Name             string   `json:"name,omitempty" maxLength:"64" doc:"Defaults to the label."`
-	Label            string   `json:"label" maxLength:"63" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes" doc:"The runs-on label. Unique."`
-	Arch             string   `json:"arch,omitempty" enum:"x64,arm64" doc:"Defaults to the arch of the primary server."`
-	VCPU             int      `json:"vcpu" minimum:"1" maximum:"64"`
-	MemoryMB         int      `json:"memory_mb" minimum:"512" maximum:"262144"`
+	Name  string `json:"name,omitempty" maxLength:"64" doc:"Defaults to the label."`
+	Label string `json:"label" maxLength:"63" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes" doc:"The runs-on label. Unique."`
+	Arch  string `json:"arch,omitempty" enum:"x64,arm64" doc:"Defaults to the arch of the primary server."`
+	PoolSize
 	DiskGB           int      `json:"disk_gb" minimum:"8" maximum:"1024"`
 	ImageID          string   `json:"image_id,omitempty" maxLength:"100" doc:"Empty: the default image."`
 	MinIdle          int      `json:"min_idle,omitempty" minimum:"0" maximum:"1000"`
@@ -128,19 +136,24 @@ func (h *Handler) createPool(ctx context.Context, in *body[CreatePoolRequest]) (
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
+// UpdatePoolRequest has the limits of CreatePoolRequest.
 type UpdatePoolRequest struct {
-	Name             *string   `json:"name,omitempty" minLength:"1" maxLength:"64"`
-	Label            *string   `json:"label,omitempty" maxLength:"63" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes"`
-	Arch             *string   `json:"arch,omitempty" enum:"x64,arm64"`
-	VCPU             *int      `json:"vcpu,omitempty" minimum:"1" maximum:"64"`
-	MemoryMB         *int      `json:"memory_mb,omitempty" minimum:"512" maximum:"262144"`
-	DiskGB           *int      `json:"disk_gb,omitempty" minimum:"8" maximum:"1024"`
-	ImageID          *string   `json:"image_id,omitempty" maxLength:"100" doc:"Empty: the default image."`
-	MinIdle          *int      `json:"min_idle,omitempty" minimum:"0" maximum:"1000"`
-	MaxRunners       *int      `json:"max_runners,omitempty" minimum:"1" maximum:"1000"`
-	TimeLimitMinutes *int      `json:"time_limit_minutes,omitempty" minimum:"0" maximum:"7200"`
-	ServerIDs        *[]string `json:"server_ids,omitempty" maxItems:"100"`
+	Name             *string   `json:"name,omitempty"`
+	Label            *string   `json:"label,omitempty"`
+	Arch             *string   `json:"arch,omitempty"`
+	VCPU             *int      `json:"vcpu,omitempty"`
+	MemoryMB         *int      `json:"memory_mb,omitempty"`
+	DiskGB           *int      `json:"disk_gb,omitempty"`
+	ImageID          *string   `json:"image_id,omitempty" doc:"Empty: the default image."`
+	MinIdle          *int      `json:"min_idle,omitempty"`
+	MaxRunners       *int      `json:"max_runners,omitempty"`
+	TimeLimitMinutes *int      `json:"time_limit_minutes,omitempty"`
+	ServerIDs        *[]string `json:"server_ids,omitempty"`
 	Enabled          *bool     `json:"enabled,omitempty"`
+}
+
+func (UpdatePoolRequest) TransformSchema(r huma.Registry, s *huma.Schema) *huma.Schema {
+	return patchOf[CreatePoolRequest](r, s)
 }
 
 func (h *Handler) updatePool(ctx context.Context, in *struct {
@@ -176,9 +189,8 @@ func (h *Handler) deletePool(ctx context.Context, in *PathID) (*empty, error) {
 }
 
 type placementInput struct {
-	Arch      string   `query:"arch" required:"true" enum:"x64,arm64"`
-	VCPU      int      `query:"vcpu" required:"true" minimum:"1" maximum:"64"`
-	MemoryMB  int      `query:"memory_mb" required:"true" minimum:"512" maximum:"262144"`
+	Arch string `query:"arch" required:"true" enum:"x64,arm64"`
+	PoolSize
 	ServerIDs []string `query:"server_ids" maxItems:"100" doc:"Comma-separated. Empty: all servers."`
 }
 
@@ -214,9 +226,6 @@ func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
 			continue
 		}
 		p.servers = append(p.servers, v)
-		if h.d.Servers == nil {
-			continue
-		}
 		if l, ok := h.d.Servers.Limits(v.ID); ok {
 			p.limits[v.ID] = l
 		}
@@ -244,5 +253,5 @@ func poolErr(err error) error {
 	if errors.Is(err, store.ErrConflict) {
 		return conflict("body.label", "A pool with this label exists.")
 	}
-	return notFound(changeErr(err), "No pool has this ID.")
+	return notFound(err, "No pool has this ID.")
 }

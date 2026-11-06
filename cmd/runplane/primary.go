@@ -25,6 +25,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/github"
+	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/pools"
@@ -81,7 +82,7 @@ func serve(ctx context.Context, args []string) error {
 
 	deps := api.Deps{
 		Store: st, Auth: auth.NewService(st, subkey(key, "runplane device tokens"), log.With("component", "auth")),
-		Settings: settingsService, Pools: pools.New(pools.Config{Store: st, Bus: bus, Log: log.With("component", "pools")}),
+		Settings: settingsService, Pools: pools.New(pools.Config{Store: st, Bus: bus, Arch: host.Arch(), Log: log.With("component", "pools")}),
 		Bus: bus, Box: box, Log: log, Config: cfg,
 	}
 	p, err := startPrimary(&deps, key, mode, end)
@@ -204,7 +205,8 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.stops = append(p.stops, local.close)
 	p.run(func(ctx context.Context) { local.node.Run(ctx) })
 
-	notifier := notify.New(notify.Config{Store: st, Box: d.Box, Bus: d.Bus, Log: log.With("component", "notify")})
+	channels := notify.NewChannels(st, d.Box, log.With("component", "notify"))
+	notifier := notify.New(notify.Config{Store: st, Channels: channels, Bus: d.Bus, Log: log.With("component", "notify")})
 	p.run(notifier.Run)
 
 	cert, fingerprint, err := tlsutil.AgentCert(cfg.TLSDir())
@@ -217,7 +219,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	}
 	ghRef := &githubRef{}
 	runners := versions.New(versions.Config{
-		Store: st, Bus: d.Bus, GitHub: ghRef, Notifier: notifier, Log: log.With("component", "runners"),
+		Store: st, Bus: d.Bus, GitHub: ghRef, Notify: notifier.Notify, Log: log.With("component", "runners"),
 		InUse: func() []string { return p.fleet.RunnerVersions() },
 	})
 	// The fleet calls the scheduler only after Run starts.
@@ -257,19 +259,12 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 		log.Error("no SSH access to debug shells", "err", err)
 	}
 
-	notifyBg := func(e notify.Event) {
-		p.wg.Go(func() {
-			if err := notifier.Notify(context.Background(), e); err != nil {
-				log.Warn("send notification", "type", e.Type, "err", err)
-			}
-		})
-	}
 	backups := backup.New(backup.Config{
-		Store: st, Box: d.Box, Bus: d.Bus, Dir: cfg.BackupsDir(), Notify: notifyBg, Log: log.With("component", "backup"),
+		Store: st, Box: d.Box, Bus: d.Bus, Dir: cfg.BackupsDir(), Log: log.With("component", "backup"),
 	})
 	p.run(backups.Run)
 	updates := update.NewService(update.Config{
-		Updater: update.New(cfg.KernelPath()), Restart: func() { end(errRestart) }, Store: st, Notify: notifyBg,
+		Updater: update.New(cfg.KernelPath()), Restart: func() { end(errRestart) }, Store: st, Notify: notifier.Notify,
 		Log: log.With("component", "update"),
 	})
 	p.run(updates.Run)
@@ -287,7 +282,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	d.Mirrors = p.fleet
 	d.Backups = backups
 	d.Updater = updates
-	d.Notifier = notifier
+	d.Channels = channels
 	d.Logs = jobLogs
 	d.Shell = opener
 	d.HostChecker = p.fleet

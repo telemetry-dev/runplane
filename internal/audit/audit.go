@@ -14,6 +14,63 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
+// The actions of the audit log, as "<object>.<verb>".
+const (
+	SetupDone         = "setup.done"
+	UserUpdate        = "user.update"
+	UserDelete        = "user.delete"
+	UserPassword      = "user.password"
+	InviteCreate      = "invite.create"
+	InviteLink        = "invite.link"
+	InviteDelete      = "invite.delete"
+	PoolCreate        = "pool.create"
+	PoolUpdate        = "pool.update"
+	PoolDelete        = "pool.delete"
+	ServerToken       = "server.token"
+	ServerInstall     = "server.install"
+	ServerUpdate      = "server.update"
+	ServerDelete      = "server.delete"
+	ServerUpdateAgent = "server.update_agent"
+	SandboxStop       = "sandbox.stop"
+	SandboxShell      = "sandbox.shell"
+	SandboxSSH        = "sandbox.ssh"
+	CacheDelete       = "cache.delete"
+	ImageCreate       = "image.create"
+	ImageUpdate       = "image.update"
+	ImageDelete       = "image.delete"
+	ImageRefresh      = "image.refresh"
+	SettingsUpdate    = "settings.update"
+	JobRerun          = "job.rerun"
+	BackupCreate      = "backup.create"
+	BackupDownload    = "backup.download"
+	UpdateApply       = "update.apply"
+	GitHubManifest    = "github.manifest"
+	GitHubAppCreate   = "github.app.create"
+	GitHubSync        = "github.sync"
+	GitHubDisconnect  = "github.disconnect"
+	ChannelCreate     = "notification.create"
+	ChannelUpdate     = "notification.update"
+	ChannelDelete     = "notification.delete"
+)
+
+// GitHubInstallation is the action of a return from the GitHub page of the
+// app installation, with the setup_action of GitHub: install, update, or
+// request.
+func GitHubInstallation(setupAction string) string { return "github.installation." + setupAction }
+
+// Actions are all actions.
+var Actions = []string{
+	SetupDone, UserUpdate, UserDelete, UserPassword, InviteCreate, InviteLink, InviteDelete,
+	PoolCreate, PoolUpdate, PoolDelete,
+	ServerToken, ServerInstall, ServerUpdate, ServerDelete, ServerUpdateAgent,
+	SandboxStop, SandboxShell, SandboxSSH, CacheDelete,
+	ImageCreate, ImageUpdate, ImageDelete, ImageRefresh,
+	SettingsUpdate, JobRerun, BackupCreate, BackupDownload, UpdateApply,
+	GitHubManifest, GitHubAppCreate, GitHubInstallation("install"), GitHubInstallation("update"), GitHubInstallation("request"),
+	GitHubSync, GitHubDisconnect,
+	ChannelCreate, ChannelUpdate, ChannelDelete,
+}
+
 // Actor makes a change. The zero Actor is runplane itself.
 type Actor struct {
 	UserID string
@@ -26,8 +83,7 @@ type Log struct {
 	Logger *slog.Logger // nil: no log
 }
 
-// Record writes an entry. action is "<object>.<verb>", for example
-// "pool.create". A failure goes to the log and does not fail the change,
+// Record writes an entry. action is one of Actions. A failure goes to the log and does not fail the change,
 // because the change is done already.
 func (l Log) Record(ctx context.Context, by Actor, action, target string, detail map[string]any) {
 	var raw json.RawMessage

@@ -52,7 +52,7 @@ func TestOpenMigrations(t *testing.T) {
 	}
 }
 
-func TestVacuumIntoWithDB(t *testing.T) {
+func TestVacuumInto(t *testing.T) {
 	s := openTest(t)
 	_, err := s.UpdateSettings(t.Context(), func(st *Settings) error {
 		st.InstanceName = "copied"
@@ -60,8 +60,8 @@ func TestVacuumIntoWithDB(t *testing.T) {
 	})
 	must(t, err)
 	path := filepath.Join(t.TempDir(), "backup.db")
-	if _, err := s.DB().Exec("VACUUM INTO ?", path); err != nil {
-		t.Fatalf("VACUUM INTO: %v", err)
+	if err := s.VacuumInto(t.Context(), path); err != nil {
+		t.Fatalf("VacuumInto: %v", err)
 	}
 	b, err := Open(path)
 	must(t, err)

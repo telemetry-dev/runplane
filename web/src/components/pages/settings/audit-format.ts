@@ -4,6 +4,7 @@ import { formatDateTime, formatRelativeTime } from '~/lib/format'
 // The rows of Settings · Members › Activity, from the entries of GET /api/audit.
 
 export type AuditEntry = Schemas['AuditEntry']
+type Action = AuditEntry['action']
 
 /** Who made the change: the user's name, or "runplane" for runplane itself. */
 export function auditActor(entry: AuditEntry): string {
@@ -13,7 +14,7 @@ export function auditActor(entry: AuditEntry): string {
 
 /**
  * What the actor did, as the rest of the sentence after the name: "added the
- * label runplane-8cpu". An action this page does not know shows as it is.
+ * label runplane-8cpu". An action of an older runplane shows as it is.
  */
 export function auditChange(entry: AuditEntry): string {
   return changes[entry.action]?.(new Detail(entry.detail)) ?? `did ${entry.action}`
@@ -58,7 +59,8 @@ class Detail {
   }
 }
 
-const changes: Record<string, (detail: Detail) => string> = {
+// A new action of the API does not compile until it has a text here.
+const changes: Record<Action, (detail: Detail) => string> = {
   'setup.done': () => 'set up runplane',
   'user.update': (d) => `made ${d.text('email') || 'a user'} ${d.text('role') === 'admin' ? 'an admin' : 'a member'}`,
   'user.delete': (d) => `removed ${d.text('email') || 'a member'}`,
