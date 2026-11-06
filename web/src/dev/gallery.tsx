@@ -31,7 +31,7 @@ import { RunnerLabel } from '~/components/app/runner-label'
 import { SectionButton, SectionHeader, SectionLink } from '~/components/app/section-header'
 import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { Stat } from '~/components/app/stat'
-import { StatusDot, type ServerStatus } from '~/components/app/status-dot'
+import { mutedStatus, StatusDot, type ServerStatus } from '~/components/app/status-dot'
 import { RunnerStateIcon } from '~/components/app/runner-state-icon'
 import { CheckIcon, StatusIcon, type CheckStatus, type JobStatus } from '~/components/app/status-icon'
 import { UsageBar } from '~/components/app/usage-bar'
@@ -930,7 +930,7 @@ function Tables() {
               <StatusDot status={server.status} />
             </DataTableCell>
             <DataTableCell>
-              <CellTitle title={server.name} detail={server.detail} muted={server.status === 'unreachable'} />
+              <CellTitle title={server.name} detail={server.detail} muted={mutedStatus[server.status]} />
             </DataTableCell>
             <DataTableCell>
               <CellTitle title={<span className="font-regular text-neutral-8">{server.size}</span>} detail={server.disk} />
