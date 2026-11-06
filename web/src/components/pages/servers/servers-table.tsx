@@ -11,7 +11,7 @@ import {
   useFittingColumns,
 } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
-import { serverStatusNames, StatusDot } from '~/components/app/status-dot'
+import { mutedStatus, serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { Spinner } from '~/components/ui/spinner'
 import { ServerMenu } from './server-menu'
@@ -109,7 +109,7 @@ function ServerRow({ server, shown, admin }: { server: Server; shown: Shown; adm
           <CellTitle
             title={<NameWithUpdate server={server} />}
             detail={noteBelow ? noteText(note) : serverOrigin(server)}
-            muted={statusFacts[server.status].muted}
+            muted={mutedStatus[server.status]}
           />
         </RowLink>
       </DataTableCell>

@@ -117,14 +117,27 @@ type Job struct {
 	EnrichedAt    *time.Time `json:"enriched_at"`
 }
 
-// JobStep is one step from the GitHub jobs API.
+// JobStep is one step from the GitHub jobs API, with the JSON names of
+// GitHub.
 type JobStep struct {
 	Number      int        `json:"number"`
 	Name        string     `json:"name"`
-	Status      string     `json:"status"`     // queued | in_progress | completed
+	State       string     `json:"status"`     // queued | in_progress | completed
 	Conclusion  string     `json:"conclusion"` // success | failure | cancelled | skipped
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
+}
+
+// Status returns StatusQueued, StatusRunning, or the result of a completed
+// step.
+func (s JobStep) Status() string {
+	switch s.State {
+	case "queued":
+		return StatusQueued
+	case "completed":
+		return cmp.Or(ResultOf(s.Conclusion), ResultFailed)
+	}
+	return StatusRunning
 }
 
 // JobMessage is one scale set job message. State is the state that the

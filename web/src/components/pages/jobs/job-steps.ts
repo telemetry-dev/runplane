@@ -1,5 +1,4 @@
 import type { Schemas } from '~/api/client'
-import { stepStatus } from '~/components/app/status-icon'
 import { stepTime } from './job-format'
 
 type Step = Schemas['JobStep']
@@ -9,7 +8,7 @@ type Step = Schemas['JobStep']
  * whole log) when no step failed.
  */
 export function defaultStep(steps: readonly Step[]): number {
-  return steps.find((step) => stepStatus(step) === 'failed')?.number ?? 0
+  return steps.find((step) => step.status === 'failed')?.number ?? 0
 }
 
 /**

@@ -1,11 +1,12 @@
 import { keepPreviousData, useQuery, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { overviewQuery } from '~/api/overview'
+import { statusQuery } from '~/api/session'
 import { LoadError } from '~/components/app/load-error'
 import { PageHeader } from '~/components/ui/page-header'
 import { SegmentedControl } from '~/components/ui/segmented'
 import { Spinner } from '~/components/ui/spinner'
-import { defaultRange, hasNoJobs, ranges, type Overview, type Range } from './data'
+import { defaultRange, ranges, type Overview, type Range } from './data'
 import { RecentJobs, RunningJobs } from './job-tables'
 import { JobsChart } from './jobs-chart'
 import { NoJobs } from './no-jobs'
@@ -54,7 +55,8 @@ export function OverviewPage({ range = defaultRange }: { range?: Range }) {
 }
 
 function OverviewBody({ overview }: { overview: Overview }) {
-  if (hasNoJobs(overview)) {
+  const hasJobs = useQuery(statusQuery).data?.has_jobs ?? true
+  if (!hasJobs) {
     return (
       <>
         <OverviewStats overview={overview} />

@@ -209,6 +209,11 @@ export const limits = {
       "enum": ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
     }
   },
+  "JobStep": {
+    "status": {
+      "enum": ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
+    }
+  },
   "JobSummary": {
     "result": {
       "enum": ["succeeded", "failed", "cancelled", "skipped"]

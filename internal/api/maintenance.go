@@ -84,22 +84,17 @@ type UpdateStatus struct {
 	URL         string     `json:"url" doc:"Release page."`
 	Notes       string     `json:"notes" doc:"Release notes in Markdown."`
 	PublishedAt *time.Time `json:"published_at"`
-	AutoUpdate  bool       `json:"auto_update" doc:"The auto_update setting."`
 	State       string     `json:"state" enum:"idle,applying,restarting" doc:"applying: runplane downloads and installs the update. restarting: the new version starts."`
 }
 
 func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*body[UpdateStatus], error) {
-	st, err := h.d.Store.GetSettings(ctx)
-	if err != nil {
-		return nil, err
-	}
 	u, err := h.d.Updater.Check(ctx)
 	if err != nil {
 		return nil, serviceErr(err)
 	}
 	out := UpdateStatus{
 		Current: u.Current, Latest: u.Latest, Available: u.Available, URL: u.URL, Notes: u.Notes,
-		AutoUpdate: st.AutoUpdate, State: string(h.d.Updater.State()),
+		State: string(h.d.Updater.State()),
 	}
 	if !u.PublishedAt.IsZero() {
 		out.PublishedAt = &u.PublishedAt

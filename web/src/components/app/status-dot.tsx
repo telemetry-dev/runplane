@@ -11,9 +11,9 @@ type StatusDotProps = {
 }
 
 /**
- * Server state of the designs: a filled dot when online, a hollow ring when
- * unreachable or disabled, a half-filled dot while draining, and the spinner
- * while installing. Pair it with the state in words; the dot alone is not enough.
+ * Server state of the designs: a filled dot when online, a hollow ring for a
+ * muted status, a half-filled dot while draining, and the spinner while
+ * installing. Pair it with the state in words; the dot alone is not enough.
  */
 export function StatusDot({ status, size = 16, className }: StatusDotProps) {
   if (status === 'installing') return <Spinner size={size} label={serverStatusNames.installing} className={className} />
@@ -26,9 +26,7 @@ export function StatusDot({ status, size = 16, className }: StatusDotProps) {
           <path d="M8 4a4 4 0 0 0 0 8z" fill="var(--neutral-10)" />
         </>
       )}
-      {(status === 'unreachable' || status === 'disabled') && (
-        <circle cx="8" cy="8" r="3.5" fill="none" stroke="var(--neutral-6)" strokeWidth="1.5" />
-      )}
+      {mutedStatus[status] && <circle cx="8" cy="8" r="3.5" fill="none" stroke="var(--neutral-6)" strokeWidth="1.5" />}
     </svg>
   )
 }
@@ -39,4 +37,17 @@ export const serverStatusNames: Record<ServerStatus, string> = {
   unreachable: 'Unreachable',
   draining: 'Draining',
   disabled: 'Disabled',
+}
+
+/**
+ * The statuses that the designs mute: the hollow ring of StatusDot, and
+ * lighter text for the server name. The server has no connection, or an
+ * admin disabled it.
+ */
+export const mutedStatus: Record<ServerStatus, boolean> = {
+  online: false,
+  installing: false,
+  unreachable: true,
+  draining: false,
+  disabled: true,
 }

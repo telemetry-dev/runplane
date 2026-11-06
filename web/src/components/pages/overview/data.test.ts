@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { Schemas } from '~/api/client'
-import { hasNoJobs, jobProgress, jobsChart, statValues, type Overview, type Range } from './data'
+import { jobProgress, jobsChart, statValues, type Overview, type Range } from './data'
 
 // Chart labels use local time; pin it before data.ts makes its formatter.
 vi.hoisted(() => {
@@ -98,21 +98,6 @@ test('jobProgress is unknown without a usual run time or past it', () => {
   expect(jobProgress(5_000, 0)).toBeNull()
 })
 
-describe('hasNoJobs', () => {
-  test('is true before the first job', () => {
-    expect(hasNoJobs(overview({ jobs: 0 }))).toBe(true)
-  })
-
-  test('is false when older jobs exist but the range has none', () => {
-    expect(hasNoJobs({ ...overview({ jobs: 0 }), recent: [job] })).toBe(false)
-  })
-
-  test('is false while the first job waits or runs', () => {
-    expect(hasNoJobs(overview({ jobs: 1 }))).toBe(false)
-    expect(hasNoJobs({ ...overview({ jobs: 0 }), running: [{ ...job, state: 'running', result: null, finished_at: null }] })).toBe(false)
-  })
-})
-
 function overview(stats: Partial<Schemas['OverviewStats']>, bucket: Partial<Bucket> = {}): Overview {
   return {
     range: '24h',
@@ -132,30 +117,4 @@ function overview(stats: Partial<Schemas['OverviewStats']>, bucket: Partial<Buck
     buckets: buckets('2026-11-03T15:00:00Z', 1, 24, { 23: bucket }),
     recent: [],
   }
-}
-
-const job: Schemas['JobSummary'] = {
-  id: '01m6je8hchzdf5e8fshs2jfy2f',
-  job_name: 'test (node 22)',
-  workflow_name: 'CI',
-  workflow_file: '.github/workflows/ci.yml',
-  repository: 'kestrel-hq/api',
-  run_number: 4181,
-  head_branch: 'main',
-  head_sha: '1d0e7aa90c44391443d4b9ca016410176d990cbb',
-  pool_id: '01m3xfhm47vd7m44bm5jv7gn1y',
-  pool_label: 'runplane-8cpu',
-  server_id: '01m3xf4sz7v9b1yvym3hxcaey9',
-  server_name: 'fsn1-ax102-a',
-  state: 'completed',
-  status: 'succeeded',
-  result: 'succeeded',
-  debug: false,
-  reject_reason: '',
-  queue_ms: 2000,
-  duration_ms: 192000,
-  queued_at: '2026-11-04T04:44:42.6Z',
-  started_at: '2026-11-04T04:44:45Z',
-  finished_at: '2026-11-04T04:47:57Z',
-  expected_duration_ms: 0,
 }
