@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { Schemas } from '~/api/client'
-import { defaultStep, longestStep, parseJobSearch, shownStep, withoutRunGroups } from './job-steps'
+import { longestStep, parseJobSearch, shownStep, withoutRunGroups } from './job-steps'
 
 type Step = Schemas['JobStep']
 
@@ -16,22 +16,16 @@ const steps = [
   step(5, 'skipped', '2026-11-04T04:44:25Z', '2026-11-04T04:44:25Z'),
 ]
 
-describe('defaultStep', () => {
-  test('opens the first failed step', () => {
-    expect(defaultStep(steps)).toBe(3)
-  })
-
-  test('opens the whole log when no step failed', () => {
-    expect(defaultStep([steps[0]!, steps[1]!, steps[4]!])).toBe(0)
-    expect(defaultStep([])).toBe(0)
-  })
-})
-
 describe('shownStep', () => {
   test('a stored log shows the step in the URL, or else the first failed step', () => {
     expect(shownStep({ log_state: 'stored', steps }, 1)).toBe(1)
     expect(shownStep({ log_state: 'stored', steps }, 0)).toBe(0)
     expect(shownStep({ log_state: 'stored', steps }, undefined)).toBe(3)
+  })
+
+  test('a stored log without a failed step shows whole', () => {
+    expect(shownStep({ log_state: 'stored', steps: [steps[0]!, steps[1]!, steps[4]!] }, undefined)).toBe(0)
+    expect(shownStep({ log_state: 'stored', steps: [] }, undefined)).toBe(0)
   })
 
   test('a live log shows whole, because the stream has every step', () => {

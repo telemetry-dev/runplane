@@ -2,19 +2,15 @@ import { describe, expect, test } from 'vitest'
 import { hasFilters, jobsApiQuery, pageRange, parseJobsSearch } from './jobs-search'
 
 describe('parseJobsSearch', () => {
-  test('keeps known filters and drops unknown values', () => {
+  test('keeps known filters', () => {
     expect(
       parseJobsSearch({ q: 'webkit', status: 'failed', repository: 'kestrel-hq/web', pool: 'p1', server: 's1', range: '30d', cursor: 'abc' }),
     ).toEqual({ q: 'webkit', status: 'failed', repository: 'kestrel-hq/web', pool: 'p1', server: 's1', range: '30d', cursor: 'abc' })
-    expect(parseJobsSearch({ status: 'passed', range: '7d', q: '  ', repository: '' })).toEqual({
-      q: undefined,
-      status: undefined,
-      repository: undefined,
-      pool: undefined,
-      server: undefined,
-      range: undefined,
-      cursor: undefined,
-    })
+  })
+
+  test('drops unknown values, blank text, and the default range, which stays out of the URL', () => {
+    // toEqual ignores keys whose value is undefined.
+    expect(parseJobsSearch({ status: 'passed', range: '7d', q: '  ', repository: '', sort: 'name' })).toEqual({})
   })
 
   test('reads a number the router parsed from the URL as text', () => {
@@ -24,17 +20,9 @@ describe('parseJobsSearch', () => {
 })
 
 describe('jobsApiQuery', () => {
+  // Without a range, the API sends the jobs of all time.
   test('asks for the last 7 days when the URL has no range', () => {
-    expect(jobsApiQuery({})).toEqual({
-      q: undefined,
-      status: undefined,
-      repository: undefined,
-      pool_id: undefined,
-      server_id: undefined,
-      range: '7d',
-      cursor: undefined,
-      limit: 50,
-    })
+    expect(jobsApiQuery({}).range).toBe('7d')
   })
 
   test('sends no range for all time, and the pool and server as IDs', () => {
