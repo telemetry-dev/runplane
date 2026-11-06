@@ -10,33 +10,35 @@ import (
 )
 
 // Settings is the typed form of the settings table. Each JSON field name is
-// one key, and each key holds one JSON value.
+// one key, and each key holds one JSON value. The key is also the name of the
+// setting in the API and in the audit log. The tags give the doc and the
+// limits of each setting to the API.
 type Settings struct {
-	InstanceName            string       `json:"instance_name"`
-	PublicURL               string       `json:"public_url"` // empty = the request host
-	Domain                  string       `json:"domain"`
-	ACMEEmail               string       `json:"acme_email"`
-	Mode                    sandbox.Mode `json:"mode"`
-	ReserveVCPU             int          `json:"reserve_vcpu"`
-	ReserveMemoryMB         int          `json:"reserve_memory_mb"`
-	CPUOvercommit           float64      `json:"cpu_overcommit"`
-	MinFreeDiskPercent      float64      `json:"min_free_disk_percent"`
-	DefaultTimeLimitMinutes int          `json:"default_time_limit_minutes"`
-	AllowPublicRepos        bool         `json:"allow_public_repos"` // VM mode only
-	AllowForkPRs            bool         `json:"allow_fork_prs"`
-	EgressAllowlist         []string     `json:"egress_allowlist"` // empty = all public internet
-	BandwidthMbps           int          `json:"bandwidth_mbps"`   // 0 = no limit
-	DNSServers              []string     `json:"dns_servers"`
-	RegistryMirror          bool         `json:"registry_mirror"`
-	ActionsCache            bool         `json:"actions_cache"`
-	CacheMaxGB              int          `json:"cache_max_gb"`
-	JobRetentionDays        int          `json:"job_retention_days"`
-	LogRetentionDays        int          `json:"log_retention_days"`
-	DebugHoldMinutes        int          `json:"debug_hold_minutes"`
+	InstanceName            string       `json:"instance_name" minLength:"1" maxLength:"64" doc:"Title in the sidebar."`
+	PublicURL               string       `json:"public_url" maxLength:"2048" doc:"Browser URL of the dashboard, for example https://ci.example.com. Empty: the URL of each request."`
+	Domain                  string       `json:"domain" maxLength:"253" doc:"With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall."`
+	ACMEEmail               string       `json:"acme_email" maxLength:"254" doc:"Contact for the certificate authority. Optional."`
+	Mode                    sandbox.Mode `json:"mode" enum:"container,vm,dev" doc:"Sandbox mode of the primary. vm needs KVM, and dev needs RUNPLANE_DEV_INSECURE=1. A change takes effect after a restart."`
+	ReserveVCPU             int          `json:"reserve_vcpu" minimum:"0" maximum:"256" doc:"vCPUs that sandboxes do not get on each server."`
+	ReserveMemoryMB         int          `json:"reserve_memory_mb" minimum:"0" maximum:"1048576" doc:"Memory that sandboxes do not get on each server."`
+	CPUOvercommit           float64      `json:"cpu_overcommit" minimum:"0.5" maximum:"8" doc:"Factor for the vCPUs that sandboxes can get. 1 means no overcommit."`
+	MinFreeDiskPercent      float64      `json:"min_free_disk_percent" minimum:"0" maximum:"90" doc:"No new sandboxes start on a server with less free disk."`
+	DefaultTimeLimitMinutes int          `json:"default_time_limit_minutes" minimum:"1" maximum:"7200" doc:"Time limit of a job in a pool without its own limit."`
+	AllowPublicRepos        bool         `json:"allow_public_repos" doc:"Take jobs of public repositories. Only when the mode setting and each server are in VM mode."`
+	AllowForkPRs            bool         `json:"allow_fork_prs" doc:"Take jobs of pull requests from forks."`
+	EgressAllowlist         []string     `json:"egress_allowlist" maxItems:"256" doc:"Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet."`
+	BandwidthMbps           int          `json:"bandwidth_mbps" minimum:"0" maximum:"100000" doc:"Bandwidth limit of each VM. 0: no limit."`
+	DNSServers              []string     `json:"dns_servers" minItems:"1" maxItems:"4" doc:"IPv4 addresses of the DNS servers of the sandboxes."`
+	RegistryMirror          bool         `json:"registry_mirror" doc:"Docker Hub pull-through cache for the sandboxes."`
+	ActionsCache            bool         `json:"actions_cache" doc:"Local Actions cache server."`
+	CacheMaxGB              int          `json:"cache_max_gb" minimum:"1" maximum:"100000"`
+	JobRetentionDays        int          `json:"job_retention_days" minimum:"1" maximum:"3650"`
+	LogRetentionDays        int          `json:"log_retention_days" minimum:"1" maximum:"3650"`
+	DebugHoldMinutes        int          `json:"debug_hold_minutes" minimum:"1" maximum:"1440" doc:"Time that a debug sandbox stays after its job."`
 	AutoUpdate              bool         `json:"auto_update"`
-	BackupEnabled           bool         `json:"backup_enabled"`
-	BackupKeep              int          `json:"backup_keep"`
-	BackupS3                BackupS3     `json:"backup_s3"`
+	BackupEnabled           bool         `json:"backup_enabled" doc:"Daily database backup."`
+	BackupKeep              int          `json:"backup_keep" minimum:"1" maximum:"365" doc:"Backups to keep."`
+	BackupS3                BackupS3     `json:"backup_s3" doc:"Optional upload of each backup to S3."`
 }
 
 // DashboardURL is the browser URL of runplane for links in notifications, or
@@ -57,12 +59,12 @@ func (s Settings) Reserve() sandbox.Reserve {
 }
 
 type BackupS3 struct {
-	Endpoint     string `json:"endpoint,omitempty"`
-	Region       string `json:"region,omitempty"`
-	Bucket       string `json:"bucket,omitempty"`
-	Prefix       string `json:"prefix,omitempty"`
-	AccessKey    string `json:"access_key,omitempty"`
-	SecretKeyEnc []byte `json:"secret_key_enc,omitempty"` // sealed with internal/secret
+	Endpoint     string `json:"endpoint"`
+	Region       string `json:"region"`
+	Bucket       string `json:"bucket"`
+	Prefix       string `json:"prefix"`
+	AccessKey    string `json:"access_key"`
+	SecretKeyEnc []byte `json:"secret_key_enc"` // sealed with internal/secret
 }
 
 // DefaultSettings returns the value of each key that is not in the table.

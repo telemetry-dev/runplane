@@ -4,9 +4,9 @@
 //
 // The bus has one delivery rule for each kind of subscriber. Subscribe never
 // loses an event, for the packages that must see each event: notify must see
-// each failed job, and github each settings change. Watch ends when its client
-// reads too slowly. The SSE stream of the API uses Watch, and the browser then
-// connects again and reads the state from the API.
+// each failed job, and github each change of the settings and the pools.
+// Watch ends when its client reads too slowly. The SSE stream of the API uses
+// Watch, and the browser then connects again and reads the state from the API.
 package events
 
 import (
@@ -31,9 +31,13 @@ type (
 // HostStats is a new host sample of a server. The browser gets it as it is.
 type HostStats store.ServerStat
 
-// ImageState is an image row that the API added or changed. The fleet makes
-// the images ready again.
+// ImageState is an image row after a change.
 type ImageState store.Image
+
+// ImageRemoved has the ID of a removed image. The browser gets it as it is.
+type ImageRemoved struct {
+	ID string `json:"id"`
+}
 
 // ImageBuildState is the build of an image on a server after a change.
 type ImageBuildState store.ImageBuild
@@ -42,12 +46,18 @@ type ImageBuildState store.ImageBuild
 // gets it as it is.
 type PoolStats store.PoolCounts
 
+// PoolsChanged says that the pools changed, or what they use: a pool, the
+// default image, an image, or a server that a pool names. The browser gets
+// it as it is.
+type PoolsChanged struct{}
+
 // GitHubState says that the GitHub status changed: the app, the
 // installations, or the scale set listeners.
 type GitHubState struct{}
 
-// SettingsChanged has the new settings. The browser does not get it.
-type SettingsChanged store.Settings
+// SettingsChanged has the settings before and after a change. The browser
+// does not get it.
+type SettingsChanged struct{ Old, New store.Settings }
 
 func (SandboxState) event()    {}
 func (JobState) event()        {}
@@ -56,8 +66,10 @@ func (HostStats) event()       {}
 func (RunnerVersion) event()   {}
 func (BackupState) event()     {}
 func (ImageState) event()      {}
+func (ImageRemoved) event()    {}
 func (ImageBuildState) event() {}
 func (PoolStats) event()       {}
+func (PoolsChanged) event()    {}
 func (GitHubState) event()     {}
 func (SettingsChanged) event() {}
 

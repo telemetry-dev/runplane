@@ -6,6 +6,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -41,7 +42,7 @@ func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], er
 	return &body[Status]{Status{
 		NeedsSetup:      users == 0,
 		Version:         version.String(),
-		Mode:            string(h.mode(settings)),
+		Mode:            string(h.d.Settings.Mode(settings)),
 		InstanceName:    settings.InstanceName,
 		GitHubConnected: connected,
 		HasJobs:         len(jobs) > 0,
@@ -63,7 +64,6 @@ func (h *Handler) setup(ctx context.Context, in *body[SetupRequest]) (*sessionOu
 	if err != nil {
 		return nil, authErr(err, "body.password")
 	}
-	h.audit(context.WithValue(ctx, userKey{}, u), "setup.done", u.ID, map[string]any{"email": u.Email})
 	return h.newSession(ctx, u, token), nil
 }
 
@@ -107,7 +107,7 @@ func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*body[H
 		return nil, err
 	}
 	if !ok {
-		return nil, invalid("query.code", sentence(auth.ErrBadSetupCode), nil)
+		return nil, invalid("query.code", field.Sentence(auth.ErrBadSetupCode), nil)
 	}
 	if h.d.HostChecker == nil {
 		return nil, unavailable("The host check")

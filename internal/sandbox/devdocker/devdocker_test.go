@@ -34,7 +34,7 @@ func TestRefusesWithoutDevInsecure(t *testing.T) {
 // The control channels of dev sandboxes listen on the port after the
 // service port, so the doctor checks that port too.
 func TestDoctorChecksTheControlPort(t *testing.T) {
-	if got := devdocker.Requirements(8486, "/etc/runplane/runplane.env").Listen; !slices.Equal(got, []string{":8487"}) {
+	if got := devdocker.Requirements(8486, "Run sudo runplane set-mode container or vm.").Listen; !slices.Equal(got, []string{":8487"}) {
 		t.Errorf("the doctor checks the ports %v, want [:8487]", got)
 	}
 }

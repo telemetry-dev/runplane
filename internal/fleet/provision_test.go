@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -172,7 +173,7 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 		n.gates["registry.example.com/app:1"] = gate
 		n.digests["registry.example.com/app:1"] = "sha256:a002"
 	})
-	if err := h.f.RefreshImage(ctx, app); err != nil {
+	if err := h.f.RefreshImage(ctx, audit.Actor{}, app); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the second pull", func() bool { return count(local.args("EnsureImage"), "registry.example.com/app:1") == 2 })
@@ -194,7 +195,7 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	if err := h.st.UpdateImage(ctx, store.Image{ID: app, Name: "app", Ref: "registry.example.com/app:2"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.f.RefreshImage(ctx, app); err != nil {
+	if err := h.f.RefreshImage(ctx, audit.Actor{}, app); err != nil {
 		t.Fatal(err)
 	}
 	if got := digest(); got != "" {
@@ -221,7 +222,7 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, agentBefore := len(local.args("GCImages")), len(agentNode.args("GCImages"))
-	if err := h.f.RemoveImage(ctx, app); err != nil {
+	if err := h.f.RemoveImage(ctx, audit.Actor{}, app); err != nil {
 		t.Fatal(err)
 	}
 	if got := digest(); got != "" {

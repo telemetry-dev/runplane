@@ -134,7 +134,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	if err != nil {
 		d.log.Warn("read settings for notifications", "err", err)
 	}
-	d.settingsChanged(events.SettingsChanged(st))
+	d.settingsChanged(st)
 	for {
 		select {
 		case <-ctx.Done():
@@ -150,8 +150,8 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			delete(d.waiting, id)
 			d.jobFailed(ctx, id)
 			d.mu.Unlock()
-		case st := <-d.settings:
-			d.settingsChanged(st)
+		case c := <-d.settings:
+			d.settingsChanged(c.New)
 		case job := <-d.jobs:
 			d.jobDone(ctx, job)
 		case v := <-d.servers:
@@ -162,7 +162,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	}
 }
 
-func (d *Dispatcher) settingsChanged(st events.SettingsChanged) {
+func (d *Dispatcher) settingsChanged(st store.Settings) {
 	d.mu.Lock()
 	d.minFree = st.MinFreeDiskPercent
 	d.mu.Unlock()

@@ -50,11 +50,11 @@ type Service struct {
 	owner string // names the listener sessions on GitHub
 
 	// ops serializes the changes of installations and scale sets.
-	ops  sync.Mutex
-	poke chan struct{}
-	// settings gets each settings change from New on, so that Run misses
-	// no change that comes before it starts.
+	ops sync.Mutex
+	// The changes of the settings and the pools, from New on, so that Run
+	// misses no change that comes before it starts.
 	settings <-chan events.SettingsChanged
+	pools    <-chan events.PoolsChanged
 
 	// base is the parent context of the listeners and of the subscription.
 	// Run cancels it.
@@ -84,8 +84,8 @@ func New(cfg Config) *Service {
 		sched:     cfg.Scheduler,
 		web:       ghrest.Web,
 		owner:     cmp.Or(owner, "runplane"),
-		poke:      make(chan struct{}, 1),
 		settings:  events.Subscribe[events.SettingsChanged](base, cfg.Bus),
+		pools:     events.Subscribe[events.PoolsChanged](base, cfg.Bus),
 		base:      base,
 		stop:      stop,
 		tokens:    map[int64]token{},
@@ -95,7 +95,9 @@ func New(cfg Config) *Service {
 
 // Run syncs the installations and starts the scale set listeners, then
 // keeps them in step with GitHub, the pools, and the settings. It syncs each
-// 5 minutes. It returns after ctx ends and all listeners have stopped.
+// 5 minutes, and does one reconcile for the changes of the pools and the
+// settings that wait. It returns after ctx ends and all listeners have
+// stopped.
 func (s *Service) Run(ctx context.Context) {
 	s.syncAll(ctx)
 	tick := time.NewTicker(5 * time.Minute)
@@ -108,20 +110,27 @@ func (s *Service) Run(ctx context.Context) {
 			return
 		case <-tick.C:
 			s.syncAll(ctx)
-		case <-s.poke:
+		case <-s.pools:
+			s.dropChanges()
 			s.reconcileNow(ctx)
 		case <-s.settings:
+			s.dropChanges()
 			s.reconcileNow(ctx)
 		}
 	}
 }
 
-// PoolsChanged makes the scale sets agree with the pools soon, without
-// blocking.
-func (s *Service) PoolsChanged() {
-	select {
-	case s.poke <- struct{}{}:
-	default:
+// dropChanges takes the changes of the settings and the pools that wait,
+// because the next reconcile reads the pools and the settings after all of
+// them.
+func (s *Service) dropChanges() {
+	for {
+		select {
+		case <-s.pools:
+		case <-s.settings:
+		default:
+			return
+		}
 	}
 }
 

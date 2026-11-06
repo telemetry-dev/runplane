@@ -6,18 +6,6 @@ import (
 	"github.com/runplane/runplane/internal/scheduler"
 )
 
-// pools is the api Scheduler: a pool change also changes the scale sets
-// on GitHub.
-type pools struct {
-	*scheduler.Scheduler
-	gh *github.Service
-}
-
-func (p pools) PoolsChanged() {
-	p.gh.PoolsChanged()
-	p.Scheduler.PoolsChanged()
-}
-
 // githubRef breaks the construction cycle of the github service: the
 // scheduler and the runner versions service get it first, and the github
 // service fills it.

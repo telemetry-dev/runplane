@@ -220,7 +220,7 @@ func TestDispatcherDiskLow(t *testing.T) {
 	}
 	now := at
 	d.now = func() time.Time { return now }
-	d.settingsChanged(events.SettingsChanged{MinFreeDiskPercent: 15})
+	d.settingsChanged(store.Settings{MinFreeDiskPercent: 15})
 	sample := func(after time.Duration, usedPercent float64) {
 		now = at.Add(after)
 		d.hostStats(ctx, events.HostStats{ServerID: "s1", At: now, DiskPercent: usedPercent})

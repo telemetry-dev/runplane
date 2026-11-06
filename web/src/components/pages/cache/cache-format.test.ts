@@ -11,7 +11,7 @@ const web: CacheRepository = {
   misses: 11,
   last_used_at: '2026-11-04T04:24:45.447Z',
 }
-const docs: CacheRepository = { ...web, repository: 'kestrel-hq/docs', entries: 1, size_bytes: 134231253, hit_rate: 0, hits: 0, misses: 0 }
+const docs: CacheRepository = { ...web, repository: 'kestrel-hq/docs', entries: 1, size_bytes: 134231253, hit_rate: null, hits: 0, misses: 0 }
 
 const cache: CacheOverview = {
   enabled: true,
@@ -25,6 +25,7 @@ const cache: CacheOverview = {
     misses: 328,
     hit_bytes: 335007449088,
     miss_bytes: 2000000,
+    hit_rate: 0.9361867704280155,
     size_bytes: 19542101196,
     started_at: '2026-11-01T03:00:00Z',
   },
@@ -36,7 +37,7 @@ describe('cacheStats', () => {
   })
 
   test('an empty cache shows 0, and no hit rate before the first lookup', () => {
-    const empty = { ...cache, size_bytes: 0, hit_rate: 0, repositories: [{ ...docs, entries: 0 }] }
+    const empty = { ...cache, size_bytes: 0, hit_rate: null, repositories: [{ ...docs, entries: 0 }] }
     expect(cacheStats(empty)).toMatchObject({ size: '0', hitRate: null, entries: '0' })
   })
 

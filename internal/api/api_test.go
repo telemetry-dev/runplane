@@ -21,8 +21,10 @@ import (
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
+	"github.com/runplane/runplane/internal/settings"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -44,10 +46,14 @@ func newEnv(t *testing.T, with ...func(*Deps)) *env {
 	must(t, err)
 	cfg := config.Default()
 	cfg.DataDir, cfg.ConfigDir, cfg.Mode = dir, dir, sandbox.ModeContainer
-	d := Deps{Store: st, Auth: auth.NewService(st, []byte("device key")), Bus: &events.Bus{}, Box: box, Config: cfg}
+	d := Deps{Store: st, Auth: auth.NewService(st, []byte("device key"), nil), Bus: &events.Bus{}, Box: box, Config: cfg}
 	for _, f := range with {
 		f(&d)
 	}
+	d.Settings = settings.New(settings.Config{
+		Store: st, Bus: d.Bus, Mode: d.Config.Mode, DevInsecure: d.Config.DevInsecure, KVM: func() bool { return false },
+	})
+	d.Pools = pools.New(pools.Config{Store: st, Bus: d.Bus})
 	h := New(d)
 	srv := httptest.NewServer(h)
 	t.Cleanup(func() {

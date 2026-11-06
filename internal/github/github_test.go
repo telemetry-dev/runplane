@@ -47,7 +47,7 @@ func TestRunFollowsSettingsAndPools(t *testing.T) {
 	eventually(t, "a scale set for the public repository too", listening(2))
 
 	e.pool("p2", "runplane-big", true)
-	e.svc.PoolsChanged()
+	e.bus.Publish(events.PoolsChanged{})
 	eventually(t, "scale sets for the new pool", listening(4))
 	scopes := map[string]int{}
 	for _, sc := range f.state().scopes {

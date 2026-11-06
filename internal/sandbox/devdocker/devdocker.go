@@ -42,11 +42,10 @@ func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 }
 
 // Requirements are what dev mode needs on the server, for the doctor.
-// envFile is the environment file, which sets the mode.
-func Requirements(servicePort int, envFile string) doctor.Requirements {
+// modeFix tells how to give the server container or vm mode.
+func Requirements(servicePort int, modeFix string) doctor.Requirements {
 	return doctor.Requirements{
-		Mode: doctor.ModeCheck.Warn("Dev mode runs jobs in privileged Docker containers",
-			"Set RUNPLANE_MODE to container or vm in "+envFile+" on a production server."),
+		Mode:   doctor.ModeCheck.Warn("Dev mode runs jobs in privileged Docker containers", modeFix),
 		Docker: true,
 		Listen: []string{sysbox.ControlAddr(servicePort)},
 	}

@@ -71,7 +71,7 @@ func Read(ctx context.Context, dataDir string) (Info, Details) {
 
 	flags := cpuFlags()
 	d.CPUVirt = flags["vmx"] || flags["svm"]
-	info.KVM, d.KVMErr = openKVM()
+	info.KVM, d.KVMErr = OpenKVM()
 	board := readDMI(os.DirFS("/sys/class/dmi/id"))
 	info.Provider = board.provider(info.Hostname)
 	d.Virtual = flags["hypervisor"] || board.virtual()
@@ -124,7 +124,9 @@ func kernelRelease() string {
 	return unix.ByteSliceToString(u.Release[:])
 }
 
-func openKVM() (bool, error) {
+// OpenKVM tells if /dev/kvm opens read-write, as the VMs need it, and why it
+// does not.
+func OpenKVM() (bool, error) {
 	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
 		return false, err

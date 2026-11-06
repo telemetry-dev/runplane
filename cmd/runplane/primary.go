@@ -27,6 +27,7 @@ import (
 	"github.com/runplane/runplane/internal/github"
 	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/notify"
+	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/scheduler"
@@ -68,18 +69,21 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	mode, err := initMode(ctx, st, cfg)
+	bus := &events.Bus{}
+	settingsService := newSettings(st, bus, cfg, log.With("component", "settings"))
+	mode, err := settingsService.InitMode(ctx)
 	if err != nil {
-		return err
-	}
-	if err := checkMode(mode, cfg.DevInsecure); err != nil {
 		return err
 	}
 	if cfg.Mode != "" && cfg.Mode != mode {
 		log.Warn("the mode in the dashboard settings overrides RUNPLANE_MODE", "settings", mode, "env", cfg.Mode)
 	}
 
-	deps := api.Deps{Store: st, Auth: auth.NewService(st, subkey(key, "runplane device tokens")), Bus: &events.Bus{}, Box: box, Log: log, Config: cfg}
+	deps := api.Deps{
+		Store: st, Auth: auth.NewService(st, subkey(key, "runplane device tokens"), log.With("component", "auth")),
+		Settings: settingsService, Pools: pools.New(pools.Config{Store: st, Bus: bus, Log: log.With("component", "pools")}),
+		Bus: bus, Box: box, Log: log, Config: cfg,
+	}
 	p, err := startPrimary(&deps, key, mode, end)
 	if err != nil {
 		return fmt.Errorf("start services: %w", err)
@@ -124,24 +128,6 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
-}
-
-// initMode returns the sandbox mode. The settings keep the mode after the
-// first start, so a change in the dashboard outlives the environment of the
-// install. At the first start, the mode comes from the configuration.
-func initMode(ctx context.Context, st *store.Store, cfg config.Config) (sandbox.Mode, error) {
-	settings, err := st.GetSettings(ctx)
-	if err != nil {
-		return "", err
-	}
-	if settings.Mode != "" || cfg.Mode == "" {
-		return settings.Mode, nil
-	}
-	settings, err = st.UpdateSettings(ctx, func(s *store.Settings) error {
-		s.Mode = cfg.Mode
-		return nil
-	})
-	return settings.Mode, err
 }
 
 // logSetupCode logs a new setup code while no admin exists, so the admin
@@ -205,6 +191,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 		return nil, err
 	}
 	p.settings.Store(&settings)
+	p.followSettings(d.Bus)
 
 	// Release reads with an installation token have a higher rate limit.
 	token := func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
@@ -292,7 +279,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 		p.acme.Stop(ctx)
 	})
 
-	d.Scheduler = pools{p.sched, p.gh}
+	d.Scheduler = p.sched
 	d.GitHub = p.gh
 	d.Servers = p.fleet
 	d.Images = p.fleet
@@ -305,7 +292,6 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	d.Shell = opener
 	d.HostChecker = p.fleet
 	d.InstallScript = p.fleet
-	d.SettingsHook = p
 	d.HTTPS = p.acme
 	return p, nil
 }
@@ -444,19 +430,28 @@ func (p *primary) recordIP(ctx context.Context, serverID, sandboxID string, list
 	}
 }
 
-// SettingsChanged is the api SettingsHook: it gives the new settings to the
-// servers, the scale sets, the scheduler, the cache, and HTTPS.
-func (p *primary) SettingsChanged(ctx context.Context, prev, next store.Settings) {
-	p.settings.Store(&next)
-	p.fleet.SettingsChanged(ctx, prev, next)
-	p.gh.PoolsChanged()
-	p.sched.PoolsChanged()
-	if prev.Domain != next.Domain || prev.ACMEEmail != next.ACMEEmail {
-		p.serveHTTPS(next)
-	}
-	if prev.Mode != next.Mode {
-		p.log.Warn("the new sandbox mode applies after a restart of runplane", "mode", next.Mode)
-	}
+// followSettings gives each settings change to the cache server and HTTPS.
+// The fleet, the scheduler, and GitHub follow the changes themselves.
+func (p *primary) followSettings(bus *events.Bus) {
+	sub, cancel := context.WithCancel(context.Background())
+	changes := events.Subscribe[events.SettingsChanged](sub, bus)
+	p.run(func(ctx context.Context) {
+		defer cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case c := <-changes:
+				p.settings.Store(&c.New)
+				if c.Old.Domain != c.New.Domain || c.Old.ACMEEmail != c.New.ACMEEmail {
+					p.serveHTTPS(c.New)
+				}
+				if c.Old.Mode != c.New.Mode {
+					p.log.Warn("the new sandbox mode applies after a restart of runplane", "mode", c.New.Mode)
+				}
+			}
+		}
+	})
 }
 
 // serveHTTPS serves the dashboard with a Let's Encrypt certificate for the

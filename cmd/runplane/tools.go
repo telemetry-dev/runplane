@@ -1,26 +1,30 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/internal/api"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/doctor"
+	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
+	"github.com/runplane/runplane/internal/settings"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/update"
 	"github.com/runplane/runplane/internal/version"
@@ -36,7 +40,7 @@ func setupCode(ctx context.Context, args []string) error {
 		return err
 	}
 	defer st.Close()
-	code, err := auth.NewService(st, nil).NewSetupCode(ctx)
+	code, err := auth.NewService(st, nil, nil).NewSetupCode(ctx)
 	if errors.Is(err, auth.ErrSetupDone) {
 		return errors.New("an admin exists, so the setup is done: log in, or ask an admin for an invite")
 	}
@@ -64,8 +68,7 @@ func runDoctor(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	// The dashboard settings win over the environment.
-	mode := cmp.Or(settings.Mode, cfg.Mode)
+	mode := policy.Mode(settings, cfg.Mode)
 	opts := doctorOptions(cfg, mode, agent, settings.Domain)
 	opts.MinFreeDiskPercent = settings.MinFreeDiskPercent
 	opts.Internet = func(context.Context) error { return sandbox.ErrProbeInService }
@@ -196,22 +199,6 @@ func setMode(ctx context.Context, args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("give the mode: runplane set-mode container|vm|dev")
 	}
-	mode := sandbox.Mode(flags.Arg(0))
-	switch mode {
-	case sandbox.ModeContainer:
-	case sandbox.ModeVM:
-		f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
-		if err != nil {
-			return fmt.Errorf("VM mode needs KVM: %w", err)
-		}
-		f.Close()
-	case sandbox.ModeDev:
-		if !cfg.DevInsecure {
-			return errDevInsecure
-		}
-	default:
-		return fmt.Errorf("mode %q: use container, vm, or dev", mode)
-	}
 	if !exists(cfg.DBPath()) {
 		return fmt.Errorf("no database at %s", cfg.DBPath())
 	}
@@ -220,19 +207,11 @@ func setMode(ctx context.Context, args []string) error {
 		return err
 	}
 	defer st.Close()
-	_, err = st.UpdateSettings(ctx, func(s *store.Settings) error {
-		s.Mode = mode
-		// Container mode always rejects public repositories, and the
-		// dashboard refuses to save the settings while this one is on.
-		if mode == sandbox.ModeContainer {
-			s.AllowPublicRepos = false
-		}
-		return nil
-	})
+	next, err := newSettings(st, &events.Bus{}, cfg, nil).SetMode(ctx, audit.Actor{}, sandbox.Mode(flags.Arg(0)))
 	if err != nil {
 		return err
 	}
-	fmt.Printf("runplane uses %s mode after its next start.\n", mode)
+	fmt.Printf("runplane uses %s mode after its next start.\n", next.Mode)
 	return nil
 }
 
@@ -269,10 +248,6 @@ func setDomain(ctx context.Context, args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("give the domain: runplane set-domain ci.example.com")
 	}
-	domain := strings.ToLower(strings.TrimSpace(flags.Arg(0)))
-	if domain != "" && !api.ValidDomain(domain) {
-		return fmt.Errorf("%q is not a domain name such as ci.example.com", domain)
-	}
 	if exists(cfg.AgentConfigPath()) {
 		return errors.New("this server is an agent: only the primary serves the dashboard")
 	}
@@ -281,19 +256,28 @@ func setDomain(ctx context.Context, args []string) error {
 		return err
 	}
 	defer st.Close()
-	_, err = st.UpdateSettings(ctx, func(s *store.Settings) error {
-		s.Domain = domain
+	next, err := newSettings(st, &events.Bus{}, cfg, nil).Update(ctx, audit.Actor{}, func(s *store.Settings) error {
+		s.Domain = flags.Arg(0)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if domain == "" {
+	if next.Domain == "" {
 		fmt.Println("runplane stops HTTPS after its next start.")
 	} else {
-		fmt.Printf("runplane serves https://%s after its next start.\n", domain)
+		fmt.Printf("runplane serves https://%s after its next start.\n", next.Domain)
 	}
 	return nil
+}
+
+// newSettings is the settings service of the primary.
+func newSettings(st *store.Store, bus *events.Bus, cfg config.Config, log *slog.Logger) *settings.Service {
+	kvm := func() bool {
+		ok, _ := host.OpenKVM()
+		return ok
+	}
+	return settings.New(settings.Config{Store: st, Bus: bus, Log: log, Mode: cfg.Mode, DevInsecure: cfg.DevInsecure, KVM: kvm})
 }
 
 func readSettings(ctx context.Context, cfg config.Config) (store.Settings, error) {

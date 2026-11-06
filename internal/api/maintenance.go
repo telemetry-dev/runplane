@@ -59,7 +59,7 @@ func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*body[Backup],
 	if err != nil {
 		return nil, notFound(err, "The new backup is gone.")
 	}
-	h.audit(ctx, "backup.create", b.ID, nil)
+	h.record(ctx, "backup.create", b.ID, nil)
 	h.d.Bus.Publish(events.BackupState(b))
 	return &body[Backup]{h.backupOut(b)}, nil
 }
@@ -79,7 +79,7 @@ func (h *Handler) downloadBackup(ctx context.Context, in *PathID) (*huma.StreamR
 	if err != nil {
 		return nil, err
 	}
-	h.audit(ctx, "backup.download", b.ID, nil)
+	h.record(ctx, "backup.download", b.ID, nil)
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		defer f.Close()
 		r, w := humago.Unwrap(hctx)
@@ -133,7 +133,7 @@ func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) 
 	if h.d.Updater == nil {
 		return nil, unavailable("The updater")
 	}
-	h.audit(ctx, "update.apply", "", nil)
+	h.record(ctx, "update.apply", "", nil)
 	// The update goes on when the admin closes the page.
 	u, err := h.d.Updater.Apply(context.WithoutCancel(ctx))
 	switch {

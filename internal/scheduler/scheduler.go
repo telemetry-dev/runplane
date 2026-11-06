@@ -73,6 +73,11 @@ type Scheduler struct {
 	pending atomic.Uint32 // work bits for Run
 	wakeCh  chan struct{}
 
+	// The changes of the pools and the settings, from New on. Run resizes
+	// the scale sets for them.
+	pools    <-chan events.PoolsChanged
+	settings <-chan events.SettingsChanged
+
 	placeMu sync.Mutex // one placement at a time, see place
 
 	mu        sync.Mutex
@@ -116,6 +121,8 @@ func New(c Config) *Scheduler {
 		bg:        bg,
 		stopBg:    stop,
 		wakeCh:    make(chan struct{}, 1),
+		pools:     events.Subscribe[events.PoolsChanged](bg, c.Bus),
+		settings:  events.Subscribe[events.SettingsChanged](bg, c.Bus),
 		sets:      map[string]*scaleSet{},
 		reserved:  map[string]reservation{},
 		starting:  map[string]string{},
@@ -134,9 +141,9 @@ func New(c Config) *Scheduler {
 }
 
 // Run does the cleanup at once and then each minute, the retention each
-// day, the metrics flush each 10 seconds, and the work that PoolsChanged,
-// CapacityChanged, and sandbox events ask for. It returns when ctx ends,
-// after the job finish steps stop.
+// day, the metrics flush each 10 seconds, and the work that the changes of
+// the pools and the settings, CapacityChanged, and sandbox events ask for.
+// It returns when ctx ends, after the job finish steps stop.
 func (s *Scheduler) Run(ctx context.Context) {
 	defer func() {
 		s.mu.Lock()
@@ -169,6 +176,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.work(ctx)
 		case <-s.wakeCh:
 			s.work(ctx)
+		case <-s.pools:
+			s.wake(doResize)
+		case <-s.settings:
+			s.wake(doResize)
 		}
 	}
 }
@@ -192,9 +203,6 @@ func (s *Scheduler) wake(work uint32) {
 	default:
 	}
 }
-
-// PoolsChanged resizes all scale sets for the new pool settings.
-func (s *Scheduler) PoolsChanged() { s.wake(doResize) }
 
 // CapacityChanged compares the sandboxes with the rows again and resizes all
 // scale sets. The fleet calls it when a server comes or goes.

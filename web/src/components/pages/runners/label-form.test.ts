@@ -27,6 +27,7 @@ const pool: Pool = {
   busy: 0,
   starting: 0,
   queued: 1,
+  assigned: 0,
 }
 
 const serverArch = new Map([

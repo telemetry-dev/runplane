@@ -24,7 +24,7 @@ import (
 func doctorOptions(cfg config.Config, mode sandbox.Mode, agent bool, domain string) doctor.Options {
 	o := doctor.Options{
 		DataDir: cfg.DataDir, EnvFile: cfg.EnvFilePath(), Unit: "runplane", Listen: primaryAddrs(cfg, domain),
-		Requirements: requirements(cfg, mode), Docker: dockerFacts, BaseImage: baseImage,
+		Requirements: requirements(cfg, mode, agent), Docker: dockerFacts, BaseImage: baseImage,
 	}
 	if agent {
 		o.Unit, o.Listen = "runplane-agent", []string{servicePortAddr(cfg)}
@@ -33,18 +33,28 @@ func doctorOptions(cfg config.Config, mode sandbox.Mode, agent bool, domain stri
 }
 
 // requirements returns what the sandbox driver of mode needs on this server.
-func requirements(cfg config.Config, mode sandbox.Mode) doctor.Requirements {
+func requirements(cfg config.Config, mode sandbox.Mode, agent bool) doctor.Requirements {
 	switch mode {
 	case sandbox.ModeContainer:
 		return sysbox.Requirements()
 	case sandbox.ModeVM:
 		return firecracker.Requirements(cfg.KernelPath(), cfg.JailDir())
 	case sandbox.ModeDev:
-		return devdocker.Requirements(cfg.ServicePort, cfg.EnvFilePath())
+		return devdocker.Requirements(cfg.ServicePort, modeFix(cfg, agent, "container or vm"))
 	}
 	return doctor.Requirements{
-		Mode: doctor.ModeCheck.Fail(fmt.Sprintf("Unknown mode %q", mode), "Set RUNPLANE_MODE to container, vm, or dev in "+cfg.EnvFilePath()+"."),
+		Mode: doctor.ModeCheck.Fail(fmt.Sprintf("Unknown mode %q", mode), modeFix(cfg, agent, "container, vm, or dev")),
 	}
+}
+
+// modeFix tells how to give this server one of modes. After the first start
+// of a primary, which makes its database, the mode setting wins over
+// RUNPLANE_MODE (policy.Mode).
+func modeFix(cfg config.Config, agent bool, modes string) string {
+	if !agent && exists(cfg.DBPath()) {
+		return "Run sudo runplane set-mode " + modes + "."
+	}
+	return "Set RUNPLANE_MODE to " + modes + " in " + cfg.EnvFilePath() + "."
 }
 
 // primaryAddrs lists the TCP addresses of the primary. A domain adds the

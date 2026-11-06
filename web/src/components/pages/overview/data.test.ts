@@ -69,7 +69,7 @@ describe('statValues', () => {
   })
 
   test('shows no failure rate while no job has succeeded or failed', () => {
-    const values = statValues(overview({ jobs: 3, failure_rate: 0 }, { cancelled: 3 }))
+    const values = statValues(overview({ jobs: 3, failure_rate: null }, { cancelled: 3 }))
     expect(values.failureRate).toBeNull()
   })
 
@@ -108,12 +108,13 @@ describe('hasNoJobs', () => {
 function overview(stats: Partial<Schemas['OverviewStats']>, bucket: Partial<Bucket> = {}): Overview {
   return {
     range: '24h',
+    bucket_ms: 3_600_000,
     stats: {
       jobs: 0,
       vcpu_in_use: 0,
       vcpu_total: 16,
       median_queue_ms: null,
-      failure_rate: 0,
+      failure_rate: null,
       cache_hit_rate: null,
       duration_ms: 0,
       ...stats,

@@ -7,6 +7,7 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/version"
 )
 
@@ -19,7 +20,7 @@ func runAgent(ctx context.Context, args []string) error {
 		return err
 	}
 	log := newLogger(ctx, cfg)
-	if err := checkMode(cfg.Mode, cfg.DevInsecure); err != nil {
+	if err := policy.CheckMode(cfg.Mode, cfg.DevInsecure); err != nil {
 		return err
 	}
 	if err := cfg.EnsureDirs(); err != nil {

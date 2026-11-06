@@ -298,14 +298,14 @@ func TestOverview(t *testing.T) {
 		t.Errorf("jobs = %d, want 6", o.Jobs)
 	}
 	// Waits: 4, 10, 2, 6, 8 s. Median 6 s.
-	if o.MedianQueueMS != 6000 {
-		t.Errorf("median queue = %d ms, want 6000", o.MedianQueueMS)
+	if o.MedianQueueMS == nil || *o.MedianQueueMS != 6000 {
+		t.Errorf("median queue = %v ms, want 6000", o.MedianQueueMS)
 	}
 	// One failed of three succeeded or failed.
-	if fmt.Sprintf("%.4f", o.FailureRate) != "0.3333" {
+	if o.FailureRate == nil || fmt.Sprintf("%.4f", *o.FailureRate) != "0.3333" {
 		t.Errorf("failure rate = %v, want 1/3", o.FailureRate)
 	}
-	if o.CacheHitRate != 0.75 {
+	if o.CacheHitRate == nil || *o.CacheHitRate != 0.75 {
 		t.Errorf("cache hit rate = %v, want 0.75", o.CacheHitRate)
 	}
 	// Run times: 100 + 50 + 30 + 0 s.

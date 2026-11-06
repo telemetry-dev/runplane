@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/doctor"
+	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -271,9 +275,106 @@ func (f *Fleet) setRegion(ctx context.Context, id, region string) bool {
 	return changed
 }
 
-// RemoveServer drains an agent, stops its sandboxes, and closes its
-// connection. The API then deletes the row.
-func (f *Fleet) RemoveServer(ctx context.Context, serverID string) error {
+// ServerChange is a change of a server by an admin. A nil field keeps its
+// value.
+type ServerChange struct {
+	Name   *string
+	Status *string // online, draining, or disabled
+}
+
+// UpdateServer renames a server or changes its status, and returns the
+// row. A status that the server cannot get now gives ErrInstalling or
+// ErrNotPaused.
+func (f *Fleet) UpdateServer(ctx context.Context, by audit.Actor, serverID string, c ServerChange) (store.Server, error) {
+	old, err := f.st.GetServer(ctx, serverID)
+	if err != nil {
+		return store.Server{}, err
+	}
+	now := f.now()
+	if c.Name != nil {
+		name := strings.TrimSpace(*c.Name)
+		if name == "" {
+			var p field.Problems
+			p.Add("name", "Enter a name.", *c.Name)
+			return store.Server{}, p
+		}
+		if name != old.Name {
+			if err := f.st.SetServerName(ctx, old.ID, name, now); err != nil {
+				return store.Server{}, err
+			}
+		}
+	}
+	if c.Status != nil && *c.Status != old.Status {
+		if err := statusChange(old.Status, *c.Status); err != nil {
+			return store.Server{}, err
+		}
+		if err := f.st.SetServerStatus(ctx, old.ID, *c.Status, "", now); err != nil {
+			return store.Server{}, err
+		}
+	}
+	v, err := f.st.GetServer(ctx, old.ID)
+	if err != nil {
+		return store.Server{}, err
+	}
+	f.serverChanged(v)
+	f.bus.Publish(events.ServerState(v))
+	changes := map[string][2]any{}
+	if v.Name != old.Name {
+		changes["name"] = [2]any{old.Name, v.Name}
+	}
+	if v.Status != old.Status {
+		changes["status"] = [2]any{old.Status, v.Status}
+	}
+	if len(changes) > 0 {
+		f.audit.Record(ctx, by, "server.update", v.ID, map[string]any{"name": v.Name, "status": v.Status, "changes": changes})
+	}
+	return v, nil
+}
+
+// The errors of a status that a server cannot get now.
+var (
+	ErrInstalling = errors.New("the server is still installing")
+	ErrNotPaused  = errors.New("only a draining or disabled server can go online")
+)
+
+// statusChange tells why a server cannot change from one status to another
+// by an admin.
+func statusChange(from, to string) error {
+	switch {
+	case from == store.ServerInstalling:
+		return ErrInstalling
+	case to == store.ServerOnline && !adminStatus(from):
+		return fmt.Errorf("%w, and the server is %s", ErrNotPaused, from)
+	}
+	return nil
+}
+
+// Actions are the changes that an admin can make to a server now.
+type Actions struct {
+	Drain     bool
+	Resume    bool // online again after a drain or disable
+	Remove    bool
+	Update    bool // install the release of the primary on the agent
+	RunDoctor bool
+}
+
+// Actions tells which changes an admin can make to the server v now.
+func (f *Fleet) Actions(v store.Server) Actions {
+	connected := f.node(v.ID) != nil
+	update := f.UpdateState(v)
+	return Actions{
+		Drain:     v.Status != store.ServerDraining && statusChange(v.Status, store.ServerDraining) == nil,
+		Resume:    v.Status != store.ServerOnline && statusChange(v.Status, store.ServerOnline) == nil,
+		Remove:    v.Kind != store.ServerLocal,
+		Update:    connected && (update == UpdateAvailable || update == UpdateFailed),
+		RunDoctor: connected,
+	}
+}
+
+// RemoveServer drains an agent, stops its sandboxes, closes its connection,
+// and deletes its row. The delete can change the servers of pools, or
+// disable them.
+func (f *Fleet) RemoveServer(ctx context.Context, by audit.Actor, serverID string) error {
 	v, err := f.st.GetServer(ctx, serverID)
 	if err != nil {
 		return err
@@ -301,21 +402,25 @@ func (f *Fleet) RemoveServer(ctx context.Context, serverID string) error {
 	}
 	f.publishServer(ctx, v.ID)
 	f.capacityChanged()
-	if n == nil {
-		return nil
-	}
-	d := n.Driver()
-	list, err := d.List(ctx)
-	if err != nil {
-		f.log.Warn("list sandboxes of a removed server", "server_id", v.ID, "err", err)
-	}
-	for _, sb := range list {
-		if err := d.Stop(ctx, sb.ID); err != nil {
-			f.log.Warn("stop sandbox of a removed server", "server_id", v.ID, "sandbox", sb.ID, "err", err)
+	if n != nil {
+		d := n.Driver()
+		list, err := d.List(ctx)
+		if err != nil {
+			f.log.Warn("list sandboxes of a removed server", "server_id", v.ID, "err", err)
 		}
+		for _, sb := range list {
+			if err := d.Stop(ctx, sb.ID); err != nil {
+				f.log.Warn("stop sandbox of a removed server", "server_id", v.ID, "sandbox", sb.ID, "err", err)
+			}
+		}
+		n.Close()
+		f.log.Info("server removed", "server_id", v.ID, "name", v.Name, "sandboxes", len(list))
 	}
-	n.Close()
-	f.log.Info("server removed", "server_id", v.ID, "name", v.Name, "sandboxes", len(list))
+	if err := f.st.DeleteServer(ctx, v.ID, f.now()); err != nil {
+		return err
+	}
+	f.bus.Publish(events.PoolsChanged{})
+	f.audit.Record(ctx, by, "server.delete", v.ID, map[string]any{"name": v.Name})
 	return nil
 }
 
@@ -350,10 +455,10 @@ func (f *Fleet) doctor(ctx context.Context, n agent.Node) (doctor.Report, error)
 	return r, nil
 }
 
-// SettingsChanged sends the new settings to each connected server.
-func (f *Fleet) SettingsChanged(_ context.Context, prev, next store.Settings) {
-	s := NodeSettings(next)
-	if reflect.DeepEqual(NodeSettings(prev), s) {
+// settingsChanged sends the new settings to each connected server.
+func (f *Fleet) settingsChanged(c events.SettingsChanged) {
+	s := NodeSettings(c.New)
+	if reflect.DeepEqual(NodeSettings(c.Old), s) {
 		return
 	}
 	for _, n := range f.connected() {

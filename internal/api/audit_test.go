@@ -15,7 +15,6 @@ import (
 
 type okScheduler struct{}
 
-func (okScheduler) PoolsChanged()                                {}
 func (okScheduler) StopSandbox(context.Context, string) error    { return nil }
 func (okScheduler) RerunJob(context.Context, string, bool) error { return nil }
 
@@ -45,7 +44,6 @@ func TestAuditDetails(t *testing.T) {
 	b.do("PATCH", "/api/settings", map[string]any{
 		"cpu_overcommit": 1.5, "backup_s3": map[string]any{"bucket": "backups", "access_key": "AKIA1", "secret_key": "s3-secret-value"},
 	}, nil).want(t, 200)
-	b.do("PATCH", "/api/servers/s1", map[string]any{"name": "fsn1-c", "status": "draining"}, nil).want(t, 200)
 	var invite CreatedInvite
 	b.do("POST", "/api/invites", map[string]any{"email": "eve@example.com", "role": "member"}, &invite).want(t, 200)
 	b.do("DELETE", "/api/invites/"+invite.Invite.ID, nil, nil).want(t, 204)
@@ -85,7 +83,6 @@ func TestAuditDetails(t *testing.T) {
 			"servers":[["fsn1-a"],["fsn1-a","fsn1-b"]]}}`,
 		"settings.update": `{"keys":["backup_s3","cpu_overcommit"],"changes":{"cpu_overcommit":[1,1.5],
 			"backup_s3.bucket":["","backups"],"backup_s3.access_key":["","AKIA1"],"backup_s3.secret_key_set":[false,true]}}`,
-		"server.update": `{"name":"fsn1-c","status":"draining","changes":{"name":["fsn1-a","fsn1-c"],"status":["online","draining"]}}`,
 		"invite.delete": `{"email":"eve@example.com","role":"member"}`,
 		"job.rerun": `{"debug":true,"repository":"acme/api","workflow_file":".github/workflows/ci.yml","job_name":"build",
 			"run_number":2290}`,

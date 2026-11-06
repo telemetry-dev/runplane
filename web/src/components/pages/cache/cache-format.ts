@@ -19,12 +19,11 @@ type Stats = {
 }
 
 export function cacheStats(cache: CacheOverview): Stats {
-  const lookups = cache.repositories.reduce((sum, repo) => sum + repo.hits + repo.misses, 0)
   const mirror = cache.mirror_enabled ? cache.mirror : undefined
   return {
     size: cache.size_bytes === 0 ? '0' : (cache.size_bytes / gb).toFixed(1),
     limit: `${Math.round(cache.max_bytes / gb)} GB`,
-    hitRate: lookups === 0 ? null : formatPercent(cache.hit_rate * 100),
+    hitRate: cache.hit_rate === null ? null : formatPercent(cache.hit_rate * 100),
     entries: formatCount(cache.repositories.reduce((sum, repo) => sum + repo.entries, 0)),
     mirrorSaved: mirror && mirror.hits > 0 ? formatBytes(mirror.hit_bytes) : null,
   }
@@ -32,7 +31,7 @@ export function cacheStats(cache: CacheOverview): Stats {
 
 /** The hit rate of a repository, or null without hits and misses. */
 export function repositoryHitRate(repo: CacheRepository): string | null {
-  return repo.hits + repo.misses === 0 ? null : formatPercent(repo.hit_rate * 100)
+  return repo.hit_rate === null ? null : formatPercent(repo.hit_rate * 100)
 }
 
 /** The mirror's hit rate since runplane started, or null before its first pull. */

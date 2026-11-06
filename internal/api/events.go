@@ -25,10 +25,12 @@ func (h *Handler) registerEvents() {
 		"sandbox.state":  Sandbox{},
 		"job.state":      JobSummary{},
 		"pool.stats":     events.PoolStats{},
+		"pools.changed":  events.PoolsChanged{},
 		"server.state":   Server{},
 		"host.stats":     events.HostStats{},
 		"runner.version": RunnerVersion{},
 		"image.state":    Image{},
+		"image.removed":  events.ImageRemoved{},
 		"github.state":   GitHubStatus{},
 		"backup.state":   Backup{},
 	}, h.streamEvents)
@@ -75,7 +77,7 @@ func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
 		return first(h.sandboxes(ctx, []store.Sandbox{store.Sandbox(e)}))
 	case events.JobState:
 		return first(h.jobSummaries(ctx, []store.Job{store.Job(e)}))
-	case events.PoolStats, events.HostStats:
+	case events.PoolStats, events.PoolsChanged, events.HostStats, events.ImageRemoved:
 		return e, nil
 	case events.ServerState:
 		return first(h.servers(ctx, []store.Server{store.Server(e)}))

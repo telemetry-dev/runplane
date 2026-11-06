@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
@@ -88,6 +89,7 @@ type Fleet struct {
 	st              *store.Store
 	bus             *events.Bus
 	log             *slog.Logger
+	audit           audit.Log
 	cfg             config.Config
 	local           agent.Node
 	fp              string
@@ -100,9 +102,8 @@ type Fleet struct {
 	now             func() time.Time
 	knownHosts      *sshinstall.KnownHosts
 
-	// The changes of server and image rows that the API makes. Run reads them.
-	serverRows <-chan events.ServerState
-	imageRows  <-chan events.ImageState
+	// settings gets each settings change. Run reads it.
+	settings <-chan events.SettingsChanged
 
 	// bg is the context of the work that outlives a call. Run cancels it.
 	bg     context.Context
@@ -153,14 +154,15 @@ type readyImage struct {
 	at    time.Time // when the pull ended
 }
 
-// New makes the fleet. It takes the changes of the server and image rows
-// from the bus at once, also the changes before Run starts.
+// New makes the fleet. It takes the settings changes from the bus at once,
+// also the changes before Run starts.
 func New(c Config) *Fleet {
 	bg, stop := context.WithCancel(context.Background())
 	f := &Fleet{
 		st:              c.Store,
 		bus:             c.Bus,
 		log:             c.Log,
+		audit:           audit.Log{Store: c.Store, Logger: c.Log},
 		cfg:             c.Config,
 		local:           c.Local,
 		fp:              c.AgentFingerprint,
@@ -172,8 +174,7 @@ func New(c Config) *Fleet {
 		runners:         c.Runners,
 		now:             c.Now,
 		knownHosts:      &sshinstall.KnownHosts{Path: c.Config.KnownHostsPath()},
-		serverRows:      events.Subscribe[events.ServerState](bg, c.Bus),
-		imageRows:       events.Subscribe[events.ImageState](bg, c.Bus),
+		settings:        events.Subscribe[events.SettingsChanged](bg, c.Bus),
 		bg:              bg,
 		stopBg:          stop,
 		wake:            make(chan struct{}, 1),
@@ -219,10 +220,8 @@ func (f *Fleet) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			f.flushStats(context.WithoutCancel(ctx))
 			return nil
-		case v := <-f.serverRows:
-			f.serverChanged(store.Server(v))
-		case <-f.imageRows:
-			f.kick()
+		case c := <-f.settings:
+			f.settingsChanged(c)
 		case <-check.C:
 			f.syncServers(ctx)
 		case <-flush.C:

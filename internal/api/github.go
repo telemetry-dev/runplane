@@ -196,7 +196,7 @@ func (h *Handler) createManifest(ctx context.Context, in *body[ManifestRequest])
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	h.audit(ctx, "github.manifest", "", map[string]any{"account_type": b.AccountType, "organization": b.Organization})
+	h.record(ctx, "github.manifest", "", map[string]any{"account_type": b.AccountType, "organization": b.Organization})
 	return &body[ManifestForm]{ManifestForm{ActionURL: action, Manifest: manifest}}, nil
 }
 
@@ -228,7 +228,7 @@ func (h *Handler) githubCallback(ctx context.Context, in *githubCallbackInput) (
 		h.d.Log.Warn("github app manifest callback", "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
 	}
-	h.audit(ctx, "github.app.create", "", nil)
+	h.record(ctx, "github.app.create", "", nil)
 	return redirect(to), nil
 }
 
@@ -254,7 +254,7 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 		h.d.Log.Warn("github installation setup", "installation", in.InstallationID, "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
 	}
-	h.audit(ctx, "github.installation."+in.SetupAction, strconv.FormatInt(in.InstallationID, 10), nil)
+	h.record(ctx, "github.installation."+in.SetupAction, strconv.FormatInt(in.InstallationID, 10), nil)
 	return redirect(to), nil
 }
 
@@ -290,7 +290,7 @@ func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStat
 	if err := h.d.GitHub.Sync(ctx); err != nil {
 		return nil, h.serviceErr(err)
 	}
-	h.audit(ctx, "github.sync", "", nil)
+	h.record(ctx, "github.sync", "", nil)
 	return reply(h.gitHubStatus(ctx))
 }
 
@@ -301,6 +301,6 @@ func (h *Handler) disconnectGitHub(ctx context.Context, _ *struct{}) (*empty, er
 	if err := h.d.GitHub.Disconnect(ctx); err != nil {
 		return nil, h.serviceErr(err)
 	}
-	h.audit(ctx, "github.disconnect", "", nil)
+	h.record(ctx, "github.disconnect", "", nil)
 	return nil, nil
 }

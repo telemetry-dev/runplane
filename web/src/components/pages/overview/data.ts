@@ -31,13 +31,11 @@ export function hasNoJobs(overview: Overview): boolean {
 }
 
 /** The figures of the stats row. `null` shows an em dash: the range has no data for it. */
-export function statValues({ stats, buckets }: Overview) {
-  // The failure rate is failed / (succeeded + failed), the same jobs the buckets count.
-  const decided = buckets.reduce((sum, bucket) => sum + bucket.succeeded + bucket.failed, 0)
+export function statValues({ stats }: Overview) {
   return {
     jobs: formatCount(stats.jobs),
     medianQueue: stats.median_queue_ms === null ? null : formatDuration(stats.median_queue_ms, { fraction: true }),
-    failureRate: decided > 0 ? formatPercent(stats.failure_rate * 100) : null,
+    failureRate: stats.failure_rate === null ? null : formatPercent(stats.failure_rate * 100),
     cacheHitRate: stats.cache_hit_rate === null ? null : formatPercent(stats.cache_hit_rate * 100),
   }
 }
