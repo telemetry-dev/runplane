@@ -1,7 +1,7 @@
 package guest
 
 import (
-	"maps"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -17,11 +17,11 @@ type Config struct {
 	Env       map[string]string `json:"env"`        // written to the runner .env
 	// ActionsCache tells that Env sends the cache calls of the job to the
 	// cache server of runplane. Without it, init removes the runner patch.
-	ActionsCache     bool     `json:"actions_cache"`
-	DNS              []string `json:"dns"`             // IPv4 only: sandboxes have no IPv6
-	RegistryMirror   string   `json:"registry_mirror"` // http://<service-ip>:<port>, empty = none
-	TimeLimitSeconds int      `json:"time_limit_seconds"`
-	Debug            bool     `json:"debug"`
+	ActionsCache     bool         `json:"actions_cache"`
+	DNS              []netip.Addr `json:"dns"`
+	RegistryMirror   string       `json:"registry_mirror"` // http://<service-ip>:<port>, empty = none
+	TimeLimitSeconds int          `json:"time_limit_seconds"`
+	Debug            bool         `json:"debug"`
 }
 
 // NewConfig is the config of a new sandbox. serviceURL is the cache server
@@ -32,18 +32,13 @@ func NewConfig(spec sandbox.Spec, s sandbox.Settings, serviceURL, runnerDir stri
 	// An unpatched runner overwrites ACTIONS_RESULTS_URL with the GitHub
 	// value, so the cache server works only with a patched runner.
 	cache := s.ActionsCache && patched
-	env := map[string]string{}
+	var env map[string]string
 	if cache {
-		maps.Copy(env, cacheEnv(serviceURL))
+		env = cacheEnv(serviceURL)
 	}
-	maps.Copy(env, spec.Env)
 	var mirror string
 	if s.RegistryMirror {
 		mirror = serviceURL
-	}
-	var dns []string
-	for _, a := range s.IPv4DNS() {
-		dns = append(dns, a.String())
 	}
 	return Config{
 		SandboxID:        spec.ID,
@@ -52,7 +47,7 @@ func NewConfig(spec sandbox.Spec, s sandbox.Settings, serviceURL, runnerDir stri
 		RunnerDir:        runnerDir,
 		Env:              env,
 		ActionsCache:     cache,
-		DNS:              dns,
+		DNS:              s.DNS,
 		RegistryMirror:   mirror,
 		TimeLimitSeconds: int(spec.TimeLimit / time.Second),
 		Debug:            spec.Debug,

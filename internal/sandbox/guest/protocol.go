@@ -64,6 +64,27 @@ type Hold struct {
 	Until time.Time `json:"until"`
 }
 
+// The time limits of the guest. The host waits for them before it stops a
+// sandbox by force.
+const (
+	// HoldGrace is how long a debug sandbox waits for a hold after the
+	// runner exits. The host sets the hold only after it sees the job
+	// complete.
+	HoldGrace = 2 * time.Minute
+	// ProcessStop is the time for the runner, and then for dockerd, to exit
+	// after SIGTERM.
+	ProcessStop = 10 * time.Second
+	// OutputWait is the time for the last output lines of the runner after
+	// it exits.
+	OutputWait = 5 * time.Second
+	// FlushWait is the time to send the last events and log lines to the
+	// host, which can be away.
+	FlushWait = 10 * time.Second
+	// StopTime is the longest time from a PathShutdown request until the
+	// guest powers off.
+	StopTime = 2*ProcessStop + OutputWait + FlushWait
+)
+
 // SizeQuery is the query of a shell request for a terminal of size.
 func SizeQuery(size sandbox.TermSize) url.Values {
 	return url.Values{

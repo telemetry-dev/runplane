@@ -32,5 +32,6 @@ func (m *Manager) RemovePort(string) error    { return errLinuxOnly }
 func HostPeer(string, string) (string, error) { return "", errLinuxOnly }
 func (m *Manager) Close() error               { return nil }
 
-func Available() bool      { return false }
-func DropChains() []string { return nil }
+func Available() bool                       { return false }
+func DropChains() []string                  { return nil }
+func ReadFirewall(context.Context) Firewall { return Firewall{Err: errLinuxOnly} }

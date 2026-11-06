@@ -150,9 +150,9 @@ func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 // host part of the VM network: forwarding, NAT, the runplane rules, and
 // other firewalls of the host.
 func (d *Driver) Probe(ctx context.Context) error {
-	dns := d.Settings().IPv4DNS()
+	dns := d.Settings().DNS
 	if len(dns) == 0 {
-		return errors.New("the dns setting has no IPv4 server, and VMs have IPv4 only")
+		return errors.New("the dns setting has no server")
 	}
 	lease, err := d.sys.acquireTap()
 	if err != nil {
@@ -163,9 +163,9 @@ func (d *Driver) Probe(ctx context.Context) error {
 			d.log.Warn("remove the probe interface", "err", err)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, sandbox.ProbeTimeout)
 	defer cancel()
-	return d.sys.probe(ctx, lease, dns[0], "https://api.github.com")
+	return d.sys.probe(ctx, lease, dns[0])
 }
 
 // Close disconnects from the VMs and leaves them running. A new driver
@@ -209,5 +209,5 @@ func (d *Driver) stopForShutdown() {
 }
 
 func (d *Driver) netConfig(s sandbox.Settings) netrules.Config {
-	return netrules.Config{ServicePort: d.opts.ServicePort, DNS: s.IPv4DNS(), Allowlist: s.EgressAllowlist}
+	return netrules.Config{ServicePort: d.opts.ServicePort, DNS: s.DNS, Allowlist: s.EgressAllowlist}
 }

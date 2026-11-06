@@ -58,6 +58,21 @@ type Config struct {
 	Allowlist []string
 }
 
+// Firewall is what ReadFirewall reads of the host firewall, for the doctor.
+type Firewall struct {
+	Drops []string // the nftables chains that block the sandboxes (DropChains)
+	// ForwardPolicy is "DROP" when the FORWARD chain of an iptables filter
+	// table drops by default, else "ACCEPT", or "" without a FORWARD chain.
+	ForwardPolicy string
+	DockerUser    bool // an iptables filter table has the DOCKER-USER chain
+	// Err tells why the iptables filter tables cannot be read, for example
+	// ErrNeedRoot.
+	Err error
+}
+
+// ErrNeedRoot tells that only root can read the host firewall.
+var ErrNeedRoot = errors.New("needs root")
+
 // Lease is the TAP name and the addresses of one VM.
 type Lease struct {
 	Index int        `json:"index"`

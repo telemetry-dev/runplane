@@ -74,6 +74,32 @@ func parseLogLine(line string) LogLine {
 	return LogLine{Time: time.UnixMilli(n).UTC(), Source: source, Text: text}
 }
 
+const logFileTime = "2006-01-02T15:04:05.000Z07:00"
+
+// AppendLogFileLine appends l to b in the form of the sandbox log,
+// "<RFC 3339 UTC time> <source> <text>\n". The host keeps the console log of
+// each sandbox in this form, and sandbox.Driver.Logs gives it.
+func AppendLogFileLine(b []byte, l LogLine) []byte {
+	b = l.Time.UTC().AppendFormat(b, logFileTime)
+	b = append(b, ' ')
+	b = append(b, l.Source...)
+	b = append(b, ' ')
+	b = append(b, l.Text...)
+	return append(b, '\n')
+}
+
+// ParseLogFileLine reads a line of the sandbox log without its line end. It
+// reports false for a line in another form.
+func ParseLogFileLine(line string) (LogLine, bool) {
+	stamp, rest, ok1 := strings.Cut(line, " ")
+	source, text, ok2 := strings.Cut(rest, " ")
+	t, err := time.Parse(logFileTime, stamp)
+	if !ok1 || !ok2 || err != nil {
+		return LogLine{}, false
+	}
+	return LogLine{Time: t, Source: source, Text: text}, true
+}
+
 // ReadLines calls fn for each line of r, without the line end, until r ends.
 // It splits lines longer than MaxLine.
 func ReadLines(r io.Reader, fn func(line string)) error {

@@ -23,16 +23,19 @@ import (
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 const (
-	// limitGrace lets runplane-init end a sandbox at its time limit, also
-	// after it waited 2 minutes for a debug hold, before the driver stops
-	// the sandbox.
-	limitGrace = 5 * time.Minute
 	// stopGrace is the time for runplane-init to stop the runner and
-	// Docker, send the last logs, and power off.
-	stopGrace = 30 * time.Second
+	// Docker, send the last logs, and power off, and for the sandbox to end.
+	stopGrace = guest.StopTime + 15*time.Second
+	// limitGrace lets runplane-init end a sandbox at its time limit, also
+	// after it waited for a debug hold, before the driver stops the
+	// sandbox. runplane-init counts the time limit from the start of the
+	// runner, which comes up to startTime after the record of the sandbox.
+	limitGrace = startTime + guest.HoldGrace + guest.StopTime
+	startTime  = 2 * time.Minute
 	// killWait is the time for a sandbox to end after a kill.
 	killWait     = 10 * time.Second
 	shutdownWait = 5 * time.Second
@@ -133,9 +136,6 @@ func (c *Core[T]) Settings() sandbox.Settings {
 
 // SetSettings keeps s for new sandboxes and returns the settings before.
 func (c *Core[T]) SetSettings(s sandbox.Settings) sandbox.Settings {
-	if len(s.IPv4DNS()) < len(s.DNS) {
-		c.log.Warn("sandboxes use only the IPv4 DNS servers", "servers", s.DNS)
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	old := c.settings

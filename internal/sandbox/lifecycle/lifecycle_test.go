@@ -325,12 +325,12 @@ func TestDeadline(t *testing.T) {
 		hold       time.Time
 		want       time.Time
 	}{
-		// Without a job: the limit, the idle grace of 5 minutes, and the 5 minutes for init.
-		{"a warm sandbox", time.Hour, time.Time{}, time.Time{}, created.Add(70 * time.Minute)},
+		// Without a job: the limit, the idle grace of 5 minutes, and the grace for init.
+		{"a warm sandbox", time.Hour, time.Time{}, time.Time{}, created.Add(65*time.Minute + limitGrace)},
 		// A sandbox that waited 3 hours for its job gets the full hour for it.
-		{"a job after a long wait", time.Hour, created.Add(3 * time.Hour), time.Time{}, created.Add(4*time.Hour + 5*time.Minute)},
-		{"a debug hold past the limit", time.Hour, created.Add(10 * time.Minute), created.Add(2 * time.Hour), created.Add(125 * time.Minute)},
-		{"a hold inside the limit", time.Hour, created.Add(10 * time.Minute), created.Add(20 * time.Minute), created.Add(75 * time.Minute)},
+		{"a job after a long wait", time.Hour, created.Add(3 * time.Hour), time.Time{}, created.Add(4*time.Hour + limitGrace)},
+		{"a debug hold past the limit", time.Hour, created.Add(10 * time.Minute), created.Add(2 * time.Hour), created.Add(2*time.Hour + limitGrace)},
+		{"a hold inside the limit", time.Hour, created.Add(10 * time.Minute), created.Add(20 * time.Minute), created.Add(70*time.Minute + limitGrace)},
 		{"no time limit", 0, created.Add(10 * time.Minute), time.Time{}, time.Time{}},
 	}
 	for _, tt := range tests {

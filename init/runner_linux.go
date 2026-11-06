@@ -22,8 +22,6 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
-const stopGrace = 10 * time.Second // for the runner and dockerd to stop after SIGTERM
-
 // prepareRunnerDir makes the writable runner folder: an overlay with the
 // read-only bundle as the lower layer and the upper layer on scratch. When
 // the overlay mount fails, for example because scratch is not a separate
@@ -156,9 +154,8 @@ const (
 
 // runRunner runs ./run.sh --jitconfig as the runner user until it exits, the
 // time limit passes, or the host asks for a shutdown. It returns the exit
-// code, and why the runner failed or "". The time limit counts from the job
-// start; before a job, the runner waits at most the limit plus
-// sandbox.IdleGrace.
+// code, and why the runner failed or "". The time limit ends at
+// sandbox.Deadline from the start of the runner.
 //
 // A runner that exits by itself before "Listening for Jobs" failed, also
 // with exit code 0: the runner exits with 0 after a bad JIT config.
@@ -172,6 +169,7 @@ func (g *guestInit) runRunner(acct account) (int, string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Credential: acct.credential()}
 	jobStarted := make(chan struct{}, 1)
 	var listened atomic.Bool
+	start := time.Now()
 	r, err := g.startLogged(cmd, guest.SourceRunner, func(line string) {
 		if ev, ok := parseRunnerLine(line); ok {
 			g.link.event(ev)
@@ -207,7 +205,7 @@ func (g *guestInit) runRunner(acct account) (int, string) {
 	var timer *time.Timer
 	var timeout <-chan time.Time
 	if limit > 0 {
-		timer = time.NewTimer(limit + sandbox.IdleGrace)
+		timer = time.NewTimer(time.Until(sandbox.Deadline(start, time.Time{}, limit)))
 		defer timer.Stop()
 		timeout = timer.C
 	}
@@ -218,7 +216,7 @@ wait:
 		select {
 		case <-jobStarted:
 			if timer != nil {
-				timer.Reset(limit)
+				timer.Reset(time.Until(sandbox.Deadline(start, time.Now(), limit)))
 			}
 		case code = <-r.exit:
 			ended = true
@@ -233,7 +231,7 @@ wait:
 			unix.Kill(sid, unix.SIGTERM)
 			select {
 			case code = <-r.exit:
-			case <-time.After(stopGrace):
+			case <-time.After(guest.ProcessStop):
 				killSession(sid, unix.SIGKILL)
 				code = <-r.exit
 			}
@@ -246,7 +244,7 @@ wait:
 	// Send the last lines before the exited event.
 	select {
 	case <-r.output:
-	case <-time.After(5 * time.Second):
+	case <-time.After(guest.OutputWait):
 	}
 	stopPages()
 	<-pagesDone
@@ -295,7 +293,7 @@ func (c *child) stop() {
 	unix.Kill(c.pid, unix.SIGTERM)
 	select {
 	case <-c.exit:
-	case <-time.After(stopGrace):
+	case <-time.After(guest.ProcessStop):
 		unix.Kill(c.pid, unix.SIGKILL)
 		<-c.exit
 	}

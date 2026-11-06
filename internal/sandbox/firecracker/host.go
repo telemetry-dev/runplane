@@ -28,8 +28,8 @@ type hostOps interface {
 	// stopJobs returns the VM scopes that systemd is about to stop, as at
 	// a host shutdown.
 	stopJobs() (map[string]bool, error)
-	// probe fetches url with the network of a VM on lease l.
-	probe(ctx context.Context, l netrules.Lease, dns netip.Addr, url string) error
+	// probe fetches sandbox.ProbeURL with the network of a VM on lease l.
+	probe(ctx context.Context, l netrules.Lease, dns netip.Addr) error
 }
 
 type systemHost struct{ net *netrules.Manager }

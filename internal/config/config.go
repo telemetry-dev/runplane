@@ -171,10 +171,10 @@ func (o option) set(c *Config, v string) error {
 }
 
 func (c Config) check() error {
-	switch c.Mode {
-	case "", sandbox.ModeContainer, sandbox.ModeVM, sandbox.ModeDev:
-	default:
-		return fmt.Errorf("mode %q: use container, vm, or dev", c.Mode)
+	if c.Mode != "" {
+		if err := c.Mode.Check(); err != nil {
+			return err
+		}
 	}
 	if c.ServicePort < 1 || c.ServicePort > 65535 {
 		return fmt.Errorf("service port %d: use 1 to 65535", c.ServicePort)

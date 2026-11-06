@@ -13,14 +13,15 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
+	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
-// probe fetches url from a network namespace that has the address of a VM
-// on lease l. A veth with the TAP name stands in for the TAP, so the VM
-// firewall rules apply to it. The caller closes the lease, which also
-// removes the veth.
-func (h systemHost) probe(ctx context.Context, l netrules.Lease, dns netip.Addr, url string) error {
+// probe fetches sandbox.ProbeURL from a network namespace that has the
+// address of a VM on lease l. A veth with the TAP name stands in for the
+// TAP, so the VM firewall rules apply to it. The caller closes the lease,
+// which also removes the veth.
+func (h systemHost) probe(ctx context.Context, l netrules.Lease, dns netip.Addr) error {
 	ns, err := onOwnThread(netns.New)
 	if err != nil {
 		return fmt.Errorf("make the probe namespace: %w", err)
@@ -47,7 +48,7 @@ func (h systemHost) probe(ctx context.Context, l netrules.Lease, dns netip.Addr,
 	if err := h.net.KeepTap(l); err != nil {
 		return err
 	}
-	return fetchIn(ctx, ns, dns, url)
+	return fetchIn(ctx, ns, dns, sandbox.ProbeURL)
 }
 
 // setUp gives the link name the address addr, sets it up, and adds a

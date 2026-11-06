@@ -76,7 +76,6 @@ func (l *guestLink) run(ctx context.Context) {
 func (l *guestLink) serve(ctx context.Context, c *guest.Client) {
 	l.mu.Lock()
 	if l.haveConfig {
-		l.events = append([]sandbox.RunnerEvent{{Kind: sandbox.RunnerResume}}, l.events...)
 		l.log.Info("connected to the host again")
 	}
 	l.conn = c

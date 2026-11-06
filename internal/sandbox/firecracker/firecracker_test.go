@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ type fakeHost struct {
 func (h *fakeHost) setupNet(context.Context, netrules.Config) error { return nil }
 func (h *fakeHost) tapLeases() int                                  { return 16384 }
 func (h *fakeHost) stopJobs() (map[string]bool, error)              { return h.stopping, nil }
-func (h *fakeHost) probe(context.Context, netrules.Lease, netip.Addr, string) error {
+func (h *fakeHost) probe(context.Context, netrules.Lease, netip.Addr) error {
 	return errors.ErrUnsupported
 }
 
@@ -150,10 +151,11 @@ func dialGuest(t *testing.T, socket string, onShutdown func()) *guest.Client {
 	return c
 }
 
-// connected waits until the host serves the guest of c.
+// connected waits until the host serves the guest of c: the host answers
+// an empty log stream.
 func connected(t *testing.T, c *guest.Client) {
 	t.Helper()
-	if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: sandbox.RunnerResume}); err != nil {
+	if err := c.StreamLogs(context.Background(), strings.NewReader("")); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -45,10 +45,17 @@ type server struct {
 	ln net.Listener
 }
 
+// The listen addresses of ACME. The HTTP-01 challenges of Let's Encrypt
+// come to port 80.
+const (
+	HTTPSAddr = ":443"
+	HTTPAddr  = ":80"
+)
+
 // NewACME returns an ACME server that keeps its account key and certificates
 // in cacheDir.
 func NewACME(cacheDir string, log *slog.Logger) *ACME {
-	a := &ACME{cacheDir: cacheDir, log: log, httpsAddr: ":443", httpAddr: ":80", retryEvery: time.Minute}
+	a := &ACME{cacheDir: cacheDir, log: log, httpsAddr: HTTPSAddr, httpAddr: HTTPAddr, retryEvery: time.Minute}
 	a.setErr(nil)
 	return a
 }

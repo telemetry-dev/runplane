@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"reflect"
 	"strings"
 	"sync"
@@ -466,9 +467,16 @@ func (f *Fleet) settingsChanged(c events.SettingsChanged) {
 
 // NodeSettings are the settings that each server gets from the primary.
 func NodeSettings(st store.Settings) agent.Settings {
+	var dns []netip.Addr
+	for _, v := range st.DNSServers {
+		// The settings service accepts only IPv4 addresses.
+		if a, err := netip.ParseAddr(v); err == nil {
+			dns = append(dns, a)
+		}
+	}
 	return agent.Settings{
 		Settings: sandbox.Settings{
-			DNS:             st.DNSServers,
+			DNS:             dns,
 			EgressAllowlist: st.EgressAllowlist,
 			BandwidthMbps:   st.BandwidthMbps,
 			RegistryMirror:  st.RegistryMirror,

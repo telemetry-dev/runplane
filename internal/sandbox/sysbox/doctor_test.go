@@ -8,6 +8,7 @@ import (
 
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
 func healthyHost() containerHost {
@@ -19,10 +20,11 @@ func healthyHost() containerHost {
 			},
 			Details: host.Details{OSID: "ubuntu", OSVersion: "24.04", CgroupV2: true, IPForward: true},
 			Docker:  doctor.Docker{Version: "29.5.1", Firewall: "iptables", Runtimes: map[string]string{"runc": "runc", "sysbox-runc": "/usr/bin/sysbox-runc"}},
-			Root:    true, Systemd: true, Unit: "runplane", UnitState: "active", NFTables: true,
+			Root:    true, Systemd: true, Unit: "runplane", UnitState: "active",
 		},
 		sysboxUnit: "active",
-		firewall:   doctor.Firewall{ForwardPolicy: "DROP", DockerUser: true},
+		nftables:   true,
+		firewall:   netrules.Firewall{ForwardPolicy: "DROP", DockerUser: true},
 	}
 }
 
@@ -62,8 +64,8 @@ func TestContainerChecks(t *testing.T) {
 		{"sysbox service stopped", func(h *containerHost) { h.sysboxUnit = "inactive" }, "sysbox", doctor.StatusFail},
 
 		{"docker nftables backend", func(h *containerHost) { h.Docker.Firewall = "nftables" }, "firewall", doctor.StatusFail},
-		{"no DOCKER-USER chain", func(h *containerHost) { h.firewall = doctor.Firewall{ForwardPolicy: "ACCEPT"} }, "firewall", doctor.StatusFail},
-		{"firewall without root", func(h *containerHost) { h.firewall = doctor.Firewall{Err: doctor.ErrNeedRoot} }, "firewall", doctor.StatusWarn},
+		{"no DOCKER-USER chain", func(h *containerHost) { h.firewall = netrules.Firewall{ForwardPolicy: "ACCEPT"} }, "firewall", doctor.StatusFail},
+		{"firewall without root", func(h *containerHost) { h.firewall = netrules.Firewall{Err: netrules.ErrNeedRoot} }, "firewall", doctor.StatusWarn},
 		{"nftables forward chain drops", func(h *containerHost) { h.firewall.Drops = []string{"inet filter forward"} }, "firewall", doctor.StatusFail},
 		// Forwarding came on before Docker started, as from a sysctl file.
 		{"docker kept the FORWARD policy ACCEPT", func(h *containerHost) { h.firewall.ForwardPolicy = "ACCEPT" }, "firewall", doctor.StatusWarn},

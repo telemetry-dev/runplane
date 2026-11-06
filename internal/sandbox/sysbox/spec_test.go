@@ -24,7 +24,6 @@ var testSpec = sandbox.Spec{
 	DiskGB:        64,
 	TimeLimit:     time.Hour,
 	JITConfig:     "jit",
-	Env:           map[string]string{"FOO": "bar"},
 }
 
 func TestCreateOptionsContainerMode(t *testing.T) {

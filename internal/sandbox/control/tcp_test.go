@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,12 +18,13 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
-type nopHandler struct{}
+// connectCounter counts the guest connections.
+type connectCounter struct{ n atomic.Int32 }
 
-func (nopHandler) OnConnect()                  {}
-func (nopHandler) OnEvent(sandbox.RunnerEvent) {}
-func (nopHandler) OnLog(guest.LogLine)         {}
-func (nopHandler) OnLostConfig()               {}
+func (c *connectCounter) OnConnect()                { c.n.Add(1) }
+func (*connectCounter) OnEvent(sandbox.RunnerEvent) {}
+func (*connectCounter) OnLog(guest.LogLine)         {}
+func (*connectCounter) OnLostConfig()               {}
 
 func TestTCPListenerChecksToken(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
@@ -33,7 +35,8 @@ func TestTCPListenerChecksToken(t *testing.T) {
 	defer tl.Close()
 	dir := t.TempDir()
 	cfg := guest.Config{SandboxID: "01jbz3x0000000000000000001", JITConfig: "jit"}
-	srv, err := tl.Listen(dir, cfg.SandboxID, &cfg, nopHandler{}, log)
+	connects := &connectCounter{}
+	srv, err := tl.Listen(dir, cfg.SandboxID, &cfg, connects, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +61,7 @@ func TestTCPListenerChecksToken(t *testing.T) {
 		}
 		conn.Close()
 	}
-	if srv.Connected() {
+	if connects.n.Load() != 0 {
 		t.Fatal("a guest with a wrong hello line got connected")
 	}
 
@@ -74,8 +77,8 @@ func TestTCPListenerChecksToken(t *testing.T) {
 	if !reflect.DeepEqual(got, cfg) {
 		t.Errorf("config = %+v, want %+v", got, cfg)
 	}
-	if !srv.Connected() {
-		t.Error("Connected() = false after a good hello line")
+	if n := connects.n.Load(); n != 1 {
+		t.Errorf("%d connections after a good hello line, want 1", n)
 	}
 
 	// A closed sandbox refuses its old token.

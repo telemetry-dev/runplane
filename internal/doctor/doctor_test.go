@@ -27,15 +27,6 @@ func open(t *testing.T, path string) *os.File {
 	return f
 }
 
-func iptablesFixture(t *testing.T, name string) string {
-	t.Helper()
-	b, err := os.ReadFile("testdata/iptables/" + name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
 // healthy returns the scan of a good host, and the options of a mode whose
 // driver adds one check.
 func healthy() (scan, Options) {
@@ -47,7 +38,7 @@ func healthy() (scan, Options) {
 			},
 			Details: host.Details{OSID: "ubuntu", OSVersion: "24.04", CgroupV2: true, IPForward: true},
 			Docker:  Docker{Version: "29.5.1", Firewall: "iptables"},
-			Root:    true, Systemd: true, Unit: "runplane", UnitState: "active", NFTables: true,
+			Root:    true, Systemd: true, Unit: "runplane", UnitState: "active",
 		},
 		clock: clock{synced: true, skew: 300 * time.Millisecond},
 		ports: []portScan{{addr: ":8484"}},
@@ -154,8 +145,8 @@ func TestHostChecks(t *testing.T) {
 		want  Status
 	}{
 		{"cgroup v1", func(h *Host) Check { h.CgroupV2 = false; return h.CgroupCheck() }, StatusFail},
-		{"no nftables as root", func(h *Host) Check { h.NFTables = false; return h.NFTablesCheck() }, StatusFail},
-		{"no nftables without root", func(h *Host) Check { h.NFTables, h.Root = false, false; return h.NFTablesCheck() }, StatusWarn},
+		{"no nftables as root", func(h *Host) Check { return h.NFTablesCheck(false) }, StatusFail},
+		{"no nftables without root", func(h *Host) Check { h.Root = false; return h.NFTablesCheck(false) }, StatusWarn},
 		{"no ip forwarding", func(h *Host) Check { h.IPForward = false; return h.ForwardCheck() }, StatusFail},
 		{"no systemd for a driver that needs it", func(h *Host) Check { h.Systemd = false; return h.SystemdCheck("which keeps VMs in scopes") }, StatusFail},
 		{"no systemd", func(h *Host) Check { h.Systemd = false; return h.SystemdCheck("") }, StatusWarn},
@@ -180,17 +171,21 @@ func TestHostChecks(t *testing.T) {
 // A probe that cannot run here warns; only a probe that ran and did not
 // reach the internet fails, because a failed check fails the install.
 func TestInternetCheck(t *testing.T) {
+	probe := func(err error) func(context.Context) error {
+		return func(context.Context) error { return err }
+	}
 	for _, tt := range []struct {
-		err  error
-		want Status
+		name  string
+		probe func(context.Context) error
+		want  Status
 	}{
-		{nil, StatusOK},
-		{sandbox.ErrNoProbe, StatusWarn},
-		{sandbox.ErrProbeInService, StatusWarn},
-		{errors.New("Get \"https://api.github.com\": dial tcp 140.82.112.6:443: i/o timeout"), StatusFail},
+		{"reached", probe(nil), StatusOK},
+		{"no image yet", probe(sandbox.ErrNoProbe), StatusWarn},
+		{"only the service can probe", nil, StatusWarn},
+		{"no internet", probe(errors.New("Get \"https://api.github.com\": dial tcp 140.82.112.6:443: i/o timeout")), StatusFail},
 	} {
-		if c := internetCheck(tt.err); c.Status != tt.want || c.Fix == "" && tt.want != StatusOK {
-			t.Errorf("%v: %s %q (fix %q), want %s with a fix", tt.err, c.Status, c.Detail, c.Fix, tt.want)
+		if c := internetCheck(t.Context(), tt.probe); c.Status != tt.want || c.Fix == "" && tt.want != StatusOK {
+			t.Errorf("%s: %s %q (fix %q), want %s with a fix", tt.name, c.Status, c.Detail, c.Fix, tt.want)
 		}
 	}
 }
@@ -348,24 +343,6 @@ func TestFormat(t *testing.T) {
 		}
 		if b.String() != tt.want {
 			t.Errorf("got\n%s\nwant\n%s", b.String(), tt.want)
-		}
-	}
-}
-
-func TestParseIptables(t *testing.T) {
-	tests := []struct {
-		file       string
-		policy     string
-		dockerUser bool
-	}{
-		{"docker", "DROP", true},
-		{"ufw", "DROP", false},
-		{"plain", "ACCEPT", false},
-	}
-	for _, tt := range tests {
-		policy, dockerUser := parseIptables(iptablesFixture(t, tt.file))
-		if policy != tt.policy || dockerUser != tt.dockerUser {
-			t.Errorf("%s: got %q %v, want %q %v", tt.file, policy, dockerUser, tt.policy, tt.dockerUser)
 		}
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -71,14 +72,13 @@ func runDoctor(ctx context.Context, args []string) error {
 	mode := policy.Mode(settings, cfg.Mode)
 	opts := doctorOptions(cfg, mode, agent, settings.Domain)
 	opts.MinFreeDiskPercent = settings.MinFreeDiskPercent
-	opts.Internet = func(context.Context) error { return sandbox.ErrProbeInService }
 	if profile, ok := probeProfile(mode); ok {
 		docker, err := client.New(client.FromEnv)
 		if err != nil {
 			return fmt.Errorf("connect to Docker: %w", err)
 		}
 		defer docker.Close()
-		probe := sysbox.ProbeOptions{Docker: docker, Profile: profile, DataDir: cfg.DataDir, DNS: sandbox.Settings{DNS: settings.DNSServers}.IPv4DNS()}
+		probe := sysbox.ProbeOptions{Docker: docker, Profile: profile, DataDir: cfg.DataDir, DNS: fleet.NodeSettings(settings).DNS}
 		opts.Internet = func(ctx context.Context) error { return sysbox.Probe(ctx, probe) }
 	}
 	r := doctor.Run(ctx, opts)

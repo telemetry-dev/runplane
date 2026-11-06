@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func TestProbe(t *testing.T) {
 	m := netrules.New(slog.New(slog.NewTextHandler(io.Discard, nil)), netrules.DefaultTapSubnet)
 	t.Cleanup(func() { m.Teardown() })
 	d := testDriver(t, t.TempDir(), systemHost{net: m})
-	dns := []string{"1.1.1.1", "8.8.8.8"}
+	dns := []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
 	if err := d.Configure(ctx, sandbox.Settings{DNS: dns}); err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,15 @@ const (
 	ModeDev       Mode = "dev"
 )
 
+// Check returns an error if m is not one of the modes above.
+func (m Mode) Check() error {
+	switch m {
+	case ModeContainer, ModeVM, ModeDev:
+		return nil
+	}
+	return fmt.Errorf("mode %q: use container, vm, or dev", m)
+}
+
 type State string
 
 const (
@@ -35,18 +44,17 @@ const (
 func (s State) Done() bool { return s == StateGone || s == StateFailed }
 
 type Spec struct {
-	ID            string            `json:"id"`
-	PoolID        string            `json:"pool_id"`
-	Image         ImageRef          `json:"image"`
-	RunnerVersion string            `json:"runner_version"`
-	Arch          string            `json:"arch"` // "x64" or "arm64"
-	VCPU          int               `json:"vcpu"`
-	MemoryMB      int               `json:"memory_mb"`
-	DiskGB        int               `json:"disk_gb"`
-	TimeLimit     time.Duration     `json:"time_limit"`           // from the job start; see Deadline
-	JITConfig     string            `json:"jit_config,omitempty"` // never written to disk
-	Env           map[string]string `json:"env,omitempty"`
-	Debug         bool              `json:"debug,omitempty"`
+	ID            string        `json:"id"`
+	PoolID        string        `json:"pool_id"`
+	Image         ImageRef      `json:"image"`
+	RunnerVersion string        `json:"runner_version"`
+	Arch          string        `json:"arch"` // "x64" or "arm64"
+	VCPU          int           `json:"vcpu"`
+	MemoryMB      int           `json:"memory_mb"`
+	DiskGB        int           `json:"disk_gb"`
+	TimeLimit     time.Duration `json:"time_limit"`           // from the job start; see Deadline
+	JITConfig     string        `json:"jit_config,omitempty"` // never written to disk
+	Debug         bool          `json:"debug,omitempty"`
 }
 
 // IdleGrace is how much longer than its time limit a sandbox may wait for
@@ -180,7 +188,6 @@ const (
 	RunnerJobStarted   = "job.started"
 	RunnerJobCompleted = "job.completed"
 	RunnerExited       = "exited"
-	RunnerResume       = "resume"
 )
 
 type RunnerEvent struct {
@@ -227,16 +234,25 @@ type Driver interface {
 	// Configure applies new settings while the driver operates.
 	Configure(ctx context.Context, s Settings) error
 	Events() <-chan Event
-	// Logs returns the console and runner log of the sandbox.
+	// Logs returns the console and runner log of the sandbox, in lines of
+	// the form "<RFC 3339 UTC time> <source> <text>"
+	// (guest.ParseLogFileLine).
 	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 	Shell(ctx context.Context, id string, size TermSize) (Terminal, error)
 	// Hold keeps a finished debug sandbox until the given time.
 	Hold(ctx context.Context, id string, until time.Time) error
-	// Probe is the sandbox internet check of the doctor: it fetches the
-	// GitHub API through the network and the firewall of a sandbox.
+	// Probe is the sandbox internet check of the doctor: it fetches
+	// ProbeURL through the network and the firewall of a sandbox, in
+	// ProbeTimeout or less.
 	Probe(ctx context.Context) error
 	Close() error
 }
+
+// The target and the time limit of Driver.Probe.
+const (
+	ProbeURL     = "https://api.github.com"
+	ProbeTimeout = time.Minute
+)
 
 // ErrNotFound is the error of Logs, Shell, and Hold for a sandbox that the
 // driver does not operate.
@@ -245,30 +261,14 @@ var ErrNotFound = errors.New("no such sandbox")
 // ErrNoProbe means that the sandbox internet check cannot run yet.
 var ErrNoProbe = errors.New("this server has no sandbox image yet")
 
-// ErrProbeInService means that only the running service can do the sandbox
-// internet check: in VM mode, the probe needs a firewall rule that only the
-// service can add without a conflict.
-var ErrProbeInService = errors.New("in VM mode, only the running runplane service can do this check, because it owns the firewall rules of the sandboxes")
-
 // Settings are the dashboard settings that a driver obeys. The primary sends
 // them to each server when they change.
 type Settings struct {
-	DNS             []string `json:"dns"`
-	EgressAllowlist []string `json:"egress_allowlist"`
-	BandwidthMbps   int      `json:"bandwidth_mbps"` // VM mode, 0 = no limit
-	RegistryMirror  bool     `json:"registry_mirror"`
-	ActionsCache    bool     `json:"actions_cache"`
-}
-
-// IPv4DNS returns the IPv4 addresses of DNS. Sandboxes have no IPv6.
-func (s Settings) IPv4DNS() []netip.Addr {
-	var list []netip.Addr
-	for _, v := range s.DNS {
-		if a, err := netip.ParseAddr(v); err == nil && a.Is4() {
-			list = append(list, a)
-		}
-	}
-	return list
+	DNS             []netip.Addr `json:"dns"` // IPv4 only: sandboxes have no IPv6
+	EgressAllowlist []string     `json:"egress_allowlist"`
+	BandwidthMbps   int          `json:"bandwidth_mbps"` // VM mode, 0 = no limit
+	RegistryMirror  bool         `json:"registry_mirror"`
+	ActionsCache    bool         `json:"actions_cache"`
 }
 
 type TermSize struct {

@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -160,9 +161,7 @@ func TestCalls(t *testing.T) {
 		ID: "sb1", PoolID: "pool1",
 		Image:         sandbox.ImageRef{Ref: "builtin:ubuntu-24.04", Digest: "sha256:5f1c"},
 		RunnerVersion: "2.330.0", Arch: "arm64", VCPU: 2, MemoryMB: 4096, DiskGB: 20,
-		TimeLimit: 6 * time.Hour, JITConfig: "jit-secret",
-		Env:   map[string]string{"ACTIONS_RESULTS_URL": "http://10.0.0.1:8486/"},
-		Debug: true,
+		TimeLimit: 6 * time.Hour, JITConfig: "jit-secret", Debug: true,
 	}
 	d := s.Driver()
 	check("mode", d.Mode(), nil, sandbox.ModeContainer)
@@ -204,14 +203,14 @@ func TestCalls(t *testing.T) {
 	check("runner prune", nil, s.PruneRunners(ctx, []string{"2.329.0"}), nil, []any{"PruneRunners", []string{"2.329.0"}})
 	settings := Settings{
 		Settings: sandbox.Settings{
-			DNS: []string{"1.1.1.1"}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 100,
+			DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 100,
 			RegistryMirror: true, ActionsCache: true,
 		},
 		MinFreeDiskPercent: 12.5,
 	}
 	check("settings", nil, s.Configure(ctx, settings), nil, []any{"Configure", settings})
 	// The driver settings alone keep the min_free_disk_percent of the agent.
-	driverOnly := sandbox.Settings{DNS: []string{"9.9.9.9"}}
+	driverOnly := sandbox.Settings{DNS: []netip.Addr{netip.MustParseAddr("9.9.9.9")}}
 	check("driver settings", nil, d.Configure(ctx, driverOnly), nil, []any{"Configure", Settings{Settings: driverOnly, MinFreeDiskPercent: 12.5}})
 
 	err = s.Update(ctx, "v0.5.0")

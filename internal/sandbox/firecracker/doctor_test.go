@@ -4,13 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
 func healthyHost() vmHost {
@@ -21,14 +21,15 @@ func healthyHost() vmHost {
 				FirecrackerVersion: "1.13.1",
 			},
 			Details: host.Details{OSID: "ubuntu", OSVersion: "24.04", CPUVirt: true, CgroupV2: true, IPForward: true},
-			Root:    true, Systemd: true, Unit: "runplane", UnitState: "active", NFTables: true,
+			Root:    true, Systemd: true, Unit: "runplane", UnitState: "active",
 		},
 		jailerVersion: "1.13.1",
 		guestKernel:   "/var/lib/runplane/kernel/vmlinux",
 		ids:           idRange{uid: 1879048192, gid: 1879048192, count: 16384},
 		jailDir:       "/var/lib/runplane/jail",
 		mount:         []string{"rw", "relatime"},
-		firewall:      doctor.Firewall{ForwardPolicy: "ACCEPT"},
+		nftables:      true,
+		firewall:      netrules.Firewall{ForwardPolicy: "ACCEPT"},
 	}
 }
 
@@ -80,13 +81,13 @@ func TestVMChecks(t *testing.T) {
 
 		{"ufw drops by default, runplane accepts its VMs", func(h *vmHost) { h.firewall.ForwardPolicy = "DROP" }, "firewall", doctor.StatusOK},
 		{"nftables input chain drops", func(h *vmHost) { h.firewall.Drops = []string{"inet filter input"} }, "firewall", doctor.StatusFail},
-		{"docker drops forwarded VM traffic", func(h *vmHost) { h.firewall = doctor.Firewall{ForwardPolicy: "DROP", DockerUser: true} }, "firewall", doctor.StatusOK},
+		{"docker drops forwarded VM traffic", func(h *vmHost) { h.firewall = netrules.Firewall{ForwardPolicy: "DROP", DockerUser: true} }, "firewall", doctor.StatusOK},
 		// Forwarding came on before Docker started, as from a sysctl file.
 		{"docker kept the FORWARD policy ACCEPT", func(h *vmHost) {
-			h.firewall, h.Docker.Version = doctor.Firewall{ForwardPolicy: "ACCEPT", DockerUser: true}, "29.5.1"
+			h.firewall, h.Docker.Version = netrules.Firewall{ForwardPolicy: "ACCEPT", DockerUser: true}, "29.5.1"
 		}, "firewall", doctor.StatusWarn},
-		{"no iptables", func(h *vmHost) { h.firewall = doctor.Firewall{Err: fmt.Errorf("list: %w", exec.ErrNotFound)} }, "firewall", doctor.StatusOK},
-		{"firewall without root", func(h *vmHost) { h.firewall = doctor.Firewall{Err: doctor.ErrNeedRoot} }, "firewall", doctor.StatusWarn},
+		{"no iptables", func(h *vmHost) { h.firewall = netrules.Firewall{} }, "firewall", doctor.StatusOK},
+		{"firewall without root", func(h *vmHost) { h.firewall = netrules.Firewall{Err: netrules.ErrNeedRoot} }, "firewall", doctor.StatusWarn},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

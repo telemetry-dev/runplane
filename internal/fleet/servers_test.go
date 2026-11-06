@@ -3,6 +3,7 @@ package fleet
 import (
 	"errors"
 	"maps"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strings"
@@ -310,7 +311,8 @@ func TestSettingsReachServers(t *testing.T) {
 	waitFor(t, "the settings of the new agent", func() bool { return len(agentNode.args("Configure")) == 1 })
 	defaults := agent.Settings{
 		Settings: sandbox.Settings{
-			DNS: []string{"1.1.1.1", "8.8.8.8"}, EgressAllowlist: []string{}, RegistryMirror: true, ActionsCache: true,
+			DNS:             []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")},
+			EgressAllowlist: []string{}, RegistryMirror: true, ActionsCache: true,
 		},
 		MinFreeDiskPercent: 15,
 	}
@@ -333,7 +335,7 @@ func TestSettingsReachServers(t *testing.T) {
 	}
 	h.bus.Publish(events.SettingsChanged{Old: prev, New: next})
 	want := agent.Settings{
-		Settings:           sandbox.Settings{DNS: []string{"9.9.9.9"}, EgressAllowlist: []string{"10.0.0.0/8"}, BandwidthMbps: 100},
+		Settings:           sandbox.Settings{DNS: []netip.Addr{netip.MustParseAddr("9.9.9.9")}, EgressAllowlist: []string{"10.0.0.0/8"}, BandwidthMbps: 100},
 		MinFreeDiskPercent: 12.5,
 	}
 	for name, n := range map[string]*fakeNode{"local": local, "agent": agentNode} {

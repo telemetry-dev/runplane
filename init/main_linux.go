@@ -14,7 +14,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"time"
 
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
@@ -101,7 +100,7 @@ func (g *guestInit) run() int {
 		code, failure = g.runRunner(acct)
 	}
 	g.link.event(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, ExitCode: code, Error: failure})
-	g.req.waitHold(cfg.Debug, holdGrace)
+	g.req.waitHold(cfg.Debug, guest.HoldGrace)
 	if dockerd != nil {
 		dockerd.stop()
 	}
@@ -137,9 +136,8 @@ func (g *guestInit) prepare() (account, error) {
 	return acct, nil
 }
 
-// The host can be away, so finish waits at most 10 seconds.
 func (g *guestInit) finish() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), guest.FlushWait)
 	defer cancel()
 	g.link.flushEvents(ctx)
 	g.log.Info("stopping the sandbox")

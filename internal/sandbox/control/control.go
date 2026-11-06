@@ -100,10 +100,6 @@ func newServer(cfg *guest.Config, h Handler, log *slog.Logger) *Server {
 	return s
 }
 
-func (s *Server) Connected() bool {
-	return s.current() != nil
-}
-
 // Hold tells the guest to wait until this time after the runner exits.
 func (s *Server) Hold(ctx context.Context, until time.Time) error {
 	body, err := json.Marshal(guest.Hold{Until: until.UTC()})

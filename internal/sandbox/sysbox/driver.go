@@ -191,7 +191,7 @@ func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 	defer cancel()
 	err := d.opts.NetRules.Setup(ctx, netrules.Config{
 		ServicePort: d.opts.ServicePort,
-		DNS:         s.IPv4DNS(),
+		DNS:         s.DNS,
 		Allowlist:   s.EgressAllowlist,
 	})
 	if err != nil {
@@ -201,7 +201,7 @@ func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 }
 
 func (d *Driver) Probe(ctx context.Context) error {
-	return Probe(ctx, ProbeOptions{Docker: d.docker, Profile: d.opts.Profile, DataDir: d.opts.DataDir, DNS: d.Settings().IPv4DNS()})
+	return Probe(ctx, ProbeOptions{Docker: d.docker, Profile: d.opts.Profile, DataDir: d.opts.DataDir, DNS: d.Settings().DNS})
 }
 
 // Close stops the loops and the control channels. The containers keep

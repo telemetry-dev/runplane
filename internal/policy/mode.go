@@ -27,18 +27,13 @@ func Mode(st store.Settings, configured sandbox.Mode) sandbox.Mode {
 // CheckMode tells why runplane cannot operate sandboxes in mode m.
 // devInsecure is RUNPLANE_DEV_INSECURE.
 func CheckMode(m sandbox.Mode, devInsecure bool) error {
-	switch m {
-	case "":
+	switch {
+	case m == "":
 		return ErrNoMode
-	case sandbox.ModeContainer, sandbox.ModeVM:
-		return nil
-	case sandbox.ModeDev:
-		if devInsecure {
-			return nil
-		}
+	case m == sandbox.ModeDev && !devInsecure:
 		return ErrDevInsecure
 	}
-	return fmt.Errorf("mode %q: use container, vm, or dev", m)
+	return m.Check()
 }
 
 // CheckModeChange tells why the primary cannot change to mode m. VM mode

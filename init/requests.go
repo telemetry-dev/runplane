@@ -10,10 +10,6 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
-// holdGrace is how long a debug sandbox waits for a hold after the runner
-// exits. The host sets the hold only after it sees the job complete.
-const holdGrace = 2 * time.Minute
-
 // hostRequests keeps what the host asks for: a hold time and a shutdown.
 type hostRequests struct {
 	mu      sync.Mutex

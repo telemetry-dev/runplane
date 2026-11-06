@@ -94,6 +94,7 @@ func syncIptables(ctx context.Context, want map[string][][]string, force bool) e
 type iptables struct {
 	cmd, restore string
 	chains       []string
+	forward      string // the policy of the FORWARD chain, if the table has one
 }
 
 // filterBackends returns the iptables backends that have a filter table.
@@ -111,24 +112,31 @@ func filterBackends(ctx context.Context) ([]iptables, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list nftables chains: %w", err)
 	}
-	var names []string
+	var nft iptables
 	for _, ch := range chains {
-		if ch.Table.Name == "filter" {
-			names = append(names, ch.Name)
+		if ch.Table.Name != "filter" {
+			continue
+		}
+		nft.chains = append(nft.chains, ch.Name)
+		if ch.Name == "FORWARD" && ch.Policy != nil {
+			nft.forward = "ACCEPT"
+			if *ch.Policy == nftables.ChainPolicyDrop {
+				nft.forward = "DROP"
+			}
 		}
 	}
-	if len(names) > 0 {
+	if len(nft.chains) > 0 {
 		b, err := findIptables(ctx, "nf_tables")
 		if err != nil {
 			return nil, err
 		}
-		b.chains = names
-		found = append(found, b)
+		nft.cmd, nft.restore = b.cmd, b.restore
+		found = append(found, nft)
 	}
 	if tables, err := os.ReadFile("/proc/thread-self/net/ip_tables_names"); err == nil && slices.Contains(strings.Fields(string(tables)), "filter") {
 		if b, err := findIptables(ctx, "legacy"); err == nil {
 			if out, err := runIptables(ctx, "", b.cmd, "-S"); err == nil {
-				b.chains = chainNames(out)
+				b.chains, b.forward = parseListing(out)
 				found = append(found, b)
 			}
 		}
@@ -136,16 +144,20 @@ func filterBackends(ctx context.Context) ([]iptables, error) {
 	return found, nil
 }
 
-// chainNames returns the chains of an "iptables -S" listing.
-func chainNames(listing string) []string {
-	var names []string
+// parseListing returns the chains of an "iptables -S" listing, and the
+// policy of its FORWARD chain.
+func parseListing(listing string) (chains []string, forward string) {
 	for line := range strings.Lines(listing) {
 		f := strings.Fields(line)
-		if len(f) >= 2 && (f[0] == "-P" || f[0] == "-N") {
-			names = append(names, f[1])
+		if len(f) < 2 || f[0] != "-P" && f[0] != "-N" {
+			continue
+		}
+		chains = append(chains, f[1])
+		if len(f) == 3 && f[0] == "-P" && f[1] == "FORWARD" {
+			forward = f[2]
 		}
 	}
-	return names
+	return chains, forward
 }
 
 // findIptables finds the command of a backend: "nf_tables" or "legacy", as

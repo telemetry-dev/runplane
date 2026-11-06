@@ -31,12 +31,12 @@ type ProbeOptions struct {
 }
 
 // Probe starts a short container on the runplane network, with the sandbox
-// runtime and the firewall rules, and fetches https://api.github.com. The
-// doctor uses it for the sandbox internet check. It runs curl in the newest
+// runtime and the firewall rules, and fetches sandbox.ProbeURL. The doctor
+// uses it for the sandbox internet check. It runs curl in the newest
 // runplane image on this server, and returns sandbox.ErrNoProbe while the
 // server has none.
 func Probe(ctx context.Context, o ProbeOptions) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, sandbox.ProbeTimeout)
 	defer cancel()
 	img, err := probeImage(ctx, o.Docker)
 	if err != nil {
@@ -46,7 +46,7 @@ func Probe(ctx context.Context, o ProbeOptions) error {
 	res, err := o.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image:      img,
-			Entrypoint: []string{"curl", "-fsS", "-o", "/dev/null", "--max-time", "20", "https://api.github.com"},
+			Entrypoint: []string{"curl", "-fsS", "-o", "/dev/null", "--max-time", "20", sandbox.ProbeURL},
 			Labels:     map[string]string{labelProbe: "true", guest.LabelManaged: "true", labelData: o.DataDir},
 			Tty:        true, // plain logs, without the stream headers
 		},
@@ -79,7 +79,7 @@ func Probe(ctx context.Context, o ProbeOptions) error {
 		if r.StatusCode == 0 {
 			return nil
 		}
-		return fmt.Errorf("curl https://api.github.com exited with code %d: %s", r.StatusCode, probeOutput(ctx, o.Docker, res.ID))
+		return fmt.Errorf("curl %s exited with code %d: %s", sandbox.ProbeURL, r.StatusCode, probeOutput(ctx, o.Docker, res.ID))
 	case err := <-wait.Error:
 		return fmt.Errorf("wait for probe container: %w", err)
 	}

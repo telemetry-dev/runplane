@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sandbox/control"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -95,7 +94,7 @@ func (l *Logs) sandbox(ctx context.Context, b store.Sandbox, follow bool) (io.Re
 
 // diagLines keeps the step output of a sandbox log line.
 func diagLines(line string) (string, bool) {
-	l, ok := control.ParseLogFileLine(line)
+	l, ok := guest.ParseLogFileLine(line)
 	return l.Text, ok && l.Source == guest.SourceDiag
 }
 

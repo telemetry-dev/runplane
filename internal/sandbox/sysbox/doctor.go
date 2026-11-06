@@ -8,6 +8,7 @@ import (
 	"io/fs"
 
 	"github.com/runplane/runplane/internal/doctor"
+	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
 const (
@@ -26,7 +27,9 @@ func Requirements() doctor.Requirements {
 			h.SysboxVersion = doctor.ToolVersion(ctx, cmp.Or(h.Docker.Runtimes[Container.runtime], Container.runtime))
 		},
 		Checks: func(ctx context.Context, h *doctor.Host) []doctor.Check {
-			return containerHost{Host: h, sysboxUnit: doctor.UnitState(ctx, sysboxUnit), firewall: doctor.ReadFirewall(ctx, h.Root)}.checks()
+			return containerHost{
+				Host: h, sysboxUnit: doctor.UnitState(ctx, sysboxUnit), nftables: netrules.Available(), firewall: netrules.ReadFirewall(ctx),
+			}.checks()
 		},
 	}
 }
@@ -34,12 +37,13 @@ func Requirements() doctor.Requirements {
 type containerHost struct {
 	*doctor.Host
 	sysboxUnit string // systemctl is-active of the sysbox service
-	firewall   doctor.Firewall
+	nftables   bool
+	firewall   netrules.Firewall
 }
 
 func (h containerHost) checks() []doctor.Check {
 	cs := []doctor.Check{
-		h.osCheck(), h.KernelCheck(h.kernelRules), h.CgroupCheck(), h.kvmCheck(), h.NFTablesCheck(), h.ForwardCheck(),
+		h.osCheck(), h.KernelCheck(h.kernelRules), h.CgroupCheck(), h.kvmCheck(), h.NFTablesCheck(h.nftables), h.ForwardCheck(),
 		h.sysboxCheck(),
 	}
 	// Without Docker, the docker check tells the problem.
@@ -101,20 +105,20 @@ func (h containerHost) sysboxCheck() doctor.Check {
 func (h containerHost) firewallCheck() doctor.Check {
 	c := doctor.Check{ID: "firewall", Name: "Firewall rules"}
 	fw := h.firewall
-	if blocked, ok := fw.Blocked(c, bridgeName); ok {
+	if blocked, ok := doctor.Blocked(c, fw.Drops, bridgeName); ok {
 		return blocked
 	}
 	switch {
 	case h.Docker.Firewall == "nftables":
 		return c.Fail("Docker uses its nftables firewall backend, which has no DOCKER-USER chain", `Remove "firewall-backend" from /etc/docker/daemon.json and restart Docker.`)
-	case errors.Is(fw.Err, doctor.ErrNeedRoot):
+	case errors.Is(fw.Err, netrules.ErrNeedRoot):
 		return c.AsRoot("Cannot read the firewall without root")
 	case fw.Err != nil:
 		return c.Fail(fmt.Sprintf("Cannot read the iptables rules: %v", fw.Err), "Install iptables.").WithCommand("sudo apt-get install -y iptables")
 	case !fw.DockerUser:
 		return c.Fail("The DOCKER-USER chain is missing, so Docker does not manage iptables", `Remove "iptables": false from /etc/docker/daemon.json and restart Docker.`)
 	}
-	if open, ok := fw.OpenForward(c, h.Host); ok {
+	if open, ok := h.OpenForward(c, fw.ForwardPolicy); ok {
 		return open
 	}
 	return c.OK("DOCKER-USER chain present")

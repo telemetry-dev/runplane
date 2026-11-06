@@ -63,7 +63,7 @@ func (d backend) Create(ctx context.Context, b *box, spec sandbox.Spec, s sandbo
 	}
 	b.SetControl(ctl)
 
-	res, err := d.docker.ContainerCreate(ctx, d.createOptions(spec, m, s.IPv4DNS()))
+	res, err := d.docker.ContainerCreate(ctx, d.createOptions(spec, m, s.DNS))
 	if err != nil {
 		return fmt.Errorf("create container: %w", err)
 	}

@@ -3,10 +3,34 @@
 package netrules
 
 import (
+	"context"
 	"os"
+	"slices"
 
 	"github.com/google/nftables"
 )
+
+// ReadFirewall reads the host firewall where it can block the sandboxes:
+// the iptables filter tables that runplane puts its rules in
+// (filterBackends), and the nftables drop chains (DropChains).
+func ReadFirewall(ctx context.Context) Firewall {
+	if os.Geteuid() != 0 {
+		return Firewall{Err: ErrNeedRoot}
+	}
+	f := Firewall{Drops: DropChains()}
+	backends, err := filterBackends(ctx)
+	if err != nil {
+		f.Err = err
+		return f
+	}
+	for _, b := range backends {
+		if f.ForwardPolicy != "DROP" && b.forward != "" {
+			f.ForwardPolicy = b.forward
+		}
+		f.DockerUser = f.DockerUser || slices.Contains(b.chains, dockerUser)
+	}
+	return f
+}
 
 // Available reports if the kernel has the nf_tables support that the rules
 // need. As root, it loads the module when it is not loaded yet.

@@ -11,10 +11,12 @@ import (
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/image"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/devdocker"
 	"github.com/runplane/runplane/internal/sandbox/firecracker"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
+	"github.com/runplane/runplane/internal/tlsutil"
 	"github.com/runplane/runplane/internal/version"
 )
 
@@ -27,7 +29,8 @@ const (
 
 // doctorOptions returns the doctor options of this server in mode: of an
 // agent, or of the primary, whose domain adds the ports of HTTPS. The
-// caller adds the internet check and the min_free_disk_percent setting.
+// caller adds the internet check, if it can do it, and the
+// min_free_disk_percent setting.
 func doctorOptions(cfg config.Config, mode sandbox.Mode, agent bool, domain string) doctor.Options {
 	o := doctor.Options{
 		DataDir: cfg.DataDir, EnvFile: cfg.EnvFilePath(), Unit: primaryUnit, Listen: primaryAddrs(cfg, domain),
@@ -39,7 +42,6 @@ func doctorOptions(cfg config.Config, mode sandbox.Mode, agent bool, domain stri
 	return o
 }
 
-// requirements returns what the sandbox driver of mode needs on this server.
 func requirements(cfg config.Config, mode sandbox.Mode, agent bool) doctor.Requirements {
 	switch mode {
 	case sandbox.ModeContainer:
@@ -49,8 +51,10 @@ func requirements(cfg config.Config, mode sandbox.Mode, agent bool) doctor.Requi
 	case sandbox.ModeDev:
 		return devdocker.Requirements(cfg.ServicePort, modeFix(cfg, agent, "container or vm"))
 	}
+	// config.Parse and the settings accept only the modes above, so the
+	// mode is empty.
 	return doctor.Requirements{
-		Mode: doctor.ModeCheck.Fail(fmt.Sprintf("Unknown mode %q", mode), modeFix(cfg, agent, "container, vm, or dev")),
+		Mode: doctor.ModeCheck.Fail(policy.ErrNoMode.Error(), modeFix(cfg, agent, "container, vm, or dev")),
 	}
 }
 
@@ -69,7 +73,7 @@ func modeFix(cfg config.Config, agent bool, modes string) string {
 func primaryAddrs(cfg config.Config, domain string) []string {
 	addrs := []string{cfg.Listen, cfg.AgentListen, servicePortAddr(cfg), cfg.SSHListen}
 	if domain != "" {
-		addrs = append(addrs, ":443", ":80")
+		addrs = append(addrs, tlsutil.HTTPSAddr, tlsutil.HTTPAddr)
 	}
 	return addrs
 }
@@ -97,7 +101,6 @@ func dockerFacts(ctx context.Context) (doctor.Docker, error) {
 	return d, nil
 }
 
-// baseImage tries to pull the default builtin image.
 func baseImage(ctx context.Context) (string, error) {
 	ref := images.Ref(version.Repo, images.Default)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)

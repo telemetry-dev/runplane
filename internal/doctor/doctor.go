@@ -16,7 +16,6 @@ import (
 
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
 type Status string
@@ -83,13 +82,15 @@ type Options struct {
 	MinFreeDiskPercent float64 // the min_free_disk_percent setting
 	Unit               string  // systemd unit of runplane, for example "runplane"; empty skips its state
 	Requirements       Requirements
-	// Docker, BaseImage, and Internet are required. Docker reads the Docker
-	// Engine of the server.
+	// Docker and BaseImage are required. Docker reads the Docker Engine of
+	// the server.
 	Docker func(ctx context.Context) (Docker, error)
 	// BaseImage tries to pull the default builtin image, and returns its
 	// registry ref and the error of the pull.
 	BaseImage func(ctx context.Context) (ref string, err error)
-	// Internet starts a sandbox that connects to the internet.
+	// Internet starts a sandbox that connects to the internet. Without it,
+	// only the running service can do the internet check, because the
+	// check needs the firewall rules that the service owns.
 	Internet func(ctx context.Context) error
 }
 
@@ -112,7 +113,6 @@ type Host struct {
 	Systemd   bool   // the host runs systemd
 	Unit      string // Options.Unit
 	UnitState string // systemctl is-active of Unit
-	NFTables  bool   // the kernel has the nf_tables support of the firewall rules
 
 	dockerSnap bool // Docker comes from the snap package
 }
@@ -135,7 +135,7 @@ func Run(ctx context.Context, o Options) Report {
 	s := o.scan(ctx)
 	checks := s.checks(ctx, o)
 	ref, pullErr := o.BaseImage(ctx)
-	checks = append(checks, baseImageCheck(s.Host, req.Docker, ref, pullErr), internetCheck(o.Internet(ctx)))
+	checks = append(checks, baseImageCheck(s.Host, req.Docker, ref, pullErr), internetCheck(ctx, o.Internet))
 	return Report{Info: s.Info, Checks: checks}
 }
 
@@ -152,7 +152,6 @@ func (o Options) scan(ctx context.Context) scan {
 	if h.Unit = o.Unit; h.Unit != "" {
 		h.UnitState = UnitState(ctx, h.Unit)
 	}
-	h.NFTables = netrules.Available()
 	return scan{Host: h, clock: readClock(ctx), ports: scanPorts(slices.Concat(o.Listen, o.Requirements.Listen), o.Serving)}
 }
 
@@ -285,13 +284,15 @@ func baseImageCheck(h *Host, needDocker bool, ref string, pullErr error) Check {
 		"Run the install script again: it installs Docker Engine for local image builds. Or make the image public on GHCR.")
 }
 
-func internetCheck(err error) Check {
+func internetCheck(ctx context.Context, probe func(context.Context) error) Check {
 	c := Check{ID: "internet", Name: "Sandbox internet access"}
-	switch {
+	if probe == nil {
+		return c.Warn("Not checked here: only the running runplane service can do this check, because it owns the firewall rules of the sandboxes.",
+			"Open this server in the dashboard and select Run doctor.")
+	}
+	switch err := probe(ctx); {
 	case errors.Is(err, sandbox.ErrNoProbe):
 		return c.Warn(fmt.Sprintf("Not checked: %v.", err), "Run runplane doctor again when the default image is ready.")
-	case errors.Is(err, sandbox.ErrProbeInService):
-		return c.Warn(fmt.Sprintf("Not checked here: %v.", err), "Open this server in the dashboard and select Run doctor.")
 	case err != nil:
 		return c.Fail(fmt.Sprintf("A sandbox cannot reach the internet: %v", err), "Fix the IP forwarding and firewall checks above.")
 	}

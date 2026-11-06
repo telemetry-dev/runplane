@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -45,7 +44,8 @@ func Requirements(kernel, jailDir string) doctor.Requirements {
 			f.ids, f.idsErr = readIDRange(JailerUser, subuidFile, subgidFile)
 			f.tunErr = checkTun()
 			f.mount, f.mountErr = readMountOptions(jailDir)
-			f.firewall = doctor.ReadFirewall(ctx, h.Root)
+			f.nftables = netrules.Available()
+			f.firewall = netrules.ReadFirewall(ctx)
 			return f.checks()
 		},
 	}
@@ -62,12 +62,13 @@ type vmHost struct {
 	jailDir        string
 	mount          []string // the options of the mount of jailDir
 	mountErr       error
-	firewall       doctor.Firewall
+	nftables       bool
+	firewall       netrules.Firewall
 }
 
 func (h vmHost) checks() []doctor.Check {
 	return []doctor.Check{
-		h.osCheck(), h.KernelCheck(h.kernelRules), h.CgroupCheck(), h.kvmCheck(), h.NFTablesCheck(), h.ForwardCheck(),
+		h.osCheck(), h.KernelCheck(h.kernelRules), h.CgroupCheck(), h.kvmCheck(), h.NFTablesCheck(h.nftables), h.ForwardCheck(),
 		h.firecrackerCheck(), h.guestKernelCheck(), h.idsCheck(), h.tunCheck(), h.mountCheck(), h.firewallCheck(),
 		h.SystemdCheck("which keeps VMs in scopes"),
 	}
@@ -241,23 +242,23 @@ func mountOptions(r io.Reader, path string) ([]string, error) {
 func (h vmHost) firewallCheck() doctor.Check {
 	c := doctor.Check{ID: "firewall", Name: "Firewall rules"}
 	fw := h.firewall
-	if blocked, ok := fw.Blocked(c, netrules.TapPrefix+"*"); ok {
+	if blocked, ok := doctor.Blocked(c, fw.Drops, netrules.TapPrefix+"*"); ok {
 		return blocked
 	}
 	switch {
-	case errors.Is(fw.Err, exec.ErrNotFound):
-		return c.OK("No iptables rules")
-	case errors.Is(fw.Err, doctor.ErrNeedRoot):
+	case errors.Is(fw.Err, netrules.ErrNeedRoot):
 		return c.AsRoot("Cannot read the firewall without root")
 	case fw.Err != nil:
 		return c.Warn(fmt.Sprintf("Cannot read the iptables rules: %v", fw.Err), "Check the policy of the FORWARD chain.").WithCommand("sudo iptables -S FORWARD")
 	}
-	if open, ok := fw.OpenForward(c, h.Host); ok {
+	if open, ok := h.OpenForward(c, fw.ForwardPolicy); ok {
 		return open
 	}
 	switch {
+	case fw.ForwardPolicy == "":
+		return c.OK("No iptables FORWARD chain")
 	case fw.ForwardPolicy != "DROP":
-		return c.OK("FORWARD policy " + cmp.Or(fw.ForwardPolicy, "ACCEPT"))
+		return c.OK("FORWARD policy " + fw.ForwardPolicy)
 	case fw.DockerUser:
 		return c.OK("Docker sets the FORWARD policy to DROP; runplane adds accept rules for its sandboxes")
 	}

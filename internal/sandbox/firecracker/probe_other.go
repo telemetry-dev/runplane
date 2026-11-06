@@ -10,6 +10,6 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
-func (h systemHost) probe(context.Context, netrules.Lease, netip.Addr, string) error {
+func (h systemHost) probe(context.Context, netrules.Lease, netip.Addr) error {
 	return errors.ErrUnsupported
 }

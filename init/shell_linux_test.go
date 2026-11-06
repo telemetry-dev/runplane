@@ -23,7 +23,8 @@ func TestShell(t *testing.T) {
 	}
 	sock := socketPath(t)
 	log := slog.New(slog.DiscardHandler)
-	host, err := control.Listen(sock, nil, &recorder{}, log)
+	rec := &recorder{}
+	host, err := control.Listen(sock, nil, rec, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestShell(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go link.run(ctx)
-	waitFor(t, "the guest", host.Connected)
+	waitFor(t, "the guest", func() bool { return rec.connects.Load() > 0 })
 
 	term, err := host.Shell(ctx, sandbox.TermSize{Rows: 30, Cols: 90})
 	if err != nil {

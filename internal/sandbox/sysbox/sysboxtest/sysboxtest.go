@@ -164,13 +164,6 @@ func (w *Watcher) Wait(t *testing.T, id string, st sandbox.State, timeout time.D
 	}).Time
 }
 
-func (w *Watcher) WaitRunner(t *testing.T, id, kind string, timeout time.Duration) {
-	t.Helper()
-	w.WaitFor(t, id, "runner event "+kind, timeout, func(ev sandbox.Event) bool {
-		return ev.Type == sandbox.EventRunner && ev.Runner.Kind == kind
-	})
-}
-
 // ReadAll reads r in the background; the result waits until r ends.
 func ReadAll(r io.Reader) func() string {
 	var buf bytes.Buffer

@@ -7,12 +7,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +33,7 @@ func TestControlChannel(t *testing.T) {
 		RunnerDir:        "/opt/runplane/runner",
 		Env:              map[string]string{"ACTIONS_RESULTS_URL": "http://10.0.0.1:8486/"},
 		ActionsCache:     true,
-		DNS:              []string{"1.1.1.1", "8.8.8.8"},
+		DNS:              []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")},
 		RegistryMirror:   "http://10.0.0.1:8486",
 		TimeLimitSeconds: 3600,
 		Debug:            true,
@@ -89,7 +91,7 @@ func TestControlChannel(t *testing.T) {
 	}
 
 	// runplane restarts: the guest keeps events and logs, connects again,
-	// sends resume first, and does not ask for the config again.
+	// and does not ask for the config again.
 	host1.Close()
 	waitFor(t, "the guest to see the host leave", func() bool {
 		link.mu.Lock()
@@ -104,8 +106,8 @@ func TestControlChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host2.Close()
-	waitFor(t, "events after the restart", func() bool { return len(rec2.eventList()) == 2 })
-	want := []sandbox.RunnerEvent{{Kind: "resume"}, {Kind: "job.started", JobName: "build"}}
+	waitFor(t, "events after the restart", func() bool { return len(rec2.eventList()) == 1 })
+	want := []sandbox.RunnerEvent{{Kind: "job.started", JobName: "build"}}
 	if ev := rec2.eventList(); !slices.Equal(ev, want) {
 		t.Errorf("events after the restart = %+v, want %+v", ev, want)
 	}
@@ -115,9 +117,6 @@ func TestControlChannel(t *testing.T) {
 	// HTTP requests travel as plain text inside yamux frames.
 	if n := strings.Count(sent.String(), "GET /v1/config "); n != 1 {
 		t.Errorf("the guest asked for the config %d times, want 1", n)
-	}
-	if !host2.Connected() {
-		t.Error("Connected() = false with a guest on the line")
 	}
 
 	// A hold keeps init after the runner exits, until a shutdown.
@@ -161,10 +160,9 @@ func TestControlChannel(t *testing.T) {
 	}
 
 	cancel()
-	waitFor(t, "the host to see the guest leave", func() bool { return !host2.Connected() })
-	if err := host2.Hold(context.Background(), time.Now()); err != control.ErrNotConnected {
-		t.Errorf("Hold without a guest = %v, want ErrNotConnected", err)
-	}
+	waitFor(t, "Hold to give ErrNotConnected after the guest left", func() bool {
+		return host2.Hold(context.Background(), time.Now()) == control.ErrNotConnected
+	})
 }
 
 // In dev mode the guest dials the TCP address in control.addr. After a host
@@ -181,14 +179,15 @@ func TestDialHostTCPAfterRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		host, err := tcp.Listen(filepath.Dir(sock), "01jbz3x0000000000000000000", nil, &recorder{}, log)
+		rec := &recorder{}
+		host, err := tcp.Listen(filepath.Dir(sock), "01jbz3x0000000000000000000", nil, rec, log)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if i == 0 {
 			go link.run(ctx)
 		}
-		waitFor(t, fmt.Sprintf("connection %d over TCP", i+1), host.Connected)
+		waitFor(t, fmt.Sprintf("connection %d over TCP", i+1), func() bool { return rec.connects.Load() > 0 })
 		host.Close()
 		tcp.Close()
 	}
@@ -305,13 +304,14 @@ func TestShutdownWhileWaitingForConfig(t *testing.T) {
 }
 
 type recorder struct {
-	mu     sync.Mutex
-	events []sandbox.RunnerEvent
-	logs   []guest.LogLine
-	lost   func() // OnLostConfig, if set
+	connects atomic.Int32
+	mu       sync.Mutex
+	events   []sandbox.RunnerEvent
+	logs     []guest.LogLine
+	lost     func() // OnLostConfig, if set
 }
 
-func (r *recorder) OnConnect() {}
+func (r *recorder) OnConnect() { r.connects.Add(1) }
 
 func (r *recorder) OnEvent(ev sandbox.RunnerEvent) {
 	r.mu.Lock()

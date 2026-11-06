@@ -30,7 +30,7 @@ import (
 // sockets, the network rules, and runplane.slice. It uses sysbox-runc when
 // Docker has it, else runc without the watchdog. RUNPLANE_TEST_IMAGE must
 // name an image with bash, curl, a user "runner", and the label
-// dev.runplane.managed=true.
+// dev.runplane.managed=true, such as the image of sysboxtest/Dockerfile.
 func TestContainerMode(t *testing.T) {
 	if os.Getenv("RUNPLANE_TEST_DOCKER") != "1" || os.Getuid() != 0 {
 		t.Skip("set RUNPLANE_TEST_DOCKER=1 and run as root")
@@ -75,7 +75,7 @@ func TestContainerMode(t *testing.T) {
 		Runner:           bundle.Runner,
 		InitPath:         func() (string, error) { return initPath, nil },
 		NetRules:         rules,
-		Settings:         sandbox.Settings{DNS: []string{"1.1.1.1"}, ActionsCache: true},
+		Settings:         sandbox.Settings{DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, ActionsCache: true},
 		Logger:           log,
 	}
 	drv, err := New(opts)
@@ -171,7 +171,8 @@ func TestContainerMode(t *testing.T) {
 			t.Fatal(err)
 		}
 		ev = sysboxtest.Watch(drv.Events())
-		ev.WaitRunner(t, id, sandbox.RunnerResume, 30*time.Second)
+		// The events come to the new driver only when the guest connects
+		// to it.
 		bundle.Signal(t, "start", id)
 		bundle.Signal(t, "end", id)
 		ev.Wait(t, id, sandbox.StateGone, 2*time.Minute)
