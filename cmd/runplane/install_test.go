@@ -287,6 +287,16 @@ check_base_image`)
 			match(t, repoFile(t, "kernel/build.sh"), `(?m)^FIRECRACKER_REF=\$\{FIRECRACKER_REF:-(\S+)\}$`), "install.sh", "kernel/build.sh")
 	})
 
+	// The add-server dialog names the systems of runplane.Systems. install.sh
+	// takes them without a warning, or with one for a best-effort system.
+	t.Run("systems", func(t *testing.T) {
+		for _, s := range runplane.Systems {
+			out := installtest.Run(t, "have_kvm() { return 0; }\nMODE=vm\nOS_ID="+s.ID+"\nOS_VERSION="+s.Version+"\nselect_mode")
+			warned := strconv.FormatBool(strings.Contains(out, "best effort"))
+			agree(t, "the best-effort warning of install.sh for "+s.Name+" "+s.Version, warned, strconv.FormatBool(s.BestEffort), "install.sh", "install.go")
+		}
+	})
+
 	// An install over SSH shows the latest step of install.sh.
 	t.Run("step lines", func(t *testing.T) {
 		out := strings.TrimSpace(installtest.Run(t, "step 'Write the configuration'"))

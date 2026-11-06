@@ -38,7 +38,7 @@ import { UsageBar } from '~/components/app/usage-bar'
 import { workflowDiff } from '~/components/pages/first-job/first-job'
 import { clock } from '~/components/pages/jobs/job-format'
 import { defaultRange, rangeOptions, statusOptions, type JobsRange, type JobsStatus } from '~/components/pages/jobs/jobs-search'
-import { supportedSystems } from '~/components/pages/servers/server-info'
+import { systemsText } from '~/components/pages/servers/server-info'
 import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup, AlertDialogTrigger } from '~/components/ui/alert-dialog'
 import { Avatar } from '~/components/ui/avatar'
 import { Button, IconButton } from '~/components/ui/button'
@@ -246,6 +246,12 @@ const pools = [
   { value: 'runplane-8cpu', label: 'runplane-8cpu' },
   { value: 'runplane-4cpu-arm', label: 'runplane-4cpu-arm' },
 ]
+const systems: Schemas['System'][] = [
+  { name: 'Ubuntu', version: '22.04', best_effort: false },
+  { name: 'Ubuntu', version: '24.04', best_effort: false },
+  { name: 'Debian', version: '12', best_effort: true },
+  { name: 'Debian', version: '13', best_effort: true },
+]
 const repositories = ['kestrel-hq/api', 'kestrel-hq/web', 'kestrel-hq/mobile', 'kestrel-hq/infra', 'ada-okafor/dotfiles']
 
 function Pickers() {
@@ -374,7 +380,7 @@ function Overlays() {
               </TabsList>
               <TabsPanel value="script">
                 <DialogDescription>
-                  Run this on a fresh server with {supportedSystems}. It installs the runplane agent, and Docker for container mode,
+                  Run this on a fresh server with {systemsText(systems)}. It installs the runplane agent, and Docker for container mode,
                   then connects to ci.kestrel.dev.
                 </DialogDescription>
                 <CodeBlock copyable code={['curl -fsSL https://ci.kestrel.dev/install.sh | sudo sh -s -- \\', '  --token rp_srv_8Fq2nL7xVb3kR9tW']} />

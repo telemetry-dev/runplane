@@ -3868,6 +3868,13 @@
             "format": "int64",
             "type": "integer"
           },
+          "systems": {
+            "description": "The operating systems of a server that install.sh names.",
+            "items": {
+              "$ref": "#/components/schemas/System"
+            },
+            "type": "array"
+          },
           "version": {
             "description": "Version of runplane, for example \"v1.2.0 (3f2a9c1)\".",
             "type": "string"
@@ -3880,7 +3887,31 @@
           "instance_name",
           "github_connected",
           "has_jobs",
-          "ssh_port"
+          "ssh_port",
+          "systems"
+        ],
+        "type": "object"
+      },
+      "System": {
+        "additionalProperties": false,
+        "properties": {
+          "best_effort": {
+            "description": "install.sh installs runplane with a warning, because runplane has no tests on the system.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "For example Ubuntu.",
+            "type": "string"
+          },
+          "version": {
+            "description": "For example 24.04.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "best_effort"
         ],
         "type": "object"
       },

@@ -5,8 +5,17 @@ import { formatBytes, formatMegabytes, formatRelativeTime } from '~/lib/format'
 
 export type Server = Schemas['Server']
 
-/** The systems that install.sh and the README name for a server. */
-export const supportedSystems = 'Ubuntu 22.04 or 24.04, or Debian 12 or 13'
+/** The systems that install.sh names for a server, as "Ubuntu 22.04 or 24.04, or Debian 12 or 13 (best effort)". */
+export function systemsText(systems: Schemas['System'][]): string {
+  const byName = new Map<string, Schemas['System'][]>()
+  for (const system of systems) byName.set(system.name, [...(byName.get(system.name) ?? []), system])
+  return [...byName]
+    .map(([name, list]) => {
+      const versions = `${name} ${list.map((system) => system.version).join(' or ')}`
+      return list.every((system) => system.best_effort) ? `${versions} (best effort)` : versions
+    })
+    .join(', or ')
+}
 
 /** "136.243.18.40 · Hetzner FSN1 · Ubuntu 24.04", without the facts the server has not reported. */
 export function serverOrigin(server: Server): string {

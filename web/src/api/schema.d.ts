@@ -2473,7 +2473,17 @@ export interface components {
              * @description Port of the SSH gateway for debug shells.
              */
             ssh_port: number;
+            /** @description The operating systems of a server that install.sh names. */
+            systems: components["schemas"]["System"][];
             /** @description Version of runplane, for example "v1.2.0 (3f2a9c1)". */
+            version: string;
+        };
+        System: {
+            /** @description install.sh installs runplane with a warning, because runplane has no tests on the system. */
+            best_effort: boolean;
+            /** @description For example Ubuntu. */
+            name: string;
+            /** @description For example 24.04. */
             version: string;
         };
         TestChannelRequest: {

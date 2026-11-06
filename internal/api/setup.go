@@ -5,6 +5,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/runplane/runplane"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/store"
@@ -12,13 +13,20 @@ import (
 )
 
 type Status struct {
-	NeedsSetup      bool   `json:"needs_setup" doc:"True until the first admin exists."`
-	Version         string `json:"version" doc:"Version of runplane, for example \"v1.2.0 (3f2a9c1)\"."`
-	Mode            string `json:"mode" enum:"container,vm,dev" doc:"Sandbox mode."`
-	InstanceName    string `json:"instance_name"`
-	GitHubConnected bool   `json:"github_connected" doc:"True when a GitHub App with at least one installation exists."`
-	HasJobs         bool   `json:"has_jobs" doc:"True when runplane has recorded at least one job."`
-	SSHPort         int    `json:"ssh_port" doc:"Port of the SSH gateway for debug shells."`
+	NeedsSetup      bool     `json:"needs_setup" doc:"True until the first admin exists."`
+	Version         string   `json:"version" doc:"Version of runplane, for example \"v1.2.0 (3f2a9c1)\"."`
+	Mode            string   `json:"mode" enum:"container,vm,dev" doc:"Sandbox mode."`
+	InstanceName    string   `json:"instance_name"`
+	GitHubConnected bool     `json:"github_connected" doc:"True when a GitHub App with at least one installation exists."`
+	HasJobs         bool     `json:"has_jobs" doc:"True when runplane has recorded at least one job."`
+	SSHPort         int      `json:"ssh_port" doc:"Port of the SSH gateway for debug shells."`
+	Systems         []System `json:"systems" doc:"The operating systems of a server that install.sh names."`
+}
+
+type System struct {
+	Name       string `json:"name" doc:"For example Ubuntu."`
+	Version    string `json:"version" doc:"For example 24.04."`
+	BestEffort bool   `json:"best_effort" doc:"install.sh installs runplane with a warning, because runplane has no tests on the system."`
 }
 
 func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], error) {
@@ -39,6 +47,10 @@ func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], er
 	if err != nil {
 		return nil, err
 	}
+	systems := make([]System, len(runplane.Systems))
+	for i, s := range runplane.Systems {
+		systems[i] = System{Name: s.Name, Version: s.Version, BestEffort: s.BestEffort}
+	}
 	return &body[Status]{Status{
 		NeedsSetup:      users == 0,
 		Version:         version.String(),
@@ -47,6 +59,7 @@ func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], er
 		GitHubConnected: connected,
 		HasJobs:         len(jobs) > 0,
 		SSHPort:         h.sshPort(),
+		Systems:         systems,
 	}}, nil
 }
 
