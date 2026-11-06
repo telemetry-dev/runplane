@@ -93,7 +93,6 @@ type Options struct {
 	Internet func(ctx context.Context) error
 }
 
-// Docker is what the doctor reads of the Docker Engine.
 type Docker struct {
 	Version  string
 	RootDir  string            // the data folder of Docker
@@ -140,7 +139,6 @@ func Run(ctx context.Context, o Options) Report {
 	return Report{Info: s.Info, Checks: checks}
 }
 
-// scan is what the doctor read for Run.
 type scan struct {
 	*Host
 	clock clock

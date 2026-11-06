@@ -53,9 +53,9 @@ func (h *Host) NFTablesCheck() Check {
 	return c.Fail("The kernel has no nf_tables support", "Load the nf_tables module.").WithCommand("sudo modprobe nf_tables")
 }
 
-// ForwardCheck looks at IP forwarding. runplane turns it on when it starts,
-// after Docker, and not with a sysctl file at boot: Docker sets the FORWARD
-// policy to DROP only when it turns on forwarding itself.
+// runplane turns IP forwarding on when it starts, after Docker, and not with
+// a sysctl file at boot: Docker sets the FORWARD policy to DROP only when it
+// turns on forwarding itself.
 func (h *Host) ForwardCheck() Check {
 	c := Check{ID: "ip_forward", Name: "IP forwarding"}
 	if h.IPForward {
@@ -86,8 +86,6 @@ func (h *Host) SystemdCheck(need string) Check {
 		WithCommand("sudo systemctl enable --now " + h.Unit)
 }
 
-// KernelCheck checks the version of the host kernel with the rules of a
-// driver.
 func (h *Host) KernelCheck(rules func(c Check, v Version) Check) Check {
 	c := Check{ID: "kernel", Name: "Kernel"}
 	v, ok := ParseVersion(h.Kernel)
@@ -111,8 +109,7 @@ type Firewall struct {
 	Err error
 }
 
-// ReadFirewall reads the firewall of the host. Without root it reads
-// nothing.
+// Without root, ReadFirewall reads nothing.
 func ReadFirewall(ctx context.Context, root bool) Firewall {
 	if !root {
 		return Firewall{Err: ErrNeedRoot}
