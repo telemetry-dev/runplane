@@ -1,7 +1,7 @@
 // Package fleet keeps the servers of the primary: its own server and the
 // agents. It records their state and host stats, makes images and runner
-// bundles ready on them, installs agents, and tells the scheduler which
-// servers can take sandboxes.
+// bundles ready on them, installs agents, and tells which servers can take
+// sandboxes.
 package fleet
 
 import (
@@ -21,7 +21,6 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/sshinstall"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -57,6 +56,11 @@ type Runners interface {
 	Built(ctx context.Context, b store.RunnerBundle)
 }
 
+// Pools makes pools: the pools service.
+type Pools interface {
+	Create(ctx context.Context, by audit.Actor, p store.Pool) (store.Pool, error)
+}
+
 type Config struct {
 	Store  *store.Store
 	Bus    *events.Bus
@@ -82,7 +86,9 @@ type Config struct {
 	// scheduler.
 	CapacityChanged func()
 	Runners         Runners
-	Now             func() time.Time // nil: time.Now
+	// Pools adds the default label at the first start.
+	Pools Pools
+	Now   func() time.Time // nil: time.Now
 }
 
 type Fleet struct {
@@ -99,6 +105,7 @@ type Fleet struct {
 	onEvent         func(string, sandbox.Event)
 	capacityChanged func()
 	runners         Runners
+	pools           Pools
 	now             func() time.Time
 	knownHosts      *sshinstall.KnownHosts
 
@@ -172,6 +179,7 @@ func New(c Config) *Fleet {
 		onEvent:         c.OnEvent,
 		capacityChanged: c.CapacityChanged,
 		runners:         c.Runners,
+		pools:           c.Pools,
 		now:             c.Now,
 		knownHosts:      &sshinstall.KnownHosts{Path: c.Config.KnownHostsPath()},
 		settings:        events.Subscribe[events.SettingsChanged](bg, c.Bus),
@@ -282,17 +290,25 @@ func (f *Fleet) kick() {
 	}
 }
 
-// Online returns the connected servers with the status online.
-func (f *Fleet) Online() []scheduler.Host {
+// Host is a connected server.
+type Host struct {
+	ServerID string
+	Name     string
+	Arch     string
+	Driver   agent.Driver
+}
+
+// Online returns the connected servers with the status online, by name.
+func (f *Fleet) Online() []Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var hosts []scheduler.Host
+	var hosts []Host
 	for _, n := range f.nodes {
 		if n.status == store.ServerOnline {
-			hosts = append(hosts, scheduler.Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
+			hosts = append(hosts, Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
 		}
 	}
-	slices.SortFunc(hosts, func(a, b scheduler.Host) int {
+	slices.SortFunc(hosts, func(a, b Host) int {
 		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ServerID, b.ServerID))
 	})
 	return hosts

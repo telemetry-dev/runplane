@@ -225,7 +225,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.fleet = fleet.New(fleet.Config{
 		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node,
 		AgentFingerprint: fingerprint, Version: version.Version, Repo: version.Repo, PublicKey: update.PublicKey,
-		OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners,
+		OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners, Pools: d.Pools,
 	})
 	jobLogs := joblog.New(joblog.Config{
 		Dir: cfg.LogsDir(), Store: st, Log: log.With("component", "joblog"),

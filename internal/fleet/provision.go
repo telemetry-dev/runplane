@@ -10,6 +10,7 @@ import (
 
 	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -45,10 +46,8 @@ func (f *Fleet) seedPool(ctx context.Context, st store.Settings) error {
 	if err != nil {
 		return err
 	}
-	p := defaultPool(local.Arch, local.VCPU-st.ReserveVCPU, local.MemoryMB-st.ReserveMemoryMB)
-	now := f.now()
-	p.ID, p.CreatedAt, p.UpdatedAt = ids.New(), now, now
-	if err := f.st.CreatePool(ctx, p); err != nil {
+	p, err := f.pools.Create(ctx, audit.Actor{}, defaultPool(local.Arch, local.VCPU-st.ReserveVCPU, local.MemoryMB-st.ReserveMemoryMB))
+	if err != nil {
 		return fmt.Errorf("add the default label: %w", err)
 	}
 	f.log.Info("added the default label", "label", p.Label, "vcpu", p.VCPU, "memory_mb", p.MemoryMB, "max_runners", p.MaxRunners)

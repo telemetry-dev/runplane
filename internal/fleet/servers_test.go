@@ -14,7 +14,6 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -111,7 +110,7 @@ func TestConnectedAgentStaysOnline(t *testing.T) {
 		t.Errorf("status %q of a connected agent, want online", got)
 	}
 	waitFor(t, "the agent in Online", func() bool {
-		return slices.ContainsFunc(h.f.Online(), func(s scheduler.Host) bool { return s.ServerID == id })
+		return slices.ContainsFunc(h.f.Online(), func(s Host) bool { return s.ServerID == id })
 	})
 }
 
@@ -251,6 +250,8 @@ func TestUpdateServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The first start added the default label.
+	entries = slices.DeleteFunc(entries, func(e store.AuditEntry) bool { return e.Action == "pool.create" })
 	want := `{"changes":{"name":["fsn1-a","fsn1-c"],"status":["online","draining"]},"name":"fsn1-c","status":"draining"}`
 	if len(entries) != 1 || entries[0].Action != "server.update" || string(entries[0].Detail) != want ||
 		entries[0].UserID != "u1" || entries[0].IP != "192.0.2.7" {

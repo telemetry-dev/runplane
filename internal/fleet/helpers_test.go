@@ -21,6 +21,7 @@ import (
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -71,6 +72,7 @@ func newHarness(t *testing.T, local *fakeNode, opts ...func(*Config)) *harness {
 		Version: "dev", Repo: version.Repo,
 		OnEvent: func(string, sandbox.Event) {}, CapacityChanged: func() { h.capacity.Add(1) }, Now: h.clock.now,
 		Runners: versions.New(versions.Config{Store: st, Bus: h.bus}),
+		Pools:   pools.New(pools.Config{Store: st, Bus: h.bus}),
 	}
 	for _, o := range opts {
 		o(&c)

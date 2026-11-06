@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -43,6 +44,24 @@ func TestFirstStartHasDefaultImage(t *testing.T) {
 		ref, ok := h.f.Image(h.localID(), "")
 		return ok && ref.Ref == "builtin:ubuntu-24.04" && ref.Digest == "sha256:b0b0"
 	})
+}
+
+// The default label of the first start is a pool change as any other: it
+// has an audit entry, and the scheduler and GitHub get events.PoolsChanged.
+func TestFirstStartAddsTheDefaultLabel(t *testing.T) {
+	ctx := t.Context()
+	h := newHarness(t, newFakeNode("arm64"))
+	changed := events.Subscribe[events.PoolsChanged](ctx, h.bus)
+	h.run()
+	recv(t, changed)
+	pools, err := h.st.ListPools(ctx)
+	if err != nil || len(pools) != 1 || pools[0].Label != "runplane" || pools[0].Arch != "arm64" {
+		t.Fatalf("pools %+v, %v; want the label runplane for arm64", pools, err)
+	}
+	entries, _, err := h.st.ListAudit(ctx, "", 10)
+	if err != nil || len(entries) != 1 || entries[0].Action != "pool.create" || entries[0].Target != pools[0].ID || entries[0].UserID != "" {
+		t.Errorf("audit entries %+v, %v; want one pool.create by runplane", entries, err)
+	}
 }
 
 func TestProvisionImagesAndRunner(t *testing.T) {
