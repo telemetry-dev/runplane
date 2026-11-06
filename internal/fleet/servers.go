@@ -443,11 +443,7 @@ func (f *Fleet) Check(ctx context.Context) (HostCheck, error) {
 }
 
 func (f *Fleet) doctor(ctx context.Context, n agent.Node) (doctor.Report, error) {
-	st, err := f.st.GetSettings(ctx)
-	if err != nil {
-		return doctor.Report{}, err
-	}
-	r, err := n.Doctor(ctx, st.MinFreeDiskPercent)
+	r, err := n.Doctor(ctx)
 	if err != nil {
 		return doctor.Report{}, fmt.Errorf("run the doctor: %w", err)
 	}

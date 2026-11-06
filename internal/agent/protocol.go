@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -53,10 +52,6 @@ var (
 		return a.Node.Driver().Capacity(ctx)
 	})
 
-	opProbe = newOp(http.MethodPost, "/v1/probe", func(ctx context.Context, a *agent, _ none) (none, error) {
-		return none{}, a.Node.Driver().Probe(ctx)
-	})
-
 	opConfigure = newOp(http.MethodPost, "/v1/settings", func(ctx context.Context, a *agent, s Settings) (none, error) {
 		return none{}, a.Node.Configure(ctx, s)
 	})
@@ -68,7 +63,7 @@ var (
 			info, err := a.Node.Facts(ctx)
 			return hostReport{Info: wireInfo(info)}, err
 		}
-		r, err := a.Node.Doctor(ctx, q.MinFreeDiskPercent)
+		r, err := a.Node.Doctor(ctx)
 		return hostReport{Info: wireInfo(r.Info), Doctor: wireChecks(r.Checks)}, err
 	})
 
@@ -78,18 +73,16 @@ var (
 		return none{}, a.Node.GCImages(ctx, req.Keep)
 	})
 
-	opEnsureRunner = newOp(http.MethodPost, "/v1/runners/ensure", func(ctx context.Context, a *agent, req runnerRequest) (bundle, error) {
-		b, err := a.Node.EnsureRunner(ctx, req.Version, req.Arch)
-		return wireBundle(b), err
+	opEnsureRunner = newOp(http.MethodPost, "/v1/runners/ensure", func(ctx context.Context, a *agent, req runnerRequest) (Bundle, error) {
+		return a.Node.EnsureRunner(ctx, req.Version, req.Arch)
 	})
 
 	opPruneRunners = newOp(http.MethodPost, "/v1/runners/prune", func(ctx context.Context, a *agent, req keepRequest) (none, error) {
 		return none{}, a.Node.PruneRunners(ctx, req.Keep)
 	})
 
-	opMirrorStats = newOp(http.MethodGet, "/v1/mirror/stats", func(ctx context.Context, a *agent, _ none) (mirrorStats, error) {
-		m, err := a.Node.MirrorStats(ctx)
-		return wireMirror(m), err
+	opMirrorStats = newOp(http.MethodGet, "/v1/mirror/stats", func(ctx context.Context, a *agent, _ none) (MirrorStats, error) {
+		return a.Node.MirrorStats(ctx)
 	})
 
 	// opUpdate replaces the binary. The primary closes the connection when
@@ -119,7 +112,7 @@ const (
 
 // Settings are the settings that a server gets from the primary: the
 // settings of its sandbox driver, and min_free_disk_percent for its
-// registry mirror.
+// registry mirror and its doctor.
 type Settings struct {
 	sandbox.Settings
 	MinFreeDiskPercent float64 `json:"min_free_disk_percent"`
@@ -143,8 +136,7 @@ type (
 		Size sandbox.TermSize
 	}
 	hostQuery struct {
-		Doctor             bool
-		MinFreeDiskPercent float64
+		Doctor bool
 	}
 	hostReport struct {
 		Info   hostInfo    `json:"info"`
@@ -165,7 +157,7 @@ type (
 	// imageMessage is one line of the answer of opEnsureImage. The last
 	// line has Image or Error.
 	imageMessage struct {
-		Progress *progress         `json:"progress,omitempty"`
+		Progress *Progress         `json:"progress,omitempty"`
 		Image    *sandbox.ImageRef `json:"image,omitempty"`
 		Error    string            `json:"error,omitempty"`
 	}
@@ -235,14 +227,11 @@ func (q hostQuery) args() (string, url.Values) {
 	if !q.Doctor {
 		return "", nil
 	}
-	return "", url.Values{"doctor": {"1"}, "min_free_disk_percent": {strconv.FormatFloat(q.MinFreeDiskPercent, 'g', -1, 64)}}
+	return "", url.Values{"doctor": {"1"}}
 }
 
 func (q *hostQuery) parse(_ string, v url.Values) error {
 	q.Doctor = v.Get("doctor") == "1"
-	if q.Doctor {
-		q.MinFreeDiskPercent, _ = strconv.ParseFloat(v.Get("min_free_disk_percent"), 64)
-	}
 	return nil
 }
 
@@ -472,9 +461,8 @@ func serveEnsureImage(w http.ResponseWriter, r *http.Request, a *agent, ref sand
 		enc.Encode(m)
 		flush()
 	}
-	img, err := a.Node.EnsureImage(r.Context(), ref.Ref, func(p image.Progress) {
-		wp := wireProgress(p)
-		send(imageMessage{Progress: &wp})
+	img, err := a.Node.EnsureImage(r.Context(), ref.Ref, func(p Progress) {
+		send(imageMessage{Progress: &p})
 	})
 	if err != nil {
 		send(imageMessage{Error: err.Error()})

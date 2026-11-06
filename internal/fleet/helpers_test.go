@@ -21,9 +21,6 @@ import (
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/mirror"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/runner/versions"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -241,7 +238,7 @@ type fakeNode struct {
 	info   host.Info
 	events chan sandbox.Event
 	stats  chan host.Stats
-	mirror mirror.Stats
+	mirror agent.MirrorStats
 	limits sandbox.Limits
 
 	mu        sync.Mutex
@@ -304,21 +301,20 @@ func (n *fakeNode) args(method string) []any {
 }
 
 func (n *fakeNode) Local() bool                              { return true }
-func (n *fakeNode) Driver() sandbox.Driver                   { return fakeDriver{n: n} }
+func (n *fakeNode) Driver() agent.Driver                     { return fakeDriver{n: n} }
 func (n *fakeNode) Facts(context.Context) (host.Info, error) { return n.info, nil }
 func (n *fakeNode) Stats() <-chan host.Stats                 { return n.stats }
 func (n *fakeNode) Close() error                             { return nil }
 
-func (n *fakeNode) MirrorStats(context.Context) (mirror.Stats, error) { return n.mirror, nil }
+func (n *fakeNode) MirrorStats(context.Context) (agent.MirrorStats, error) { return n.mirror, nil }
 
-func (n *fakeNode) Doctor(_ context.Context, minFree float64) (doctor.Report, error) {
-	n.record("Doctor", minFree)
+func (n *fakeNode) Doctor(context.Context) (doctor.Report, error) {
 	return doctor.Report{Info: n.info, Checks: []doctor.Check{{ID: "kernel", Name: "Kernel", Status: doctor.StatusOK, Detail: n.info.Kernel}}}, nil
 }
 
-func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
+func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (sandbox.ImageRef, error) {
 	n.record("EnsureImage", ref)
-	progress(image.Progress{Status: image.StatusPulling, Total: 4096})
+	progress(agent.Progress{Status: agent.ImagePulling, Total: 4096})
 	n.mu.Lock()
 	gate := n.gates[ref]
 	n.mu.Unlock()
@@ -338,14 +334,14 @@ func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(im
 	return sandbox.ImageRef{Ref: ref, Digest: digest}, nil
 }
 
-func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (runner.Bundle, error) {
+func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (agent.Bundle, error) {
 	n.record("EnsureRunner", version)
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !n.runners[version] {
-		return runner.Bundle{}, fmt.Errorf("download runner %s: 404 Not Found", version)
+		return agent.Bundle{}, fmt.Errorf("download runner %s: 404 Not Found", version)
 	}
-	return runner.Bundle{Version: version, Arch: arch, SHA256: "9e2f" + version, Patched: true, Dir: "/var/lib/runplane/runners/" + version + "-" + arch}, nil
+	return agent.Bundle{Version: version, Arch: arch, SHA256: "9e2f" + version, Patched: true}, nil
 }
 
 func (n *fakeNode) GCImages(_ context.Context, keep []string) error {
@@ -372,7 +368,7 @@ func (n *fakeNode) Update(_ context.Context, version string) error {
 
 // fakeDriver leaves out the driver methods that the fleet does not call.
 type fakeDriver struct {
-	sandbox.Driver
+	agent.Driver
 	n *fakeNode
 }
 

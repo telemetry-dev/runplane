@@ -12,8 +12,6 @@ import (
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
@@ -212,13 +210,10 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 		f.saveBuild(ctx, &b, store.BuildPending, "")
 	}
 	var total int64
-	ref, err := n.EnsureImage(ctx, img.Ref, func(p image.Progress) {
+	ref, err := n.EnsureImage(ctx, img.Ref, func(p agent.Progress) {
 		total = max(total, p.Total)
-		switch s := string(p.Status); s {
-		case store.BuildPulling, store.BuildBuilding, store.BuildConverting:
-			if s != b.Status && !refresh {
-				f.saveBuild(ctx, &b, s, "")
-			}
+		if s, ok := buildStatus(p.Status); ok && s != b.Status && !refresh {
+			f.saveBuild(ctx, &b, s, "")
 		}
 	})
 	if err != nil {
@@ -258,6 +253,20 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 	}
 }
 
+// buildStatus gives the status of the image build row for a step of a pull
+// that is in progress.
+func buildStatus(s agent.ImageStatus) (string, bool) {
+	switch s {
+	case agent.ImagePulling:
+		return store.BuildPulling, true
+	case agent.ImageBuilding:
+		return store.BuildBuilding, true
+	case agent.ImageConverting:
+		return store.BuildConverting, true
+	}
+	return "", false
+}
+
 func (f *Fleet) saveBuild(ctx context.Context, b *store.ImageBuild, status, msg string) {
 	b.Status, b.Error, b.UpdatedAt = status, msg, f.now()
 	if err := f.st.UpsertImageBuild(ctx, *b); err != nil {
@@ -277,11 +286,11 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 			errs = append(errs, fmt.Errorf("server %s: %w", n.id, err))
 			// A lost connection says nothing about the bundle.
 			if ctx.Err() == nil && !errors.Is(err, agent.ErrClosed) {
-				f.runners.Built(ctx, v, n.arch, runner.Bundle{}, err)
+				f.runners.Built(ctx, store.RunnerBundle{Version: v, Arch: n.arch, Status: store.BundleFailed, Error: err.Error()})
 			}
 			continue
 		}
-		f.runners.Built(ctx, v, n.arch, b, nil)
+		f.runners.Built(ctx, store.RunnerBundle{Version: v, Arch: n.arch, SHA256: b.SHA256, Patched: b.Patched, Status: store.BundleReady})
 		f.mu.Lock()
 		first := n.runner == ""
 		if first || version.Compare(v, n.runner) > 0 {

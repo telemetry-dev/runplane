@@ -142,9 +142,9 @@ func TestBuiltKeepsAReadyBundle(t *testing.T) {
 	published := events.Subscribe[events.RunnerVersion](t.Context(), bus)
 	s := New(Config{Store: st, Bus: bus})
 
-	s.Built(ctx, "2.330.0", "x64", runner.Bundle{Version: "2.330.0", Arch: "x64", SHA256: "9e2f", Patched: true}, nil)
+	s.Built(ctx, store.RunnerBundle{Version: "2.330.0", Arch: "x64", SHA256: "9e2f", Patched: true, Status: store.BundleReady})
 	// Another server cannot download the version.
-	s.Built(ctx, "2.330.0", "x64", runner.Bundle{}, errNotFound)
+	s.Built(ctx, store.RunnerBundle{Version: "2.330.0", Arch: "x64", Status: store.BundleFailed, Error: errNotFound.Error()})
 	b, err := st.GetRunnerBundle(ctx, "2.330.0", "x64")
 	if err != nil || b.Status != store.BundleReady || b.SHA256 != "9e2f" || !b.Patched {
 		t.Errorf("bundle = %+v, %v; want ready with the first build", b, err)
@@ -152,7 +152,7 @@ func TestBuiltKeepsAReadyBundle(t *testing.T) {
 	if n := countEvents(published); n != 1 {
 		t.Errorf("published %d runner.version events, want 1", n)
 	}
-	s.Built(ctx, "2.331.0", "x64", runner.Bundle{}, errNotFound)
+	s.Built(ctx, store.RunnerBundle{Version: "2.331.0", Arch: "x64", Status: store.BundleFailed, Error: errNotFound.Error()})
 	if b, _ := st.GetRunnerBundle(ctx, "2.331.0", "x64"); b.Status != store.BundleFailed || b.Error != errNotFound.Error() {
 		t.Errorf("bundle = %+v, want failed with the error", b)
 	}

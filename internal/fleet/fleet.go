@@ -20,7 +20,6 @@ import (
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/sshinstall"
@@ -53,7 +52,9 @@ var ErrNotConnected = errors.New("the server is not connected")
 // Runners records the runner bundle builds of the servers: the Built method
 // of the runner versions service.
 type Runners interface {
-	Built(ctx context.Context, version, arch string, b runner.Bundle, err error)
+	// Built records the build of a bundle on one server: a ready row with
+	// its SHA-256, or a failed row with the error.
+	Built(ctx context.Context, b store.RunnerBundle)
 }
 
 type Config struct {
@@ -299,7 +300,7 @@ func (f *Fleet) Online() []scheduler.Host {
 
 // Driver returns the driver of a connected server, also a draining or
 // disabled one, or nil.
-func (f *Fleet) Driver(serverID string) sandbox.Driver {
+func (f *Fleet) Driver(serverID string) agent.Driver {
 	if n := f.node(serverID); n != nil {
 		return n.Driver()
 	}

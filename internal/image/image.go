@@ -41,21 +41,21 @@ const (
 
 // Progress is one step of Manager.Ensure.
 type Progress struct {
-	Status Status `json:"status"`
-	Done   int64  `json:"done"`  // bytes, 0 when unknown
-	Total  int64  `json:"total"` // bytes, 0 when unknown
-	Error  string `json:"error,omitempty"`
+	Status Status
+	Done   int64 // bytes, 0 when unknown
+	Total  int64 // bytes, 0 when unknown
+	Error  string
 }
 
 // Image is an image that is ready on this server.
 type Image struct {
-	Ref string `json:"ref"` // the reference that runplane pulled or built
+	Ref string // the reference that runplane pulled or built
 	// Digest identifies the image on this server: the Docker image ID in
 	// container and dev mode and after a local build, else the manifest
 	// digest for this platform.
-	Digest string `json:"digest"`
-	Path   string `json:"path,omitempty"` // VM mode: the ext4 root disk
-	Size   int64  `json:"size"`
+	Digest string
+	Path   string // VM mode: the ext4 root disk
+	Size   int64
 }
 
 type Config struct {

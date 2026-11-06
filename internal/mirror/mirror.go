@@ -42,19 +42,11 @@ type Config struct {
 // Stats counts the use of the mirror since the start. A request for a
 // manifest or a blob is a hit if the mirror serves it from the cache.
 type Stats struct {
-	Hits      int64 `json:"hits"`
-	Misses    int64 `json:"misses"`
-	HitBytes  int64 `json:"hit_bytes"`  // bytes sent to clients from the cache
-	MissBytes int64 `json:"miss_bytes"` // bytes fetched from upstream
-	SizeBytes int64 `json:"size_bytes"` // bytes in the cache now
-}
-
-func (s *Stats) Add(o Stats) {
-	s.Hits += o.Hits
-	s.Misses += o.Misses
-	s.HitBytes += o.HitBytes
-	s.MissBytes += o.MissBytes
-	s.SizeBytes += o.SizeBytes
+	Hits      int64
+	Misses    int64
+	HitBytes  int64 // bytes sent to clients from the cache
+	MissBytes int64 // bytes fetched from upstream
+	SizeBytes int64 // bytes in the cache now
 }
 
 // Mirror is an http.Handler for /v2/.

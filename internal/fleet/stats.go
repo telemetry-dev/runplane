@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -68,10 +68,10 @@ func (f *Fleet) flushStats(ctx context.Context) {
 
 // MirrorStats sums the registry mirror stats of the connected servers:
 // the api Mirrors service. A server that does not answer adds nothing.
-func (f *Fleet) MirrorStats(ctx context.Context) mirror.Stats {
+func (f *Fleet) MirrorStats(ctx context.Context) agent.MirrorStats {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	var sum mirror.Stats
+	var sum agent.MirrorStats
 	for _, n := range f.connected() {
 		m, err := n.MirrorStats(ctx)
 		if err != nil {

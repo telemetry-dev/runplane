@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/auth"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -18,9 +18,9 @@ type fakeCaches struct {
 
 func (f fakeCaches) MaxBytes() int64 { return f.limit }
 
-type fakeMirrors mirror.Stats
+type fakeMirrors agent.MirrorStats
 
-func (f fakeMirrors) MirrorStats(context.Context) mirror.Stats { return mirror.Stats(f) }
+func (f fakeMirrors) MirrorStats(context.Context) agent.MirrorStats { return agent.MirrorStats(f) }
 
 func TestCachesReportTheMirrorsOfAllServers(t *testing.T) {
 	e := newEnv(t, func(d *Deps) {

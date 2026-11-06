@@ -197,7 +197,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	// Release reads with an installation token have a higher rate limit.
 	token := func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
 	local, err := newLocal(context.Background(), cfg, localConfig{
-		mode: mode, settings: fleet.NodeSettings(settings).Settings, domain: settings.Domain, token: token,
+		mode: mode, settings: fleet.NodeSettings(settings), domain: settings.Domain, token: token,
 	}, log)
 	if err != nil {
 		return nil, err
@@ -227,7 +227,10 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 		AgentFingerprint: fingerprint, Version: version.Version, Repo: version.Repo, PublicKey: update.PublicKey,
 		OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners,
 	})
-	jobLogs := joblog.New(joblog.Config{Dir: cfg.LogsDir(), Store: st, Driver: p.fleet.Driver, Log: log.With("component", "joblog")})
+	jobLogs := joblog.New(joblog.Config{
+		Dir: cfg.LogsDir(), Store: st, Log: log.With("component", "joblog"),
+		Driver: func(serverID string) joblog.Driver { return p.fleet.Driver(serverID) },
+	})
 	p.sched = scheduler.New(scheduler.Config{
 		Store: st, Bus: d.Bus, Fleet: schedulerFleet{p.fleet}, GitHub: ghRef, Log: log.With("component", "scheduler"),
 		JobLogs: jobLogs,
@@ -252,7 +255,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	if err := p.listenAgents(cert, caches.ServeAgent); err != nil {
 		return nil, err
 	}
-	opener := shell.Drivers{Store: st, Driver: p.fleet.Driver}
+	opener := shell.Drivers{Store: st, Driver: func(serverID string) shell.Driver { return p.fleet.Driver(serverID) }}
 	if err := p.serveSSH(opener); err != nil {
 		// The debug shell in the browser still works.
 		log.Error("no SSH access to debug shells", "err", err)

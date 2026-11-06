@@ -22,7 +22,7 @@ import (
 // source address of the request and refuses requests from other addresses.
 // Run connects it to the primary.
 type CacheProxy struct {
-	driver    sandbox.Driver
+	driver    Driver
 	proxy     *httputil.ReverseProxy
 	transport *http.Transport
 
@@ -30,7 +30,7 @@ type CacheProxy struct {
 	sess *yamux.Session // nil while the agent has no connection
 }
 
-func NewCacheProxy(driver sandbox.Driver, log *slog.Logger) *CacheProxy {
+func NewCacheProxy(driver Driver, log *slog.Logger) *CacheProxy {
 	p := &CacheProxy{driver: driver}
 	p.transport = &http.Transport{
 		DialContext:         p.dial,

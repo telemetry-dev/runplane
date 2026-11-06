@@ -18,9 +18,6 @@ import (
 
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/mirror"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -182,9 +179,6 @@ type Session struct {
 	// the session can close the channels safely.
 	mu     sync.RWMutex
 	closed bool
-
-	settingsMu sync.Mutex
-	settings   Settings // of the last Configure
 }
 
 func newSession(sess *yamux.Session, hello Hello, cache func(http.ResponseWriter, *http.Request, string, string), log *slog.Logger) *Session {
@@ -218,7 +212,7 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 
 func (s *Session) Local() bool { return false }
 
-func (s *Session) Driver() sandbox.Driver { return remoteDriver{s} }
+func (s *Session) Driver() Driver { return remoteDriver{s} }
 
 // Close ends the session. The sandboxes on the agent keep operating.
 func (s *Session) Close() error {
@@ -231,13 +225,8 @@ func (s *Session) Close() error {
 func (s *Session) Stats() <-chan host.Stats { return s.stats }
 
 func (s *Session) Configure(ctx context.Context, settings Settings) error {
-	if _, err := call(ctx, s, opConfigure, settings); err != nil {
-		return err
-	}
-	s.settingsMu.Lock()
-	s.settings = settings
-	s.settingsMu.Unlock()
-	return nil
+	_, err := call(ctx, s, opConfigure, settings)
+	return err
 }
 
 func (s *Session) Facts(ctx context.Context) (host.Info, error) {
@@ -245,12 +234,12 @@ func (s *Session) Facts(ctx context.Context) (host.Info, error) {
 	return rep.Info.info(), err
 }
 
-func (s *Session) Doctor(ctx context.Context, minFreeDiskPercent float64) (doctor.Report, error) {
-	rep, err := call(ctx, s, opHost, hostQuery{Doctor: true, MinFreeDiskPercent: minFreeDiskPercent})
+func (s *Session) Doctor(ctx context.Context) (doctor.Report, error) {
+	rep, err := call(ctx, s, opHost, hostQuery{Doctor: true})
 	return doctor.Report{Info: rep.Info.info(), Checks: checks(rep.Doctor)}, err
 }
 
-func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
+func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(Progress)) (sandbox.ImageRef, error) {
 	resp, err := open(ctx, s, opEnsureImage.route, sandbox.ImageRef{Ref: ref})
 	if err != nil {
 		return sandbox.ImageRef{}, err
@@ -271,14 +260,13 @@ func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(ima
 		case m.Image != nil:
 			return *m.Image, nil
 		case m.Progress != nil && progress != nil:
-			progress(m.Progress.imageProgress())
+			progress(*m.Progress)
 		}
 	}
 }
 
-func (s *Session) EnsureRunner(ctx context.Context, version, arch string) (runner.Bundle, error) {
-	b, err := call(ctx, s, opEnsureRunner, runnerRequest{Version: version, Arch: arch})
-	return b.runnerBundle(), err
+func (s *Session) EnsureRunner(ctx context.Context, version, arch string) (Bundle, error) {
+	return call(ctx, s, opEnsureRunner, runnerRequest{Version: version, Arch: arch})
 }
 
 func (s *Session) GCImages(ctx context.Context, keep []string) error {
@@ -291,9 +279,8 @@ func (s *Session) PruneRunners(ctx context.Context, keep []string) error {
 	return err
 }
 
-func (s *Session) MirrorStats(ctx context.Context) (mirror.Stats, error) {
-	m, err := call(ctx, s, opMirrorStats, none{})
-	return m.stats(), err
+func (s *Session) MirrorStats(ctx context.Context) (MirrorStats, error) {
+	return call(ctx, s, opMirrorStats, none{})
 }
 
 // Update makes the agent replace its binary. When the agent answers, the
@@ -364,7 +351,7 @@ func (s *Session) deliver(it streamItem) bool {
 		return false
 	}
 	if it.Stats != nil {
-		sendLatest(s.stats, it.Stats.stats())
+		SendLatest(s.stats, it.Stats.stats())
 	}
 	if it.Event != nil {
 		select {

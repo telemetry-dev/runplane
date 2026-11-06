@@ -13,7 +13,6 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
@@ -143,14 +142,14 @@ func TestConnectedAgents(t *testing.T) {
 	ctx := t.Context()
 	local := newFakeNode("arm64")
 	local.info.Region = "fsn1"
-	local.mirror = mirror.Stats{Hits: 2, Misses: 1, HitBytes: 20, MissBytes: 10, SizeBytes: 30}
+	local.mirror = agent.MirrorStats{Hits: 2, Misses: 1, HitBytes: 20, MissBytes: 10, SizeBytes: 30}
 	h := newHarness(t, local)
 	h.run()
 	a, b := newFakeNode("arm64"), newFakeNode("x64")
 	a.info.Region, a.info.Kernel = "nbg1", "6.1.0-agent"
-	a.mirror = mirror.Stats{Hits: 5, Misses: 2, HitBytes: 500, MissBytes: 200, SizeBytes: 900}
+	a.mirror = agent.MirrorStats{Hits: 5, Misses: 2, HitBytes: 500, MissBytes: 200, SizeBytes: 900}
 	a.limits = sandbox.Limits{OverheadMB: 64, MaxVCPU: 32, MaxSandboxes: 100}
-	b.mirror = mirror.Stats{Hits: 1, Misses: 3, HitBytes: 100, MissBytes: 300, SizeBytes: 400}
+	b.mirror = agent.MirrorStats{Hits: 1, Misses: 3, HitBytes: 100, MissBytes: 300, SizeBytes: 400}
 	agentA, idA := h.connectAgent("arm-1", a)
 	h.connectAgent("amd-1", b)
 
@@ -161,7 +160,7 @@ func TestConnectedAgents(t *testing.T) {
 	if v := h.server(idA); v.Provider != "Hetzner" {
 		t.Errorf("provider %q, want Hetzner without the region", v.Provider)
 	}
-	want := mirror.Stats{Hits: 8, Misses: 6, HitBytes: 620, MissBytes: 510, SizeBytes: 1330}
+	want := agent.MirrorStats{Hits: 8, Misses: 6, HitBytes: 620, MissBytes: 510, SizeBytes: 1330}
 	if got := h.f.MirrorStats(ctx); got != want {
 		t.Errorf("mirror stats %+v, want %+v", got, want)
 	}
@@ -305,7 +304,7 @@ func TestSettingsReachServers(t *testing.T) {
 	h := newHarness(t, local)
 	h.run()
 	agentNode := newFakeNode("x64")
-	_, agentID := h.connectAgent("build-x64", agentNode)
+	h.connectAgent("build-x64", agentNode)
 
 	waitFor(t, "the settings of the new agent", func() bool { return len(agentNode.args("Configure")) == 1 })
 	defaults := agent.Settings{
@@ -341,13 +340,6 @@ func TestSettingsReachServers(t *testing.T) {
 			list := n.args("Configure")
 			return len(list) > 0 && reflect.DeepEqual(list[len(list)-1], want)
 		})
-	}
-	// The doctor of each server gets the min_free_disk_percent setting.
-	if _, err := h.f.Doctor(ctx, agentID); err != nil {
-		t.Fatal(err)
-	}
-	if got := agentNode.args("Doctor"); !reflect.DeepEqual(got, []any{12.5}) {
-		t.Errorf("doctor of the agent got the minimum free disk %v, want 12.5", got)
 	}
 }
 

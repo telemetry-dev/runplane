@@ -18,8 +18,6 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
 )
@@ -181,21 +179,19 @@ func TestCalls(t *testing.T) {
 	if err := d.Hold(ctx, "sb1", until); !errors.Is(err, sandbox.ErrNotFound) {
 		t.Errorf("hold of a stopped sandbox: %v, want sandbox.ErrNotFound", err)
 	}
-	check("probe", nil, d.Probe(ctx), nil, []any{"Probe"})
 
 	info, err := s.Facts(ctx)
 	check("facts", info, err, testInfo)
-	report, err := s.Doctor(ctx, 12.5)
-	check("doctor", report, err, testReport, []any{"Doctor", 12.5})
-	var steps []image.Progress
-	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p image.Progress) { steps = append(steps, p) })
+	report, err := s.Doctor(ctx)
+	check("doctor", report, err, testReport, []any{"Doctor"})
+	var steps []Progress
+	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p Progress) { steps = append(steps, p) })
 	check("image", ref, err, sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"})
 	check("image progress", steps, nil, testProgress)
 	_, err = s.EnsureImage(ctx, "missing:latest", nil)
 	checkErr("missing image", err, "pull missing:latest: not found")
 	b, err := s.EnsureRunner(ctx, "2.330.0", "arm64")
-	// The folder of the bundle is a path on the agent.
-	check("runner", b, err, runner.Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true})
+	check("runner", b, err, Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true})
 	m, err := s.MirrorStats(ctx)
 	check("mirror stats", m, err, testMirror)
 	keep := []string{"sha256:5f1c", "sha256:9e2f"}
@@ -209,9 +205,6 @@ func TestCalls(t *testing.T) {
 		MinFreeDiskPercent: 12.5,
 	}
 	check("settings", nil, s.Configure(ctx, settings), nil, []any{"Configure", settings})
-	// The driver settings alone keep the min_free_disk_percent of the agent.
-	driverOnly := sandbox.Settings{DNS: []string{"9.9.9.9"}}
-	check("driver settings", nil, d.Configure(ctx, driverOnly), nil, []any{"Configure", Settings{Settings: driverOnly, MinFreeDiskPercent: 12.5}})
 
 	err = s.Update(ctx, "v0.5.0")
 	check("update", nil, err, nil, []any{"Update", "v0.5.0"})

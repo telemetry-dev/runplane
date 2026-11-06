@@ -17,6 +17,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
@@ -24,7 +25,6 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
@@ -198,7 +198,7 @@ type Caches interface {
 
 type Mirrors interface {
 	// MirrorStats sums the counts of the registry mirrors of all servers.
-	MirrorStats(ctx context.Context) mirror.Stats
+	MirrorStats(ctx context.Context) agent.MirrorStats
 }
 
 type Backups interface {

@@ -75,20 +75,17 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// Built records the result of a bundle build on one server, and publishes
-// the row when its status or its error changed. A failure does not change a
-// bundle that is ready, because it can be ready on other servers.
-func (s *Service) Built(ctx context.Context, version, arch string, b runner.Bundle, err error) {
-	row := store.RunnerBundle{Version: version, Arch: arch, SHA256: b.SHA256, Patched: b.Patched, Status: store.BundleReady}
-	if err != nil {
-		row = store.RunnerBundle{Version: version, Arch: arch, Status: store.BundleFailed, Error: err.Error()}
-	}
-	before, _ := s.cfg.Store.GetRunnerBundle(ctx, version, arch)
-	if err := s.cfg.Store.SetRunnerBundleBuild(ctx, row); err != nil {
-		s.log.Warn("record runner bundle", "version", version, "arch", arch, "err", err)
+// Built records the build of a bundle on one server: a ready row with its
+// SHA-256, or a failed row with the error. It publishes the row when its
+// status or its error changed. A failure does not change a bundle that is
+// ready, because it can be ready on other servers.
+func (s *Service) Built(ctx context.Context, b store.RunnerBundle) {
+	before, _ := s.cfg.Store.GetRunnerBundle(ctx, b.Version, b.Arch)
+	if err := s.cfg.Store.SetRunnerBundleBuild(ctx, b); err != nil {
+		s.log.Warn("record runner bundle", "version", b.Version, "arch", b.Arch, "err", err)
 		return
 	}
-	after, err := s.cfg.Store.GetRunnerBundle(ctx, version, arch)
+	after, err := s.cfg.Store.GetRunnerBundle(ctx, b.Version, b.Arch)
 	if err != nil || after.Status == before.Status && after.Error == before.Error {
 		return
 	}
