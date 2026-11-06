@@ -25,6 +25,46 @@
         "properties": {
           "action": {
             "description": "\u003cobject\u003e.\u003cverb\u003e, for example \"pool.create\".",
+            "enum": [
+              "setup.done",
+              "user.update",
+              "user.delete",
+              "user.password",
+              "invite.create",
+              "invite.link",
+              "invite.delete",
+              "pool.create",
+              "pool.update",
+              "pool.delete",
+              "server.token",
+              "server.install",
+              "server.update",
+              "server.delete",
+              "server.update_agent",
+              "sandbox.stop",
+              "sandbox.shell",
+              "sandbox.ssh",
+              "cache.delete",
+              "image.create",
+              "image.update",
+              "image.delete",
+              "image.refresh",
+              "settings.update",
+              "job.rerun",
+              "backup.create",
+              "backup.download",
+              "update.apply",
+              "github.manifest",
+              "github.app.create",
+              "github.installation.install",
+              "github.installation.update",
+              "github.installation.request",
+              "github.sync",
+              "github.disconnect",
+              "notification.create",
+              "notification.update",
+              "notification.delete"
+            ],
             "type": "string"
           },
           "at": {
@@ -261,7 +301,7 @@
             "type": "boolean"
           },
           "hit_rate": {
-            "description": "Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.",
+            "description": "Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.",
             "format": "double",
             "type": [
               "number",
@@ -269,13 +309,12 @@
             ]
           },
           "max_bytes": {
-            "description": "The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it. 0 when the cache server is not available.",
+            "description": "The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it.",
             "format": "int64",
             "type": "integer"
           },
           "mirror": {
-            "$ref": "#/components/schemas/MirrorStats",
-            "description": "Absent when the mirror stats are not available."
+            "$ref": "#/components/schemas/MirrorStats"
           },
           "mirror_enabled": {
             "description": "The registry_mirror setting.",
@@ -292,15 +331,22 @@
             "description": "Size of all entries and of the files of the unfinished uploads.",
             "format": "int64",
             "type": "integer"
+          },
+          "stats_days": {
+            "description": "The hit rates, hits, and misses count the cache lookups of this many last days.",
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
           "enabled",
           "size_bytes",
           "max_bytes",
+          "stats_days",
           "hit_rate",
           "repositories",
-          "mirror_enabled"
+          "mirror_enabled",
+          "mirror"
         ],
         "type": "object"
       },
@@ -312,7 +358,7 @@
             "type": "integer"
           },
           "hit_rate": {
-            "description": "Hits / (hits + misses) of the last 7 days, 0 to 1. Null without hits and misses.",
+            "description": "Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.",
             "format": "double",
             "type": [
               "number",
@@ -320,7 +366,7 @@
             ]
           },
           "hits": {
-            "description": "Of the last 7 days.",
+            "description": "Of the last stats_days days.",
             "format": "int64",
             "type": "integer"
           },
@@ -332,7 +378,7 @@
             ]
           },
           "misses": {
-            "description": "Of the last 7 days.",
+            "description": "Of the last stats_days days.",
             "format": "int64",
             "type": "integer"
           },
@@ -593,10 +639,10 @@
         },
         "required": [
           "label",
-          "vcpu",
-          "memory_mb",
           "disk_gb",
-          "max_runners"
+          "max_runners",
+          "vcpu",
+          "memory_mb"
         ],
         "type": "object"
       },
@@ -1994,11 +2040,6 @@
             "description": "Bytes in the mirror now.",
             "format": "int64",
             "type": "integer"
-          },
-          "started_at": {
-            "description": "Start of runplane, where the counts start.",
-            "format": "date-time",
-            "type": "string"
           }
         },
         "required": [
@@ -2007,8 +2048,7 @@
           "hit_bytes",
           "miss_bytes",
           "hit_rate",
-          "size_bytes",
-          "started_at"
+          "size_bytes"
         ],
         "type": "object"
       },
@@ -3406,6 +3446,10 @@
             "$ref": "#/components/schemas/BackupS3",
             "description": "Optional upload of each backup to S3."
           },
+          "backup_time": {
+            "description": "Time of day in UTC of the daily backup, for example 03:00. Read-only.",
+            "type": "string"
+          },
           "bandwidth_applies": {
             "description": "bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only.",
             "type": "boolean"
@@ -3468,7 +3512,7 @@
           },
           "https": {
             "$ref": "#/components/schemas/HTTPSStatus",
-            "description": "Certificate of the domain. Read-only. Absent when this runplane process cannot report it."
+            "description": "Certificate of the domain. Read-only."
           },
           "instance_name": {
             "description": "Title in the sidebar.",
@@ -3535,6 +3579,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "secret_key_path": {
+            "description": "File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only.",
+            "type": "string"
+          },
           "ssh_port": {
             "description": "Port of the SSH gateway for debug shells. Read-only.",
             "format": "int64",
@@ -3544,6 +3592,9 @@
         "required": [
           "backup_s3",
           "ssh_port",
+          "backup_time",
+          "secret_key_path",
+          "https",
           "public_repos_possible",
           "public_repos_refusal",
           "bandwidth_applies",
@@ -3800,12 +3851,11 @@
             "type": "string"
           },
           "mode": {
-            "description": "Sandbox mode. Empty until the install sets it.",
+            "description": "Sandbox mode.",
             "enum": [
               "container",
               "vm",
-              "dev",
-              ""
+              "dev"
             ],
             "type": "string"
           },
@@ -3817,6 +3867,13 @@
             "description": "Port of the SSH gateway for debug shells.",
             "format": "int64",
             "type": "integer"
+          },
+          "systems": {
+            "description": "The operating systems of a server that install.sh names.",
+            "items": {
+              "$ref": "#/components/schemas/System"
+            },
+            "type": "array"
           },
           "version": {
             "description": "Version of runplane, for example \"v1.2.0 (3f2a9c1)\".",
@@ -3830,7 +3887,31 @@
           "instance_name",
           "github_connected",
           "has_jobs",
-          "ssh_port"
+          "ssh_port",
+          "systems"
+        ],
+        "type": "object"
+      },
+      "System": {
+        "additionalProperties": false,
+        "properties": {
+          "best_effort": {
+            "description": "install.sh installs runplane with a warning, because runplane has no tests on the system.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "For example Ubuntu.",
+            "type": "string"
+          },
+          "version": {
+            "description": "For example 24.04.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "best_effort"
         ],
         "type": "object"
       },
@@ -3992,7 +4073,6 @@
           },
           "name": {
             "maxLength": 64,
-            "minLength": 1,
             "type": "string"
           },
           "server_ids": {

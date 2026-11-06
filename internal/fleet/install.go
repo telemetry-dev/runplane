@@ -195,7 +195,7 @@ func (f *Fleet) InstallSSH(ctx context.Context, by audit.Actor, base string, req
 		return "", err
 	}
 	f.publishServer(ctx, id)
-	f.audit.Record(ctx, by, "server.install", id, map[string]any{"name": req.Name, "host": req.Host, "port": req.Port, "user": req.User})
+	f.audit.Record(ctx, by, audit.ServerInstall, id, map[string]any{"name": req.Name, "host": req.Host, "port": req.Port, "user": req.User})
 
 	job := installJob{id: id, target: t, signer: signer, primary: f.agentAddr(hostOf(base))}
 	job.command = "sh -s -- " + agentFlags(token, job.primary, f.fp)

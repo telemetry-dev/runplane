@@ -3,27 +3,33 @@ package backup
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
 )
+
+// ErrNoFile is the error of Open when the file of a backup is not on this
+// server.
+var ErrNoFile = errors.New("the backup file is not on this server")
 
 type Config struct {
 	Store *store.Store
 	Box   *secret.Box // opens the S3 secret key
 	Bus   *events.Bus
-	Dir   string // the backups folder
-	// Notify sends a notification. It must not wait for the delivery.
-	Notify func(notify.Event)
-	Log    *slog.Logger // nil: no log
+	Dir   string       // the backups folder
+	Log   *slog.Logger // nil: no log
 }
 
 // Service makes the backups of the database: when an admin asks, and each
@@ -39,8 +45,8 @@ func New(cfg Config) *Service {
 	return &Service{cfg: cfg, log: cmp.Or(cfg.Log, slog.New(slog.DiscardHandler))}
 }
 
-// Run makes a backup each day at 03:00 UTC while backup_enabled is on,
-// until ctx ends.
+// Run makes a backup each day at DailyAt while backup_enabled is on, until
+// ctx ends.
 func (s *Service) Run(ctx context.Context) {
 	daily(ctx, func(ctx context.Context) {
 		st, err := s.cfg.Store.GetSettings(ctx)
@@ -55,7 +61,7 @@ func (s *Service) Run(ctx context.Context) {
 
 // Create makes a backup, removes the backups over backup_keep, and uploads
 // the new one to S3 if a bucket is set. A failed upload fails the backup
-// but keeps its file. Each failure sends a backup.failed notification.
+// but keeps its file.
 func (s *Service) Create(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,11 +74,9 @@ func (s *Service) Create(ctx context.Context) (string, error) {
 		return "", err
 	}
 	s.publish(row)
-	res, err := write(ctx, s.cfg.Store.DB(), s.cfg.Dir, st.BackupKeep)
+	res, err := write(ctx, s.cfg.Store.VacuumInto, s.cfg.Dir, st.BackupKeep)
 	if err != nil {
-		row.Status, row.Error = store.BackupFailed, err.Error()
-		s.save(ctx, row)
-		s.failed(st, err)
+		s.fail(ctx, row, err)
 		return "", fmt.Errorf("back up the database: %w", err)
 	}
 	row.Path, row.SizeBytes, row.Status = res.path, res.size, store.BackupDone
@@ -85,13 +89,42 @@ func (s *Service) Create(ctx context.Context) (string, error) {
 	s.save(ctx, row)
 	row.S3Key, err = s.upload(ctx, st.BackupS3, res.path)
 	if err != nil {
-		row.Status, row.Error = store.BackupFailed, err.Error()
-		s.failed(st, err)
-	} else {
-		row.Status = store.BackupUploaded
+		s.fail(ctx, row, err)
+		return row.ID, nil
 	}
+	row.Status = store.BackupUploaded
 	s.save(ctx, row)
 	return row.ID, nil
+}
+
+// Available reports if the file of b is on this server.
+func (s *Service) Available(b store.Backup) bool {
+	_, err := os.Stat(b.Path)
+	return err == nil && s.inDir(b.Path)
+}
+
+// Open opens the file of the backup id for a download. It returns
+// store.ErrNotFound for an unknown ID, and ErrNoFile when the file is not
+// on this server.
+func (s *Service) Open(ctx context.Context, id string) (store.Backup, *os.File, error) {
+	b, err := s.cfg.Store.GetBackup(ctx, id)
+	if err != nil {
+		return store.Backup{}, nil, err
+	}
+	if !s.inDir(b.Path) {
+		return b, nil, ErrNoFile
+	}
+	f, err := os.Open(b.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return b, nil, ErrNoFile
+	}
+	return b, f, err
+}
+
+// inDir guards the download against a path outside the backups folder.
+func (s *Service) inDir(path string) bool {
+	rel, err := filepath.Rel(s.cfg.Dir, path)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
 }
 
 func (s *Service) upload(ctx context.Context, b store.BackupS3, path string) (string, error) {
@@ -105,6 +138,14 @@ func (s *Service) upload(ctx context.Context, b store.BackupS3, path string) (st
 		return "", fmt.Errorf("upload to S3: %w", err)
 	}
 	return k, nil
+}
+
+// fail records a failed backup. The notifier sends the backup.failed alert
+// for the row.
+func (s *Service) fail(ctx context.Context, row store.Backup, err error) {
+	s.log.Error("backup failed", "err", err)
+	row.Status, row.Error = store.BackupFailed, err.Error()
+	s.save(ctx, row)
 }
 
 func (s *Service) save(ctx context.Context, row store.Backup) {
@@ -136,9 +177,4 @@ func (s *Service) dropRows(ctx context.Context, removed []string) {
 			s.log.Warn("delete backup row", "backup", row.ID, "err", err)
 		}
 	}
-}
-
-func (s *Service) failed(st store.Settings, err error) {
-	s.log.Error("backup failed", "err", err)
-	s.cfg.Notify(notify.BackupFailedEvent(st.DashboardURL(), err))
 }

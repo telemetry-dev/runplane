@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
@@ -83,13 +84,12 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 	app, err := st.GetGitHubApp(ctx)
 	switch {
 	case err == nil:
-		slug := url.PathEscape(app.Slug)
 		owner := ghrest.Account{Type: app.OwnerType, Login: app.OwnerLogin}
 		out.App = &GitHubApp{
 			AppID: app.AppID, Slug: app.Slug, Name: app.Name, ClientID: app.ClientID, OwnerLogin: app.OwnerLogin,
 			OwnerType: app.OwnerType, HTMLURL: app.HTMLURL, CreatedAt: app.CreatedAt,
-			SettingsURL: owner.SettingsURL(ghrest.Web) + "/apps/" + slug,
-			InstallURL:  ghrest.Web + "/apps/" + slug + "/installations/new",
+			SettingsURL: owner.AppURL(ghrest.Web, app.Slug),
+			InstallURL:  ghrest.AppInstallURL(ghrest.Web, app.Slug),
 		}
 	case !errors.Is(err, store.ErrNotFound):
 		return GitHubStatus{}, err
@@ -109,8 +109,7 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 			ID: inst.ID, AccountLogin: inst.AccountLogin, AccountType: inst.AccountType, AvatarURL: inst.AvatarURL,
 			RepositorySelection: inst.RepositorySelection, RepositoryCount: len(repos), Repositories: make([]Repository, len(repos)),
 			Suspended: inst.SuspendedAt != nil, SuspendedAt: inst.SuspendedAt,
-			HTMLURL: ghrest.Account{Type: inst.AccountType, Login: inst.AccountLogin}.SettingsURL(ghrest.Web) +
-				"/installations/" + strconv.FormatInt(inst.ID, 10),
+			HTMLURL: ghrest.Account{Type: inst.AccountType, Login: inst.AccountLogin}.InstallationURL(ghrest.Web, inst.ID),
 		})
 		list := out.Installations[len(out.Installations)-1].Repositories
 		for i, r := range repos {
@@ -145,9 +144,9 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 }
 
 // runnerGroup names the runner group of a scale set. runplane makes its
-// scale sets in the group Default, which has the ID 1.
+// scale sets in the group Default.
 func runnerGroup(id int64) string {
-	if id <= 1 {
+	if id <= ghrest.DefaultRunnerGroup {
 		return "Default"
 	}
 	return "Group " + strconv.FormatInt(id, 10)
@@ -186,18 +185,15 @@ func (h *Handler) createManifest(ctx context.Context, in *body[ManifestRequest])
 		}
 		owner = ghrest.Account{Type: ghrest.Organization, Login: b.Organization}
 	}
-	if h.d.GitHub == nil {
-		return nil, unavailable("The GitHub connection")
-	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
 	action, manifest, err := h.d.GitHub.Manifest(ctx, base, owner)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "github.manifest", "", map[string]any{"account_type": b.AccountType, "organization": owner.Login})
+	h.record(ctx, audit.GitHubManifest, "", map[string]any{"account_type": b.AccountType, "organization": owner.Login})
 	return &body[ManifestForm]{ManifestForm{ActionURL: action, Manifest: manifest}}, nil
 }
 
@@ -221,15 +217,12 @@ func (h *Handler) githubCallback(ctx context.Context, in *githubCallbackInput) (
 	if to != "" {
 		return redirect(to), nil
 	}
-	if h.d.GitHub == nil {
-		return redirect(h.githubErrorPage(ctx, "The GitHub connection is not available in this runplane process.")), nil
-	}
 	to, err := h.d.GitHub.Callback(ctx, in.Code, in.State)
 	if err != nil {
 		h.d.Log.Warn("github app manifest callback", "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
 	}
-	h.record(ctx, "github.app.create", "", nil)
+	h.record(ctx, audit.GitHubAppCreate, "", nil)
 	return redirect(to), nil
 }
 
@@ -247,15 +240,12 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 	if to != "" {
 		return redirect(to), nil
 	}
-	if h.d.GitHub == nil {
-		return redirect(h.githubErrorPage(ctx, "The GitHub connection is not available in this runplane process.")), nil
-	}
 	to, err := h.d.GitHub.Setup(ctx, in.InstallationID, in.SetupAction)
 	if err != nil {
 		h.d.Log.Warn("github installation setup", "installation", in.InstallationID, "err", err)
 		return redirect(h.githubErrorPage(ctx, err.Error())), nil
 	}
-	h.record(ctx, "github.installation."+in.SetupAction, strconv.FormatInt(in.InstallationID, 10), nil)
+	h.record(ctx, audit.GitHubInstallation(in.SetupAction), strconv.FormatInt(in.InstallationID, 10), nil)
 	return redirect(to), nil
 }
 
@@ -285,23 +275,17 @@ func (h *Handler) githubErrorPage(ctx context.Context, msg string) string {
 }
 
 func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {
-	if h.d.GitHub == nil {
-		return nil, unavailable("The GitHub connection")
-	}
 	if err := h.d.GitHub.Sync(ctx); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "github.sync", "", nil)
+	h.record(ctx, audit.GitHubSync, "", nil)
 	return reply(h.gitHubStatus(ctx))
 }
 
 func (h *Handler) disconnectGitHub(ctx context.Context, _ *struct{}) (*empty, error) {
-	if h.d.GitHub == nil {
-		return nil, unavailable("The GitHub connection")
-	}
 	if err := h.d.GitHub.Disconnect(ctx); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "github.disconnect", "", nil)
+	h.record(ctx, audit.GitHubDisconnect, "", nil)
 	return nil, nil
 }

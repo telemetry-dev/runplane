@@ -95,7 +95,7 @@ func (s *Service) Update(ctx context.Context, by audit.Actor, change func(*store
 	if len(changes) == 0 {
 		return next, nil
 	}
-	s.audit.Record(ctx, by, "settings.update", "", detail(old, next, changes))
+	s.audit.Record(ctx, by, audit.SettingsUpdate, "", detail(old, next, changes))
 	s.bus.Publish(events.SettingsChanged{Old: old, New: next})
 	return next, nil
 }

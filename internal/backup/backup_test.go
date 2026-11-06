@@ -173,7 +173,7 @@ func TestWrite(t *testing.T) {
 	}
 
 	backups := filepath.Join(dir, "backups")
-	res, err := write(context.Background(), db, backups, 7)
+	res, err := write(context.Background(), vacuumInto(db), backups, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestWriteKeepsNewest(t *testing.T) {
 	}
 	defer db.Close()
 
-	res, err := write(context.Background(), db, dir, 3)
+	res, err := write(context.Background(), vacuumInto(db), dir, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,6 +274,13 @@ func TestNextRun(t *testing.T) {
 		if got := nextRun(tt.now); !got.Equal(tt.want) {
 			t.Errorf("nextRun(%v) = %v, want %v", tt.now, got, tt.want)
 		}
+	}
+}
+
+func vacuumInto(db *sql.DB) func(context.Context, string) error {
+	return func(ctx context.Context, path string) error {
+		_, err := db.ExecContext(ctx, "VACUUM INTO ?", path)
+		return err
 	}
 }
 

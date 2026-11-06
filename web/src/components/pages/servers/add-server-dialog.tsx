@@ -6,6 +6,7 @@ import { applyChange, refreshServers } from '~/api/events'
 import { useFormProblems } from '~/api/form-problems'
 import { limits } from '~/api/limits'
 import { serversQuery, sshKeyQuery, tokenStatusQuery } from '~/api/servers'
+import { statusQuery } from '~/api/session'
 import { settingsQuery } from '~/api/settings'
 import { CodeBlock } from '~/components/app/code-block'
 import { LoadError } from '~/components/app/load-error'
@@ -16,7 +17,7 @@ import { Form } from '~/components/ui/form'
 import { Spinner } from '~/components/ui/spinner'
 import { Tab, Tabs, TabsList, TabsPanel } from '~/components/ui/tabs'
 import { InstallProgress } from './install-progress'
-import { commandLines, installState, supportedSystems } from './server-info'
+import { commandLines, installState, systemsText } from './server-info'
 
 type AddServerDialogProps = {
   /** The element that opens the dialog. The default is the primary "Add server" button of the Servers page. */
@@ -86,7 +87,7 @@ function AddServer({ onDone }: { onDone: () => void }) {
         </TabsList>
         <TabsPanel value="script" className="mt-l">
           <DialogDescription>
-            Run this on a fresh server with {supportedSystems}. It installs the runplane agent, and Docker for container mode, then
+            Run this on a fresh server with <Systems />. It installs the runplane agent, and Docker for container mode, then
             connects to <PublicHost />.
           </DialogDescription>
           <InstallCommand script={script} />
@@ -212,7 +213,7 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
   return (
     <>
       <DialogDescription>
-        Add this key to <code className="font-code text-xs">~/.ssh/authorized_keys</code> on a fresh server with {supportedSystems}.
+        Add this key to <code className="font-code text-xs">~/.ssh/authorized_keys</code> on a fresh server with <Systems />.
         runplane then installs the agent over SSH, and Docker for container mode.
       </DialogDescription>
       {key.data ? (
@@ -262,6 +263,12 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
       </Form>
     </>
   )
+}
+
+/** The systems that install.sh names. The app shell has loaded the status. */
+function Systems() {
+  const systems = useQuery(statusQuery).data?.systems
+  return <>{systems ? systemsText(systems) : 'a supported system'}</>
 }
 
 /** The host that new servers connect to: the public_url setting, or this page's host. */

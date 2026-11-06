@@ -83,7 +83,7 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 	out := make([]Server, len(list))
 	byID := map[string]*Server{}
 	for i, v := range list {
-		f := v.ServerFacts
+		f, a := v.ServerFacts, h.d.Servers.Actions(v)
 		out[i] = Server{
 			ServerSummary: ServerSummary{
 				ID: v.ID, Name: v.Name, Kind: v.Kind, Status: v.Status, StatusDetail: v.StatusDetail, Arch: f.Arch,
@@ -91,15 +91,11 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 			},
 			Address: f.Address, Provider: f.Provider, Region: regions[v.ID], OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
 			DockerVersion: f.DockerVersion, SysboxVersion: f.SysboxVersion, FirecrackerVersion: f.FirecrackerVersion,
-			Version: f.Version, UpdateState: string(fleet.UpdateNone), UpdateError: v.UpdateError,
-			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
-		}
-		if h.d.Servers != nil {
-			out[i].UpdateState = string(h.d.Servers.UpdateState(v))
-			a := h.d.Servers.Actions(v)
-			out[i].Actions = ServerActions{
+			Version: f.Version, UpdateState: string(h.d.Servers.UpdateState(v)), UpdateError: v.UpdateError,
+			Actions: ServerActions{
 				CanDrain: a.Drain, CanResume: a.Resume, CanRemove: a.Remove, CanUpdate: a.Update, CanRunDoctor: a.RunDoctor,
-			}
+			},
+			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
 		}
 		if st, ok := stats[v.ID]; ok {
 			out[i].CPUPercent, out[i].MemoryPercent, out[i].DiskPercent = &st.CPUPercent, &st.MemoryPercent, &st.DiskPercent
@@ -150,9 +146,6 @@ type ServerToken struct {
 }
 
 func (h *Handler) createServerToken(ctx context.Context, in *body[*ServerTokenRequest]) (*body[ServerToken], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	var name string
 	if in.Body != nil {
 		name = in.Body.Name
@@ -163,7 +156,7 @@ func (h *Handler) createServerToken(ctx context.Context, in *body[*ServerTokenRe
 	}
 	t, err := h.d.Servers.NewToken(ctx, actor(ctx), base, name)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return &body[ServerToken]{ServerToken{ID: t.ID, Token: t.Token, Command: t.Command, ExpiresAt: t.ExpiresAt}}, nil
 }
@@ -194,9 +187,6 @@ type SSHInstall struct {
 }
 
 func (h *Handler) installServerSSH(ctx context.Context, in *body[SSHInstall]) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	req := in.Body
 	base, err := h.baseURL(ctx)
 	if err != nil {
@@ -204,7 +194,7 @@ func (h *Handler) installServerSSH(ctx context.Context, in *body[SSHInstall]) (*
 	}
 	id, err := h.d.Servers.InstallSSH(ctx, actor(ctx), base, fleet.SSHInstall{Name: req.Name, Host: req.Host, Port: req.Port, User: req.User})
 	if err != nil {
-		return nil, h.serviceErr(changeErr(err))
+		return nil, serviceErr(err)
 	}
 	v, err := h.d.Store.GetServer(ctx, id)
 	if err != nil {
@@ -218,12 +208,9 @@ type SSHKey struct {
 }
 
 func (h *Handler) getSSHKey(ctx context.Context, _ *struct{}) (*body[SSHKey], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	key, err := h.d.Servers.SSHPublicKey(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return &body[SSHKey]{SSHKey{PublicKey: key}}, nil
 }
@@ -237,23 +224,17 @@ func (h *Handler) updateServer(ctx context.Context, in *struct {
 	PathID
 	Body UpdateServerRequest
 }) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Changing servers")
-	}
 	v, err := h.d.Servers.UpdateServer(ctx, actor(ctx), in.ID, fleet.ServerChange{Name: in.Body.Name, Status: in.Body.Status})
 	if errors.Is(err, fleet.ErrInstalling) || errors.Is(err, fleet.ErrNotPaused) {
 		return nil, huma.Error409Conflict(field.Sentence(err))
 	}
 	if err != nil {
-		return nil, notFound(changeErr(err), "No server has this ID.")
+		return nil, notFound(err, "No server has this ID.")
 	}
 	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
 func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Removing servers")
-	}
 	err := h.d.Servers.RemoveServer(ctx, actor(ctx), in.ID)
 	switch {
 	case errors.Is(err, fleet.ErrLocalServer):
@@ -261,15 +242,12 @@ func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) 
 	case errors.Is(err, store.ErrNotFound):
 		return nil, huma.Error404NotFound("No server has this ID.")
 	case err != nil:
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return nil, nil
 }
 
 func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Agent updates")
-	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
@@ -284,7 +262,7 @@ func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], e
 	case errors.Is(err, fleet.ErrNotConnected):
 		return nil, huma.Error409Conflict("The server is not connected, so it cannot update.")
 	case err != nil:
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return reply(first(h.servers(ctx, []store.Server{v})))
 }
@@ -319,9 +297,6 @@ func doctorResult(r store.DoctorResult) DoctorResult {
 }
 
 func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("The doctor")
-	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
@@ -331,7 +306,7 @@ func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult
 		return nil, huma.Error409Conflict("The server is not connected, so its checks cannot run.")
 	}
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return &body[DoctorResult]{doctorResult(r)}, nil
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { auditActor, auditChange, auditTarget, auditTime, type AuditEntry } from './audit-format'
 
+// The database can hold the actions of an older runplane, so action is any text.
 function entry(action: string, detail: Record<string, unknown> = {}, user: Partial<AuditEntry> = {}): AuditEntry {
   return {
     id: '01m6audit',
@@ -8,7 +9,7 @@ function entry(action: string, detail: Record<string, unknown> = {}, user: Parti
     user_id: '01m3ada',
     user_name: 'Ada Okafor',
     user_email: 'ada@kestrel.dev',
-    action,
+    action: action as AuditEntry['action'],
     target: '01m3target',
     detail,
     ip: '203.0.113.24',
@@ -40,7 +41,7 @@ describe('auditChange', () => {
     expect(auditChange(entry(action, detail))).toBe(want)
   })
 
-  test('an action the page does not know shows as it is', () => {
+  test('an action of an older runplane shows as it is', () => {
     expect(auditChange(entry('server.reboot'))).toBe('did server.reboot')
   })
 })

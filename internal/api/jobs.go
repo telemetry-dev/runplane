@@ -10,6 +10,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -281,7 +283,7 @@ func jobURL(j store.Job) string {
 	if j.HTMLURL != "" || j.RunID == 0 || j.Repository == "" {
 		return j.HTMLURL
 	}
-	u := fmt.Sprintf("https://github.com/%s/actions/runs/%d", j.Repository, j.RunID)
+	u := fmt.Sprintf("%s/%s/actions/runs/%d", ghrest.Web, j.Repository, j.RunID)
 	if j.RunAttempt > 1 {
 		u += fmt.Sprintf("/attempts/%d", j.RunAttempt)
 	}
@@ -356,9 +358,6 @@ func (h *Handler) rerunJob(ctx context.Context, in *struct {
 	PathID
 	Body RerunRequest
 }) (*empty, error) {
-	if h.d.Scheduler == nil {
-		return nil, unavailable("The scheduler")
-	}
 	j, err := h.d.Store.GetJob(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No job has this ID.")
@@ -367,9 +366,9 @@ func (h *Handler) rerunJob(ctx context.Context, in *struct {
 		return nil, huma.Error409Conflict("Only a completed job can run again.")
 	}
 	if err := h.d.Scheduler.RerunJob(ctx, j.ID, in.Body.Debug); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.record(ctx, "job.rerun", j.ID, jobDetail(map[string]any{"debug": in.Body.Debug}, j))
+	h.record(ctx, audit.JobRerun, j.ID, jobDetail(map[string]any{"debug": in.Body.Debug}, j))
 	return nil, nil
 }
 
@@ -380,9 +379,6 @@ type logInput struct {
 }
 
 func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamResponse, error) {
-	if h.d.Logs == nil {
-		return nil, unavailable("The job log")
-	}
 	if _, err := h.d.Store.GetJob(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No job has this ID.")
 	}
@@ -394,16 +390,20 @@ func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamRespons
 	if live && in.Step > 0 {
 		send := resp.Body
 		resp.Body = func(hctx huma.Context) {
-			hctx.SetHeader(stepFilterHeader, "ignored")
+			hctx.SetHeader(stepFilterHeader, stepFilterIgnored)
 			send(hctx)
 		}
 	}
 	return resp, nil
 }
 
-// stepFilterHeader tells that the job log has all steps although the
-// request asked for one: the live log of a running job has no step marks.
-const stepFilterHeader = "X-Runplane-Step-Filter"
+// stepFilterHeader with the value stepFilterIgnored tells that the job log
+// has all steps although the request asked for one: the live log of a
+// running job has no step marks.
+const (
+	stepFilterHeader  = "X-Runplane-Step-Filter"
+	stepFilterIgnored = "ignored"
+)
 
 type Overview struct {
 	Range    string           `json:"range" enum:"24h,7d,30d"`

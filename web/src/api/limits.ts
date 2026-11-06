@@ -11,6 +11,11 @@ export const limits = {
       "maxLength": 1024
     }
   },
+  "AuditEntry": {
+    "action": {
+      "enum": ["setup.done", "user.update", "user.delete", "user.password", "invite.create", "invite.link", "invite.delete", "pool.create", "pool.update", "pool.delete", "server.token", "server.install", "server.update", "server.delete", "server.update_agent", "sandbox.stop", "sandbox.shell", "sandbox.ssh", "cache.delete", "image.create", "image.update", "image.delete", "image.refresh", "settings.update", "job.rerun", "backup.create", "backup.download", "update.apply", "github.manifest", "github.app.create", "github.installation.install", "github.installation.update", "github.installation.request", "github.sync", "github.disconnect", "notification.create", "notification.update", "notification.delete"]
+    }
+  },
   "Backup": {
     "status": {
       "enum": ["running", "done", "uploading", "uploaded", "failed"]
@@ -457,7 +462,7 @@ export const limits = {
   },
   "Status": {
     "mode": {
-      "enum": ["container", "vm", "dev", ""]
+      "enum": ["container", "vm", "dev"]
     }
   },
   "TestChannelRequest": {
@@ -538,7 +543,6 @@ export const limits = {
       "maximum": 1000
     },
     "name": {
-      "minLength": 1,
       "maxLength": 64
     },
     "server_ids": {

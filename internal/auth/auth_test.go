@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -15,19 +16,21 @@ import (
 )
 
 type testEnv struct {
-	svc *Service
-	st  *store.Store
-	now time.Time
+	svc  *Service
+	st   *store.Store
+	path string // of the database
+	now  time.Time
 }
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
+	path := filepath.Join(t.TempDir(), "runplane.db")
+	st, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	e := &testEnv{st: st, now: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
+	e := &testEnv{st: st, path: path, now: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
 	e.svc = NewService(st, []byte("device key"), nil)
 	e.svc.now = func() time.Time { return e.now }
 	return e
@@ -239,8 +242,14 @@ func TestSetupCode(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	// The code is used: it fails even when no user exists again.
-	if _, err := e.st.DB().ExecContext(ctx, "DELETE FROM users WHERE id = ?", u.ID); err != nil {
+	// The code is used: it fails even when no user exists again. The store
+	// keeps its last admin, so the test deletes the row itself.
+	db, err := sql.Open("sqlite", e.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "DELETE FROM users WHERE id = ?", u.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := setup(code); !errors.Is(err, ErrBadSetupCode) {
@@ -373,6 +382,15 @@ func TestUpdateMeChangesNothingForABadName(t *testing.T) {
 	u, token, err := e.svc.UpdateMe(ctx, admin.ID, &name, nil, nil, "", "")
 	if err != nil || u.Name != "Ada L" || token != "" {
 		t.Fatalf("rename: %+v, token %q, %v; want Ada L and no new session", u, token, err)
+	}
+}
+
+func TestUpdateMeNeedsTheCurrentPassword(t *testing.T) {
+	e := newEnv(t)
+	admin, _ := e.setup(t)
+	next := "second password"
+	if _, _, err := e.svc.UpdateMe(context.Background(), admin.ID, nil, nil, &next, "", ""); !errors.Is(err, ErrNoCurrentPassword) {
+		t.Fatalf("new password without the current one: err = %v, want ErrNoCurrentPassword", err)
 	}
 }
 

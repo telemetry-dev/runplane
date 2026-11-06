@@ -146,7 +146,7 @@ func (f *Fleet) NewToken(ctx context.Context, by audit.Actor, base, name string)
 	if err != nil {
 		return Token{}, err
 	}
-	f.audit.Record(ctx, by, "server.token", t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
+	f.audit.Record(ctx, by, audit.ServerToken, t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
 	return Token{ID: t.ID, Token: token, Command: f.installCommand(base, token), ExpiresAt: t.ExpiresAt}, nil
 }
 

@@ -196,5 +196,5 @@ func (s *Server) audit(ctx context.Context, c client, t Target) {
 	if t.Job != "" {
 		detail["job_name"], detail["repository"] = t.Job, t.Repository
 	}
-	s.cfg.Audit(ctx, audit.Actor{IP: c.ip}, "sandbox.ssh", c.sandboxID, detail)
+	s.cfg.Audit(ctx, audit.Actor{IP: c.ip}, audit.SandboxSSH, c.sandboxID, detail)
 }

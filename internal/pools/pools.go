@@ -16,7 +16,6 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -24,18 +23,23 @@ import (
 type Config struct {
 	Store *store.Store
 	Bus   *events.Bus
+	Arch  string       // of the primary server, the default arch of a pool
 	Log   *slog.Logger // nil: no log
 }
 
 type Service struct {
 	st    *store.Store
 	bus   *events.Bus
+	arch  string
 	audit audit.Log
 	log   *slog.Logger
 }
 
 func New(c Config) *Service {
-	return &Service{st: c.Store, bus: c.Bus, audit: audit.Log{Store: c.Store, Logger: c.Log}, log: cmp.Or(c.Log, slog.New(slog.DiscardHandler))}
+	return &Service{
+		st: c.Store, bus: c.Bus, arch: c.Arch, audit: audit.Log{Store: c.Store, Logger: c.Log},
+		log: cmp.Or(c.Log, slog.New(slog.DiscardHandler)),
+	}
 }
 
 // Create adds the pool p. Its name defaults to the label, and its arch to the
@@ -45,14 +49,8 @@ func (s *Service) Create(ctx context.Context, by audit.Actor, p store.Pool) (sto
 	now := time.Now()
 	p.ID, p.CreatedAt, p.UpdatedAt = ids.New(), now, now
 	p.Name = cmp.Or(strings.TrimSpace(p.Name), p.Label)
+	p.Arch = cmp.Or(p.Arch, s.arch)
 	p.ServerIDs = orEmpty(p.ServerIDs)
-	if p.Arch == "" {
-		arch, err := s.defaultArch(ctx)
-		if err != nil {
-			return store.Pool{}, err
-		}
-		p.Arch = arch
-	}
 	if err := s.check(ctx, p, nil); err != nil {
 		return store.Pool{}, err
 	}
@@ -60,7 +58,7 @@ func (s *Service) Create(ctx context.Context, by audit.Actor, p store.Pool) (sto
 		return store.Pool{}, err
 	}
 	s.bus.Publish(events.PoolsChanged{})
-	s.audit.Record(ctx, by, "pool.create", p.ID, map[string]any{"label": p.Label})
+	s.audit.Record(ctx, by, audit.PoolCreate, p.ID, map[string]any{"label": p.Label})
 	return p, nil
 }
 
@@ -83,7 +81,7 @@ func (s *Service) Update(ctx context.Context, by audit.Actor, id string, change 
 	}
 	s.bus.Publish(events.PoolsChanged{})
 	if changes := s.changes(ctx, old, p); len(changes) > 0 {
-		s.audit.Record(ctx, by, "pool.update", p.ID, map[string]any{"label": p.Label, "changes": changes})
+		s.audit.Record(ctx, by, audit.PoolUpdate, p.ID, map[string]any{"label": p.Label, "changes": changes})
 	}
 	return p, nil
 }
@@ -100,7 +98,7 @@ func (s *Service) Delete(ctx context.Context, by audit.Actor, id string) error {
 		return err
 	}
 	s.bus.Publish(events.PoolsChanged{})
-	s.audit.Record(ctx, by, "pool.delete", p.ID, map[string]any{"label": p.Label})
+	s.audit.Record(ctx, by, audit.PoolDelete, p.ID, map[string]any{"label": p.Label})
 	return nil
 }
 
@@ -173,16 +171,6 @@ func (s *Service) changes(ctx context.Context, old, p store.Pool) map[string][2]
 		changes["servers"] = [2]any{named(old.ServerIDs), named(p.ServerIDs)}
 	}
 	return changes
-}
-
-// defaultArch is the arch of the primary server, or of this process before
-// the primary has reported its facts.
-func (s *Service) defaultArch(ctx context.Context) (string, error) {
-	local, err := s.st.GetLocalServer(ctx)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return "", err
-	}
-	return cmp.Or(local.Arch, host.Arch()), nil
 }
 
 // orEmpty gives an empty list for nil, because the JSON of the two differs

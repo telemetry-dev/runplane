@@ -153,9 +153,6 @@ type UpdateMeRequest struct {
 
 func (h *Handler) updateMe(ctx context.Context, in *body[UpdateMeRequest]) (*sessionOutput, error) {
 	b := in.Body
-	if b.NewPassword != nil && (b.CurrentPassword == nil || *b.CurrentPassword == "") {
-		return nil, invalid("body.current_password", "Enter your current password.", nil)
-	}
 	c := clientOf(ctx)
 	u, token, err := h.d.Auth.UpdateMe(ctx, currentUser(ctx).ID, b.Name, b.CurrentPassword, b.NewPassword, c.ip, c.userAgent)
 	if err != nil {
@@ -198,7 +195,7 @@ func authErr(err error, passwordLoc string) error {
 		return invalid("body.role", msg, nil)
 	case errors.Is(err, auth.ErrShortPassword):
 		return invalid(passwordLoc, msg, nil)
-	case errors.Is(err, auth.ErrBadPassword):
+	case errors.Is(err, auth.ErrBadPassword), errors.Is(err, auth.ErrNoCurrentPassword):
 		return invalid("body.current_password", msg, nil)
 	}
 	return err

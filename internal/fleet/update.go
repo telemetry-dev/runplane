@@ -78,7 +78,7 @@ func (f *Fleet) UpdateAgent(ctx context.Context, by audit.Actor, serverID string
 	f.mu.Lock()
 	name := n.name
 	f.mu.Unlock()
-	f.audit.Record(ctx, by, "server.update_agent", n.id, map[string]any{"name": name, "from": n.version, "to": f.version})
+	f.audit.Record(ctx, by, audit.ServerUpdateAgent, n.id, map[string]any{"name": name, "from": n.version, "to": f.version})
 	f.goBg(func(ctx context.Context) { f.runUpdate(ctx, n) })
 	return nil
 }
