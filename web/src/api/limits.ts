@@ -21,7 +21,7 @@ export const limits = {
   },
   "AuditEntry": {
     "action": {
-      "enum": ["setup.done", "user.update", "user.delete", "user.password", "invite.create", "invite.link", "invite.delete", "pool.create", "pool.update", "pool.delete", "server.token", "server.install", "server.update", "server.delete", "server.update_agent", "sandbox.stop", "sandbox.shell", "sandbox.ssh", "cache.delete", "image.create", "image.update", "image.delete", "image.refresh", "settings.update", "job.rerun", "backup.create", "backup.download", "update.apply", "github.manifest", "github.app.create", "github.installation.install", "github.installation.update", "github.installation.request", "github.sync", "github.pull_request.create", "github.disconnect", "notification.create", "notification.update", "notification.delete"]
+      "enum": ["setup.done", "user.update", "user.delete", "user.password", "user.password_reset", "invite.create", "invite.link", "invite.delete", "pool.create", "pool.update", "pool.delete", "server.token", "server.install", "server.update", "server.delete", "server.update_agent", "sandbox.stop", "sandbox.shell", "sandbox.ssh", "cache.delete", "image.create", "image.update", "image.delete", "image.refresh", "settings.update", "job.rerun", "backup.create", "backup.download", "update.apply", "github.manifest", "github.app.create", "github.installation.install", "github.installation.update", "github.installation.request", "github.sync", "github.pull_request.create", "github.disconnect", "notification.create", "notification.update", "notification.delete"]
     }
   },
   "Backup": {
@@ -167,6 +167,9 @@ export const limits = {
     }
   },
   "ImageBuild": {
+    "arch": {
+      "enum": ["x64", "arm64", ""]
+    },
     "status": {
       "enum": ["pending", "pulling", "building", "converting", "ready", "failed"]
     }
@@ -287,8 +290,14 @@ export const limits = {
     }
   },
   "Server": {
+    "arch": {
+      "enum": ["x64", "arm64", ""]
+    },
     "kind": {
       "enum": ["local", "agent"]
+    },
+    "mode": {
+      "enum": ["container", "vm", "dev", ""]
     },
     "status": {
       "enum": ["online", "installing", "unreachable", "draining", "disabled"]
@@ -298,8 +307,14 @@ export const limits = {
     }
   },
   "ServerSummary": {
+    "arch": {
+      "enum": ["x64", "arm64", ""]
+    },
     "kind": {
       "enum": ["local", "agent"]
+    },
+    "mode": {
+      "enum": ["container", "vm", "dev", ""]
     },
     "status": {
       "enum": ["online", "installing", "unreachable", "draining", "disabled"]
@@ -634,7 +649,7 @@ export const queryLimits = {
       "minimum": 0
     },
     "setup_action": {
-      "maxLength": 20
+      "enum": ["install", "update", "request"]
     }
   },
   "get /api/jobs": {

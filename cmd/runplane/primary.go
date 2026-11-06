@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -91,7 +90,7 @@ func serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("start services: %w", err)
 	}
 	defer p.stop()
-	if err := logSetupCode(ctx, st, deps.Auth, log); err != nil {
+	if err := logSetupCode(ctx, deps.Auth, log); err != nil {
 		return err
 	}
 
@@ -132,30 +131,20 @@ func serve(ctx context.Context, args []string) error {
 	return nil
 }
 
-// logSetupCode logs a new setup code while no admin exists, so the admin
-// can find it in the service log. It keeps a code that is still valid,
-// because install.sh printed it.
-func logSetupCode(ctx context.Context, st *store.Store, a *auth.Service, log *slog.Logger) error {
-	n, err := st.CountUsers(ctx)
-	if err != nil || n > 0 {
+// logSetupCode logs a setup code while no admin exists, so the admin can
+// find it in the service log.
+func logSetupCode(ctx context.Context, a *auth.Service, log *slog.Logger) error {
+	code, err := a.EnsureSetupCode(ctx)
+	switch {
+	case errors.Is(err, auth.ErrSetupDone):
+		return nil
+	case err != nil:
 		return err
-	}
-	open, err := st.HasOpenSetupCode(ctx, time.Now())
-	if err != nil {
-		return err
-	}
-	if open {
+	case code == "":
 		log.Info("no admin exists: open the dashboard and enter the setup code. Run 'runplane setup-code' for a new setup code.")
-		return nil
+	default:
+		log.Info("no admin exists: open the dashboard and enter the setup code", "code", code, "valid", auth.SetupCodeTTL)
 	}
-	code, err := a.NewSetupCode(ctx)
-	if errors.Is(err, auth.ErrSetupDone) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	log.Info("no admin exists: open the dashboard and enter the setup code", "code", code, "valid", auth.SetupCodeTTL)
 	return nil
 }
 
@@ -172,8 +161,7 @@ type primary struct {
 	acme    *tlsutil.ACME
 	handler http.Handler // the dashboard, for HTTPS
 
-	wg    sync.WaitGroup // work that no stop function ends
-	stops []func()       // stop runs them in reverse order
+	stops []func() // stop runs them in reverse order
 }
 
 // startPrimary starts the services of the primary and sets them in d. They
@@ -331,7 +319,6 @@ func (p *primary) stop() {
 	for i := len(p.stops) - 1; i >= 0; i-- {
 		p.stops[i]()
 	}
-	p.wg.Wait()
 }
 
 // serveCaches starts the Actions cache server and the registry mirror, and

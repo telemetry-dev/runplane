@@ -23,7 +23,6 @@ const (
 	Webhook = "webhook" // generic JSON POST
 )
 
-// Kinds are all channel kinds.
 var Kinds = []string{Slack, Discord, Webhook}
 
 // Retry and timeout values. Tests make them short.

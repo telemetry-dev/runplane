@@ -169,7 +169,6 @@ func (c *Channels) apply(ch *store.NotificationChannel, change ChannelChange, ke
 	return rawURL, check(*ch, rawURL)
 }
 
-// check applies the rules of a channel to ch with the plain URL rawURL.
 func check(ch store.NotificationChannel, rawURL string) error {
 	var errs field.Problems
 	if ch.Name == "" {
@@ -184,8 +183,6 @@ func check(ch store.NotificationChannel, rawURL string) error {
 	return errs.Err()
 }
 
-// checkTarget adds the problems of the kind and the plain URL of a channel
-// to errs.
 func checkTarget(errs *field.Problems, kind, rawURL string) {
 	if !slices.Contains(Kinds, kind) {
 		errs.Add("kind", "runplane has no channel kind "+strconv.Quote(kind)+".", kind)
@@ -235,7 +232,6 @@ func (c *Channels) deliver(ctx context.Context, ch store.NotificationChannel, e 
 	return err
 }
 
-// view adds the masked URL and the last delivery to each channel.
 func (c *Channels) view(ctx context.Context, list ...store.NotificationChannel) ([]Channel, error) {
 	deliveries, err := c.st.NotificationDeliveries(ctx)
 	if err != nil {

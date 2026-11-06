@@ -374,7 +374,7 @@ func (h *Handler) rerunJob(ctx context.Context, in *struct {
 
 type logInput struct {
 	PathID
-	Step   int  `query:"step" minimum:"0" doc:"Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored."`
+	Step   int  `query:"step" minimum:"0" doc:"Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps."`
 	Follow bool `query:"follow" doc:"Stream new lines until the log ends."`
 }
 
@@ -382,28 +382,12 @@ func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamRespons
 	if _, err := h.d.Store.GetJob(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No job has this ID.")
 	}
-	rc, live, err := h.d.Logs.Job(ctx, in.ID, in.Step, in.Follow)
+	rc, err := h.d.Logs.Job(ctx, in.ID, in.Step, in.Follow)
 	if err != nil {
 		return nil, h.logErr(err)
 	}
-	resp := h.stream(rc, "text/plain; charset=utf-8", in.Follow)
-	if live && in.Step > 0 {
-		send := resp.Body
-		resp.Body = func(hctx huma.Context) {
-			hctx.SetHeader(stepFilterHeader, stepFilterIgnored)
-			send(hctx)
-		}
-	}
-	return resp, nil
+	return h.stream(rc, "text/plain; charset=utf-8", in.Follow), nil
 }
-
-// stepFilterHeader with the value stepFilterIgnored tells that the job log
-// has all steps although the request asked for one: the live log of a
-// running job has no step marks.
-const (
-	stepFilterHeader  = "X-Runplane-Step-Filter"
-	stepFilterIgnored = "ignored"
-)
 
 type Overview struct {
 	Range    string           `json:"range" enum:"24h,7d,30d"`

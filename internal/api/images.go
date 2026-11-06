@@ -26,7 +26,7 @@ type Image struct {
 type ImageBuild struct {
 	ServerID   string    `json:"server_id"`
 	ServerName string    `json:"server_name"`
-	Arch       string    `json:"arch" doc:"Arch of the server: x64 or arm64. Empty until the server reports its facts."`
+	Arch       string    `json:"arch" enum:"x64,arm64," doc:"Arch of the server. Empty until the server reports its facts."`
 	Digest     string    `json:"digest"`
 	Status     string    `json:"status" enum:"pending,pulling,building,converting,ready,failed"`
 	Error      string    `json:"error"`

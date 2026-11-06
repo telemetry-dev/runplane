@@ -108,7 +108,6 @@ func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*body[UpdateStatu
 }
 
 func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) {
-	h.record(ctx, audit.UpdateApply, "", nil)
 	// The update goes on when the admin closes the page.
 	u, err := h.d.Updater.Apply(context.WithoutCancel(ctx))
 	switch {
@@ -116,7 +115,11 @@ func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) 
 		return nil, huma.Error409Conflict("An update is being installed.")
 	case errors.Is(err, update.ErrNoUpdate):
 		return nil, huma.Error409Conflict("runplane " + u.Current + " is the latest version.")
-	case err != nil:
+	}
+	// serve stops after the update, but the HTTP server waits for this
+	// handler before the store closes.
+	h.record(ctx, audit.UpdateApply, "", nil)
+	if err != nil {
 		return nil, serviceErr(err)
 	}
 	return nil, nil

@@ -88,7 +88,7 @@ type Config struct {
 	AdminKeys func(ctx context.Context) []ssh.PublicKey
 	// Audit records each shell that opens: the Record method of an
 	// audit.Log.
-	Audit func(ctx context.Context, by audit.Actor, action, target string, detail map[string]any)
+	Audit func(ctx context.Context, by audit.Actor, action audit.Action, target string, detail map[string]any)
 	Log   *slog.Logger
 }
 

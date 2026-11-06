@@ -19,7 +19,7 @@ func actor(ctx context.Context) audit.Actor {
 
 // record writes an audit entry for a change that the handler makes itself.
 // The services record their own changes.
-func (h *Handler) record(ctx context.Context, action, target string, detail map[string]any) {
+func (h *Handler) record(ctx context.Context, action audit.Action, target string, detail map[string]any) {
 	h.audit.Record(ctx, actor(ctx), action, target, detail)
 }
 
@@ -49,7 +49,7 @@ type AuditEntry struct {
 func (AuditEntry) TransformSchema(_ huma.Registry, s *huma.Schema) *huma.Schema {
 	action := s.Properties["action"]
 	for _, a := range audit.Actions {
-		action.Enum = append(action.Enum, a)
+		action.Enum = append(action.Enum, string(a))
 	}
 	return s
 }

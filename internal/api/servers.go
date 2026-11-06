@@ -21,8 +21,8 @@ type ServerSummary struct {
 	Kind          string     `json:"kind" enum:"local,agent" doc:"local is the primary."`
 	Status        string     `json:"status" enum:"online,installing,unreachable,draining,disabled"`
 	StatusDetail  string     `json:"status_detail" doc:"For example the install progress or the last error."`
-	Arch          string     `json:"arch" doc:"x64 or arm64. Empty until the server reports its facts."`
-	Mode          string     `json:"mode" doc:"container, vm, or dev. Empty until the server reports its facts."`
+	Arch          string     `json:"arch" enum:"x64,arm64," doc:"Empty until the server reports its facts."`
+	Mode          string     `json:"mode" enum:"container,vm,dev," doc:"Empty until the server reports its facts."`
 	VCPU          int        `json:"vcpu"`
 	MemoryMB      int        `json:"memory_mb"`
 	DiskBytes     int64      `json:"disk_bytes"`
@@ -215,9 +215,14 @@ func (h *Handler) getSSHKey(ctx context.Context, _ *struct{}) (*body[SSHKey], er
 	return &body[SSHKey]{SSHKey{PublicKey: key}}, nil
 }
 
+// UpdateServerRequest has the name limits of SSHInstall.
 type UpdateServerRequest struct {
-	Name   *string `json:"name,omitempty" minLength:"1" maxLength:"64"`
+	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty" enum:"online,draining,disabled" doc:"draining and disabled servers get no new sandboxes. online makes a draining or disabled server take sandboxes again."`
+}
+
+func (UpdateServerRequest) TransformSchema(r huma.Registry, s *huma.Schema) *huma.Schema {
+	return patchOf[SSHInstall](r, s)
 }
 
 func (h *Handler) updateServer(ctx context.Context, in *struct {

@@ -153,12 +153,10 @@ func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
 	}
 	failed := jobs[store.ResultFailed]
 	// The completion comes before the run data: no alert yet.
-	for range 15 {
-		for _, j := range jobs {
-			bus.Publish(events.JobState(j))
-		}
-		time.Sleep(10 * time.Millisecond)
+	for _, j := range jobs {
+		bus.Publish(events.JobState(j))
 	}
+	time.Sleep(100 * time.Millisecond)
 	if got := h.events(); len(got) != 0 {
 		t.Fatalf("alerts before the run data: %+v", got)
 	}
