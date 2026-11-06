@@ -81,7 +81,6 @@ func (s *Scheduler) syncServers(ctx context.Context) {
 				continue
 			}
 			s.setState(ctx, b.ID, sandbox.StateGone, "not found on the server")
-			s.flushSandbox(ctx, b.ID)
 		}
 	}
 
@@ -93,7 +92,6 @@ func (s *Scheduler) syncServers(ctx context.Context) {
 	for _, b := range rows {
 		if !known[b.ServerID] {
 			s.setState(ctx, b.ID, sandbox.StateGone, "server removed")
-			s.flushSandbox(ctx, b.ID)
 		}
 	}
 }
@@ -119,7 +117,6 @@ func (s *Scheduler) dropWaiting(ctx context.Context, serverID string) {
 		}
 		s.log.Info("cleanup: drop a sandbox of an unreachable server", "sandbox", b.ID, "server", serverID)
 		s.setState(ctx, b.ID, sandbox.StateGone, "server unreachable")
-		s.flushSandbox(ctx, b.ID)
 	}
 }
 
@@ -243,7 +240,7 @@ func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 		}
 		s.mu.Unlock()
 		s.log.Info("cleanup: complete a job whose sandbox is gone", "job", j.ID, "sandbox", j.SandboxID, "result", result)
-		done, _, err := s.st.UpsertJob(ctx, store.JobMessage{
+		done, err := s.st.UpsertJob(ctx, store.JobMessage{
 			RunnerRequestID: j.RunnerRequestID, State: store.JobCompleted, Result: result, Guessed: true, FinishedAt: finished,
 		}, s.now())
 		if err != nil {
@@ -259,7 +256,7 @@ func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 // step did not end, for example because runplane stopped during it. GitHub
 // does not send the JobCompleted message again.
 func (s *Scheduler) resumeFinish(ctx context.Context) {
-	jobs, err := s.st.ListUnfinishedJobs(ctx, s.now().Add(-resumeFinishWithin), resumeFinishBatch)
+	jobs, err := s.st.ListUnfinishedJobs(ctx, resumeFinishBatch)
 	if err != nil {
 		s.log.Warn("cleanup: list unfinished jobs", "err", err)
 		return

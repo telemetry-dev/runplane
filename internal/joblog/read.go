@@ -60,7 +60,8 @@ func (l *Logs) Job(ctx context.Context, jobID string, step int, follow bool) (_ 
 	case store.LogExpired:
 		return nil, false, ErrExpired
 	case store.LogNone:
-		if job.State == store.JobCompleted {
+		// The finish step can still store the GitHub log.
+		if job.State == store.JobCompleted && !job.FinishPending {
 			return nil, false, ErrNoGitHubLog
 		}
 	}

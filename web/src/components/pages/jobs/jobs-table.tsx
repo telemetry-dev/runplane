@@ -15,7 +15,7 @@ import {
 import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
-import { jobStatus, StatusIcon } from '~/components/app/status-icon'
+import { StatusIcon } from '~/components/app/status-icon'
 import { cx } from '~/lib/cx'
 import { formatDuration, formatRelativeTime } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
@@ -85,17 +85,16 @@ export function JobsTable({ jobs, empty, stale = false }: JobsTableProps) {
 }
 
 function JobRow({ job, now, shown }: { job: Schemas['JobSummary']; now: number; shown: Shown }) {
-  const status = jobStatus(job)
   const queued = queueTime(job, now)
   const duration = runTime(job, now)
   return (
     <DataTableRow>
       <DataTableCell>
-        <StatusIcon status={status} />
+        <StatusIcon status={job.status} />
       </DataTableCell>
       <DataTableCell>
         <RowLink to="/jobs/$jobId" params={{ jobId: job.id }}>
-          <CellTitle title={job.job_name} detail={jobOrigin(job)} muted={status === 'cancelled' || status === 'skipped'} />
+          <CellTitle title={job.job_name} detail={jobOrigin(job)} muted={job.status === 'cancelled' || job.status === 'skipped'} />
         </RowLink>
       </DataTableCell>
       {shown.branch && (

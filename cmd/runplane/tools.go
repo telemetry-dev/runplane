@@ -36,7 +36,7 @@ func setupCode(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := store.Open(cfg.DBPath())
+	st, err := openDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -161,10 +161,7 @@ func resetPassword(ctx context.Context, args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("give the email address of the user: runplane reset-password <email>")
 	}
-	if !exists(cfg.DBPath()) {
-		return fmt.Errorf("no database at %s", cfg.DBPath())
-	}
-	st, err := store.Open(cfg.DBPath())
+	st, err := openDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -199,10 +196,7 @@ func setMode(ctx context.Context, args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("give the mode: runplane set-mode container|vm|dev")
 	}
-	if !exists(cfg.DBPath()) {
-		return fmt.Errorf("no database at %s", cfg.DBPath())
-	}
-	st, err := store.Open(cfg.DBPath())
+	st, err := openDB(cfg, false)
 	if err != nil {
 		return err
 	}
@@ -248,10 +242,7 @@ func setDomain(ctx context.Context, args []string) error {
 	if flags.NArg() != 1 {
 		return errors.New("give the domain: runplane set-domain ci.example.com")
 	}
-	if exists(cfg.AgentConfigPath()) {
-		return errors.New("this server is an agent: only the primary serves the dashboard")
-	}
-	st, err := store.Open(cfg.DBPath())
+	st, err := openDB(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -271,7 +262,6 @@ func setDomain(ctx context.Context, args []string) error {
 	return nil
 }
 
-// newSettings is the settings service of the primary.
 func newSettings(st *store.Store, bus *events.Bus, cfg config.Config, log *slog.Logger) *settings.Service {
 	kvm := func() bool {
 		ok, _ := host.OpenKVM()
@@ -280,8 +270,23 @@ func newSettings(st *store.Store, bus *events.Bus, cfg config.Config, log *slog.
 	return settings.New(settings.Config{Store: st, Bus: bus, Log: log, Mode: cfg.Mode, DevInsecure: cfg.DevInsecure, KVM: kvm})
 }
 
+var errAgent = errors.New("this server is an agent: run this command on the primary")
+
+// openDB opens the database of the primary. It rejects an agent, which
+// reads only runplane.env and agent.json: a database there changes nothing.
+// With create, it makes the database when it does not exist.
+func openDB(cfg config.Config, create bool) (*store.Store, error) {
+	if exists(cfg.AgentConfigPath()) {
+		return nil, errAgent
+	}
+	if !create && !exists(cfg.DBPath()) {
+		return nil, fmt.Errorf("no database at %s", cfg.DBPath())
+	}
+	return store.Open(cfg.DBPath())
+}
+
 func readSettings(ctx context.Context, cfg config.Config) (store.Settings, error) {
-	st, err := store.Open(cfg.DBPath())
+	st, err := openDB(cfg, false)
 	if err != nil {
 		return store.Settings{}, err
 	}

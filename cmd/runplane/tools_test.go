@@ -98,6 +98,40 @@ func TestUpdateRefusesAnAgent(t *testing.T) {
 	}
 }
 
+// An agent reads no database, and the primary makes its database at the
+// first start. A command that made a database would report a change that
+// runplane does not use. Only set-domain makes one, for install.sh --domain.
+func TestCommandsMakeNoDatabase(t *testing.T) {
+	for _, tt := range []struct {
+		agent bool
+		args  []string
+	}{
+		{true, []string{"setup-code"}},
+		{true, []string{"reset-password", "admin@example.com"}},
+		{true, []string{"set-mode", "vm"}},
+		{true, []string{"set-domain", "ci.example.com"}},
+		{false, []string{"setup-code"}},
+		{false, []string{"reset-password", "admin@example.com"}},
+		{false, []string{"set-mode", "vm"}},
+	} {
+		dir := t.TempDir()
+		t.Setenv("RUNPLANE_CONFIG_DIR", dir)
+		t.Setenv("RUNPLANE_DATA_DIR", dir)
+		if tt.agent {
+			if err := os.WriteFile(filepath.Join(dir, "agent.json"), []byte(`{"primary": "203.0.113.5:8485"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := run(context.Background(), tt.args)
+		if err == nil || tt.agent && !errors.Is(err, errAgent) {
+			t.Errorf("runplane %v (agent %v): %v, want the refusal", tt.args, tt.agent, err)
+		}
+		if exists(filepath.Join(dir, "runplane.db")) {
+			t.Errorf("runplane %v (agent %v) made a database", tt.args, tt.agent)
+		}
+	}
+}
+
 func settingsIn(t *testing.T, dir string) store.Settings {
 	t.Helper()
 	st, err := store.Open(dir + "/runplane.db")

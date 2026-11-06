@@ -4,14 +4,16 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
 
-// The github package implements ScaleSetClient and GitHub, and the fleet
-// package implements Fleet. Change these interfaces only together with them.
+// The github package implements ScaleSetClient and GitHub. The composition
+// root (cmd/runplane) makes a Fleet of the fleet package. Change these
+// interfaces only together with them.
 
 // Scaler takes the messages of the listener of one scale set.
 type Scaler interface {
@@ -45,6 +47,9 @@ type ScaleSetClient interface {
 	// RemoveRunner returns ErrRunnerBusy if the runner has a job, and nil if
 	// the runner does not exist.
 	RemoveRunner(ctx context.Context, runnerID int64) error
+	// ListRunners returns the runners of the scale set. GitHub gives no scale
+	// set of a runner, so the list has the runners with the label of the
+	// scale set whose name IsRunnerOf that label.
 	ListRunners(ctx context.Context) ([]Runner, error)
 	// SetMaxRunners sets the maxCapacity that the listener sends with each poll.
 	SetMaxRunners(n int)
@@ -60,6 +65,17 @@ type Runner struct {
 	ID   int64
 	Name string
 	Busy bool
+}
+
+// RunnerName is the name of the runner of a new sandbox of the pool label.
+func RunnerName(label, sandboxID string) string {
+	return label + "-" + sandboxID[len(sandboxID)-8:]
+}
+
+// IsRunnerOf tells if the runner name has the form of RunnerName for the
+// label. GitHub compares runner names and labels without case.
+func IsRunnerOf(name, label string) bool {
+	return strings.HasPrefix(strings.ToLower(name), strings.ToLower(label)+"-")
 }
 
 var ErrRunnerBusy = errors.New("runner is busy")

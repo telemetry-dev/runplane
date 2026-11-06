@@ -35,7 +35,7 @@ func insertSandbox(t *testing.T, st *store.Store, id string, state sandbox.State
 func TestLookupStore(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
-	job, _, err := st.UpsertJob(ctx, store.JobMessage{
+	job, err := st.UpsertJob(ctx, store.JobMessage{
 		RunnerRequestID: 7, State: store.JobRunning, Repository: "octo/api", JobName: "build",
 	}, time.Now())
 	if err != nil {

@@ -16,7 +16,7 @@ import {
 import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
 import { SectionHeader, SectionLink } from '~/components/app/section-header'
-import { jobStatus, StatusIcon } from '~/components/app/status-icon'
+import { StatusIcon } from '~/components/app/status-icon'
 import { UsageBar } from '~/components/app/usage-bar'
 import { formatDuration, formatRelativeTime } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
@@ -109,7 +109,7 @@ const jobColumns: Column[] = [
           <CellTitle
             title={job.job_name}
             detail={workflow ? `${job.repository} · ${workflow}` : job.repository}
-            muted={jobStatus(job) === 'cancelled'}
+            muted={job.status === 'cancelled'}
           />
         </RowLink>
       )
@@ -133,7 +133,7 @@ const runningColumns: Column[] = [
 ]
 
 const recentColumns: Column[] = [
-  { width: 16, cell: (job) => <StatusIcon status={jobStatus(job)} /> },
+  { width: 16, cell: (job) => <StatusIcon status={job.status} /> },
   ...jobColumns,
   { head: 'Duration', width: 96, align: 'end', drop: 3, className: 'whitespace-nowrap', cell: (job) => formatDuration(job.duration_ms) },
   {

@@ -48,7 +48,7 @@ func TestAuditDetails(t *testing.T) {
 	b.do("POST", "/api/invites", map[string]any{"email": "eve@example.com", "role": "member"}, &invite).want(t, 200)
 	b.do("DELETE", "/api/invites/"+invite.Invite.ID, nil, nil).want(t, 204)
 
-	job, _, err := e.st.UpsertJob(ctx, store.JobMessage{
+	job, err := e.st.UpsertJob(ctx, store.JobMessage{
 		RunnerRequestID: 7, State: store.JobCompleted, Result: store.ResultFailed, Repository: "acme/api", JobName: "build",
 		WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", QueuedAt: now,
 	}, now)

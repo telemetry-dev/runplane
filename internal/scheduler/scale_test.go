@@ -134,7 +134,7 @@ func TestMinIdleKeepsWarmSandboxes(t *testing.T) {
 	}
 
 	for _, s := range specs {
-		e.event(serverID, s.ID, runnerEvent(sandbox.RunnerListening))
+		e.listening(serverID, s.ID)
 	}
 	if n := len(e.sandboxes(pool.ID, sandbox.StateIdle)); n != 2 {
 		t.Fatalf("%d idle sandboxes, want 2", n)
@@ -189,7 +189,7 @@ func TestScaleDownRemovesRunnerBeforeStop(t *testing.T) {
 	e.scale(sc, msg(0))
 	list := e.sandboxes(pool.ID)
 	for _, b := range list {
-		e.event(serverID, b.ID, runnerEvent(sandbox.RunnerListening))
+		e.listening(serverID, b.ID)
 	}
 	// A busy sandbox whose job GitHub no longer counts ends with its job.
 	busy := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
@@ -459,7 +459,7 @@ func TestReplacesStaleWarmSandboxes(t *testing.T) {
 			busy := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
 			e.scale(sc, msg(0))
 			warm := e.sandbox(driver.specs[0].ID)
-			e.event(serverID, warm.ID, runnerEvent(sandbox.RunnerListening))
+			e.listening(serverID, warm.ID)
 			client.busy[warm.RunnerID] = tt.githubBusy
 
 			tt.change(e, &pool)

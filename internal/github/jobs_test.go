@@ -127,7 +127,7 @@ func TestEnrich(t *testing.T) {
 		State: sandbox.StateBusy, RunnerName: "runplane-01abc", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	job, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobRunning, Repository: "acme/web",
+	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobRunning, Repository: "acme/web",
 		JobName: "build", RunID: 555, QueuedAt: time.Now()}, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestRerunFindsJobIDFirst(t *testing.T) {
 		rerun = append(rerun, r.PathValue("id"))
 		writeJSON(w, http.StatusCreated, map[string]any{})
 	})
-	job, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 2, State: store.JobCompleted, Result: store.ResultFailed,
+	job, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 2, State: store.JobCompleted, Result: store.ResultFailed,
 		Repository: "acme/web", JobName: "lint", RunID: 555, QueuedAt: time.Now()}, time.Now())
 	if err != nil {
 		t.Fatal(err)

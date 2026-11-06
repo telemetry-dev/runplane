@@ -1,10 +1,7 @@
 // Package joblog keeps the logs of the jobs. While a job runs, its sandbox
-// streams the log (log state live). After the job, the GitHub log goes to a
-// file in the logs folder (stored), or GitHub has none (none). The
-// retention removes old files (expired).
-//
-// A completed job whose log is still live waits for its download: the
-// scheduler runs the finish step of such a job again after a restart.
+// streams the log (log state live). After the job, the finish step of the
+// scheduler puts the GitHub log in a file in the logs folder (stored), or
+// GitHub has none (none). The retention removes old files (expired).
 package joblog
 
 import (
@@ -46,10 +43,11 @@ func New(cfg Config) *Logs {
 	return &Logs{cfg: cfg, log: cmp.Or(cfg.Log, slog.New(slog.DiscardHandler))}
 }
 
-// MarkLive records that the sandbox of a job streams its log, unless the
-// job has a log state already.
+// MarkLive records that the sandbox of a running job streams its log,
+// unless the job has a log state already. A start message that comes again
+// after the completion does not change the job.
 func (l *Logs) MarkLive(ctx context.Context, job *store.Job) error {
-	if job.LogState != store.LogNone {
+	if job.State != store.JobRunning || job.LogState != store.LogNone {
 		return nil
 	}
 	if err := l.cfg.Store.SetJobLogState(ctx, job.ID, store.LogLive); err != nil {
@@ -74,6 +72,9 @@ func (l *Logs) Fetch(ctx context.Context, jobID string, download func(context.Co
 		if err = l.write(ctx, jobID, download); err == nil {
 			break
 		}
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	state := store.LogStored
 	if err != nil {

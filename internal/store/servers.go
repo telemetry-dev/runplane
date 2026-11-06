@@ -185,7 +185,7 @@ func (s *Store) ServerRegions(ctx context.Context) (map[string]string, error) {
 
 // DeleteServer also deletes its image builds and host samples, and removes
 // its ID from the server_ids of each pool. A pool that loses its last server
-// becomes disabled, because empty server_ids means all servers.
+// becomes disabled, because empty server_ids means all servers (Pool.CanUse).
 func (s *Store) DeleteServer(ctx context.Context, id string, now time.Time) error {
 	return s.tx(ctx, "delete server", func(tx *sql.Tx) error {
 		if err := exec1(ctx, tx, "delete row", "DELETE FROM servers WHERE id = ?", id); err != nil {
