@@ -231,7 +231,7 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 		return
 	}
 	if ref.Digest != before {
-		b.Digest, b.SizeBytes, b.Path = ref.Digest, total, ""
+		b.Digest, b.SizeBytes = ref.Digest, total
 	}
 	f.mu.Lock()
 	dropped := f.dropped[img.ID]

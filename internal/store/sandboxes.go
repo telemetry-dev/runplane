@@ -105,8 +105,7 @@ func (s *Store) SetSandboxDebug(ctx context.Context, id string) error {
 }
 
 // The SQL terms of the sandbox states come from the order in package
-// sandbox. A query that must use the partial index sandboxes_live_ip has
-// liveState as its state term, the WHERE clause of the index.
+// sandbox.
 var (
 	liveState = "state NOT IN (" + stateList(sandbox.DoneStates()) + ")"
 	doneState = "state IN (" + stateList(sandbox.DoneStates()) + ")"
