@@ -14,7 +14,7 @@ import (
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/fleet"
-	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -119,7 +119,7 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		permissions   = map[string]bool{}
 		accesses      = map[string]bool{}
 	)
-	for _, owner := range []ghrest.Account{{Type: ghrest.Organization}, {Type: ghrest.User}} {
+	for _, owner := range []ghapp.Account{{Type: ghapp.Organization}, {Type: ghapp.User}} {
 		for _, p := range owner.AppPermissions() {
 			permissions[p.Name], accesses[p.Access] = true, true
 		}
@@ -140,7 +140,7 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		"HostCheck.mode":                             modes,
 		"Image.source":                               {"registry", images.Source},
 		"ImageBuild.status":                          {store.BuildPending, store.BuildPulling, store.BuildBuilding, store.BuildConverting, store.BuildReady, store.BuildFailed},
-		"Installation.account_type":                  {ghrest.Organization, ghrest.User},
+		"Installation.account_type":                  {ghapp.Organization, ghapp.User},
 		"Installation.repository_selection":          {"all", "selected"}, // GitHub sets them
 		"Invite.role":                                roles,
 		"InviteInfo.role":                            roles,

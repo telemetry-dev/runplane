@@ -1242,7 +1242,7 @@ export interface components {
         CreatePullRequestRequest: {
             /** @description The label of an enabled pool. */
             label: string;
-            /** @description owner/name of a repository that the GitHub App can access. */
+            /** @description owner/name of a repository whose takes_jobs is true. */
             repository: string;
         };
         CreatedInvite: {
@@ -1350,6 +1350,8 @@ export interface components {
             app_permissions: components["schemas"]["AppPermissions"];
             /** @description An app with at least one installation exists. */
             connected: boolean;
+            /** @description The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool. */
+            hosted_labels: string[];
             installations: components["schemas"]["Installation"][];
             /** @description One for each pool and installation, or for each pool and repository of a personal account. */
             scale_sets: components["schemas"]["ScaleSetStatus"][];
@@ -1989,8 +1991,9 @@ export interface components {
             full_name: string;
             /** Format: int64 */
             id: number;
-            /** @description runplane rejects jobs of public repositories unless allow_public_repos is on in VM mode. */
             private: boolean;
+            /** @description runplane takes the jobs of the repository. The scheduler still checks each job. */
+            takes_jobs: boolean;
         };
         RerunRequest: {
             /** @description Keep the sandbox of the new attempt after the job for a debug shell. */

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"time"
 
@@ -14,8 +13,10 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/field"
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/pages"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -25,6 +26,7 @@ type GitHubStatus struct {
 	Installations  []Installation   `json:"installations"`
 	ScaleSets      []ScaleSetStatus `json:"scale_sets" doc:"One for each pool and installation, or for each pool and repository of a personal account."`
 	AppPermissions AppPermissions   `json:"app_permissions" doc:"The permissions that the manifest of a new app asks for."`
+	HostedLabels   []string         `json:"hosted_labels" doc:"The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool."`
 }
 
 // AppPermissions has the permissions of the app for each account_type of
@@ -67,10 +69,11 @@ type Installation struct {
 }
 
 type Repository struct {
-	ID       int64  `json:"id"`
-	FullName string `json:"full_name" doc:"owner/name"`
-	Private  bool   `json:"private" doc:"runplane rejects jobs of public repositories unless allow_public_repos is on in VM mode."`
-	Archived bool   `json:"archived"`
+	ID        int64  `json:"id"`
+	FullName  string `json:"full_name" doc:"owner/name"`
+	Private   bool   `json:"private"`
+	Archived  bool   `json:"archived"`
+	TakesJobs bool   `json:"takes_jobs" doc:"runplane takes the jobs of the repository. The scheduler still checks each job."`
 }
 
 type ScaleSetStatus struct {
@@ -100,24 +103,31 @@ type ScaleSetStats struct {
 func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 	st := h.d.Store
 	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}, AppPermissions: AppPermissions{
-		Organization: appPermissions(ghrest.Account{Type: ghrest.Organization}),
-		User:         appPermissions(ghrest.Account{Type: ghrest.User}),
-	}}
+		Organization: appPermissions(ghapp.Account{Type: ghapp.Organization}),
+		User:         appPermissions(ghapp.Account{Type: ghapp.User}),
+	}, HostedLabels: ghapp.HostedLabels}
 	app, err := st.GetGitHubApp(ctx)
 	switch {
 	case err == nil:
-		owner := ghrest.Account{Type: app.OwnerType, Login: app.OwnerLogin}
+		owner := ghapp.Account{Type: app.OwnerType, Login: app.OwnerLogin}
 		out.App = &GitHubApp{
 			AppID: app.AppID, Slug: app.Slug, Name: app.Name, ClientID: app.ClientID, OwnerLogin: app.OwnerLogin,
 			OwnerType: app.OwnerType, HTMLURL: app.HTMLURL, CreatedAt: app.CreatedAt,
 			SettingsURL:    owner.AppURL(ghrest.Web, app.Slug),
-			PermissionsURL: owner.AppURL(ghrest.Web, app.Slug) + "/permissions",
-			InstallURL:     ghrest.AppInstallURL(ghrest.Web, app.Slug),
+			PermissionsURL: owner.AppPermissionsURL(ghrest.Web, app.Slug),
+			InstallURL:     ghapp.AppInstallURL(ghrest.Web, app.Slug),
 		}
 	case !errors.Is(err, store.ErrNotFound):
 		return GitHubStatus{}, err
 	}
+	if out.Connected, err = st.GitHubConnected(ctx); err != nil {
+		return GitHubStatus{}, err
+	}
 	installs, err := st.ListInstallations(ctx)
+	if err != nil {
+		return GitHubStatus{}, err
+	}
+	settings, err := st.GetSettings(ctx)
 	if err != nil {
 		return GitHubStatus{}, err
 	}
@@ -132,16 +142,16 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 			ID: inst.ID, AccountLogin: inst.AccountLogin, AccountType: inst.AccountType, AvatarURL: inst.AvatarURL,
 			RepositorySelection: inst.RepositorySelection, RepositoryCount: len(repos), Repositories: make([]Repository, len(repos)),
 			Suspended: inst.SuspendedAt != nil, SuspendedAt: inst.SuspendedAt,
-			HTMLURL: ghrest.Account{Type: inst.AccountType, Login: inst.AccountLogin}.InstallationURL(ghrest.Web, inst.ID),
+			HTMLURL: ghapp.Account{Type: inst.AccountType, Login: inst.AccountLogin}.InstallationURL(ghrest.Web, inst.ID),
 		})
 		list := out.Installations[len(out.Installations)-1].Repositories
 		for i, r := range repos {
-			list[i] = Repository{ID: r.ID, FullName: r.FullName, Private: r.Private, Archived: r.Archived}
+			list[i] = Repository{ID: r.ID, FullName: r.FullName, Private: r.Private, Archived: r.Archived,
+				TakesJobs: inst.SuspendedAt == nil && policy.TakesJobs(settings, r)}
 			repoNames[r.ID] = r.FullName
 		}
 		accounts[inst.ID] = inst.AccountLogin
 	}
-	out.Connected = out.App != nil && len(installs) > 0
 
 	sets, err := st.ListScaleSets(ctx)
 	if err != nil {
@@ -169,13 +179,13 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 // runnerGroup names the runner group of a scale set. runplane makes its
 // scale sets in the group Default.
 func runnerGroup(id int64) string {
-	if id <= ghrest.DefaultRunnerGroup {
+	if id <= ghapp.DefaultRunnerGroup {
 		return "Default"
 	}
 	return "Group " + strconv.FormatInt(id, 10)
 }
 
-func appPermissions(owner ghrest.Account) []AppPermission {
+func appPermissions(owner ghapp.Account) []AppPermission {
 	list := owner.AppPermissions()
 	out := make([]AppPermission, len(list))
 	for i, p := range list {
@@ -186,16 +196,6 @@ func appPermissions(owner ghrest.Account) []AppPermission {
 
 func (h *Handler) getGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {
 	return reply(h.gitHubStatus(ctx))
-}
-
-func (h *Handler) githubConnected(ctx context.Context) (bool, error) {
-	if _, err := h.d.Store.GetGitHubApp(ctx); errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	} else if err != nil {
-		return false, err
-	}
-	list, err := h.d.Store.ListInstallations(ctx)
-	return len(list) > 0, err
 }
 
 type ManifestRequest struct {
@@ -210,12 +210,12 @@ type ManifestForm struct {
 
 func (h *Handler) createManifest(ctx context.Context, in *body[ManifestRequest]) (*body[ManifestForm], error) {
 	b := in.Body
-	owner := ghrest.Account{Type: ghrest.User}
+	owner := ghapp.Account{Type: ghapp.User}
 	if b.AccountType == "organization" {
 		if b.Organization == "" {
 			return nil, invalid("body.organization", "Enter the organization.", nil)
 		}
-		owner = ghrest.Account{Type: ghrest.Organization, Login: b.Organization}
+		owner = ghapp.Account{Type: ghapp.Organization, Login: b.Organization}
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
@@ -297,7 +297,7 @@ func (h *Handler) browserAdmin(ctx context.Context, self string) (context.Contex
 }
 
 func (h *Handler) githubErrorPage(ctx context.Context, msg string) string {
-	ok, err := h.githubConnected(ctx)
+	ok, err := h.d.Store.GitHubConnected(ctx)
 	return pages.GitHubError(err == nil && ok, msg)
 }
 
@@ -310,7 +310,7 @@ func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStat
 }
 
 type CreatePullRequestRequest struct {
-	Repository string `json:"repository" maxLength:"140" doc:"owner/name of a repository that the GitHub App can access."`
+	Repository string `json:"repository" maxLength:"140" doc:"owner/name of a repository whose takes_jobs is true."`
 	Label      string `json:"label" doc:"The label of an enabled pool."`
 }
 
@@ -321,22 +321,13 @@ type PullRequest struct {
 
 func (h *Handler) createPullRequest(ctx context.Context, in *body[CreatePullRequestRequest]) (*body[PullRequest], error) {
 	b := in.Body
-	pools, err := h.d.Store.ListPools(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !slices.ContainsFunc(pools, func(p store.Pool) bool { return p.Enabled && p.Label == b.Label }) {
-		return nil, invalid("body.label", "No enabled pool has this label.", b.Label)
-	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
 	number, htmlURL, err := h.d.GitHub.OpenPullRequest(ctx, base, b.Repository, b.Label)
 	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return nil, huma.Error404NotFound("The GitHub App has no access to " + b.Repository + ".")
-	case errors.Is(err, ghrest.ErrNoPullPermissions):
+	case errors.Is(err, ghapp.ErrNoPullPermissions):
 		return nil, huma.Error403Forbidden(field.Sentence(err))
 	case err != nil:
 		return nil, serviceErr(err)

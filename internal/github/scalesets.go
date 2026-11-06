@@ -14,6 +14,7 @@ import (
 
 	"github.com/actions/scaleset"
 
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/policy"
@@ -84,7 +85,7 @@ func (s *Service) targets(ctx context.Context) (map[string]target, error) {
 	}
 	byInst := map[int64][]store.Repository{}
 	for _, inst := range insts {
-		if inst.AccountType != ghrest.User {
+		if inst.AccountType != ghapp.User {
 			continue
 		}
 		repos, err := s.st.ListRepositories(ctx, inst.ID)
@@ -99,15 +100,14 @@ func (s *Service) targets(ctx context.Context) (map[string]target, error) {
 			continue
 		}
 		for _, inst := range insts {
-			if inst.AccountType == ghrest.Organization {
+			if inst.AccountType == ghapp.Organization {
 				t := target{pool: pool, inst: inst}
 				out[rowKey(t.row())] = t
 				continue
 			}
-			// A repository whose jobs runplane refuses gets no scale set. The
-			// scheduler checks the modes of the runners for each job.
+			// A repository whose jobs runplane refuses gets no scale set.
 			for _, r := range byInst[inst.ID] {
-				if r.Archived || policy.Refusal(settings, policy.Job{Private: r.Private}, nil) != "" {
+				if !policy.TakesJobs(settings, r) {
 					continue
 				}
 				t := target{pool: pool, inst: inst, repo: &r}

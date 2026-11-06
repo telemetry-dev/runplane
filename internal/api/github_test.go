@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -45,35 +47,65 @@ func TestGitHubLinks(t *testing.T) {
 	}
 }
 
-// fakeGitHub opens pull requests. The tests use no other GitHub method.
+// The pull request form lists the repositories whose jobs runplane takes,
+// so that the jobs of a pull request start.
+func TestRepositoriesTakeJobs(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	now := time.Now()
+	must(t, e.st.SaveGitHubApp(ctx, store.GitHubApp{ID: "a", AppID: 5, Slug: "runplane-acme", Name: "runplane acme",
+		OwnerLogin: "acme", OwnerType: "Organization", PrivateKeyEnc: []byte{1}, CreatedAt: now}))
+	for _, inst := range []store.Installation{
+		{ID: 77, AppID: 5, AccountLogin: "acme", AccountType: "Organization", CreatedAt: now, UpdatedAt: now},
+		{ID: 78, AppID: 5, AccountLogin: "octo", AccountType: "User", SuspendedAt: &now, CreatedAt: now, UpdatedAt: now},
+	} {
+		must(t, e.st.UpsertInstallation(ctx, inst))
+	}
+	must(t, e.st.ReplaceRepositories(ctx, 77, []store.Repository{
+		{ID: 1, FullName: "acme/api", Private: true, UpdatedAt: now},
+		{ID: 2, FullName: "acme/site", UpdatedAt: now},
+		{ID: 3, FullName: "acme/old", Private: true, Archived: true, UpdatedAt: now},
+	}))
+	must(t, e.st.ReplaceRepositories(ctx, 78, []store.Repository{{ID: 4, FullName: "octo/app", Private: true, UpdatedAt: now}}))
+
+	var gh GitHubStatus
+	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/github", nil, &gh).want(t, 200)
+	takes := map[string]bool{}
+	for _, inst := range gh.Installations {
+		for _, r := range inst.Repositories {
+			takes[r.FullName] = r.TakesJobs
+		}
+	}
+	want := map[string]bool{"acme/api": true, "acme/site": false, "acme/old": false, "octo/app": false}
+	if !maps.Equal(takes, want) {
+		t.Errorf("takes_jobs = %v, want %v", takes, want)
+	}
+}
+
+// fakeGitHub opens pull requests to the label big. The tests use no other
+// GitHub method.
 type fakeGitHub struct {
 	GitHub
 	opened []string // "repository label" of each call
 }
 
 func (f *fakeGitHub) OpenPullRequest(_ context.Context, _, repository, label string) (int, string, error) {
+	if label != "big" {
+		return 0, "", field.Problems{{Key: "label", Message: "No enabled pool has this label.", Value: label}}
+	}
 	f.opened = append(f.opened, repository+" "+label)
 	return 12, "https://github.com/" + repository + "/pull/12", nil
 }
 
-// A pull request must move jobs to a label that an enabled pool serves, or
-// the jobs never start. Only an admin can write to repositories.
+// The form shows a refused pull request at its field. Only an admin can
+// write to repositories.
 func TestCreatePullRequest(t *testing.T) {
 	gh := &fakeGitHub{}
 	e := newEnv(t, func(d *Deps) { d.GitHub = gh })
-	now := time.Now()
-	for _, p := range []store.Pool{
-		{ID: "p1", Name: "big", Label: "big", Arch: "x64", VCPU: 4, MemoryMB: 8192, DiskGB: 64, MaxRunners: 2, Enabled: true, CreatedAt: now, UpdatedAt: now},
-		{ID: "p2", Name: "off", Label: "off", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 64, MaxRunners: 2, CreatedAt: now, UpdatedAt: now},
-	} {
-		must(t, e.st.CreatePool(context.Background(), p))
-	}
 	const path = "/api/github/pull-requests"
 	e.login("bob@example.com", auth.RoleMember).do("POST", path, map[string]any{"repository": "acme/web", "label": "big"}, nil).want(t, 403)
 	admin := e.login("ada@example.com", auth.RoleAdmin)
-	for _, label := range []string{"off", "gone"} {
-		admin.do("POST", path, map[string]any{"repository": "acme/web", "label": label}, nil).wantField(t, 422, "body.label")
-	}
+	admin.do("POST", path, map[string]any{"repository": "acme/web", "label": "off"}, nil).wantField(t, 422, "body.label")
 
 	var pr PullRequest
 	admin.do("POST", path, map[string]any{"repository": "acme/web", "label": "big"}, &pr).want(t, 200)

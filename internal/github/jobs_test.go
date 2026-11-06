@@ -202,11 +202,13 @@ func TestMatchJob(t *testing.T) {
 
 func TestDownloadLogFollowsRedirectWithoutToken(t *testing.T) {
 	e := acmeEnv(t)
+	// GitHub sends the log from a blob store on a different host.
+	blob := strings.Replace(e.srv.URL, "127.0.0.1", "localhost", 1)
 	e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/jobs/902/logs", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ghs_10_") {
 			t.Errorf("log request without the installation token")
 		}
-		http.Redirect(w, r, e.srv.URL+"/blob/job-902.txt?sig=abc", http.StatusFound)
+		http.Redirect(w, r, blob+"/blob/job-902.txt?sig=abc", http.StatusFound)
 	})
 	e.mux.HandleFunc("GET /blob/job-902.txt", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("sig") != "abc" {

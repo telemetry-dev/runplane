@@ -36,6 +36,14 @@ func Refusal(st store.Settings, job Job, modes []sandbox.Mode) string {
 	return ""
 }
 
+// TakesJobs tells if runplane takes the jobs of the repository r while its
+// installation is active. GitHub runs no workflows of an archived
+// repository. The scheduler checks each job again with Refusal, with the
+// fork and the modes of its runners.
+func TakesJobs(st store.Settings, r store.Repository) bool {
+	return !r.Archived && Refusal(st, Job{Private: r.Private}, nil) == ""
+}
+
 // RunnerAllowed tells if a runner in mode m can wait for jobs.
 func RunnerAllowed(st store.Settings, m sandbox.Mode) bool {
 	return !st.AllowPublicRepos || m == sandbox.ModeVM

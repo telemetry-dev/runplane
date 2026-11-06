@@ -166,6 +166,13 @@ func (s *Store) ListInstallations(ctx context.Context) ([]Installation, error) {
 		"SELECT "+installationCols+" FROM installations ORDER BY account_login")
 }
 
+// GitHubConnected tells if runplane has a GitHub App with at least one
+// installation.
+func (s *Store) GitHubConnected(ctx context.Context) (bool, error) {
+	return queryOne(ctx, s.r, "check the github connection", scanValue[bool],
+		"SELECT EXISTS (SELECT 1 FROM installations i JOIN github_apps a ON a.app_id = i.app_id)")
+}
+
 // DeleteInstallation also deletes its repositories.
 func (s *Store) DeleteInstallation(ctx context.Context, id int64) error {
 	return exec1(ctx, s.w, "delete installation", "DELETE FROM installations WHERE id = ?", id)

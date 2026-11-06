@@ -46,6 +46,27 @@ func TestReplaceRepositories(t *testing.T) {
 	}
 }
 
+// The setup step, the GitHub error page, and the web read the same rule.
+func TestGitHubConnected(t *testing.T) {
+	s := openTest(t)
+	ctx := t.Context()
+	now := time.Now()
+	connected := func(want bool) {
+		t.Helper()
+		if got, err := s.GitHubConnected(ctx); err != nil || got != want {
+			t.Fatalf("connected = %v, %v; want %v", got, err, want)
+		}
+	}
+	connected(false)
+	must(t, s.SaveGitHubApp(ctx, GitHubApp{ID: "a", AppID: 5, Slug: "rp", Name: "rp", PrivateKeyEnc: []byte{1}, CreatedAt: now}))
+	connected(false)
+	must(t, s.UpsertInstallation(ctx, Installation{ID: 10, AppID: 5, AccountLogin: "acme", AccountID: 1,
+		AccountType: "Organization", CreatedAt: now, UpdatedAt: now}))
+	connected(true)
+	must(t, s.DeleteGitHubApp(ctx, "a"))
+	connected(false)
+}
+
 func TestConsumeManifestState(t *testing.T) {
 	s := openTest(t)
 	ctx := t.Context()

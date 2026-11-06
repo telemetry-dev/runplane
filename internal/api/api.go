@@ -25,7 +25,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
-	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -134,7 +134,7 @@ type GitHub interface {
 	// the manifest JSON for the form field "manifest". base is the browser
 	// URL of runplane, for example "https://ci.example.com", without a
 	// trailing slash.
-	Manifest(ctx context.Context, base string, owner ghrest.Account) (actionURL, manifest string, err error)
+	Manifest(ctx context.Context, base string, owner ghapp.Account) (actionURL, manifest string, err error)
 	// Callback converts the manifest code into the app and returns the URL
 	// for the browser, normally the app installation page on GitHub.
 	Callback(ctx context.Context, code, state string) (redirect string, err error)
@@ -147,12 +147,11 @@ type GitHub interface {
 	// Disconnect stops the listeners, deletes the scale sets, and removes the app.
 	Disconnect(ctx context.Context) error
 	// OpenPullRequest opens a pull request in the repository (owner/name)
-	// that sets runs-on to label in each job on a GitHub-hosted Ubuntu
-	// runner. While the pull request of an earlier call is open, it returns
-	// that one. It returns store.ErrNotFound when the app has no access to
-	// the repository, ghrest.ErrNoPullPermissions when the account has not
-	// accepted the permissions, and field.Problems when the repository has
-	// no job to move.
+	// that sets runs-on to label in each job on one of ghapp.HostedLabels.
+	// While the pull request of an earlier call is open, it returns that
+	// one. It returns ghapp.ErrNoPullPermissions when the account has not
+	// accepted the permissions, and field.Problems at "repository" or
+	// "label" when the jobs of the pull request would not start.
 	OpenPullRequest(ctx context.Context, base, repository, label string) (number int, url string, err error)
 }
 
@@ -310,7 +309,7 @@ func (h *Handler) routes() {
 	handle(h, public, "GET /api/github/setup", "github-setup", "Record an installation (browser redirect from GitHub)", h.githubSetup, redirectResponse)
 	handle(h, auth.ActionAdmin, "POST /api/github/sync", "sync-github", "Sync the installations now", h.syncGitHub)
 	handle(h, auth.ActionAdmin, "POST /api/github/pull-requests", "create-github-pull-request", "Open a pull request that moves jobs to a runplane label", h.createPullRequest,
-		describe("The pull request sets runs-on to the label for each job on ubuntu-latest or ubuntu-24.04. While an earlier pull request of runplane is open in the repository, the response gives that one."))
+		describe("The pull request sets runs-on to the label for each job on "+ghapp.HostedLabelsText("")+". While an earlier pull request of runplane is open in the repository, the response gives that one."))
 	handle(h, auth.ActionAdmin, "DELETE /api/github", "disconnect-github", "Disconnect GitHub", h.disconnectGitHub)
 
 	handle(h, auth.ActionRead, "GET /api/pools", "list-pools", "List the pools with live sandbox counts", h.listPools)

@@ -1,8 +1,6 @@
 // Package ghrest calls the GitHub REST API and downloads files from GitHub.
 // It sends the headers that GitHub asks for, tries again after network
-// errors and rate limits, and reads all pages of a list. It also gives the
-// GitHub account types, the permissions of the runplane app, and the web
-// pages of an account.
+// errors and rate limits, and reads all pages of a list.
 package ghrest
 
 import (
@@ -43,12 +41,11 @@ type Client struct {
 
 // Call is one REST request. Path is relative to the API URL, or absolute.
 type Call struct {
-	Method     string
-	Path       string
-	Body       any           // sent as JSON if not nil
-	Auth       Auth          // nil for an anonymous call
-	Timeout    time.Duration // of one attempt with its body; 0 for 30 seconds
-	NoRedirect bool          // Do returns a redirect and does not follow it
+	Method  string
+	Path    string
+	Body    any           // sent as JSON if not nil
+	Auth    Auth          // nil for an anonymous call
+	Timeout time.Duration // of one attempt with its body; 0 for 30 seconds
 
 	download bool
 }
@@ -195,8 +192,6 @@ func (c Client) Download(ctx context.Context, url string) (*http.Response, error
 
 func (c Client) url() string { return cmp.Or(c.URL, API) }
 
-var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-
 func (c Client) send(ctx context.Context, cl Call, authorization string) (*http.Response, error) {
 	u := cl.Path
 	if strings.HasPrefix(u, "/") {
@@ -233,11 +228,7 @@ func (c Client) send(ctx context.Context, cl Call, authorization string) (*http.
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	hc := http.DefaultClient
-	if cl.NoRedirect {
-		hc = noRedirect
-	}
-	resp, err := hc.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		cancel()
 		// The url.Error has the full URL, and a signed URL must not go

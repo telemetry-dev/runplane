@@ -14,20 +14,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/store"
 )
 
 func TestManifest(t *testing.T) {
 	tests := []struct {
-		owner           ghrest.Account
+		owner           ghapp.Account
 		wantAction      string
 		wantPermissions map[string]any
 	}{
-		{ghrest.Account{Type: ghrest.Organization, Login: "acme"}, "/organizations/acme/settings/apps/new",
+		{ghapp.Account{Type: ghapp.Organization, Login: "acme"}, "/organizations/acme/settings/apps/new",
 			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read",
 				"contents": "write", "pull_requests": "write", "workflows": "write"}},
-		{ghrest.Account{Type: ghrest.User}, "/settings/apps/new",
+		{ghapp.Account{Type: ghapp.User}, "/settings/apps/new",
 			map[string]any{"administration": "write", "actions": "write", "metadata": "read",
 				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 	}
@@ -94,7 +94,7 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
 		})
 	})
-	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghrest.Account{Type: ghrest.Organization, Login: "acme"})
+	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghapp.Account{Type: ghapp.Organization, Login: "acme"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestCallbackRejectsAppOfAnotherAccount(t *testing.T) {
 			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
 		})
 	})
-	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghrest.Account{Type: ghrest.Organization, Login: "Telemetry"})
+	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghapp.Account{Type: ghapp.Organization, Login: "Telemetry"})
 	if err != nil {
 		t.Fatal(err)
 	}

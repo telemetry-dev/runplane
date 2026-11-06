@@ -4,7 +4,6 @@ import type { Schemas } from '~/api/client'
 import { githubQuery } from '~/api/github'
 import { poolsQuery } from '~/api/pools'
 import { useCapabilities } from '~/api/session'
-import { settingsQuery } from '~/api/settings'
 import { CodeBlock } from '~/components/app/code-block'
 import { JobWait, LabelTable, suggestedLabel, workflowDiff } from '~/components/pages/first-job/first-job'
 import { jobRepositories } from '~/components/pages/github/links'
@@ -15,7 +14,7 @@ import { formatCount } from '~/lib/format'
 import { SetupHeader } from './parts'
 
 export function prefetch(client: QueryClient) {
-  return Promise.all([client.ensureQueryData(githubQuery), client.ensureQueryData(poolsQuery), client.ensureQueryData(settingsQuery)])
+  return Promise.all([client.ensureQueryData(githubQuery), client.ensureQueryData(poolsQuery)])
 }
 
 /**
@@ -25,12 +24,11 @@ export function prefetch(client: QueryClient) {
 export function FirstJobStep() {
   const navigate = useNavigate()
   const { admin } = useCapabilities()
-  const { app, installations } = useSuspenseQuery(githubQuery).data
+  const { app, installations, hosted_labels } = useSuspenseQuery(githubQuery).data
   const pools = useSuspenseQuery(poolsQuery).data
-  const settings = useSuspenseQuery(settingsQuery).data
   const labels = pools.filter((pool) => pool.enabled)
   const label = suggestedLabel(pools)
-  const repositories = jobRepositories(installations, settings)
+  const repositories = jobRepositories(installations)
 
   return (
     <>
@@ -40,7 +38,13 @@ export function FirstJobStep() {
       {label && admin && repositories.length > 0 && (
         <section className="flex flex-col gap-xs">
           <h2 className="text-s font-medium text-neutral-10">Open a pull request</h2>
-          <PullRequestForm repositories={repositories} labels={[label]} defaultLabel={label} permissionsUrl={app?.permissions_url} />
+          <PullRequestForm
+            repositories={repositories}
+            labels={[label]}
+            defaultLabel={label}
+            hostedLabels={hosted_labels}
+            permissionsUrl={app?.permissions_url}
+          />
         </section>
       )}
       <LabelTable pools={labels} />

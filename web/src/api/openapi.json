@@ -706,7 +706,7 @@
             "type": "string"
           },
           "repository": {
-            "description": "owner/name of a repository that the GitHub App can access.",
+            "description": "owner/name of a repository whose takes_jobs is true.",
             "maxLength": 140,
             "type": "string"
           }
@@ -981,6 +981,13 @@
             "description": "An app with at least one installation exists.",
             "type": "boolean"
           },
+          "hosted_labels": {
+            "description": "The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "installations": {
             "items": {
               "$ref": "#/components/schemas/Installation"
@@ -999,7 +1006,8 @@
           "connected",
           "installations",
           "scale_sets",
-          "app_permissions"
+          "app_permissions",
+          "hosted_labels"
         ],
         "type": "object"
       },
@@ -2594,7 +2602,10 @@
             "type": "integer"
           },
           "private": {
-            "description": "runplane rejects jobs of public repositories unless allow_public_repos is on in VM mode.",
+            "type": "boolean"
+          },
+          "takes_jobs": {
+            "description": "runplane takes the jobs of the repository. The scheduler still checks each job.",
             "type": "boolean"
           }
         },
@@ -2602,7 +2613,8 @@
           "id",
           "full_name",
           "private",
-          "archived"
+          "archived",
+          "takes_jobs"
         ],
         "type": "object"
       },

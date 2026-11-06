@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/field"
-	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -84,6 +84,8 @@ func (e *env) repo() *fakeRepo {
 	}); err != nil {
 		e.t.Fatal(err)
 	}
+	e.pool("p1", "big", true)
+	e.pool("p2", "off", false)
 	f := &fakeRepo{
 		permissions: map[string]string{"actions": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "workflows": "write"},
 		workflows:   map[string]string{"ci.yml": ciWorkflow, "release.yaml": "jobs:\n  build:\n    runs-on: macos-latest\n", "README.md": "runs-on: ubuntu-latest\n"},
@@ -224,24 +226,43 @@ func TestOpenPullRequest(t *testing.T) {
 		}
 	})
 
+	// The jobs of the pull request must start.
+	setRepo := func(e *env, r store.Repository) {
+		r.ID, r.FullName, r.DefaultBranch, r.UpdatedAt = 100, "acme/web", "main", time.Now()
+		if err := e.st.ReplaceRepositories(ctx, 10, []store.Repository{r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	suspend := func(e *env) {
+		now := time.Now()
+		if err := e.st.UpsertInstallation(ctx, store.Installation{ID: 10, AppID: testAppID, AccountLogin: "acme",
+			AccountType: "Organization", SuspendedAt: &now, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	errorTests := []struct {
-		name       string
-		repository string
-		change     func(f *fakeRepo)
-		want       string // errorKind
+		name              string
+		repository, label string
+		change            func(e *env, f *fakeRepo)
+		want              string // errorKind
 	}{
-		{"unknown repository", "acme/other", func(*fakeRepo) {}, "no access"},
-		{"no workflows permission", "acme/web", func(f *fakeRepo) { delete(f.permissions, "workflows") }, "no permissions"},
-		{"read-only contents", "acme/web", func(f *fakeRepo) { f.permissions["contents"] = "read" }, "no permissions"},
-		{"no workflows", "acme/web", func(f *fakeRepo) { f.workflows = nil }, "repository problem"},
-		{"no job on ubuntu-latest", "acme/web", func(f *fakeRepo) { delete(f.workflows, "ci.yml") }, "repository problem"},
+		{"unknown repository", "acme/other", "big", func(*env, *fakeRepo) {}, "repository problem"},
+		{"label of a disabled pool", "acme/web", "off", func(*env, *fakeRepo) {}, "label problem"},
+		{"label of no pool", "acme/web", "gone", func(*env, *fakeRepo) {}, "label problem"},
+		{"suspended installation", "acme/web", "big", func(e *env, _ *fakeRepo) { suspend(e) }, "repository problem"},
+		{"public repository", "acme/web", "big", func(e *env, _ *fakeRepo) { setRepo(e, store.Repository{}) }, "repository problem"},
+		{"archived repository", "acme/web", "big", func(e *env, _ *fakeRepo) { setRepo(e, store.Repository{Private: true, Archived: true}) }, "repository problem"},
+		{"no workflows permission", "acme/web", "big", func(_ *env, f *fakeRepo) { delete(f.permissions, "workflows") }, "no permissions"},
+		{"read-only contents", "acme/web", "big", func(_ *env, f *fakeRepo) { f.permissions["contents"] = "read" }, "no permissions"},
+		{"no workflows", "acme/web", "big", func(_ *env, f *fakeRepo) { f.workflows = nil }, "repository problem"},
+		{"no job on ubuntu-latest", "acme/web", "big", func(_ *env, f *fakeRepo) { delete(f.workflows, "ci.yml") }, "repository problem"},
 	}
 	for _, tt := range errorTests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := acmeEnv(t)
 			f := e.repo()
-			tt.change(f)
-			_, _, err := e.svc.OpenPullRequest(ctx, "https://ci.example.com", tt.repository, "big")
+			tt.change(e, f)
+			_, _, err := e.svc.OpenPullRequest(ctx, "https://ci.example.com", tt.repository, tt.label)
 			if got := errorKind(err); got != tt.want {
 				t.Errorf("err = %v (%s), want %s", err, got, tt.want)
 			}
@@ -257,12 +278,10 @@ func TestOpenPullRequest(t *testing.T) {
 func errorKind(err error) string {
 	var p field.Problems
 	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return "no access"
-	case errors.Is(err, ghrest.ErrNoPullPermissions):
+	case errors.Is(err, ghapp.ErrNoPullPermissions):
 		return "no permissions"
-	case errors.As(err, &p) && len(p) == 1 && p[0].Key == "repository":
-		return "repository problem"
+	case errors.As(err, &p) && len(p) == 1:
+		return p[0].Key + " problem"
 	}
 	return "another error"
 }
