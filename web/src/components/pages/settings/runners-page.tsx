@@ -159,7 +159,7 @@ function Network({ settings, disabled }: { settings: Settings; disabled: boolean
         <ListSetting
           lines
           label="Egress allowlist"
-          description="Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach, one on each line."
+          description="Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach, one on each line."
           value={settings.egress_allowlist}
           toPatch={(egress_allowlist) => ({ egress_allowlist })}
           placeholder="Empty: all of the public internet"

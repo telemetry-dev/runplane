@@ -3620,7 +3620,7 @@
             "type": "string"
           },
           "egress_allowlist": {
-            "description": "Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet.",
+            "description": "Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet.",
             "items": {
               "type": "string"
             },
@@ -3822,7 +3822,7 @@
             "type": "string"
           },
           "egress_allowlist": {
-            "description": "Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet.",
+            "description": "Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet.",
             "items": {
               "type": "string"
             },

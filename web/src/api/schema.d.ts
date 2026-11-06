@@ -2380,7 +2380,7 @@ export interface components {
             dns_servers: string[];
             /** @description With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall. */
             domain: string;
-            /** @description Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet. */
+            /** @description Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist: string[];
             /** @description Certificate of the domain. Read-only. */
             https: components["schemas"]["HTTPSStatus"];
@@ -2465,7 +2465,7 @@ export interface components {
             dns_servers?: string[];
             /** @description With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall. */
             domain?: string;
-            /** @description Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet. */
+            /** @description Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist?: string[];
             /** @description Title in the sidebar. */
             instance_name?: string;

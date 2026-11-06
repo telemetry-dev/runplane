@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/runplane/runplane/internal/field"
+	"github.com/runplane/runplane/internal/sandbox/allowlist"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -53,8 +54,8 @@ func clean(old store.Settings, next *store.Settings) field.Problems {
 		for i, v := range next.EgressAllowlist {
 			v = strings.ToLower(strings.TrimSpace(v))
 			next.EgressAllowlist[i] = v
-			if !validEgress(v) {
-				p.Add(fmt.Sprintf("egress_allowlist[%d]", i), "Enter a host name, *.domain, IP address, or CIDR.", v)
+			if _, ok := allowlist.Parse(v); !ok {
+				p.Add(fmt.Sprintf("egress_allowlist[%d]", i), "Enter a host name, IPv4 address, or IPv4 CIDR.", v)
 			}
 		}
 	}
@@ -106,14 +107,4 @@ func validDomain(d string) bool {
 		}
 	}
 	return true
-}
-
-func validEgress(v string) bool {
-	if _, err := netip.ParseAddr(v); err == nil {
-		return true
-	}
-	if _, err := netip.ParsePrefix(v); err == nil {
-		return true
-	}
-	return validDomain(strings.TrimPrefix(v, "*."))
 }
