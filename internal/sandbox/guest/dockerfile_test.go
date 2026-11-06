@@ -14,7 +14,7 @@ import (
 
 // The builtin images make the runner user and the folders that runplane-init
 // uses, and have the label that finds them on a server. A change to one of
-// these constants must change images/*/Dockerfile too, and the other way
+// these constants must change images/Dockerfile too, and the other way
 // around.
 func TestBuiltinImagesHaveTheGuestLayout(t *testing.T) {
 	files := map[string]string{}
