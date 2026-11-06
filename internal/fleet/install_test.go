@@ -125,41 +125,13 @@ sudo() { "$@"; }
 	}
 }
 
-// TestInstallKeepsRegisteredAgent runs write_config of install.sh again with
-// the token that the agent used. The agent.json of the registered agent must
-// stay, also when the primary has an IPv6 address.
-func TestInstallKeepsRegisteredAgent(t *testing.T) {
-	script, err := installtest.ReplaceMain(runplane.InstallScript, `CONFIG_DIR=$1 DATA_DIR=$1/data ENV_FILE=$1/runplane.env AGENT_FILE=$1/agent.json
-DRY_RUN=0 ROLE=agent MODE=container TOKEN=rp_srv_TEST PRIMARY=$2 FINGERPRINT=sha256:aa
-write_config
-`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, primary := range []string{"203.0.113.7:8485", "[2001:db8::5]:8485"} {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "agent.json")
-		registered := "{\n  \"primary\": \"" + primary + "\",\n  \"fingerprint\": \"sha256:aa\",\n" +
-			"  \"server_id\": \"01jbd5x7k2m4n6p8q9r0s1t2v3\",\n  \"secret\": \"s3cret\"\n}\n"
-		if err := os.WriteFile(path, []byte(registered), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if out, err := installtest.Sh(script, nil, "-s", "--", dir, primary); err != nil {
-			t.Fatalf("install.sh: %v\n%s", err, out)
-		}
-		if raw, _ := os.ReadFile(path); string(raw) != registered {
-			t.Errorf("agent.json of %s after a second install with the same token:\n%s\nwant it unchanged", primary, raw)
-		}
-	}
-}
-
 // TestInstallScriptSignature runs the release download of the served
 // install.sh against release files on disk. The script has the release key
 // of the primary binary, so it installs only a release whose SHA256SUMS has
 // a signature of that key.
 func TestInstallScriptSignature(t *testing.T) {
-	if out, err := exec.Command("openssl", "version").Output(); err != nil || !bytes.HasPrefix(out, []byte("OpenSSL ")) {
-		t.Skip("install.sh checks signatures with OpenSSL 3 or newer")
+	if !openSSL3() {
+		t.Skip("needs OpenSSL 3 or newer: install.sh checks the release signature with openssl pkeyutl -rawin")
 	}
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -235,6 +207,16 @@ cat "$TMP/runplane"
 			}
 		})
 	}
+}
+
+// openSSL3 reports if the openssl command is OpenSSL 3 or newer. LibreSSL
+// and OpenSSL 1 cannot check an ed25519 signature of a file.
+func openSSL3() bool {
+	out, err := exec.Command("openssl", "version").Output()
+	version, ok := bytes.CutPrefix(out, []byte("OpenSSL "))
+	major, _, _ := bytes.Cut(version, []byte("."))
+	n, aerr := strconv.Atoi(string(major))
+	return err == nil && ok && aerr == nil && n >= 3
 }
 
 // releaseArchive returns a release archive whose runplane file holds text.

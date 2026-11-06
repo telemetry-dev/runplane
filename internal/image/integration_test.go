@@ -28,9 +28,11 @@ func TestRealRootDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("root disk %s, %d bytes", img.Path, img.Size)
-	ext4test.Check(t, img.Path)
-	ext4test.Debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
-	ext4test.Debugfs(t, img.Path, "ls -l /bin/", "busybox")
+	t.Run("ext4", func(t *testing.T) {
+		ext4test.Check(t, img.Path)
+		ext4test.Debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
+		ext4test.Debugfs(t, img.Path, "ls -l /bin/", "busybox")
+	})
 }
 
 func TestDockerBuildsBuiltinImage(t *testing.T) {
@@ -74,10 +76,12 @@ func TestDockerBuildsBuiltinRootDisk(t *testing.T) {
 		t.Errorf("statuses = %s", s)
 	}
 	t.Logf("root disk %s, %d bytes", img.Path, img.Size)
-	ext4test.Check(t, img.Path)
-	ext4test.Debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
-	ext4test.Debugfs(t, img.Path, "stat /.dockerenv", "File not found")
-	ext4test.Debugfs(t, img.Path, "cat /etc/runplane/environ", "RUNNER_TOOL_CACHE=/opt/hostedtoolcache\x00")
+	t.Run("ext4", func(t *testing.T) {
+		ext4test.Check(t, img.Path)
+		ext4test.Debugfs(t, img.Path, "ls -l /sbin/", "runplane-init")
+		ext4test.Debugfs(t, img.Path, "stat /.dockerenv", "File not found")
+		ext4test.Debugfs(t, img.Path, "cat /etc/runplane/environ", "RUNNER_TOOL_CACHE=/opt/hostedtoolcache\x00")
+	})
 }
 
 func vmManager(t *testing.T, docker *client.Client) *Manager {

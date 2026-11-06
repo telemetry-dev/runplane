@@ -73,17 +73,19 @@ func TestEnsureRootDisk(t *testing.T) {
 	}
 	assertNoTemp(t, dir)
 
-	ext4test.Check(t, got.Path)
-	ext4test.Debugfs(t, got.Path, "ls -l /sbin/", "runplane-init")
-	ext4test.Debugfs(t, got.Path, "cat /sbin/runplane-init", string(init))
-	ext4test.Debugfs(t, got.Path, "stat /usr/sbin/runplane-init", "Mode:  0755")
-	ext4test.Debugfs(t, got.Path, "stat /sbin", `Fast link dest: "usr/sbin"`)
-	ext4test.Debugfs(t, got.Path, "cat /etc/kept", "new")
-	ext4test.Debugfs(t, got.Path, "stat /etc/gone", "File not found")
-	ext4test.Debugfs(t, got.Path, "stat /tmp", "Mode:  01777")
-	ext4test.Debugfs(t, got.Path, "stat /mnt/scratch", "Type: directory")
-	ext4test.Debugfs(t, got.Path, "stat /proc", "Mode:  0711")
-	ext4test.Debugfs(t, got.Path, "cat /etc/runplane/environ", "PATH=/usr/sbin:/usr/bin\x00GOFLAGS=-tags=vm\x00")
+	t.Run("ext4", func(t *testing.T) {
+		ext4test.Check(t, got.Path)
+		ext4test.Debugfs(t, got.Path, "ls -l /sbin/", "runplane-init")
+		ext4test.Debugfs(t, got.Path, "cat /sbin/runplane-init", string(init))
+		ext4test.Debugfs(t, got.Path, "stat /usr/sbin/runplane-init", "Mode:  0755")
+		ext4test.Debugfs(t, got.Path, "stat /sbin", `Fast link dest: "usr/sbin"`)
+		ext4test.Debugfs(t, got.Path, "cat /etc/kept", "new")
+		ext4test.Debugfs(t, got.Path, "stat /etc/gone", "File not found")
+		ext4test.Debugfs(t, got.Path, "stat /tmp", "Mode:  01777")
+		ext4test.Debugfs(t, got.Path, "stat /mnt/scratch", "Type: directory")
+		ext4test.Debugfs(t, got.Path, "stat /proc", "Mode:  0711")
+		ext4test.Debugfs(t, got.Path, "cat /etc/runplane/environ", "PATH=/usr/sbin:/usr/bin\x00GOFLAGS=-tags=vm\x00")
+	})
 
 	steps = nil
 	again, err := m.Ensure(ctx, ref, func(p Progress) { steps = append(steps, p) })

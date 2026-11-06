@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -117,8 +117,8 @@ func TestInstallKeys(t *testing.T) {
 				if _, ok := errors.AsType[*HostKeyError](err); !ok || !strings.Contains(err.Error(), known.Path) {
 					t.Errorf("err = %v, want a HostKeyError that names %s", err, known.Path)
 				}
-			} else if got, err := known.key(srv.Addr); err != nil || fingerprint(got) != fingerprint(tt.wantKey) {
-				t.Errorf("known host key %s (%v), want %s", fingerprint(got), err, fingerprint(tt.wantKey))
+			} else if err := trusts(known.Path, srv.Addr, tt.wantKey); err != nil {
+				t.Errorf("known_hosts does not trust %s for %s: %v", fingerprint(tt.wantKey), srv.Addr, err)
 			}
 			if got := len(srv.Commands()) > ran; got != tt.wantRun {
 				t.Errorf("command ran: %v, want %v", got, tt.wantRun)
@@ -134,17 +134,36 @@ func fingerprint(key ssh.PublicKey) string {
 	return ssh.FingerprintSHA256(key)
 }
 
+// trusts reads the known_hosts file as OpenSSH does, and reports if it
+// trusts key for addr.
+func trusts(path, addr string, key ssh.PublicKey) error {
+	check, err := knownhosts.New(path)
+	if err != nil {
+		return err
+	}
+	remote, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return check(addr, remote, key)
+}
+
+// The end of ctx stops a command that runs.
 func TestInstallCancel(t *testing.T) {
 	key := testKey(t)
-	block := make(chan struct{})
+	running, block := make(chan struct{}), make(chan struct{})
 	t.Cleanup(func() { close(block) })
 	srv := sshtest.NewServer(t, key.PublicKey(), func(string, []byte, io.Writer, io.Writer) uint32 {
+		close(running)
 		<-block
 		return 0
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
-	if err := Install(ctx, Target{srv.Addr, "deploy"}, key, newKnownHosts(t), "sleep 600", nil, func(string) {}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want context.DeadlineExceeded", err)
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		<-running
+		cancel()
+	}()
+	if err := Install(ctx, Target{srv.Addr, "deploy"}, key, newKnownHosts(t), "sleep 600", nil, func(string) {}); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }

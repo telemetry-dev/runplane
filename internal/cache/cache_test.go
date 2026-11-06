@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
+	"io/fs"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -69,8 +69,9 @@ func TestBlockUploadAndRestore(t *testing.T) {
 	if got := f.counts(t, "acme/app"); got != (store.CacheCounts{Hits: 2, Misses: 1, BytesRead: 36, BytesWritten: 18}) {
 		t.Errorf("stats = %+v", got)
 	}
-	if staged, _ := os.ReadDir(filepath.Join(f.dir, "uploads")); len(staged) != 0 {
-		t.Errorf("staged blocks left after commit: %v", staged)
+	// Only the blob of 18 bytes is left, not the staged blocks.
+	if n := dirBytes(t, f.dir); n != 18 {
+		t.Errorf("%d bytes in the cache folder after the commit, want 18", n)
 	}
 }
 
@@ -361,8 +362,8 @@ func TestEviction(t *testing.T) {
 			t.Errorf("entry %q kept = %v, want %v", key, matched != "", want)
 		}
 	}
-	if blobs, _ := os.ReadDir(filepath.Join(f.dir, "blobs")); len(blobs) != 2 {
-		t.Errorf("%d blobs on disk, want 2", len(blobs))
+	if n := dirBytes(t, f.dir); n != 200 {
+		t.Errorf("%d bytes in the cache folder, want the 200 bytes of a and c", n)
 	}
 }
 
@@ -394,40 +395,54 @@ func TestUploadOverLimit(t *testing.T) {
 	})
 }
 
+// Run removes the uploads that stay unfinished for an hour, and the files
+// of no entry.
 func TestCleanup(t *testing.T) {
 	f := newFixture(t, 0)
 	c := client{t: t, url: f.url}
-	ctx := context.Background()
+	ctx := t.Context()
+	abandoned := func() error {
+		_, err := f.st.GetCacheEntryByKey(ctx, "acme/app", "refs/heads/main", "abandoned", version)
+		return err
+	}
 
 	c.save("kept", version, []byte("x"))
 	u := c.reserve("abandoned", version)
 	c.put(u+"&comp=block&blockid="+url.QueryEscape(blockID(0)), []byte("partial"), nil)
-	orphan := filepath.Join(f.dir, "blobs", "01jorphan0000000000000000")
-	os.WriteFile(orphan, []byte("x"), 0o600)
-	// A block that arrived while its upload was removed.
-	os.MkdirAll(filepath.Join(f.dir, "uploads", "01jorphan0000000000000001"), 0o700)
-	os.WriteFile(filepath.Join(f.dir, "uploads", "01jorphan0000000000000001", "block"), []byte("x"), 0o600)
+	// The files of removed entries, as a crash during a removal leaves them,
+	// and a block that arrived while its upload was removed.
+	orphanBlob := filepath.Join(f.dir, "blobs", "01jorphan0000000000000000")
+	orphanUpload := filepath.Join(f.dir, "uploads", "01jorphan0000000000000001")
+	if err := errors.Join(
+		os.WriteFile(orphanBlob, []byte("x"), 0o600),
+		os.MkdirAll(orphanUpload, 0o700),
+		os.WriteFile(filepath.Join(orphanUpload, "block"), []byte("x"), 0o600),
+	); err != nil {
+		t.Fatal(err)
+	}
+	gone := func(path string) bool {
+		_, err := os.Stat(path)
+		return errors.Is(err, os.ErrNotExist)
+	}
 
+	// The cleanup removes the orphan uploads after the stale uploads.
 	f.clock.advance(staleUpload - time.Minute)
-	f.srv.cleanup(ctx)
-	if _, err := f.st.GetCacheEntryByKey(ctx, "acme/app", "refs/heads/main", "abandoned", version); err != nil {
+	stop := f.start(t)
+	waitFor(t, "the removal of the orphan files", func() bool { return gone(orphanBlob) && gone(orphanUpload) })
+	stop()
+	if err := abandoned(); err != nil {
 		t.Fatalf("upload removed before one hour: %v", err)
 	}
-	if staged, _ := os.ReadDir(filepath.Join(f.dir, "uploads")); len(staged) != 1 {
-		t.Errorf("staging folders = %v, want only the active upload", staged)
+	if n := dirBytes(t, f.dir); n != int64(len("x")+len("partial")) {
+		t.Errorf("%d bytes in the cache folder, want the blob of kept and the block of the active upload", n)
 	}
 
 	f.clock.advance(2 * time.Minute)
-	f.srv.removeOrphans(ctx, "blobs")
-	f.srv.cleanup(ctx)
-	if _, err := f.st.GetCacheEntryByKey(ctx, "acme/app", "refs/heads/main", "abandoned", version); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("abandoned upload still in the index: %v", err)
-	}
-	if staged, _ := os.ReadDir(filepath.Join(f.dir, "uploads")); len(staged) != 0 {
-		t.Errorf("staged blocks left: %v", staged)
-	}
-	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
-		t.Errorf("orphan blob still on disk: %v", err)
+	stop = f.start(t)
+	waitFor(t, "the removal of the abandoned upload", func() bool { return errors.Is(abandoned(), store.ErrNotFound) })
+	stop()
+	if n := dirBytes(t, f.dir); n != int64(len("x")) {
+		t.Errorf("%d bytes in the cache folder, want only the blob of kept", n)
 	}
 	if matched, _ := c.lookup(version, "kept"); matched != "kept" {
 		t.Error("cleanup removed a finalized entry")
@@ -440,8 +455,7 @@ func TestDamagedBlobIsAMiss(t *testing.T) {
 	c.save("deps-old", version, []byte("old"))
 	f.clock.advance(time.Minute)
 	c.save("deps-new", version, []byte("new"))
-	e, _ := f.st.GetCacheEntryByKey(context.Background(), "acme/app", "refs/heads/main", "deps-new", version)
-	os.Truncate(filepath.Join(f.dir, "blobs", e.ID), 1)
+	damage(t, f.dir, "new")
 
 	// A download URL is a promise: BuildKit fails the build on a 404.
 	if matched, data := c.restore(version, "deps-"); matched != "deps-old" || string(data) != "old" {
@@ -463,8 +477,28 @@ func TestDelete(t *testing.T) {
 	if matched, _ := c.lookup(version, "a"); matched != "" {
 		t.Error("entry restorable after delete")
 	}
-	if blobs, _ := os.ReadDir(filepath.Join(f.dir, "blobs")); len(blobs) != 0 {
-		t.Errorf("blobs left after delete: %v", blobs)
+	if n := dirBytes(t, f.dir); n != 0 {
+		t.Errorf("%d bytes in the cache folder after delete, want 0", n)
+	}
+}
+
+// damage cuts each file under dir whose content is data to one byte, as a
+// disk error can.
+func damage(t *testing.T, dir, data string) {
+	t.Helper()
+	found := false
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if b, err := os.ReadFile(path); err != nil || string(b) != data {
+			return err
+		}
+		found = true
+		return os.Truncate(path, 1)
+	})
+	if err != nil || !found {
+		t.Fatalf("damage the file with %q: found %v, %v", data, found, err)
 	}
 }
 
@@ -525,12 +559,16 @@ func TestResultsProxy(t *testing.T) {
 	}
 }
 
-// lateJob is a sandbox whose job runplane learns after linked is set, as
-// with GitHub, which sends the job message after the job starts.
-type lateJob struct{ linked atomic.Bool }
+// lateJob is a sandbox whose job runplane learns after the first lookup of
+// the sandbox, as with GitHub, which sends the job message after the job
+// starts. A job that never comes stays unknown.
+type lateJob struct {
+	never   bool
+	lookups atomic.Int32
+}
 
 func (l *lateJob) SandboxAt(context.Context, netip.Addr) (Identity, error) {
-	if !l.linked.Load() {
+	if l.lookups.Add(1) == 1 || l.never {
 		return Identity{SandboxID: "sb-1"}, nil
 	}
 	return acme("sb-1", "refs/heads/main", ""), nil
@@ -544,60 +582,53 @@ func (l *lateJob) SandboxOn(ctx context.Context, _, _ string) (Identity, error) 
 // sandbox. The request must wait for the job, not fail with 403.
 func TestCacheRequestWaitsForTheJob(t *testing.T) {
 	tests := []struct {
-		name    string
-		linkIn  time.Duration // 0 = never
-		wantErr error
+		name   string
+		never  bool
+		status int
 	}{
-		{"job known after 200 ms", 200 * time.Millisecond, nil},
-		{"job never known", 0, ErrNoSandbox},
+		{"job known after the first lookup", false, http.StatusOK},
+		{"job never known", true, http.StatusForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &lateJob{}
-			s := &Server{cfg: Config{Resolver: r}, jobWait: time.Second}
-			if tt.linkIn > 0 {
-				time.AfterFunc(tt.linkIn, func() { r.linked.Store(true) })
-			}
-			ident, err := s.identify(httptest.NewRequest("POST", "/twirp/x", nil), source{})
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("err %v, want %v", err, tt.wantErr)
-			}
-			if tt.wantErr == nil && ident.Repository != "acme/app" {
-				t.Errorf("identity %+v, want the repository of the job", ident)
+			f := newFixture(t, 0, func(c *Config) { c.Resolver = &lateJob{never: tt.never} })
+			status, out := client{t: t, url: f.url}.call("CreateCacheEntry", map[string]any{"key": "k", "version": version})
+			if status != tt.status {
+				t.Errorf("CreateCacheEntry: %d %v, want %d", status, out, tt.status)
 			}
 		})
 	}
 }
 
-func TestStatsAddPerHour(t *testing.T) {
-	st := openStore(t)
-	t0 := time.Date(2026, 11, 4, 10, 15, 0, 0, time.UTC)
-	now := t0
-	s := newStats(st, slog.New(slog.DiscardHandler), func() time.Time { return now })
-	s.add("acme/api", store.CacheCounts{Hits: 1, BytesRead: 100})
-	now = t0.Add(30 * time.Minute)
-	s.add("acme/api", store.CacheCounts{Misses: 1})
-	s.add("acme/web", store.CacheCounts{BytesWritten: 7})
-	now = t0.Add(time.Hour)
-	s.add("acme/api", store.CacheCounts{Hits: 2})
-
-	// run writes the counts when it ends.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	s.run(ctx)
-	// A later flush adds to the rows that exist.
-	s.add("acme/api", store.CacheCounts{Hits: 1})
-	s.flush(context.Background())
+// Each request counts in the hour of its time, and a later write of the
+// counts adds to the rows of the hour.
+func TestStatsPerHour(t *testing.T) {
+	f := newFixture(t, 0)
+	t0 := f.clock.now()
+	c, other := client{t: t, url: f.url}, f.via(t, "sb-other")
+	c.save("k", version, []byte("data"))
+	f.clock.advance(30 * time.Minute)
+	c.restore(version, "k")
+	c.lookup(version, "missing")
+	other.save("o", version, []byte("12345"))
+	f.clock.advance(30 * time.Minute)
+	c.restore(version, "k")
+	f.start(t)()
+	c.restore(version, "k")
+	f.start(t)()
 
 	tests := []struct {
 		since time.Time
 		want  map[string]store.CacheCounts
 	}{
-		{t0, map[string]store.CacheCounts{"acme/api": {Hits: 4, Misses: 1, BytesRead: 100}, "acme/web": {BytesWritten: 7}}},
-		{t0.Add(time.Hour), map[string]store.CacheCounts{"acme/api": {Hits: 3}}},
+		{t0, map[string]store.CacheCounts{
+			"acme/app":  {Hits: 3, Misses: 1, BytesRead: 12, BytesWritten: 4},
+			"other/lib": {BytesWritten: 5},
+		}},
+		{t0.Add(time.Hour), map[string]store.CacheCounts{"acme/app": {Hits: 2, BytesRead: 8}}},
 	}
 	for _, tt := range tests {
-		got, err := st.CacheStatsByRepository(context.Background(), tt.since)
+		got, err := f.st.CacheStatsByRepository(t.Context(), tt.since)
 		if err != nil || !maps.Equal(got, tt.want) {
 			t.Errorf("counts since %s = %v, %v; want %v", tt.since, got, err, tt.want)
 		}

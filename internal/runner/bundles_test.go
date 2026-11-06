@@ -93,9 +93,11 @@ func TestEnsureBundle(t *testing.T) {
 	if target, err := os.Readlink(filepath.Join(bundle.Dir, "externals", "node", "bin", "npm")); err != nil || target != "../lib/npm-cli.js" {
 		t.Errorf("npm link = %q, %v", target, err)
 	}
-	ext4test.Check(t, bundle.Ext4Path)
-	ext4test.Debugfs(t, bundle.Ext4Path, "cat /bin/Runner.Worker.dll", string(wantDLL))
-	ext4test.Debugfs(t, bundle.Ext4Path, "stat /externals/node/bin/npm", `Fast link dest: "../lib/npm-cli.js"`)
+	t.Run("ext4", func(t *testing.T) {
+		ext4test.Check(t, bundle.Ext4Path)
+		ext4test.Debugfs(t, bundle.Ext4Path, "cat /bin/Runner.Worker.dll", string(wantDLL))
+		ext4test.Debugfs(t, bundle.Ext4Path, "stat /externals/node/bin/npm", `Fast link dest: "../lib/npm-cli.js"`)
+	})
 
 	before := requests.Load()
 	again, err := b.Ensure(context.Background(), "2.338.2", "arm64")

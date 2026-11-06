@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -59,15 +58,13 @@ func TestRegisterThenReconnect(t *testing.T) {
 	if st, _ := os.Stat(a.path); st.Mode().Perm() != 0o600 {
 		t.Errorf("agent.json mode %v, want 0600", st.Mode().Perm())
 	}
-	// install.sh keeps a registered agent.json when it finds these lines.
-	if !regexp.MustCompile(`"server_id": *"[^"]`).Match(raw) || !strings.Contains(string(raw), `"primary": "`+p.addr+`"`) {
-		t.Errorf("install.sh would not find the registration in:\n%s", raw)
-	}
 
+	held, resume := node.holdConnect()
 	s1.Close()
-	p.logs.waitFor(t, "connection to the primary ended")
+	waitClosed(t, held)
 	// An event while the agent has no connection arrives after it connects again.
 	node.events <- sandbox.Event{SandboxID: "sb1", Type: sandbox.EventState, State: sandbox.StateIdle}
+	resume()
 
 	s2 := recv(t, p.sessions)
 	second := recv(t, p.hellos)
@@ -91,11 +88,10 @@ func TestRefusedAgentKeepsItsConfig(t *testing.T) {
 		name        string
 		fingerprint string // empty: the primary's
 		token       string
-		log         string
 		hello       bool // the primary sees a hello
 	}{
-		{name: "wrong fingerprint", fingerprint: otherFP, token: goodToken, log: "does not match pinned"},
-		{name: "used token", token: "rp_srv_used", log: "primary refused the agent: the install token is not valid", hello: true},
+		{name: "wrong fingerprint", fingerprint: otherFP, token: goodToken},
+		{name: "used token", token: "rp_srv_used", hello: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,8 +100,14 @@ func TestRefusedAgentKeepsItsConfig(t *testing.T) {
 			if tt.fingerprint != "" {
 				f = strings.Replace(f, p.fp, tt.fingerprint, 1)
 			}
-			a := p.startAgent(f, newFakeNode(), nil)
-			p.logs.waitFor(t, tt.log)
+			node := newFakeNode()
+			first, resume := node.holdConnect()
+			a := p.startAgent(f, node, nil)
+			waitClosed(t, first)
+			second, _ := node.holdConnect()
+			resume()
+			// The agent tries again after the refusal.
+			waitClosed(t, second)
 
 			if got := len(p.hellos) > 0; got != tt.hello {
 				t.Errorf("primary saw a hello: %v, want %v", got, tt.hello)

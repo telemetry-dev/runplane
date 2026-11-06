@@ -17,7 +17,7 @@ import (
 // It needs root and loop devices: the CI step "go test as root" runs it.
 func TestRootDiskMounts(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("needs root")
+		t.Skip("needs root to mount the root disk on a loop device")
 	}
 	ref := pushImage(t, testImage(t, runtime.GOARCH))
 	init := []byte("#!runplane-init")

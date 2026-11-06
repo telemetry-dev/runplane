@@ -205,17 +205,6 @@ func (l *logBuffer) logger(side string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})).With("side", side)
 }
 
-func (l *logBuffer) waitFor(t *testing.T, text string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(l.String(), text) {
-		if time.Now().After(deadline) {
-			t.Fatalf("no log line with %q", text)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 var (
 	testInfo = host.Info{
 		Hostname: "agent-1", OS: "Ubuntu 24.04.3 LTS", Kernel: "6.8.0-45-generic", Arch: "arm64",
@@ -256,6 +245,22 @@ type fakeNode struct {
 	mu        sync.Mutex
 	sandboxes map[string]sandbox.Sandbox
 	calls     [][]any
+	hold      *hold // of the next Facts call
+}
+
+// hold makes a Facts call wait: held closes when the call waits, and the
+// call goes on when resume closes.
+type hold struct{ held, resume chan struct{} }
+
+// holdConnect makes the next connection of the agent wait, because the
+// agent reads the facts before each connection. The agent waits when held
+// closes, until the test calls resume.
+func (n *fakeNode) holdConnect() (held <-chan struct{}, resume func()) {
+	h := &hold{held: make(chan struct{}), resume: make(chan struct{})}
+	n.mu.Lock()
+	n.hold = h
+	n.mu.Unlock()
+	return h.held, func() { close(h.resume) }
 }
 
 // logStream is one Logs call: the test writes the log to w, and done
@@ -297,9 +302,25 @@ func (n *fakeNode) put(sb sandbox.Sandbox) {
 	n.sandboxes[sb.ID] = sb
 }
 
-func (n *fakeNode) Local() bool                              { return true }
-func (n *fakeNode) Driver() Driver                           { return n }
-func (n *fakeNode) Facts(context.Context) (host.Info, error) { return testInfo, nil }
+func (n *fakeNode) Local() bool    { return true }
+func (n *fakeNode) Driver() Driver { return n }
+
+func (n *fakeNode) Facts(ctx context.Context) (host.Info, error) {
+	n.mu.Lock()
+	h := n.hold
+	n.hold = nil
+	n.mu.Unlock()
+	if h != nil {
+		close(h.held)
+		select {
+		case <-h.resume:
+		case <-ctx.Done():
+			return host.Info{}, ctx.Err()
+		}
+	}
+	return testInfo, nil
+}
+
 func (n *fakeNode) Doctor(context.Context) (doctor.Report, error) {
 	return testReport, n.record("Doctor")
 }
