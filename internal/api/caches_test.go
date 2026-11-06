@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/auth"
@@ -103,7 +104,7 @@ func TestRunnerVersionsCurrentIsTheNewestReady(t *testing.T) {
 		{Version: "2.99.0", Arch: "x64", Status: store.BundleReady},
 		{Version: "2.331.0", Arch: "arm64", Status: store.BundlePending},
 	} {
-		must(t, e.st.SetRunnerBundleBuild(ctx, b))
+		must(t, e.st.SetRunnerBundleBuild(ctx, b, time.Now()))
 	}
 	var got RunnerVersions
 	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/runner-versions", nil, &got).want(t, 200)

@@ -156,7 +156,7 @@ func (f *Fleet) wanted(n *node, pools []store.Pool) []string {
 		list = append(list, f.defaultID)
 	}
 	for _, p := range pools {
-		if !p.Enabled || p.Arch != n.arch || len(p.ServerIDs) > 0 && !slices.Contains(p.ServerIDs, n.id) {
+		if !p.Enabled || !p.CanUse(n.id, n.arch) {
 			continue
 		}
 		if id := p.ImageID; id != "" && !slices.Contains(list, id) {

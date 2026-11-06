@@ -14,24 +14,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
 )
 
 func TestManifest(t *testing.T) {
 	tests := []struct {
-		accountType, org string
-		wantAction       string
-		wantPermissions  map[string]any
+		owner           ghrest.Account
+		wantAction      string
+		wantPermissions map[string]any
 	}{
-		{"organization", "acme", "/organizations/acme/settings/apps/new",
+		{ghrest.Account{Type: ghrest.Organization, Login: "acme"}, "/organizations/acme/settings/apps/new",
 			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read"}},
-		{"user", "", "/settings/apps/new",
+		{ghrest.Account{Type: ghrest.User}, "/settings/apps/new",
 			map[string]any{"administration": "write", "actions": "write", "metadata": "read"}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.accountType, func(t *testing.T) {
+		t.Run(tt.owner.Type, func(t *testing.T) {
 			e := newEnv(t)
-			action, manifest, err := e.svc.Manifest(context.Background(), "https://ci.example.com", tt.accountType, tt.org)
+			action, manifest, err := e.svc.Manifest(context.Background(), "https://ci.example.com", tt.owner)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +96,7 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
 		})
 	})
-	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", "organization", "acme")
+	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghrest.Account{Type: ghrest.Organization, Login: "acme"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestCallbackRejectsAppOfAnotherAccount(t *testing.T) {
 			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
 		})
 	})
-	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", "organization", "Telemetry")
+	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghrest.Account{Type: ghrest.Organization, Login: "Telemetry"})
 	if err != nil {
 		t.Fatal(err)
 	}

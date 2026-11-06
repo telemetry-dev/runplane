@@ -15,7 +15,7 @@ func TestListRunnerBundlesNewestFirst(t *testing.T) {
 		{Version: "2.331.0", Arch: "x64", Status: BundleFailed},
 		{Version: "2.330.0", Arch: "arm64", Status: BundleReady},
 	} {
-		must(t, s.SetRunnerBundleBuild(ctx, b))
+		must(t, s.SetRunnerBundleBuild(ctx, b, sec(0)))
 	}
 	list, err := s.ListRunnerBundles(ctx)
 	must(t, err)

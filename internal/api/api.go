@@ -24,6 +24,7 @@ import (
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/secret"
@@ -131,7 +132,7 @@ type GitHub interface {
 	// the manifest JSON for the form field "manifest". base is the browser
 	// URL of runplane, for example "https://ci.example.com", without a
 	// trailing slash.
-	Manifest(ctx context.Context, base, accountType, organization string) (actionURL, manifest string, err error)
+	Manifest(ctx context.Context, base string, owner ghrest.Account) (actionURL, manifest string, err error)
 	// Callback converts the manifest code into the app and returns the URL
 	// for the browser, normally the app installation page on GitHub.
 	Callback(ctx context.Context, code, state string) (redirect string, err error)

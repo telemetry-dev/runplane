@@ -44,29 +44,30 @@ func (b *RunnerBundle) cols() []any {
 		atPtr(&b.ReleasedAt), &b.Warned, at(&b.CreatedAt)}
 }
 
-// SetRunnerBundleBuild records the result of a bundle build on one server:
-// sha256, patched, status, and error. A failure does not change a bundle
-// that is ready, because it can be ready on other servers. The dates stay.
-func (s *Store) SetRunnerBundleBuild(ctx context.Context, b RunnerBundle) error {
+// SetRunnerBundleBuild records the result of a bundle build on one server
+// at now: sha256, patched, status, and error. A failure does not change a
+// bundle that is ready, because it can be ready on other servers. The dates
+// stay.
+func (s *Store) SetRunnerBundleBuild(ctx context.Context, b RunnerBundle, now time.Time) error {
 	return exec(ctx, s.w, "set runner bundle build", `INSERT INTO runner_bundles
 			(version, arch, sha256, patched, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (version, arch) DO UPDATE SET sha256 = excluded.sha256, patched = excluded.patched,
 			status = excluded.status, error = excluded.error
 		WHERE excluded.status = 'ready' OR runner_bundles.status != 'ready'`,
-		b.Version, b.Arch, b.SHA256, b.Patched, b.Status, b.Error, ms(time.Now()))
+		b.Version, b.Arch, b.SHA256, b.Patched, b.Status, b.Error, ms(now))
 }
 
 // SetRunnerBundleDates writes the release time and the end date of a runner
-// version. A new row gets the pending status. A nil time keeps the stored
-// value, and the build columns never change, so this cannot undo the work of
-// the bundle builder.
-func (s *Store) SetRunnerBundleDates(ctx context.Context, version, arch string, releasedAt, endDate *time.Time) error {
+// version at now. A new row gets the pending status. A nil time keeps the
+// stored value, and the build columns never change, so this cannot undo the
+// work of the bundle builder.
+func (s *Store) SetRunnerBundleDates(ctx context.Context, version, arch string, releasedAt, endDate *time.Time, now time.Time) error {
 	return exec(ctx, s.w, "set runner bundle dates", `INSERT INTO runner_bundles
 			(version, arch, status, released_at, end_date, created_at) VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (version, arch) DO UPDATE SET
 			released_at = coalesce(excluded.released_at, released_at),
 			end_date = coalesce(excluded.end_date, end_date)`,
-		version, arch, BundlePending, msPtr(releasedAt), msPtr(endDate), ms(time.Now()))
+		version, arch, BundlePending, msPtr(releasedAt), msPtr(endDate), ms(now))
 }
 
 // SetRunnerBundleWarned records that the end date warning of a version went

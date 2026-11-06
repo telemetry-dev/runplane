@@ -89,10 +89,10 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 	// 2.330.0 is the newest release, but it does not download on this
 	// server. 2.329.0 is ready on other servers.
 	now := time.Now()
-	if err := h.st.SetRunnerBundleBuild(ctx, store.RunnerBundle{Version: "2.329.0", Arch: "arm64", Status: store.BundleReady}); err != nil {
+	if err := h.st.SetRunnerBundleBuild(ctx, store.RunnerBundle{Version: "2.329.0", Arch: "arm64", Status: store.BundleReady}, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.st.SetRunnerBundleDates(ctx, "2.330.0", "arm64", &now, nil); err != nil {
+	if err := h.st.SetRunnerBundleDates(ctx, "2.330.0", "arm64", &now, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	h.run()
@@ -285,7 +285,7 @@ func TestNewRunnerPrunesOldBundlesOnAgents(t *testing.T) {
 	}
 
 	now := time.Now()
-	if err := h.st.SetRunnerBundleDates(ctx, "2.331.0", "arm64", &now, nil); err != nil {
+	if err := h.st.SetRunnerBundleDates(ctx, "2.331.0", "arm64", &now, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	h.f.provision(ctx)

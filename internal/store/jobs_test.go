@@ -115,20 +115,68 @@ func TestGitHubResultReplacesAGuess(t *testing.T) {
 	}
 }
 
-// UpsertJob gives the state of the job before the message, so that a
-// caller knows if the message is new.
-func TestUpsertJobGivesThePreviousState(t *testing.T) {
+// A completed job waits for its finish step until the scheduler ends the
+// step. ListUnfinishedJobs finds the job after a restart, also when the job
+// had no live log.
+func TestFinishPending(t *testing.T) {
 	s := openTest(t)
-	for _, step := range []struct{ state, wantPrev string }{
-		{JobQueued, ""},
-		{JobRunning, JobQueued},
-		{JobCompleted, JobRunning},
-		{JobCompleted, JobCompleted},
-	} {
-		_, prev, err := s.UpsertJob(t.Context(), JobMessage{RunnerRequestID: 1, State: step.state, Result: ResultSucceeded}, sec(0))
+	ctx := t.Context()
+	unfinished := func() []int64 {
+		t.Helper()
+		list, err := s.ListUnfinishedJobs(ctx, 10)
 		must(t, err)
-		if prev != step.wantPrev {
-			t.Errorf("message %s: previous state %q, want %q", step.state, prev, step.wantPrev)
+		var ids []int64
+		for _, j := range list {
+			ids = append(ids, j.RunnerRequestID)
+		}
+		return ids
+	}
+	streamed := addJob(t, s, JobMessage{RunnerRequestID: 1, State: JobRunning, QueuedAt: sec(0), StartedAt: sec(1)})
+	must(t, s.SetJobLogState(ctx, streamed.ID, LogLive))
+	addJob(t, s, JobMessage{RunnerRequestID: 2, State: JobRunning, QueuedAt: sec(0), StartedAt: sec(1)})
+	addJob(t, s, JobMessage{RunnerRequestID: 3, State: JobRunning, QueuedAt: sec(0), StartedAt: sec(1)})
+	if got := unfinished(); got != nil {
+		t.Fatalf("unfinished jobs before a completion: %v", got)
+	}
+
+	j := addJob(t, s, JobMessage{RunnerRequestID: 1, State: JobCompleted, Result: ResultSucceeded, FinishedAt: sec(60)})
+	if !j.FinishPending || j.LogState != LogNone {
+		t.Errorf("completed job: finish pending %v, log %q; want true and none, because the sandbox log ended", j.FinishPending, j.LogState)
+	}
+	addJob(t, s, JobMessage{RunnerRequestID: 2, State: JobCompleted, Result: ResultFailed, FinishedAt: sec(70)})
+	if got := unfinished(); !slices.Equal(got, []int64{2, 1}) {
+		t.Fatalf("unfinished jobs = %v, want [2 1]", got)
+	}
+
+	must(t, s.EndJobFinish(ctx, j.ID))
+	addJob(t, s, JobMessage{RunnerRequestID: 1, State: JobCompleted, Result: ResultSucceeded, FinishedAt: sec(60)})
+	if got := unfinished(); !slices.Equal(got, []int64{2}) {
+		t.Errorf("unfinished jobs after the end of a step and a repeated message = %v, want [2]", got)
+	}
+
+	// The result from GitHub after a guess needs the finish step again.
+	guess := addJob(t, s, JobMessage{RunnerRequestID: 3, State: JobCompleted, Result: ResultCancelled, Guessed: true, FinishedAt: sec(80)})
+	must(t, s.EndJobFinish(ctx, guess.ID))
+	if j := addJob(t, s, JobMessage{RunnerRequestID: 3, State: JobCompleted, Result: ResultFailed, FinishedAt: sec(90)}); !j.FinishPending {
+		t.Error("the result from GitHub after a guess: no finish step")
+	}
+}
+
+// The status shows a job that GitHub assigned as queued until a runner
+// starts it.
+func TestJobStatus(t *testing.T) {
+	for _, tt := range []struct {
+		state, result, want string
+	}{
+		{JobQueued, "", StatusQueued},
+		{JobAssigned, "", StatusQueued},
+		{JobRunning, "", StatusRunning},
+		{JobCompleted, ResultSucceeded, ResultSucceeded},
+		{JobCompleted, ResultSkipped, ResultSkipped},
+		{JobCompleted, "", ResultFailed},
+	} {
+		if got := (Job{State: tt.state, Result: tt.result}).Status(); got != tt.want {
+			t.Errorf("job %s with result %q: status %q, want %q", tt.state, tt.result, got, tt.want)
 		}
 	}
 }
@@ -216,6 +264,10 @@ func TestListAndCountJobsFilters(t *testing.T) {
 		var got []int64
 		for _, j := range jobs {
 			got = append(got, j.RunnerRequestID)
+			// The page shows the status that the filter selects.
+			if tt.f.Status != "" && j.Status() != tt.f.Status {
+				t.Errorf("status filter %q gave job %d with status %q", tt.f.Status, j.RunnerRequestID, j.Status())
+			}
 		}
 		n, err := s.CountJobs(ctx, tt.f)
 		must(t, err)
@@ -366,7 +418,7 @@ func TestUpsertJobConcurrentMessages(t *testing.T) {
 	errs := make(chan error, 40)
 	for i := range 40 {
 		go func() {
-			_, _, err := s.UpsertJob(ctx, JobMessage{RunnerRequestID: 5, State: states[i%4], Result: ResultSucceeded, QueuedAt: sec(0)}, sec(0))
+			_, err := s.UpsertJob(ctx, JobMessage{RunnerRequestID: 5, State: states[i%4], Result: ResultSucceeded, QueuedAt: sec(0)}, sec(0))
 			errs <- err
 		}()
 	}
@@ -407,12 +459,15 @@ func TestExpireQueuedJobs(t *testing.T) {
 	if want := []string{waiting.ID, rejected.ID}; !slices.Equal(ids, want) {
 		t.Fatalf("expired %v, want the two jobs queued before the limit %v", ids, want)
 	}
-	for id, want := range map[string]string{waiting.ID: NotRunReason, rejected.ID: fork} {
+	// Only the scheduler gives reject reasons, and a job that never ran has
+	// nothing to finish.
+	for id, want := range map[string]string{waiting.ID: "", rejected.ID: fork} {
 		j, _ := s.GetJob(ctx, id)
 		if j.State != JobCompleted || j.Result != ResultCancelled || !j.ResultGuessed || j.FinishedAt == nil ||
-			!j.FinishedAt.Equal(sec(4000)) || j.RejectReason != want {
-			t.Errorf("job %d = %s %s (guessed %v) finished %v reason %q, want completed cancelled (guessed) at 4000 with %q",
-				j.RunnerRequestID, j.State, j.Result, j.ResultGuessed, j.FinishedAt, j.RejectReason, want)
+			!j.FinishedAt.Equal(sec(4000)) || j.RejectReason != want || j.FinishPending {
+			t.Errorf("job %d = %s %s (guessed %v) finished %v reason %q finish pending %v, "+
+				"want completed cancelled (guessed) at 4000 with %q and no finish step",
+				j.RunnerRequestID, j.State, j.Result, j.ResultGuessed, j.FinishedAt, j.RejectReason, j.FinishPending, want)
 		}
 	}
 	for _, id := range []string{recent.ID, assigned.ID} {

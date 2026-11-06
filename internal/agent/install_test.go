@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
-	"github.com/runplane/runplane"
+	"github.com/runplane/runplane/internal/installtest"
 )
 
 // install.sh writes agent.json for a new agent, and on a later run it reads
@@ -23,7 +21,7 @@ func TestInstallScriptAgentFile(t *testing.T) {
 	flags := "--token rp_srv_TEST --primary 203.0.113.7:8485 --fingerprint " + fp
 	install := func(flags string) string {
 		t.Helper()
-		return installSh(t, fmt.Sprintf(`CONFIG_DIR=%[1]s DATA_DIR=%[1]s/data UNIT_DIR=%[1]s AGENT_FILE=%[2]s ENV_FILE=%[3]s
+		return installtest.Run(t, fmt.Sprintf(`CONFIG_DIR=%[1]s DATA_DIR=%[1]s/data UNIT_DIR=%[1]s AGENT_FILE=%[2]s ENV_FILE=%[3]s
 parse_flags %[4]s
 check_role
 MODE=container
@@ -58,23 +56,4 @@ printf 'primary=%%s\n' "$PRIMARY"`, dir, path, filepath.Join(t.TempDir(), "runpl
 			t.Errorf("install.sh %s changed the agent.json of a registered agent:\n%s\nwant\n%s", flags, got, registered)
 		}
 	}
-}
-
-// installSh runs install.sh with body in the place of its call of main,
-// without the RUNPLANE_* variables of the environment, and returns the
-// output.
-func installSh(t *testing.T, body string) string {
-	t.Helper()
-	script, ok := strings.CutSuffix(strings.TrimRight(string(runplane.InstallScript), "\n"), `main "$@"`)
-	if !ok {
-		t.Fatal(`install.sh does not end with main "$@"`)
-	}
-	cmd := exec.Command("sh", "-s")
-	cmd.Stdin = strings.NewReader(script + body + "\n")
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "RUNPLANE_") })
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("install.sh: %v\n%s", err, out)
-	}
-	return string(out)
 }

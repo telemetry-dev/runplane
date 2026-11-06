@@ -117,7 +117,7 @@ func (s *Service) Versions(ctx context.Context, arch string) ([]string, error) {
 // ready, because it can be ready on other servers.
 func (s *Service) Built(ctx context.Context, b store.RunnerBundle) {
 	before, _ := s.cfg.Store.GetRunnerBundle(ctx, b.Version, b.Arch)
-	if err := s.cfg.Store.SetRunnerBundleBuild(ctx, b); err != nil {
+	if err := s.cfg.Store.SetRunnerBundleBuild(ctx, b, time.Now()); err != nil {
 		s.log.Warn("record runner bundle", "version", b.Version, "arch", b.Arch, "err", err)
 		return
 	}
@@ -213,7 +213,7 @@ func earliest(a, b *time.Time) *time.Time {
 // changed.
 func (s *Service) setDates(ctx context.Context, version, arch string, releasedAt, endDate *time.Time) {
 	before, berr := s.cfg.Store.GetRunnerBundle(ctx, version, arch)
-	if err := s.cfg.Store.SetRunnerBundleDates(ctx, version, arch, releasedAt, endDate); err != nil {
+	if err := s.cfg.Store.SetRunnerBundleDates(ctx, version, arch, releasedAt, endDate, time.Now()); err != nil {
 		s.log.Warn("record runner version", "version", version, "arch", arch, "err", err)
 		return
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/runplane/runplane"
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/field"
+	"github.com/runplane/runplane/internal/installtest"
 	"github.com/runplane/runplane/internal/sshinstall/sshtest"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -39,23 +40,6 @@ import (
 const printValues = `parse_flags "$@"
 printf '%s\n' "REPO=$REPO" "VERSION=$VERSION" "PRIMARY=$PRIMARY" "FINGERPRINT=$FINGERPRINT" "TOKEN=$TOKEN" "ROLE=$ROLE"
 `
-
-// replaceMain returns install.sh with body in the place of the call of main.
-func replaceMain(script []byte, body string) ([]byte, error) {
-	src, ok := strings.CutSuffix(strings.TrimRight(string(script), "\n"), `main "$@"`)
-	if !ok {
-		return nil, errors.New(`install.sh does not end with main "$@"`)
-	}
-	return []byte(src + body), nil
-}
-
-func sh(stdin []byte, env []string, args ...string) (string, error) {
-	cmd := exec.Command("sh", args...)
-	cmd.Stdin = bytes.NewReader(stdin)
-	cmd.Env = append(os.Environ(), env...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
 
 func values(out string) (map[string]string, error) {
 	m := map[string]string{}
@@ -112,7 +96,7 @@ func TestInstallValues(t *testing.T) {
 			if !strings.HasPrefix(tt.url, "https://github.com/") {
 				served = h.f.Script(httptest.NewRequest("GET", tt.url, nil).Host)
 			}
-			script, err := replaceMain(served, printValues)
+			script, err := installtest.ReplaceMain(served, printValues)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +104,7 @@ func TestInstallValues(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "install.sh"), script, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			out, err := sh(nil, []string{"DIR=" + dir}, "-c", `curl() { printf '%s\n' "$*" >"$DIR/curl-args"; cat "$DIR/install.sh"; }
+			out, err := installtest.Sh(nil, []string{"DIR=" + dir}, "-c", `curl() { printf '%s\n' "$*" >"$DIR/curl-args"; cat "$DIR/install.sh"; }
 sudo() { "$@"; }
 `+command)
 			if err != nil {
@@ -145,7 +129,7 @@ sudo() { "$@"; }
 // the token that the agent used. The agent.json of the registered agent must
 // stay, also when the primary has an IPv6 address.
 func TestInstallKeepsRegisteredAgent(t *testing.T) {
-	script, err := replaceMain(runplane.InstallScript, `CONFIG_DIR=$1 DATA_DIR=$1/data ENV_FILE=$1/runplane.env AGENT_FILE=$1/agent.json
+	script, err := installtest.ReplaceMain(runplane.InstallScript, `CONFIG_DIR=$1 DATA_DIR=$1/data ENV_FILE=$1/runplane.env AGENT_FILE=$1/agent.json
 DRY_RUN=0 ROLE=agent MODE=container TOKEN=rp_srv_TEST PRIMARY=$2 FINGERPRINT=sha256:aa
 write_config
 `)
@@ -160,7 +144,7 @@ write_config
 		if err := os.WriteFile(path, []byte(registered), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if out, err := sh(script, nil, "-s", "--", dir, primary); err != nil {
+		if out, err := installtest.Sh(script, nil, "-s", "--", dir, primary); err != nil {
 			t.Fatalf("install.sh: %v\n%s", err, out)
 		}
 		if raw, _ := os.ReadFile(path); string(raw) != registered {
@@ -191,7 +175,7 @@ func TestInstallScriptSignature(t *testing.T) {
 	h.run()
 	// curl takes the files from $RELEASES: install.sh calls it with
 	// "-o <file> <url>" at the end.
-	script, err := replaceMain(h.f.Script("ci.example.com"), `
+	script, err := installtest.ReplaceMain(h.f.Script("ci.example.com"), `
 curl() {
 	while [ $# -gt 2 ]; do shift; done
 	cp "$RELEASES/${2#https://github.com/}" "$1" 2>/dev/null || return 22
@@ -239,7 +223,7 @@ cat "$TMP/runplane"
 					t.Fatal(err)
 				}
 			}
-			out, err := sh(script, []string{"RELEASES=" + releases, "WORK=" + t.TempDir()}, "-s")
+			out, err := installtest.Sh(script, []string{"RELEASES=" + releases, "WORK=" + t.TempDir()}, "-s")
 			if tt.wantErr == "" {
 				if err != nil || !strings.HasSuffix(out, "\nrelease binary") {
 					t.Errorf("install.sh: %v; want the release binary:\n%s", err, out)
@@ -301,12 +285,12 @@ func TestInstallSSH(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		args, ok := strings.CutPrefix(command, "sudo -n sh -s -- ")
-		script, err := replaceMain(stdin, printValues)
+		script, err := installtest.ReplaceMain(stdin, printValues)
 		if !ok || err != nil {
 			fmt.Fprintf(out, "Error: the command %q does not run install.sh with sudo: %v\n", command, err)
 			return 1
 		}
-		res, err := sh(script, nil, append([]string{"-s", "--"}, strings.Fields(args)...)...)
+		res, err := installtest.Sh(script, nil, append([]string{"-s", "--"}, strings.Fields(args)...)...)
 		v, verr := values(res)
 		if err != nil || verr != nil {
 			fmt.Fprintf(out, "Error: %v %v\n%s", err, verr, res)

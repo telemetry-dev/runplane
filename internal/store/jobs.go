@@ -13,13 +13,29 @@ import (
 	"github.com/runplane/runplane/internal/ids"
 )
 
-// Job states, in their order. A job never goes back to an earlier state.
+// Job states, in their order. A job goes back to an earlier state only when
+// it was cancelled before it ran and GitHub offers it again (see mergeJob).
 const (
 	JobQueued    = "queued"
 	JobAssigned  = "assigned"
 	JobRunning   = "running"
 	JobCompleted = "completed"
 )
+
+// Job statuses. A job is queued until a runner starts it, also after GitHub
+// assigned it to the scale set, and then running. The status of a completed
+// job is its result.
+const (
+	StatusQueued  = "queued"
+	StatusRunning = "running"
+)
+
+// statusStates are the job states of each status of a job that did not
+// complete.
+var statusStates = map[string][]string{
+	StatusQueued:  {JobQueued, JobAssigned},
+	StatusRunning: {JobRunning},
+}
 
 // Job results.
 const (
@@ -51,13 +67,10 @@ func ResultOf(name string) string {
 // Job log states.
 const (
 	LogNone    = "none"
-	LogLive    = "live"   // the sandbox streams the log
+	LogLive    = "live"   // the job runs, and its sandbox streams the log
 	LogStored  = "stored" // the GitHub log is in the logs folder
 	LogExpired = "expired"
 )
-
-// NotRunReason is the reject reason of a job that ExpireQueuedJobs closed.
-const NotRunReason = "runplane did not run this job."
 
 type Job struct {
 	ID              string     `json:"id"`
@@ -94,11 +107,14 @@ type Job struct {
 	HTMLURL         string     `json:"html_url"`
 	Steps           []JobStep  `json:"steps"`
 	LogState        string     `json:"log_state"`
-	CPUPeak         *float64   `json:"cpu_peak"`
-	CPUAvg          *float64   `json:"cpu_avg"`
-	MemPeakMB       *int       `json:"mem_peak_mb"`
-	Debug           bool       `json:"debug"`
-	EnrichedAt      *time.Time `json:"enriched_at"`
+	// FinishPending is true from the completion of the job until the
+	// scheduler ends its finish step, which stores the GitHub log.
+	FinishPending bool       `json:"finish_pending"`
+	CPUPeak       *float64   `json:"cpu_peak"`
+	CPUAvg        *float64   `json:"cpu_avg"`
+	MemPeakMB     *int       `json:"mem_peak_mb"`
+	Debug         bool       `json:"debug"`
+	EnrichedAt    *time.Time `json:"enriched_at"`
 }
 
 // JobStep is one step from the GitHub jobs API.
@@ -186,7 +202,7 @@ type RunUsage struct {
 
 // JobFilter selects jobs for ListJobs. Zero values select all.
 type JobFilter struct {
-	Status     string // running, queued (also assigned), succeeded, failed, or cancelled
+	Status     string // a Job.Status: queued, running, succeeded, failed, or cancelled
 	Repository string
 	PoolID     string
 	ServerID   string
@@ -212,7 +228,8 @@ type JobFacets struct {
 const jobCols = `id, runner_request_id, github_job_id, scale_set_id, pool_id, sandbox_id, server_id, repository,
 	workflow_ref, workflow_file, workflow_name, job_name, run_id, run_number, run_attempt, head_branch, head_sha,
 	commit_message, event, actor, pr_number, base_ref, labels_json, state, result, result_guessed, reject_reason, queued_at,
-	assigned_at, started_at, finished_at, html_url, steps_json, log_state, cpu_peak, cpu_avg, mem_peak_mb, debug, enriched_at`
+	assigned_at, started_at, finished_at, html_url, steps_json, log_state, finish_pending, cpu_peak, cpu_avg, mem_peak_mb,
+	debug, enriched_at`
 
 func (j *Job) cols() []any {
 	return []any{&j.ID, &j.RunnerRequestID, &j.GitHubJobID, &j.ScaleSetID, &j.PoolID, &j.SandboxID, &j.ServerID,
@@ -220,24 +237,34 @@ func (j *Job) cols() []any {
 		&j.RunAttempt, &j.HeadBranch, &j.HeadSHA, &j.CommitMessage, &j.Event, &j.Actor, &j.PRNumber,
 		&j.BaseRef, jsonCol(&j.Labels), &j.State, text(&j.Result), &j.ResultGuessed, &j.RejectReason, at(&j.QueuedAt),
 		atPtr(&j.AssignedAt), atPtr(&j.StartedAt), atPtr(&j.FinishedAt), &j.HTMLURL, jsonCol(&j.Steps), &j.LogState,
-		&j.CPUPeak, &j.CPUAvg, &j.MemPeakMB, &j.Debug, atPtr(&j.EnrichedAt)}
+		&j.FinishPending, &j.CPUPeak, &j.CPUAvg, &j.MemPeakMB, &j.Debug, atPtr(&j.EnrichedAt)}
 }
 
 // Ran tells if the job started on a runner. A job that never ran has no log.
 func (j Job) Ran() bool { return j.StartedAt != nil || j.SandboxID != "" }
 
-// UpsertJob records a job message at now. It returns the job, and its state
-// before the message, or "" for a new job. It is safe to call again with
-// the same message. The state only moves forward (queued, assigned,
-// running, completed), and a completed job keeps its state, result, and
-// finish time, except in the two cases that mergeJob describes. A message
-// can still fill fields that the job does not have yet.
-func (s *Store) UpsertJob(ctx context.Context, m JobMessage, now time.Time) (Job, string, error) {
+// Status returns StatusQueued, StatusRunning, or the result of a completed
+// job.
+func (j Job) Status() string {
+	for status, states := range statusStates {
+		if slices.Contains(states, j.State) {
+			return status
+		}
+	}
+	return cmp.Or(j.Result, ResultFailed)
+}
+
+// UpsertJob records a job message at now, and returns the job. It is safe
+// to call again with the same message. The state only moves forward
+// (queued, assigned, running, completed), and a completed job keeps its
+// state, result, and finish time, except in the two cases that mergeJob
+// describes. A message can still fill fields that the job does not have
+// yet. A job that GitHub or runplane completes gets FinishPending.
+func (s *Store) UpsertJob(ctx context.Context, m JobMessage, now time.Time) (Job, error) {
 	if stateRank(m.State) < 0 {
-		return Job{}, "", fmt.Errorf("upsert job: unknown state %q", m.State)
+		return Job{}, fmt.Errorf("upsert job: unknown state %q", m.State)
 	}
 	var j Job
-	var prev string
 	err := s.tx(ctx, "upsert job", func(tx *sql.Tx) error {
 		var err error
 		j, err = scanRow[Job](tx.QueryRowContext(ctx, "SELECT "+jobCols+" FROM jobs WHERE runner_request_id = ?", m.RunnerRequestID))
@@ -246,16 +273,14 @@ func (s *Store) UpsertJob(ctx context.Context, m JobMessage, now time.Time) (Job
 			j = Job{ID: ids.New(), RunnerRequestID: m.RunnerRequestID, State: JobQueued, LogState: LogNone}
 		case err != nil:
 			return err
-		default:
-			prev = j.State
 		}
 		mergeJob(&j, m, now)
 		return writeJob(ctx, tx, j)
 	})
 	if err != nil {
-		return Job{}, "", err
+		return Job{}, err
 	}
-	return j, prev, nil
+	return j, nil
 }
 
 func writeJob(ctx context.Context, tx *sql.Tx, j Job) error {
@@ -275,12 +300,13 @@ func mergeJob(j *Job, m JobMessage, now time.Time) {
 	// opens again, and the scheduler checks it again.
 	if j.State == JobCompleted && j.Result == ResultCancelled && !j.Ran() && m.State != JobCompleted {
 		j.State, j.Result, j.ResultGuessed, j.FinishedAt, j.RejectReason = JobQueued, "", false, nil, ""
-		j.LogState = LogNone
+		j.LogState, j.FinishPending = LogNone, false
 	}
 	// GitHub reports a job as completed one time, and its result replaces a
-	// result that runplane guessed.
+	// result that runplane guessed. The finish step runs again, because the
+	// GitHub log can be ready only now.
 	if j.State == JobCompleted && j.ResultGuessed && m.State == JobCompleted && !m.Guessed && m.Result != "" {
-		j.Result, j.ResultGuessed = m.Result, false
+		j.Result, j.ResultGuessed, j.FinishPending = m.Result, false, true
 		if !m.FinishedAt.IsZero() {
 			t := m.FinishedAt.UTC()
 			j.FinishedAt = &t
@@ -317,6 +343,12 @@ func mergeJob(j *Job, m JobMessage, now time.Time) {
 	if m.State == JobCompleted {
 		j.Result, j.ResultGuessed = m.Result, m.Guessed
 		fillTime(&j.FinishedAt, orNow(m.FinishedAt, now))
+		// The sandbox log ends with the job. The finish step stores the
+		// GitHub log.
+		j.FinishPending = true
+		if j.LogState == LogLive {
+			j.LogState = LogNone
+		}
 	}
 }
 
@@ -379,6 +411,11 @@ func (s *Store) SetJobLogState(ctx context.Context, id, state string) error {
 	return exec1(ctx, s.w, "set job log state", "UPDATE jobs SET log_state = ? WHERE id = ?", state, id)
 }
 
+// EndJobFinish records that the finish step of the job ended.
+func (s *Store) EndJobFinish(ctx context.Context, id string) error {
+	return exec1(ctx, s.w, "end job finish step", "UPDATE jobs SET finish_pending = 0 WHERE id = ?", id)
+}
+
 func (s *Store) SetJobRejectReason(ctx context.Context, id, reason string) error {
 	return exec1(ctx, s.w, "set job reject reason", "UPDATE jobs SET reject_reason = ? WHERE id = ?", reason, id)
 }
@@ -435,10 +472,8 @@ func jobWhere(f JobFilter) ([]string, []any, error) {
 	}
 	switch f.Status {
 	case "":
-	case "running":
-		add("state = 'running'")
-	case "queued":
-		add("state IN ('queued', 'assigned')")
+	case StatusQueued, StatusRunning:
+		add(stateTerm(statusStates[f.Status]))
 	case ResultSucceeded, ResultFailed, ResultCancelled:
 		add("state = 'completed' AND result = ?", f.Status)
 	default:
@@ -466,6 +501,11 @@ func jobWhere(f JobFilter) ([]string, []any, error) {
 		add("queued_at < ?", ms(f.Until))
 	}
 	return conds, args, nil
+}
+
+// stateTerm returns the SQL term "state IN ('a', 'b')" for the job states.
+func stateTerm(states []string) string {
+	return "state IN ('" + strings.Join(states, "', '") + "')"
 }
 
 func (s *Store) JobFacets(ctx context.Context) (JobFacets, error) {
@@ -526,19 +566,18 @@ func (s *Store) ListStaleRunningJobs(ctx context.Context, before time.Time) ([]J
 		AND sandbox_id IN (SELECT id FROM sandboxes WHERE `+doneState+` AND stopped_at < ?)`, ms(before))
 }
 
-// ListUnfinishedJobs returns up to limit completed jobs, newest first, that
-// finished after since and still have log_state live: their finish step did
-// not end, for example because runplane stopped during it.
-func (s *Store) ListUnfinishedJobs(ctx context.Context, since time.Time, limit int) ([]Job, error) {
+// ListUnfinishedJobs returns up to limit jobs with FinishPending, newest
+// first: their finish step did not end, for example because runplane
+// stopped during it.
+func (s *Store) ListUnfinishedJobs(ctx context.Context, limit int) ([]Job, error) {
 	return queryAll(ctx, s.r, "list unfinished jobs", scanRow[Job], "SELECT "+jobCols+` FROM jobs
-		WHERE state = 'completed' AND log_state = 'live' AND finished_at > ?
-		ORDER BY finished_at DESC LIMIT ?`, ms(since), limit)
+		WHERE finish_pending ORDER BY finished_at DESC LIMIT ?`, limit)
 }
 
 // ExpireQueuedJobs completes the jobs that are queued since before:
 // runplane did not take them, so it guesses that they are cancelled at now.
-// A job without a reject reason gets NotRunReason. It returns the changed
-// jobs.
+// These jobs never ran, so they get no FinishPending. It returns the
+// changed jobs.
 func (s *Store) ExpireQueuedJobs(ctx context.Context, before, now time.Time) ([]Job, error) {
 	var list []Job
 	err := s.tx(ctx, "expire queued jobs", func(tx *sql.Tx) error {
@@ -550,7 +589,7 @@ func (s *Store) ExpireQueuedJobs(ctx context.Context, before, now time.Time) ([]
 		}
 		for i := range list {
 			mergeJob(&list[i], JobMessage{State: JobCompleted, Result: ResultCancelled, Guessed: true}, now)
-			list[i].RejectReason = cmp.Or(list[i].RejectReason, NotRunReason)
+			list[i].FinishPending = false
 			if err := writeJob(ctx, tx, list[i]); err != nil {
 				return err
 			}

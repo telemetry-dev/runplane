@@ -552,7 +552,7 @@ setup_vm() {
 	v[0-9]*.[0-9]*.[0-9]*) ;;
 	*) die "RUNPLANE_FIRECRACKER_VERSION=$fc_tag is not a Firecracker release tag such as v1.17.0" ;;
 	esac
-	have=$(firecracker --version 2>/dev/null | sed -n '1s/^Firecracker \(v[0-9.]*\).*/\1/p' || true)
+	have=$(/usr/local/bin/firecracker --version 2>/dev/null | sed -n '1s/^Firecracker \(v[0-9.]*\).*/\1/p' || true)
 	if [ "$have" = "$fc_tag" ] && [ -x /usr/local/bin/jailer ]; then
 		say "Firecracker: $fc_tag"
 	else

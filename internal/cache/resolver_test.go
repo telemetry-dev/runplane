@@ -34,7 +34,7 @@ func TestResolver(t *testing.T) {
 	}
 	var jobs []string
 	for i, repo := range []string{"acme/api", "acme/web"} {
-		j, _, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobRunning, Repository: repo}, t0)
+		j, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobRunning, Repository: repo}, t0)
 		if err != nil {
 			t.Fatal(err)
 		}

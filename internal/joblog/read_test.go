@@ -85,7 +85,7 @@ func TestJobLog(t *testing.T) {
 	dir := t.TempDir()
 	newJob := func(id int64, state, logState, sandboxID string) store.Job {
 		t.Helper()
-		j, _, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: state, Repository: "acme/api"}, time.Now())
+		j, err := st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: state, Repository: "acme/api"}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,6 +147,18 @@ func TestJobLog(t *testing.T) {
 
 	if _, _, err := l.Job(ctx, expired.ID, 0, false); !errors.Is(err, ErrExpired) {
 		t.Errorf("log of an expired job: %v, want ErrExpired", err)
+	}
+
+	// GitHub has no log for a completed job only after its finish step.
+	finishing := newJob(4, store.JobCompleted, store.LogNone, "")
+	if _, _, err := l.Job(ctx, finishing.ID, 0, false); !errors.Is(err, ErrNotYet) {
+		t.Errorf("log of a job in its finish step: %v, want ErrNotYet", err)
+	}
+	if err := st.EndJobFinish(ctx, finishing.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.Job(ctx, finishing.ID, 0, false); !errors.Is(err, ErrNoGitHubLog) {
+		t.Errorf("log of a finished job: %v, want ErrNoGitHubLog", err)
 	}
 }
 

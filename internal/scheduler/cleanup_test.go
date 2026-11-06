@@ -213,7 +213,7 @@ func TestFinishStepTakesTheGitHubResultOfALostJob(t *testing.T) {
 func (e *testEnv) runningJob(p store.Pool, set store.ScaleSet, serverID string, requestID int64, stopped time.Time) {
 	e.t.Helper()
 	b := e.insertSandbox(p, set, serverID, sandbox.StateBusy, start.Add(-time.Minute))
-	j, _, err := e.st.UpsertJob(e.ctx, store.JobMessage{
+	j, err := e.st.UpsertJob(e.ctx, store.JobMessage{
 		RunnerRequestID: requestID, State: store.JobRunning, PoolID: p.ID, ScaleSetID: set.ID,
 		Repository: "acme/api", JobName: "e2e", RunID: 7000, QueuedAt: start.Add(-2 * time.Minute), StartedAt: start.Add(-time.Minute),
 	}, start)
@@ -232,7 +232,7 @@ func TestRetentionDeletesOldJobsAndLogs(t *testing.T) {
 	e := newTestEnv(t)
 	day := 24 * time.Hour
 	job := func(requestID int64, finished time.Time) string {
-		j, _, err := e.st.UpsertJob(e.ctx, store.JobMessage{
+		j, err := e.st.UpsertJob(e.ctx, store.JobMessage{
 			RunnerRequestID: requestID, State: store.JobCompleted, Result: store.ResultSucceeded,
 			Repository: "acme/api", JobName: "build", QueuedAt: finished.Add(-time.Hour), FinishedAt: finished,
 		}, start)
@@ -285,8 +285,8 @@ func TestCleanupClosesUnclaimedJobs(t *testing.T) {
 	e.clock.add(2 * time.Minute)
 	e.s.cleanup(e.ctx)
 	j := e.job(31)
-	if j.State != store.JobCompleted || j.Result != store.ResultCancelled || j.RejectReason != store.NotRunReason {
-		t.Errorf("job %s %s %q after 61 minutes, want completed cancelled with %q", j.State, j.Result, j.RejectReason, store.NotRunReason)
+	if j.State != store.JobCompleted || j.Result != store.ResultCancelled || j.RejectReason != "" {
+		t.Errorf("job %s %s %q after 61 minutes, want completed cancelled with no reject reason", j.State, j.Result, j.RejectReason)
 	}
 	published := false
 	for len(states) > 0 {
@@ -325,37 +325,43 @@ func TestClosedRejectedJobRunsWhenAllowed(t *testing.T) {
 }
 
 // GitHub sends JobCompleted one time, so a finish step that a restart cuts
-// off must run again after the restart. Its metrics summary stays.
+// off must run again after the restart. Its metrics summary stays. A job
+// whose JobStarted runplane did not get gets its sandbox only with
+// JobCompleted, and it had no live log.
 func TestFinishStepRunsAgainAfterRestart(t *testing.T) {
-	e := newTestEnv(t)
-	e.newScheduler(0, time.Hour)
-	e.addServer("fsn1-a", capacity("x64", 16, 65536))
-	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
-	_, sc, _ := e.attach(pool)
-	e.scale(sc, msg(0))
-	b := e.sandboxes(pool.ID)[0]
-	e.scale(sc, msg(1, started(71, "acme/api", 970, "build", b)))
-	if err := e.st.AppendJobMetrics(e.ctx, e.job(71).ID, []store.JobMetric{{At: start, CPUPercent: 80, MemoryMB: 900}}); err != nil {
-		t.Fatal(err)
-	}
-	e.gh.noLog = true
-	e.scale(sc, msg(0, completed(71, "acme/api", 970, "build", b, store.ResultSucceeded)))
-	for len(e.rec.matching("download ")) == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	// runplane stops while the finish step waits for the log.
-	e.s.stopBg()
-	e.settle()
-	if j := e.job(71); j.LogState != store.LogLive || j.CPUPeak == nil || *j.CPUPeak != 80 {
-		t.Fatalf("after the stop: log %q, cpu peak %v; want live and 80", j.LogState, j.CPUPeak)
-	}
+	for _, jobStarted := range []bool{true, false} {
+		t.Run(fmt.Sprintf("JobStarted %v", jobStarted), func(t *testing.T) {
+			e := newTestEnv(t)
+			e.newScheduler(0, time.Hour)
+			serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
+			pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
+			_, sc, _ := e.attach(pool)
+			e.scale(sc, msg(0))
+			b := e.sandboxes(pool.ID)[0]
+			if jobStarted {
+				e.scale(sc, msg(1, started(71, "acme/api", 970, "build", b)))
+			}
+			e.event(serverID, b.ID, sandbox.Event{Type: sandbox.EventMetrics, Metrics: &sandbox.Metrics{CPUPercent: 80, MemoryMB: 900}})
+			e.gh.noLog = true
+			e.scale(sc, msg(0, completed(71, "acme/api", 970, "build", b, store.ResultSucceeded)))
+			for len(e.rec.matching("download ")) == 0 {
+				time.Sleep(time.Millisecond)
+			}
+			// runplane stops while the finish step waits for the log.
+			e.s.stopBg()
+			e.settle()
+			if j := e.job(71); !j.FinishPending || j.CPUPeak == nil || *j.CPUPeak != 80 {
+				t.Fatalf("after the stop: finish pending %v, cpu peak %v; want true and 80", j.FinishPending, j.CPUPeak)
+			}
 
-	e.gh.noLog = false
-	e.newScheduler(0, time.Hour)
-	e.s.cleanup(e.ctx)
-	e.settle()
-	if j := e.job(71); j.LogState != store.LogStored {
-		t.Errorf("after the restart: log %q, want stored", j.LogState)
+			e.gh.noLog = false
+			e.newScheduler(0, time.Hour)
+			e.s.cleanup(e.ctx)
+			e.settle()
+			if j := e.job(71); j.LogState != store.LogStored || j.FinishPending {
+				t.Errorf("after the restart: log %q, finish pending %v; want stored and false", j.LogState, j.FinishPending)
+			}
+		})
 	}
 }
 

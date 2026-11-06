@@ -136,7 +136,7 @@ func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
 
 	jobs := map[string]store.Job{}
 	for i, result := range []string{store.ResultFailed, store.ResultCancelled, store.ResultSucceeded} {
-		j, _, err := d.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobCompleted,
+		j, err := d.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobCompleted,
 			Result: result, Repository: "acme/api", JobName: "test"}, time.Now())
 		if err != nil {
 			t.Fatal(err)
@@ -191,7 +191,7 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 	subscribe(t, d, h, "hook", true, JobFailed)
 	runDispatcher(t, d)
 
-	j, _, err := d.st.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
+	j, err := d.st.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
 		Result: store.ResultFailed, Repository: "acme/api", JobName: "test"}, time.Now())
 	if err != nil {
 		t.Fatal(err)

@@ -121,7 +121,7 @@ func TestJobLinksToItsRunBeforeGitHubGivesTheJob(t *testing.T) {
 	b := e.login("ada@example.com", auth.RoleMember)
 	ctx := context.Background()
 	job := func(id, runID int64, enrich *store.JobEnrichment) string {
-		j, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: store.JobQueued, Repository: "acme/api", JobName: "test",
+		j, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: store.JobQueued, Repository: "acme/api", JobName: "test",
 			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", RunID: runID, QueuedAt: time.Now()}, time.Now())
 		must(t, err)
 		if enrich != nil {
@@ -143,6 +143,22 @@ func TestJobLinksToItsRunBeforeGitHubGivesTheJob(t *testing.T) {
 		if j.HTMLURL != tc.want {
 			t.Errorf("job %s: html_url %q, want %q", tc.id, j.HTMLURL, tc.want)
 		}
+	}
+}
+
+// The web shows the status of the API, so a job that GitHub assigned must
+// have the status of the filter that lists it.
+func TestAssignedJobHasTheQueuedStatus(t *testing.T) {
+	e := newEnv(t)
+	now := time.Now()
+	_, err := e.st.UpsertJob(context.Background(), store.JobMessage{
+		RunnerRequestID: 1, State: store.JobAssigned, Repository: "acme/api", QueuedAt: now, AssignedAt: now,
+	}, now)
+	must(t, err)
+	var page JobPage
+	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/jobs?status=queued", nil, &page).want(t, 200)
+	if len(page.Items) != 1 || page.Items[0].Status != store.StatusQueued {
+		t.Errorf("queued jobs %+v, want the assigned job with the status queued", page.Items)
 	}
 }
 
@@ -191,7 +207,7 @@ func TestOverviewHasNoRatesWithoutData(t *testing.T) {
 		}
 	}
 
-	_, _, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now}, now)
+	_, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now}, now)
 	must(t, err)
 	must(t, e.st.AddCacheStats(ctx, now, "acme/api", store.CacheCounts{Misses: 4}))
 	var o Overview
