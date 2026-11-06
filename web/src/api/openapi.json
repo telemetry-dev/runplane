@@ -4223,10 +4223,6 @@
       "UpdateStatus": {
         "additionalProperties": false,
         "properties": {
-          "auto_update": {
-            "description": "The auto_update setting.",
-            "type": "boolean"
-          },
           "available": {
             "description": "latest is newer than current.",
             "type": "boolean"
@@ -4271,7 +4267,6 @@
           "url",
           "notes",
           "published_at",
-          "auto_update",
           "state"
         ],
         "type": "object"

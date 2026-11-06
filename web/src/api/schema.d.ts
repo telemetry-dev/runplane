@@ -2599,8 +2599,6 @@ export interface components {
             status?: "online" | "draining" | "disabled";
         };
         UpdateStatus: {
-            /** @description The auto_update setting. */
-            auto_update: boolean;
             /** @description latest is newer than current. */
             available: boolean;
             /** @description Version of this runplane. */
