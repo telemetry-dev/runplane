@@ -64,7 +64,6 @@ func readDMI(fsys fs.FS) dmi {
 	}
 }
 
-// names returns the vendor and product names in lower case.
 func (d dmi) names() string {
 	return strings.ToLower(strings.Join([]string{d.sysVendor, d.productName, d.biosVendor, d.boardVendor, d.chassisVendor}, " "))
 }
@@ -107,7 +106,6 @@ func ec2UUID(uuid string) bool {
 	return strings.HasPrefix(u, "ec2") || len(u) >= 8 && u[4] == '2' && u[6:8] == "ec"
 }
 
-// virtual reports if the DMI data names a hypervisor.
 func (d dmi) virtual() bool {
 	text := d.names()
 	return slices.ContainsFunc([]string{"qemu", "kvm", "virtual", "vmware", "xen", "bochs", "bhyve", "openstack", "vserver", "droplet"},
