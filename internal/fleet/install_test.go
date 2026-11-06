@@ -28,6 +28,8 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/runplane/runplane"
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/sshinstall/sshtest"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -99,7 +101,7 @@ func TestInstallValues(t *testing.T) {
 			_, port, _ := net.SplitHostPort(h.cfg.AgentListen)
 			command, token := "curl -fsSL '"+tt.url+"' | sudo sh -s -- --token rp_srv_TEST", "rp_srv_TEST"
 			if tt.base != "" {
-				tok, err := h.f.NewToken(t.Context(), tt.base, "build-1", "")
+				tok, err := h.f.NewToken(t.Context(), audit.Actor{}, tt.base, "build-1")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -315,13 +317,19 @@ func TestInstallSSH(t *testing.T) {
 		return 0
 	})
 
-	id, err := h.f.InstallSSH(ctx, "http://localhost:8484", SSHInstall{Name: "build-2", Host: "127.0.0.1", Port: port(srv.Addr), User: "deploy"})
+	id, err := h.f.InstallSSH(ctx, audit.Actor{}, "http://localhost:8484", SSHInstall{Name: "build-2", Host: "127.0.0.1", Port: port(srv.Addr), User: "deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the new server online", func() bool { return h.server(id).Status == store.ServerOnline && h.f.Driver(id) != nil })
 	if v := h.server(id); v.Name != "build-2" || v.Kind != store.ServerAgent || v.Arch != "x64" {
 		t.Errorf("installed server %+v, want build-2, an x64 agent", v)
+	}
+	entries, _, err := h.st.ListAudit(ctx, "", 10)
+	if err != nil || !slices.ContainsFunc(entries, func(e store.AuditEntry) bool {
+		return e.Action == "server.install" && e.Target == id && string(e.Detail) == fmt.Sprintf(`{"host":"127.0.0.1","name":"build-2","port":%d,"user":"deploy"}`, port(srv.Addr))
+	}) {
+		t.Errorf("audit entries %+v, %v; want the server.install of build-2", entries, err)
 	}
 	if !sawOutput.Load() {
 		t.Error("the status detail did not show the install output during the install")
@@ -344,7 +352,7 @@ func TestInstallSSH(t *testing.T) {
 	}
 	fmt.Fprintln(f, knownhosts.Line([]string{srv2.Addr}, clientKey))
 	f.Close()
-	id2, err := h.f.InstallSSH(ctx, "http://localhost:8484", SSHInstall{Name: "build-3", Host: "127.0.0.1", Port: port(srv2.Addr), User: "deploy"})
+	id2, err := h.f.InstallSSH(ctx, audit.Actor{}, "http://localhost:8484", SSHInstall{Name: "build-3", Host: "127.0.0.1", Port: port(srv2.Addr), User: "deploy"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,6 +362,20 @@ func TestInstallSSH(t *testing.T) {
 	}
 	if got := srv2.Commands(); len(got) != 0 {
 		t.Errorf("the server with the other host key got the commands %q", got)
+	}
+}
+
+// The dashboard form sends the name and the host as the user typed them.
+func TestInstallSSHRefusesABadNameOrHost(t *testing.T) {
+	ctx := t.Context()
+	h := newHarness(t, newFakeNode("arm64"))
+	_, err := h.f.InstallSSH(ctx, audit.Actor{}, "http://localhost:8484", SSHInstall{Name: " ", Host: "root@203.0.113.9"})
+	var p field.Problems
+	if !errors.As(err, &p) || len(p) != 2 || p[0].Key != "name" || p[1].Key != "host" {
+		t.Fatalf("InstallSSH: %v, want problems at name and host", err)
+	}
+	if list, err := h.st.ListServers(ctx); err != nil || len(list) != 0 {
+		t.Errorf("servers after the refused install: %+v, %v; want none", list, err)
 	}
 }
 

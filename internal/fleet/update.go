@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/store"
 	"github.com/runplane/runplane/internal/version"
 )
@@ -66,7 +67,7 @@ func (f *Fleet) UpdateState(v store.Server) UpdateState {
 
 // UpdateAgent makes a connected agent install the release of the primary.
 // The update runs in the background.
-func (f *Fleet) UpdateAgent(ctx context.Context, serverID string) error {
+func (f *Fleet) UpdateAgent(ctx context.Context, by audit.Actor, serverID string) error {
 	n := f.node(serverID)
 	if n == nil {
 		return ErrNotConnected
@@ -74,6 +75,10 @@ func (f *Fleet) UpdateAgent(ctx context.Context, serverID string) error {
 	if err := f.beginUpdate(ctx, n.id, n.version, true); err != nil {
 		return err
 	}
+	f.mu.Lock()
+	name := n.name
+	f.mu.Unlock()
+	f.audit.Record(ctx, by, "server.update_agent", n.id, map[string]any{"name": name, "from": n.version, "to": f.version})
 	f.goBg(func(ctx context.Context) { f.runUpdate(ctx, n) })
 	return nil
 }

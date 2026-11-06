@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
@@ -133,7 +134,7 @@ func (h *harness) server(id string) store.Server {
 // its session.
 func (h *harness) connectAgent(name string, node *fakeNode) (*testAgent, string) {
 	h.t.Helper()
-	tok, err := h.f.NewToken(context.Background(), "https://ci.example.com", name, "")
+	tok, err := h.f.NewToken(context.Background(), audit.Actor{}, "https://ci.example.com", name)
 	if err != nil {
 		h.t.Fatal(err)
 	}

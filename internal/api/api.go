@@ -149,11 +149,12 @@ type GitHub interface {
 type Servers interface {
 	// NewToken makes a one-time install token for a new agent and the
 	// command that installs the agent with it.
-	NewToken(ctx context.Context, base, name, createdBy string) (fleet.Token, error)
+	NewToken(ctx context.Context, by audit.Actor, base, name string) (fleet.Token, error)
 	// InstallSSH starts an install over SSH and returns the ID of the new
 	// server. The install continues in the background; the server status
-	// and status detail show its progress.
-	InstallSSH(ctx context.Context, base string, req fleet.SSHInstall) (serverID string, err error)
+	// and status detail show its progress. A name or a host that is not
+	// valid gives field.Problems.
+	InstallSSH(ctx context.Context, by audit.Actor, base string, req fleet.SSHInstall) (serverID string, err error)
 	SSHPublicKey(ctx context.Context) (string, error)
 	// Doctor runs the doctor on a server and keeps the result. It returns
 	// fleet.ErrNotConnected for a server without a connection.
@@ -171,7 +172,7 @@ type Servers interface {
 	Actions(v store.Server) fleet.Actions
 	// UpdateAgent makes a connected agent install the release of the
 	// primary. The update runs in the background, and UpdateState shows it.
-	UpdateAgent(ctx context.Context, serverID string) error
+	UpdateAgent(ctx context.Context, by audit.Actor, serverID string) error
 }
 
 type Images interface {

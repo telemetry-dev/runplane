@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -13,7 +12,6 @@ import (
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/version"
 )
 
 // ServerSummary is the server card of the overview.
@@ -157,17 +155,16 @@ func (h *Handler) createServerToken(ctx context.Context, in *body[*ServerTokenRe
 	}
 	var name string
 	if in.Body != nil {
-		name = strings.TrimSpace(in.Body.Name)
+		name = in.Body.Name
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
-	t, err := h.d.Servers.NewToken(ctx, base, name, currentUser(ctx).ID)
+	t, err := h.d.Servers.NewToken(ctx, actor(ctx), base, name)
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	h.record(ctx, "server.token", t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
 	return &body[ServerToken]{ServerToken{ID: t.ID, Token: t.Token, Command: t.Command, ExpiresAt: t.ExpiresAt}}, nil
 }
 
@@ -201,26 +198,14 @@ func (h *Handler) installServerSSH(ctx context.Context, in *body[SSHInstall]) (*
 		return nil, unavailable("Adding servers")
 	}
 	req := in.Body
-	req.Name, req.Host = strings.TrimSpace(req.Name), strings.TrimSpace(req.Host)
-	var p field.Problems
-	if req.Name == "" {
-		p.Add("name", "Enter a name.", in.Body.Name)
-	}
-	if req.Host == "" || strings.ContainsAny(req.Host, " /@") {
-		p.Add("host", "Enter a host name or an IP address.", in.Body.Host)
-	}
-	if len(p) > 0 {
-		return nil, unprocessable(p)
-	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, err := h.d.Servers.InstallSSH(ctx, base, fleet.SSHInstall{Name: req.Name, Host: req.Host, Port: req.Port, User: req.User})
+	id, err := h.d.Servers.InstallSSH(ctx, actor(ctx), base, fleet.SSHInstall{Name: req.Name, Host: req.Host, Port: req.Port, User: req.User})
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, h.serviceErr(changeErr(err))
 	}
-	h.record(ctx, "server.install", id, map[string]any{"name": req.Name, "host": req.Host, "port": req.Port, "user": req.User})
 	v, err := h.d.Store.GetServer(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "The new server is gone.")
@@ -289,7 +274,7 @@ func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], e
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	switch err := h.d.Servers.UpdateAgent(ctx, v.ID); {
+	switch err := h.d.Servers.UpdateAgent(ctx, actor(ctx), v.ID); {
 	case errors.Is(err, fleet.ErrUpToDate):
 		return nil, huma.Error409Conflict("The server runs runplane " + v.Version + ", the version of the primary.")
 	case errors.Is(err, fleet.ErrUpdateInProgress):
@@ -301,7 +286,6 @@ func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], e
 	case err != nil:
 		return nil, h.serviceErr(err)
 	}
-	h.record(ctx, "server.update_agent", v.ID, map[string]any{"name": v.Name, "from": v.Version, "to": version.Version})
 	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 

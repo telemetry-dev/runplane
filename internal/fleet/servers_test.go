@@ -260,8 +260,8 @@ func TestUpdateServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The first start added the default label.
-	entries = slices.DeleteFunc(entries, func(e store.AuditEntry) bool { return e.Action == "pool.create" })
+	// The first start and the agent install also record entries.
+	entries = slices.DeleteFunc(entries, func(e store.AuditEntry) bool { return e.Action != "server.update" })
 	want := `{"changes":{"name":["fsn1-a","fsn1-c"],"status":["online","draining"]},"name":"fsn1-c","status":"draining"}`
 	if len(entries) != 1 || entries[0].Action != "server.update" || string(entries[0].Detail) != want ||
 		entries[0].UserID != "u1" || entries[0].IP != "192.0.2.7" {
@@ -443,7 +443,7 @@ func TestUpdateAgentByHand(t *testing.T) {
 	if got := state(); got != UpdateCurrent {
 		t.Fatalf("update state %q of an agent of the same version, want current", got)
 	}
-	if err := h.f.UpdateAgent(ctx, id); err == nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err == nil {
 		t.Fatal("UpdateAgent started an update of an agent of the same version")
 	}
 	if got := h.f.UpdateState(h.server(h.localID())); got != UpdateCurrent {
@@ -455,20 +455,25 @@ func TestUpdateAgentByHand(t *testing.T) {
 		t.Fatalf("update state %q of an older agent, want available", got)
 	}
 	agentNode.set(func(n *fakeNode) { n.updateErr = errors.New("download failed") })
-	if err := h.f.UpdateAgent(ctx, id); err != nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the failed update", func() bool { return state() == UpdateFailed })
 	// An admin can try a failed version again.
 	agentNode.set(func(n *fakeNode) { n.updateErr = nil })
-	if err := h.f.UpdateAgent(ctx, id); err != nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the second update call", func() bool { return len(agentNode.args("Update")) == 2 })
 	if got := state(); got != UpdateUpdating {
 		t.Fatalf("update state %q before the agent restarts, want updating", got)
 	}
-	if err := h.f.UpdateAgent(ctx, id); err == nil {
+	entries, _, err := h.st.ListAudit(ctx, "", 10)
+	if err != nil || len(entries) == 0 || entries[0].Action != "server.update_agent" || entries[0].Target != id ||
+		string(entries[0].Detail) != `{"from":"v1.4.1","name":"arm-2","to":"v1.4.2"}` {
+		t.Errorf("audit entries %+v, %v; want the server.update_agent of arm-2 from v1.4.1 to v1.4.2 first", entries, err)
+	}
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err == nil {
 		t.Fatal("UpdateAgent started a second update while one runs")
 	}
 
@@ -480,7 +485,7 @@ func TestUpdateAgentByHand(t *testing.T) {
 
 	// An agent that does not come back fails the update.
 	olderAgent()
-	if err := h.f.UpdateAgent(ctx, id); err != nil {
+	if err := h.f.UpdateAgent(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the third update call", func() bool { return len(agentNode.args("Update")) == 3 })

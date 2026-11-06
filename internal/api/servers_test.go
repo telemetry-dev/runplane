@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
@@ -38,7 +39,7 @@ func (f *fakeServers) Actions(v store.Server) fleet.Actions {
 }
 
 // UpdateAgent refuses an update as the fleet does for each state.
-func (f *fakeServers) UpdateAgent(_ context.Context, id string) error {
+func (f *fakeServers) UpdateAgent(_ context.Context, _ audit.Actor, id string) error {
 	switch f.states[id] {
 	case fleet.UpdateCurrent:
 		return fleet.ErrUpToDate
@@ -52,7 +53,7 @@ func (f *fakeServers) UpdateAgent(_ context.Context, id string) error {
 	return nil
 }
 
-func (f *fakeServers) NewToken(_ context.Context, _, name, _ string) (fleet.Token, error) {
+func (f *fakeServers) NewToken(_ context.Context, _ audit.Actor, _, name string) (fleet.Token, error) {
 	f.names = append(f.names, name)
 	return fleet.Token{ID: "tok1", Token: "rp_srv_x", Command: "curl", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
