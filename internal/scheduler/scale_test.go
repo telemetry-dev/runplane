@@ -428,6 +428,88 @@ func TestDetachStopsClientCalls(t *testing.T) {
 	}
 }
 
+// A server keeps an image only while a build row or a live sandbox row has
+// its digest, and a pull can record a new digest while GitHub makes the
+// runner of a start. Thus the row of the start comes first. A cleanup in
+// that time keeps the row and the runner.
+func TestStartWritesItsRowBeforeTheRunner(t *testing.T) {
+	e := newTestEnv(t)
+	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
+	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
+	client, _, _ := e.attach(pool)
+
+	var rows []store.Sandbox
+	e.duringJIT(client, func() {
+		var err error
+		rows, err = e.st.ListSandboxes(e.ctx, store.SandboxFilter{ServerID: serverID, States: sandbox.LiveStates()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.clock.add(2 * time.Minute)
+		e.s.cleanup(e.ctx)
+	})
+	if len(rows) != 1 || rows[0].ImageDigest != e.fleet.imageRef.Digest || rows[0].RunnerVersion != "2.330.0" {
+		t.Fatalf("live rows during the JIT request: %+v, want one with the image and the runner version of the start", rows)
+	}
+	if b := e.sandbox(rows[0].ID); b.State != sandbox.StateStarting || b.RunnerID != 1 {
+		t.Errorf("row after the start: state %q, runner %d; want starting with runner 1", b.State, b.RunnerID)
+	}
+	if n := len(driver.specs); n != 1 {
+		t.Errorf("%d starts, want 1", n)
+	}
+	if calls := e.rec.matching("remove-runner "); len(calls) != 0 {
+		t.Errorf("the cleanup removed the runner of the start: %v", calls)
+	}
+}
+
+// When GitHub makes no runner, for example in an outage, the row of the
+// start goes away. A gone row would stay for each try.
+func TestStartWithoutARunnerLeavesNoRow(t *testing.T) {
+	e := newTestEnv(t)
+	_, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
+	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
+	client, sc, _ := e.attach(pool)
+	client.jitErr = errors.New("make JIT config: 503 Service Unavailable")
+
+	e.scale(sc, msg(0))
+	if rows := e.sandboxes(pool.ID); len(rows) != 0 {
+		t.Errorf("rows after the JIT error: %+v, want none", rows)
+	}
+	if n := len(driver.specs); n != 0 {
+		t.Errorf("%d starts, want 0", n)
+	}
+}
+
+// A user or the cleanup can stop a sandbox while GitHub makes its runner.
+// The sandbox then does not start, and its runner goes away.
+func TestStopDuringTheJITRequestCancelsTheStart(t *testing.T) {
+	e := newTestEnv(t)
+	e.addServer("fsn1-a", capacity("x64", 16, 65536))
+	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
+	client, _, _ := e.attach(pool)
+
+	var b store.Sandbox
+	e.duringJIT(client, func() {
+		rows := e.sandboxes(pool.ID)
+		if len(rows) != 1 {
+			t.Fatalf("%d rows during the JIT request, want 1", len(rows))
+		}
+		b = rows[0]
+		if err := e.s.StopSandbox(e.ctx, b.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if e.rec.index("start "+b.ID) >= 0 {
+		t.Error("the stopped sandbox started")
+	}
+	if len(client.runners) != 0 {
+		t.Errorf("runners on GitHub after the stop: %v", client.runners)
+	}
+	if got := e.sandbox(b.ID); got.State != sandbox.StateStopping || got.ExitReason != "stopped by a user" {
+		t.Errorf("row: state %q, exit reason %q; want stopping, stopped by a user", got.State, got.ExitReason)
+	}
+}
+
 // A warm sandbox must equal a new sandbox of its pool. Else the next job
 // runs with the old size, image, or runner after a change. A warm sandbox
 // that waits for a job for the whole time limit gives way to a new one

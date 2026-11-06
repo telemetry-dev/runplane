@@ -174,6 +174,7 @@ type fakeClient struct {
 	busy     map[int64]bool // runners that GitHub calls busy
 	acquired [][]int64      // the IDs of each AcquireJobs call
 	max      int
+	jitErr   error // GitHub makes no runner and GenerateJITConfig gives this error
 	// jitGate, if set, makes GenerateJITConfig wait until it is closed.
 	// jitEntered gets a value when the call begins to wait.
 	jitGate    chan struct{}
@@ -187,17 +188,41 @@ func (c *fakeClient) AcquireJobs(ctx context.Context, keys []int64) ([]int64, er
 	return keys, nil
 }
 
+// GenerateJITConfig makes the runner on GitHub before the gate: GitHub has
+// the runner before runplane gets the answer.
 func (c *fakeClient) GenerateJITConfig(ctx context.Context, runnerName string) (JITConfig, error) {
+	c.mu.Lock()
+	err := c.jitErr
+	if err == nil {
+		c.nextID++
+		c.runners[c.nextID] = Runner{ID: c.nextID, Name: runnerName}
+	}
+	id := c.nextID
+	c.mu.Unlock()
+	c.rec.add("jit %s", runnerName)
 	if c.jitGate != nil {
 		c.jitEntered <- struct{}{}
 		<-c.jitGate
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.nextID++
-	c.runners[c.nextID] = Runner{ID: c.nextID, Name: runnerName}
-	c.rec.add("jit %s", runnerName)
-	return JITConfig{Encoded: "eyJqaXQiOiI" + runnerName, RunnerID: c.nextID, RunnerName: runnerName}, nil
+	if err != nil {
+		return JITConfig{}, err
+	}
+	return JITConfig{Encoded: "eyJqaXQiOiI" + runnerName, RunnerID: id}, nil
+}
+
+// duringJIT runs fn while the next start of the scale set of client waits
+// for GitHub to answer the JIT request. It returns when the start ends.
+func (e *testEnv) duringJIT(client *fakeClient, fn func()) {
+	client.jitGate, client.jitEntered = make(chan struct{}), make(chan struct{}, 1)
+	resized := make(chan struct{})
+	go func() {
+		e.s.resizeAll(e.ctx)
+		close(resized)
+	}()
+	<-client.jitEntered
+	fn()
+	close(client.jitGate)
+	<-resized
 }
 
 func (c *fakeClient) RemoveRunner(ctx context.Context, runnerID int64) error {

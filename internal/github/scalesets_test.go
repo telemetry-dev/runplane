@@ -145,7 +145,7 @@ func TestScaleSetListens(t *testing.T) {
 	eventually(t, "new max capacity", func() bool { p := f.state().polls; return p[len(p)-1] == 5 })
 
 	jit, err := c.GenerateJITConfig(ctx, "runplane-01xyz")
-	if err != nil || jit != (scheduler.JITConfig{Encoded: "jit-runplane-01xyz-_work", RunnerID: 9001, RunnerName: "runplane-01xyz"}) {
+	if err != nil || jit != (scheduler.JITConfig{Encoded: "jit-runplane-01xyz-_work", RunnerID: 9001}) {
 		t.Errorf("JIT config = %+v, %v", jit, err)
 	}
 	runners, err := c.ListRunners(ctx)

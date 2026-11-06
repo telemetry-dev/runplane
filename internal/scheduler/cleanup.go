@@ -77,7 +77,7 @@ func (s *Scheduler) syncServers(ctx context.Context) {
 			continue
 		}
 		for _, b := range rows {
-			if listed[b.ID] || starting[b.ID] != "" || !b.CreatedAt.Before(since) {
+			if listed[b.ID] || starting[b.ID] || !b.CreatedAt.Before(since) {
 				continue
 			}
 			s.setState(ctx, b.ID, sandbox.StateGone, "not found on the server")
@@ -129,14 +129,8 @@ func (s *Scheduler) removeStrayRunners(ctx context.Context) {
 			s.log.Warn("cleanup: list runners", "scale_set", h.set.ID, "err", err)
 			continue
 		}
-		// A runner can exist on GitHub before its row. Take this snapshot
-		// after the runner list and before the rows.
-		s.mu.Lock()
-		starting := map[string]bool{}
-		for _, name := range s.starting {
-			starting[name] = true
-		}
-		s.mu.Unlock()
+		// A start writes its row before GitHub makes its runner, so the rows
+		// read after the runner list name each runner of a start.
 		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{PoolID: h.set.PoolID, States: sandbox.LiveStates()})
 		if err != nil {
 			s.log.Warn("cleanup: list rows", "err", err)
@@ -147,7 +141,7 @@ func (s *Scheduler) removeStrayRunners(ctx context.Context) {
 			known[b.RunnerName] = true
 		}
 		for _, r := range runners {
-			if r.Busy || known[r.Name] || starting[r.Name] {
+			if r.Busy || known[r.Name] {
 				continue
 			}
 			s.log.Info("cleanup: remove a runner with no sandbox", "runner", r.Name, "scale_set", h.set.ID)

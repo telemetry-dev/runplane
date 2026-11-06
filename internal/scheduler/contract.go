@@ -56,9 +56,8 @@ type ScaleSetClient interface {
 }
 
 type JITConfig struct {
-	Encoded    string
-	RunnerID   int64
-	RunnerName string
+	Encoded  string
+	RunnerID int64
 }
 
 type Runner struct {
@@ -123,7 +122,10 @@ type Fleet interface {
 	// disabled one, or nil.
 	Driver(serverID string) Driver
 	// Image returns the image for new sandboxes on the server, if the image
-	// is ready there. An empty imageID means the default image.
+	// is ready there. An empty imageID means the default image. The server
+	// keeps an image only while a build row or a live sandbox row has its
+	// digest: a pull of a new digest can remove the image that Image gave
+	// before, until the row of the new sandbox has it.
 	Image(serverID, imageID string) (sandbox.ImageRef, bool)
 	// RunnerVersion returns the runner version for new sandboxes on the
 	// server, if a runner bundle for the server arch is ready there.

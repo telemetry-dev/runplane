@@ -67,6 +67,19 @@ func (s *Store) InsertSandbox(ctx context.Context, b Sandbox) error {
 	return exec(ctx, s.w, "insert sandbox", insert("sandboxes", sandboxCols), b.cols()...)
 }
 
+// SetSandboxRunner records the GitHub runner of a starting sandbox. It
+// returns ErrNotFound if the sandbox is no longer starting, because a stop
+// came first.
+func (s *Store) SetSandboxRunner(ctx context.Context, id string, runnerID int64) error {
+	return exec1(ctx, s.w, "set sandbox runner",
+		"UPDATE sandboxes SET runner_id = ? WHERE id = ? AND state = ?", runnerID, id, sandbox.StateStarting)
+}
+
+// DeleteSandbox deletes the row of a sandbox that got no runner.
+func (s *Store) DeleteSandbox(ctx context.Context, id string) error {
+	return exec(ctx, s.w, "delete sandbox", "DELETE FROM sandboxes WHERE id = ?", id)
+}
+
 // LinkJobSandbox records that the sandbox runs the job: the job gets the
 // sandbox and its server, and the sandbox gets the job. It returns the two
 // rows after the change, or ErrNotFound if one of them does not exist.

@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -87,13 +86,16 @@ func (h *scaleSet) start(ctx context.Context, pool store.Pool, st store.Settings
 	wg.Wait()
 }
 
+// startOne starts a sandbox of the pool on the placement. It writes the row
+// before GitHub makes the runner: from then on, the fleet keeps the image
+// and the runner version of the sandbox on the server (Fleet.Image), and
+// the cleanup knows the name of the runner.
 func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Settings, p placement, debug bool) {
 	s := h.s
 	defer s.reserve(p.host.ServerID, pool, -1)
 	id := ids.New()
-	name := RunnerName(pool.Label, id)
 	s.mu.Lock()
-	s.starting[id] = name
+	s.starting[id] = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -101,11 +103,6 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		s.mu.Unlock()
 	}()
 
-	jit, err := h.client.GenerateJITConfig(ctx, name)
-	if err != nil {
-		s.log.Warn("generate JIT config", "pool", pool.Label, "err", err)
-		return
-	}
 	b := store.Sandbox{
 		ID:            id,
 		PoolID:        pool.ID,
@@ -113,8 +110,7 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		ScaleSetID:    h.set.ID,
 		Mode:          p.host.Driver.Mode(),
 		State:         sandbox.StateStarting,
-		RunnerID:      jit.RunnerID,
-		RunnerName:    cmp.Or(jit.RunnerName, name),
+		RunnerName:    RunnerName(pool.Label, id),
 		ImageDigest:   p.image.Digest,
 		RunnerVersion: p.runnerVersion,
 		VCPU:          pool.VCPU,
@@ -123,6 +119,20 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		Debug:         debug,
 		CreatedAt:     s.now().UTC(),
 	}
+	if err := s.st.InsertSandbox(ctx, b); err != nil {
+		s.log.Warn("insert sandbox", "err", err)
+		return
+	}
+	jit, err := h.client.GenerateJITConfig(ctx, b.RunnerName)
+	if err != nil {
+		s.log.Warn("generate JIT config", "pool", pool.Label, "err", err)
+		// A gone row would stay for each try while GitHub makes no runners.
+		if err := s.st.DeleteSandbox(context.WithoutCancel(ctx), id); err != nil {
+			s.log.Warn("delete sandbox", "sandbox", id, "err", err)
+		}
+		return
+	}
+	b.RunnerID = jit.RunnerID
 	spec := sandbox.Spec{
 		ID:            id,
 		PoolID:        pool.ID,
@@ -144,11 +154,13 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 	}
 }
 
-// launch inserts the row of a new sandbox and starts it on the placement.
-// After an error, the row is failed, or gone when ctx ended first.
+// launch records the runner of the starting sandbox b and starts the
+// sandbox on the placement. It does not start a sandbox that a stop reached
+// first. After a failed start, the row is failed, or gone when ctx ended
+// first.
 func (s *Scheduler) launch(ctx context.Context, p placement, b store.Sandbox, spec sandbox.Spec) error {
-	if err := s.st.InsertSandbox(ctx, b); err != nil {
-		s.log.Warn("insert sandbox", "err", err)
+	if err := s.st.SetSandboxRunner(ctx, b.ID, b.RunnerID); err != nil {
+		s.log.Warn("record the runner of a sandbox", "sandbox", b.ID, "err", err)
 		return err
 	}
 	s.bus.Publish(events.SandboxState(b))

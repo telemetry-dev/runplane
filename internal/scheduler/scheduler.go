@@ -82,7 +82,7 @@ type Scheduler struct {
 	mu        sync.Mutex
 	sets      map[string]*scaleSet      // attached scale sets by ID
 	reserved  map[string]reservation    // by server ID
-	starting  map[string]string         // runner name by sandbox ID, from before the JIT config until Driver.Start returns
+	starting  map[string]bool           // sandbox IDs, from before the row write until Driver.Start returns
 	reruns    map[rerunKey]time.Time    // debug re-runs that wait for their next attempt
 	debugJobs map[string][]string       // debug job IDs by scale set ID that wait for a debug sandbox
 	checks    map[checkKey]checkEntry   // CheckJob results by run
@@ -124,7 +124,7 @@ func New(c Config) *Scheduler {
 		settings:  events.Subscribe[events.SettingsChanged](bg, c.Bus),
 		sets:      map[string]*scaleSet{},
 		reserved:  map[string]reservation{},
-		starting:  map[string]string{},
+		starting:  map[string]bool{},
 		reruns:    map[rerunKey]time.Time{},
 		debugJobs: map[string][]string{},
 		checks:    map[checkKey]checkEntry{},

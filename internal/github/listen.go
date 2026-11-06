@@ -396,7 +396,7 @@ func (l *setListener) GenerateJITConfig(ctx context.Context, runnerName string) 
 	if cfg.Runner == nil || cfg.EncodedJITConfig == "" {
 		return scheduler.JITConfig{}, errors.New("make JIT config: GitHub sent no runner")
 	}
-	return scheduler.JITConfig{Encoded: cfg.EncodedJITConfig, RunnerID: int64(cfg.Runner.ID), RunnerName: cfg.Runner.Name}, nil
+	return scheduler.JITConfig{Encoded: cfg.EncodedJITConfig, RunnerID: int64(cfg.Runner.ID)}, nil
 }
 
 func (l *setListener) RemoveRunner(ctx context.Context, runnerID int64) error {
