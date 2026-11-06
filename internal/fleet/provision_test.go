@@ -182,9 +182,10 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	}
 	close(gate)
 	waitFor(t, "the new digest", func() bool { return digest() == "sha256:a002" })
-	if got := local.args("GCImages"); !slices.ContainsFunc(got, func(keep any) bool { return !slices.Contains(keep.([]string), "sha256:a001") }) {
-		t.Errorf("image GC calls %v after the new digest, want one that drops sha256:a001", got)
-	}
+	// The pull calls the GC after it makes the new digest ready.
+	waitFor(t, "an image GC that drops sha256:a001", func() bool {
+		return slices.ContainsFunc(local.args("GCImages"), func(keep any) bool { return !slices.Contains(keep.([]string), "sha256:a001") })
+	})
 
 	// After a new ref, the image of the old ref is not used.
 	gate = make(chan struct{})
@@ -297,7 +298,12 @@ func TestTaggedImagesArePulledAgainEachDay(t *testing.T) {
 
 	h.clock.add(23 * time.Hour)
 	h.f.provision(ctx)
-	time.Sleep(50 * time.Millisecond)
+	// provision marks each pull that it starts until the pull ends.
+	waitFor(t, "the end of the pulls", func() bool {
+		h.f.mu.Lock()
+		defer h.f.mu.Unlock()
+		return len(h.f.nodes[id].pulls) == 0
+	})
 	if n := count(local.args("EnsureImage"), "builtin:ubuntu-24.04"); n != 1 {
 		t.Errorf("%d pulls of the default image after 23 hours, want 1", n)
 	}
