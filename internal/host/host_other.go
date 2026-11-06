@@ -3,7 +3,6 @@
 package host
 
 import (
-	"errors"
 	"fmt"
 	"runtime"
 
@@ -39,13 +38,3 @@ func diskSpace(path string) (total, free int64, err error) {
 	}
 	return int64(st.Blocks) * int64(st.Bsize), int64(st.Bavail) * int64(st.Bsize), nil
 }
-
-func nftablesAvailable() bool { return false }
-
-func nftDropChains() []string { return nil }
-
-func clockSynced() (bool, error) {
-	return false, errors.New("no kernel clock state on " + runtime.GOOS)
-}
-
-func portOwner(int) (pid int, name string) { return 0, "" }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/datadisk"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
@@ -32,9 +33,9 @@ type Node interface {
 	// Configure applies the settings that the primary gives each server.
 	Configure(ctx context.Context, s Settings) error
 	Facts(ctx context.Context) (host.Info, error)
-	// Doctor runs the checks of the server. minFreeDiskPercent is the
+	// Doctor runs the doctor on the server. minFreeDiskPercent is the
 	// min_free_disk_percent setting.
-	Doctor(ctx context.Context, minFreeDiskPercent float64) ([]host.Check, error)
+	Doctor(ctx context.Context, minFreeDiskPercent float64) (doctor.Report, error)
 	// EnsureImage makes an image ready on the server. progress, if not nil,
 	// gets each step.
 	EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error)
@@ -101,9 +102,10 @@ type LocalConfig struct {
 	// min_free_disk_percent of the last settings.
 	Mirror mirror.Config
 	// Doctor holds the doctor options of this server. Its DataDir also
-	// selects the disk for the facts and the stats. Doctor sets
-	// MinFreeDiskPercent, and the internet check is the Probe of Driver.
-	Doctor host.Options
+	// selects the disk of the stats. The node adds what it knows at each
+	// run: this process listens on Doctor.Listen, MinFreeDiskPercent comes
+	// with the run, and the internet check is the Probe of Driver.
+	Doctor doctor.Options
 	Logger *slog.Logger
 }
 
@@ -164,14 +166,15 @@ func (n *LocalNode) Configure(ctx context.Context, s Settings) error {
 }
 
 func (n *LocalNode) Facts(ctx context.Context) (host.Info, error) {
-	return host.Facts(ctx, n.cfg.Doctor.DataDir)
+	return doctor.Facts(ctx, n.cfg.Doctor)
 }
 
-func (n *LocalNode) Doctor(ctx context.Context, minFreeDiskPercent float64) ([]host.Check, error) {
+func (n *LocalNode) Doctor(ctx context.Context, minFreeDiskPercent float64) (doctor.Report, error) {
 	opts := n.cfg.Doctor
+	opts.Serving = true
 	opts.MinFreeDiskPercent = minFreeDiskPercent
 	opts.Internet = n.cfg.Driver.Probe
-	return host.Doctor(ctx, n.cfg.Driver.Mode(), opts), nil
+	return doctor.Run(ctx, opts), nil
 }
 
 func (n *LocalNode) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {

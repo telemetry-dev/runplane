@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"slices"
 
 	"github.com/moby/moby/client"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/policy"
@@ -51,31 +51,26 @@ func setupCode(ctx context.Context, args []string) error {
 	return nil
 }
 
-// doctor runs the checks of the host package for this server: a primary,
-// or an agent when agent.json exists. It fails when a check fails.
-func doctor(ctx context.Context, args []string) error {
+// runDoctor runs the doctor on this server: a primary, or an agent when
+// agent.json exists. It fails when a check fails. An agent, and a primary
+// before its first start, use the default settings: the primary sends its
+// settings only to a running agent.
+func runDoctor(ctx context.Context, args []string) error {
 	cfg, err := config.Parse(flag.NewFlagSet("doctor", flag.ContinueOnError), args,
 		config.Listen, config.AgentListen, config.ServicePort, config.DataDir, config.Mode, config.SSHListen)
 	if err != nil {
 		return err
 	}
-	mode := cfg.Mode
-	var dns []string
-	opts := host.Options{DataDir: cfg.DataDir, GuestKernel: cfg.KernelPath(), BaseImage: baseImage}
-	if exists(cfg.AgentConfigPath()) {
-		opts.Unit, opts.Listen = "runplane-agent", []string{servicePortAddr(cfg)}
-	} else {
-		var settings store.Settings
-		if exists(cfg.DBPath()) {
-			if settings, err = readSettings(ctx, cfg); err != nil {
-				return err
-			}
+	agent := exists(cfg.AgentConfigPath())
+	settings := store.DefaultSettings()
+	if !agent && exists(cfg.DBPath()) {
+		if settings, err = readSettings(ctx, cfg); err != nil {
+			return err
 		}
-		mode = policy.Mode(settings, mode)
-		opts.Unit, opts.Listen = "runplane", primaryAddrs(cfg, settings.Domain)
-		opts.MinFreeDiskPercent = settings.MinFreeDiskPercent
-		dns = settings.DNSServers
 	}
+	mode := policy.Mode(settings, cfg.Mode)
+	opts := doctorOptions(cfg, mode, agent, settings.Domain)
+	opts.MinFreeDiskPercent = settings.MinFreeDiskPercent
 	opts.Internet = func(context.Context) error { return sandbox.ErrProbeInService }
 	if profile, ok := probeProfile(mode); ok {
 		docker, err := client.New(client.FromEnv)
@@ -83,14 +78,14 @@ func doctor(ctx context.Context, args []string) error {
 			return fmt.Errorf("connect to Docker: %w", err)
 		}
 		defer docker.Close()
-		probe := sysbox.ProbeOptions{Docker: docker, Profile: profile, DataDir: cfg.DataDir, DNS: sandbox.Settings{DNS: dns}.IPv4DNS()}
+		probe := sysbox.ProbeOptions{Docker: docker, Profile: profile, DataDir: cfg.DataDir, DNS: sandbox.Settings{DNS: settings.DNSServers}.IPv4DNS()}
 		opts.Internet = func(ctx context.Context) error { return sysbox.Probe(ctx, probe) }
 	}
-	checks := host.Doctor(ctx, mode, opts)
-	if err := host.FormatDoctor(os.Stdout, checks); err != nil {
+	r := doctor.Run(ctx, opts)
+	if err := doctor.Format(os.Stdout, r.Checks); err != nil {
 		return err
 	}
-	if slices.ContainsFunc(checks, func(c host.Check) bool { return c.Status == host.StatusFail }) {
+	if r.Failed() {
 		return errors.New("a check failed")
 	}
 	return nil
@@ -278,17 +273,11 @@ func setDomain(ctx context.Context, args []string) error {
 
 // newSettings is the settings service of the primary.
 func newSettings(st *store.Store, bus *events.Bus, cfg config.Config, log *slog.Logger) *settings.Service {
-	return settings.New(settings.Config{Store: st, Bus: bus, Log: log, Mode: cfg.Mode, DevInsecure: cfg.DevInsecure, KVM: kvm})
-}
-
-// kvm tells if this server can open /dev/kvm, which VM mode needs.
-func kvm() bool {
-	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
-	if err != nil {
-		return false
+	kvm := func() bool {
+		ok, _ := host.OpenKVM()
+		return ok
 	}
-	f.Close()
-	return true
+	return settings.New(settings.Config{Store: st, Bus: bus, Log: log, Mode: cfg.Mode, DevInsecure: cfg.DevInsecure, KVM: kvm})
 }
 
 func readSettings(ctx context.Context, cfg config.Config) (store.Settings, error) {

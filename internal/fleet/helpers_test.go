@@ -18,6 +18,7 @@ import (
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
@@ -311,9 +312,9 @@ func (n *fakeNode) Close() error                             { return nil }
 
 func (n *fakeNode) MirrorStats(context.Context) (mirror.Stats, error) { return n.mirror, nil }
 
-func (n *fakeNode) Doctor(_ context.Context, minFree float64) ([]host.Check, error) {
+func (n *fakeNode) Doctor(_ context.Context, minFree float64) (doctor.Report, error) {
 	n.record("Doctor", minFree)
-	return []host.Check{{ID: "kernel", Name: "Kernel", Status: host.StatusOK, Detail: n.info.Kernel}}, nil
+	return doctor.Report{Info: n.info, Checks: []doctor.Check{{ID: "kernel", Name: "Kernel", Status: doctor.StatusOK, Detail: n.info.Kernel}}}, nil
 }
 
 func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {

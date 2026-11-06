@@ -51,7 +51,7 @@ func deleteTap(name string) error {
 // The kernel then lets a process open the device only with the uid and the
 // gid. netlink.Tuntap sets the group to root, which no VM has.
 func makeTap(name string, uid, gid int) error {
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(TunDevice, unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}

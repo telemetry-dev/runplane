@@ -14,6 +14,7 @@ import (
 	"errors"
 	"net/netip"
 
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
 )
@@ -39,6 +40,16 @@ func New(devInsecure bool, opts sysbox.Options) (*Driver, error) {
 
 func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 	return d.Driver.Configure(ctx, noCache(s))
+}
+
+// Requirements are what dev mode needs on the server, for the doctor.
+// modeFix tells how to give the server container or vm mode.
+func Requirements(servicePort int, modeFix string) doctor.Requirements {
+	return doctor.Requirements{
+		Mode:   doctor.ModeCheck.Warn("Dev mode runs jobs in privileged Docker containers", modeFix),
+		Docker: true,
+		Listen: []string{sysbox.ControlAddr(servicePort)},
+	}
 }
 
 // Allow adds the loopback address to allow, which tells if an address at the

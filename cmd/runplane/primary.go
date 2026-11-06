@@ -196,8 +196,7 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	// Release reads with an installation token have a higher rate limit.
 	token := func(ctx context.Context) (string, error) { return p.gh.Token(ctx) }
 	local, err := newLocal(context.Background(), cfg, localConfig{
-		mode: mode, settings: fleet.NodeSettings(settings).Settings, unit: "runplane", token: token,
-		listen: primaryAddrs(cfg, settings.Domain),
+		mode: mode, settings: fleet.NodeSettings(settings).Settings, domain: settings.Domain, token: token,
 	}, log)
 	if err != nil {
 		return nil, err
@@ -469,16 +468,6 @@ func (p *primary) serveHTTPS(st store.Settings) {
 		return
 	}
 	p.log.Info("HTTPS started", "domain", st.Domain)
-}
-
-// primaryAddrs lists the TCP addresses of the primary for the doctor. A
-// domain adds the ports of HTTPS, which another web server often has.
-func primaryAddrs(cfg config.Config, domain string) []string {
-	addrs := []string{cfg.Listen, cfg.AgentListen, servicePortAddr(cfg), cfg.SSHListen}
-	if domain != "" {
-		addrs = append(addrs, ":443", ":80")
-	}
-	return addrs
 }
 
 // subkey derives a key for one use from the secret key.

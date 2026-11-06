@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
@@ -222,15 +223,17 @@ func (l *logBuffer) waitFor(t *testing.T, text string) {
 
 var (
 	testInfo = host.Info{
-		Hostname: "agent-1", OS: "Ubuntu 24.04.3 LTS", OSID: "ubuntu", OSVersion: "24.04", Kernel: "6.8.0-45-generic", Arch: "arm64",
+		Hostname: "agent-1", OS: "Ubuntu 24.04.3 LTS", Kernel: "6.8.0-45-generic", Arch: "arm64",
 		Resources: host.Resources{VCPU: 16, MemoryMB: 65536, DiskBytes: 500e9, FreeDiskBytes: 320e9},
-		DiskKind:  "NVMe", CgroupV2: true, NFTables: true, IPForward: true,
-		DockerVersion: "29.1.0", DockerFirewall: "iptables", SysboxVersion: "0.7.1", SysboxRuntime: true,
+		DiskKind:  "NVMe", KVM: true, DockerVersion: "29.1.0", SysboxVersion: "0.7.1", FirecrackerVersion: "1.13.1",
 		IPv4: "203.0.113.7", Provider: "Hetzner", Region: "fsn1",
 	}
-	testChecks = []host.Check{
-		{ID: "kernel", Name: "Kernel", Status: host.StatusOK, Detail: "6.8.0-45-generic"},
-		{ID: "sysbox", Name: "Sysbox", Status: host.StatusFail, Detail: "sysbox-runc is missing", Fix: "Install Sysbox 0.7.1"},
+	testReport = doctor.Report{
+		Info: host.Info{Hostname: "agent-1", OS: "Ubuntu 24.04.3 LTS", Kernel: "6.8.0-45-generic", Arch: "arm64", Region: "fsn1"},
+		Checks: []doctor.Check{
+			{ID: "kernel", Name: "Kernel", Status: doctor.StatusOK, Detail: "6.8.0-45-generic"},
+			{ID: "sysbox", Name: "Sysbox", Status: doctor.StatusFail, Detail: "sysbox-runc is missing", Fix: "Install Sysbox 0.7.1"},
+		},
 	}
 	testProgress = []image.Progress{
 		{Status: image.StatusPending},
@@ -303,8 +306,8 @@ func (n *fakeNode) put(sb sandbox.Sandbox) {
 func (n *fakeNode) Local() bool                              { return true }
 func (n *fakeNode) Driver() sandbox.Driver                   { return fakeDriver{n} }
 func (n *fakeNode) Facts(context.Context) (host.Info, error) { return testInfo, nil }
-func (n *fakeNode) Doctor(_ context.Context, minFree float64) ([]host.Check, error) {
-	return testChecks, n.record("Doctor", minFree)
+func (n *fakeNode) Doctor(_ context.Context, minFree float64) (doctor.Report, error) {
+	return testReport, n.record("Doctor", minFree)
 }
 func (n *fakeNode) Stats() <-chan host.Stats { return n.stats }
 

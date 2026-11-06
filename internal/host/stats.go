@@ -13,10 +13,10 @@ import (
 
 // Stats is one sample of host use. The percentages are 0 to 100.
 type Stats struct {
-	At            time.Time `json:"at"`
-	CPUPercent    float64   `json:"cpu_percent"`
-	MemoryPercent float64   `json:"memory_percent"`
-	DiskPercent   float64   `json:"disk_percent"`
+	At            time.Time
+	CPUPercent    float64
+	MemoryPercent float64
+	DiskPercent   float64
 	Resources
 }
 

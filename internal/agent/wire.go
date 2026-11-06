@@ -15,6 +15,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/mirror"
@@ -62,11 +63,11 @@ type reply struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// An agent of an earlier release sends more facts in hostInfo, which only its
+// doctor read. The primary ignores them.
 type hostInfo struct {
 	Hostname           string `json:"hostname"`
 	OS                 string `json:"os"`
-	OSID               string `json:"os_id"`
-	OSVersion          string `json:"os_version"`
 	Kernel             string `json:"kernel"`
 	Arch               string `json:"arch"`
 	VCPU               int    `json:"vcpu"`
@@ -75,18 +76,9 @@ type hostInfo struct {
 	FreeDiskBytes      int64  `json:"free_disk_bytes"`
 	DiskKind           string `json:"disk_kind"`
 	KVM                bool   `json:"kvm"`
-	CPUVirt            bool   `json:"cpu_virt"`
-	Virtual            bool   `json:"virtual"`
-	CgroupV2           bool   `json:"cgroup_v2"`
-	NFTables           bool   `json:"nftables"`
-	IPForward          bool   `json:"ip_forward"`
 	DockerVersion      string `json:"docker_version"`
-	DockerSnap         bool   `json:"docker_snap"`
-	DockerFirewall     string `json:"docker_firewall"`
 	SysboxVersion      string `json:"sysbox_version"`
-	SysboxRuntime      bool   `json:"sysbox_runtime"`
 	FirecrackerVersion string `json:"firecracker_version"`
-	JailerVersion      string `json:"jailer_version"`
 	IPv4               string `json:"ipv4"`
 	Provider           string `json:"provider"`
 	Region             string `json:"region"`
@@ -94,25 +86,19 @@ type hostInfo struct {
 
 func wireInfo(i host.Info) hostInfo {
 	return hostInfo{
-		Hostname: i.Hostname, OS: i.OS, OSID: i.OSID, OSVersion: i.OSVersion, Kernel: i.Kernel, Arch: i.Arch,
+		Hostname: i.Hostname, OS: i.OS, Kernel: i.Kernel, Arch: i.Arch,
 		VCPU: i.VCPU, MemoryMB: i.MemoryMB, DiskBytes: i.DiskBytes, FreeDiskBytes: i.FreeDiskBytes,
-		DiskKind: i.DiskKind, KVM: i.KVM, CPUVirt: i.CPUVirt, Virtual: i.Virtual, CgroupV2: i.CgroupV2,
-		NFTables: i.NFTables, IPForward: i.IPForward, DockerVersion: i.DockerVersion, DockerSnap: i.DockerSnap,
-		DockerFirewall: i.DockerFirewall, SysboxVersion: i.SysboxVersion, SysboxRuntime: i.SysboxRuntime,
-		FirecrackerVersion: i.FirecrackerVersion, JailerVersion: i.JailerVersion, IPv4: i.IPv4,
-		Provider: i.Provider, Region: i.Region,
+		DiskKind: i.DiskKind, KVM: i.KVM, DockerVersion: i.DockerVersion, SysboxVersion: i.SysboxVersion,
+		FirecrackerVersion: i.FirecrackerVersion, IPv4: i.IPv4, Provider: i.Provider, Region: i.Region,
 	}
 }
 
 func (i hostInfo) info() host.Info {
 	return host.Info{
-		Hostname: i.Hostname, OS: i.OS, OSID: i.OSID, OSVersion: i.OSVersion, Kernel: i.Kernel, Arch: i.Arch,
+		Hostname: i.Hostname, OS: i.OS, Kernel: i.Kernel, Arch: i.Arch,
 		Resources: host.Resources{VCPU: i.VCPU, MemoryMB: i.MemoryMB, DiskBytes: i.DiskBytes, FreeDiskBytes: i.FreeDiskBytes},
-		DiskKind:  i.DiskKind, KVM: i.KVM, CPUVirt: i.CPUVirt, Virtual: i.Virtual, CgroupV2: i.CgroupV2,
-		NFTables: i.NFTables, IPForward: i.IPForward, DockerVersion: i.DockerVersion, DockerSnap: i.DockerSnap,
-		DockerFirewall: i.DockerFirewall, SysboxVersion: i.SysboxVersion, SysboxRuntime: i.SysboxRuntime,
-		FirecrackerVersion: i.FirecrackerVersion, JailerVersion: i.JailerVersion, IPv4: i.IPv4,
-		Provider: i.Provider, Region: i.Region,
+		DiskKind:  i.DiskKind, KVM: i.KVM, DockerVersion: i.DockerVersion, SysboxVersion: i.SysboxVersion,
+		FirecrackerVersion: i.FirecrackerVersion, IPv4: i.IPv4, Provider: i.Provider, Region: i.Region,
 	}
 }
 
@@ -125,7 +111,7 @@ type hostCheck struct {
 	Command string `json:"command,omitempty"`
 }
 
-func wireChecks(list []host.Check) []hostCheck {
+func wireChecks(list []doctor.Check) []hostCheck {
 	out := make([]hostCheck, len(list))
 	for i, c := range list {
 		out[i] = hostCheck{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
@@ -133,10 +119,10 @@ func wireChecks(list []host.Check) []hostCheck {
 	return out
 }
 
-func checks(list []hostCheck) []host.Check {
-	out := make([]host.Check, len(list))
+func checks(list []hostCheck) []doctor.Check {
+	out := make([]doctor.Check, len(list))
 	for i, c := range list {
-		out[i] = host.Check{ID: c.ID, Name: c.Name, Status: host.Status(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
+		out[i] = doctor.Check{ID: c.ID, Name: c.Name, Status: doctor.Status(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
 	}
 	return out
 }

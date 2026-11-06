@@ -20,10 +20,10 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/pools"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -158,7 +158,7 @@ type Servers interface {
 	SSHPublicKey(ctx context.Context) (string, error)
 	// Doctor returns fleet.ErrNotConnected for a server without a
 	// connection.
-	Doctor(ctx context.Context, serverID string) ([]host.Check, error)
+	Doctor(ctx context.Context, serverID string) ([]doctor.Check, error)
 	// Limits returns the limits of the driver of a connected server.
 	Limits(serverID string) (sandbox.Limits, bool)
 	// UpdateServer renames a server or changes its status. It returns
@@ -239,7 +239,7 @@ type Shell interface {
 }
 
 type HostChecker interface {
-	// Check reads this server and runs the doctor checks for the setup page.
+	// Check runs the doctor on this server for the setup page.
 	Check(ctx context.Context) (fleet.HostCheck, error)
 }
 

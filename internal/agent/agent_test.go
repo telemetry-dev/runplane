@@ -187,8 +187,8 @@ func TestCalls(t *testing.T) {
 
 	info, err := s.Facts(ctx)
 	check("facts", info, err, testInfo)
-	checks, err := s.Doctor(ctx, 12.5)
-	check("doctor", checks, err, testChecks, []any{"Doctor", 12.5})
+	report, err := s.Doctor(ctx, 12.5)
+	check("doctor", report, err, testReport, []any{"Doctor", 12.5})
 	var steps []image.Progress
 	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p image.Progress) { steps = append(steps, p) })
 	check("image", ref, err, sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"})

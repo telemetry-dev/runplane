@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/runplane/runplane/internal/host"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 )
@@ -62,16 +61,15 @@ var (
 		return none{}, a.Node.Configure(ctx, s)
 	})
 
-	// opHost answers the facts, and with Doctor also the doctor checks.
+	// opHost answers the facts, or with Doctor the report of the doctor,
+	// which has the facts too.
 	opHost = newOp(http.MethodGet, "/v1/host", func(ctx context.Context, a *agent, q hostQuery) (hostReport, error) {
-		info, err := a.Node.Facts(ctx)
-		rep := hostReport{Info: wireInfo(info)}
-		if err == nil && q.Doctor {
-			var list []host.Check
-			list, err = a.Node.Doctor(ctx, q.MinFreeDiskPercent)
-			rep.Doctor = wireChecks(list)
+		if !q.Doctor {
+			info, err := a.Node.Facts(ctx)
+			return hostReport{Info: wireInfo(info)}, err
 		}
-		return rep, err
+		r, err := a.Node.Doctor(ctx, q.MinFreeDiskPercent)
+		return hostReport{Info: wireInfo(r.Info), Doctor: wireChecks(r.Checks)}, err
 	})
 
 	opEnsureImage = newStream(http.MethodPost, "/v1/images/ensure", serveEnsureImage)
