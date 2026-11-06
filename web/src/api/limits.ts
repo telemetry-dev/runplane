@@ -183,6 +183,9 @@ export const limits = {
     },
     "state": {
       "enum": ["queued", "assigned", "running", "completed"]
+    },
+    "status": {
+      "enum": ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
     }
   },
   "JobSummary": {
@@ -191,6 +194,9 @@ export const limits = {
     },
     "state": {
       "enum": ["queued", "assigned", "running", "completed"]
+    },
+    "status": {
+      "enum": ["queued", "running", "succeeded", "failed", "cancelled", "skipped"]
     }
   },
   "LoginRequest": {

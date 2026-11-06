@@ -2,8 +2,8 @@ import type { ReactNode } from 'react'
 import type { Schemas } from '~/api/client'
 import { Spinner } from '~/components/ui/spinner'
 
-/** A state of a job, or its result once it completes. */
-export type JobStatus = 'queued' | 'running' | NonNullable<Schemas['JobSummary']['result']>
+/** The status of a job from the API: queued, running, or its result once it completes. */
+export type JobStatus = Schemas['JobSummary']['status']
 
 type StatusIconProps = {
   status: JobStatus
@@ -110,16 +110,6 @@ function warning(size: number) {
       <circle cx="12" cy="16.5" r={small ? 1.25 : 1.125} fill="var(--neutral-10)" />
     </>
   )
-}
-
-/**
- * The icon status of a job from the API. `result` is set once the job
- * completes. An assigned job shows as running, because its sandbox is starting.
- */
-export function jobStatus(job: Pick<Schemas['JobSummary'], 'state' | 'result'>): JobStatus {
-  if (job.state === 'queued') return 'queued'
-  if (job.state !== 'completed') return 'running'
-  return job.result ?? 'failed'
 }
 
 /** The icon status of a GitHub step: `status` is queued, in_progress, or completed; `conclusion` is success, failure, … */

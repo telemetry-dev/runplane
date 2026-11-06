@@ -19,19 +19,21 @@ func TestRunnerAndStateEvents(t *testing.T) {
 
 	steps := []struct {
 		server string
-		event  sandbox.Event
+		events []sandbox.Event
 		want   sandbox.State
 	}{
-		{serverID, runnerEvent(sandbox.RunnerListening), sandbox.StateIdle},
-		{otherID, runnerEvent(sandbox.RunnerJobStarted), sandbox.StateIdle}, // another server cannot change it
-		{serverID, runnerEvent(sandbox.RunnerJobStarted), sandbox.StateBusy},
-		{serverID, runnerEvent(sandbox.RunnerListening), sandbox.StateBusy}, // a late event does not go back
-		{serverID, runnerEvent(sandbox.RunnerExited), sandbox.StateStopping},
-		{serverID, stateEvent(sandbox.StateGone, "removed"), sandbox.StateGone},
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerListening}), sandbox.StateIdle},
+		{otherID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerJobStarted}), sandbox.StateIdle}, // another server cannot change it
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerJobStarted}), sandbox.StateBusy},
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerListening}), sandbox.StateBusy}, // a late event does not go back
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerExited}), sandbox.StateStopping},
+		{serverID, []sandbox.Event{stateEvent(sandbox.StateGone, "removed")}, sandbox.StateGone},
 	}
 	for i, step := range steps {
 		e.clock.add(time.Second)
-		e.event(step.server, b.ID, step.event)
+		for _, ev := range step.events {
+			e.event(step.server, b.ID, ev)
+		}
 		if got := e.sandbox(b.ID).State; got != step.want {
 			t.Fatalf("step %d: state %q, want %q", i, got, step.want)
 		}
@@ -44,9 +46,9 @@ func TestRunnerAndStateEvents(t *testing.T) {
 	// The runner error from runplane-init is the exit reason, not the exit
 	// code, which is 0 after a bad JIT config.
 	noJIT := e.insertSandbox(pool, set, serverID, sandbox.StateStarting, start)
-	exited := runnerEvent(sandbox.RunnerExited)
-	exited.Runner.Error = "the runner did not connect to GitHub"
-	e.event(serverID, noJIT.ID, exited)
+	for _, ev := range driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, Error: "the runner did not connect to GitHub"}) {
+		e.event(serverID, noJIT.ID, ev)
+	}
 	if got := e.sandbox(noJIT.ID); got.State != sandbox.StateStopping || got.ExitReason != "the runner did not connect to GitHub" {
 		t.Errorf("state %q, exit reason %q; want stopping because the runner did not connect", got.State, got.ExitReason)
 	}
@@ -63,12 +65,41 @@ func TestRunnerAndStateEvents(t *testing.T) {
 	}
 }
 
+// The cache and the mirror find a sandbox of the primary by its address, so
+// an agent must not give its address to a sandbox of the primary.
+func TestIdleEventRecordsTheAddressOfASandboxOfTheServer(t *testing.T) {
+	e := newTestEnv(t)
+	primaryID, _ := e.addServer("primary", capacity("x64", 16, 65536))
+	agentID, agent := e.addServer("agent", capacity("x64", 16, 65536))
+	pool := e.addPool("runplane")
+	_, _, set := e.attach(pool)
+	onPrimary := e.insertSandbox(pool, set, primaryID, sandbox.StateStarting, start)
+	if err := e.st.SetSandboxIP(e.ctx, primaryID, onPrimary.ID, "10.213.0.5"); err != nil {
+		t.Fatal(err)
+	}
+	onAgent := e.insertSandbox(pool, set, agentID, sandbox.StateStarting, start)
+	// The agent lists the sandbox of the primary with an address of its own.
+	for id, ip := range map[string]string{onPrimary.ID: "10.214.0.7", onAgent.ID: "10.214.0.8"} {
+		agent.running[id] = sandbox.Spec{ID: id}
+		agent.ips[id] = ip
+	}
+
+	e.event(agentID, onPrimary.ID, stateEvent(sandbox.StateIdle, ""))
+	e.event(agentID, onAgent.ID, stateEvent(sandbox.StateIdle, ""))
+	e.settle()
+	for id, want := range map[string]string{onPrimary.ID: "10.213.0.5", onAgent.ID: "10.214.0.8"} {
+		if got := e.sandbox(id).IP; got != want {
+			t.Errorf("sandbox %s: address %q, want %s", id, got, want)
+		}
+	}
+}
+
 func TestDebugRerunHoldsSandbox(t *testing.T) {
 	e := newTestEnv(t)
 	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane")
 	_, sc, _ := e.attach(pool)
-	first, _, err := e.st.UpsertJob(e.ctx, store.JobMessage{
+	first, err := e.st.UpsertJob(e.ctx, store.JobMessage{
 		RunnerRequestID: 300, State: store.JobCompleted, Result: store.ResultFailed, PoolID: pool.ID,
 		Repository: "acme/api", JobName: "integration", RunID: 5150, QueuedAt: start,
 	}, start)

@@ -148,6 +148,7 @@ const job: Schemas['JobSummary'] = {
   server_id: '01m3xf4sz7v9b1yvym3hxcaey9',
   server_name: 'fsn1-ax102-a',
   state: 'completed',
+  status: 'succeeded',
   result: 'succeeded',
   debug: false,
   reject_reason: '',

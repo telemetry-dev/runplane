@@ -53,6 +53,7 @@ type fakeDriver struct {
 
 	mu       sync.Mutex
 	running  map[string]sandbox.Spec
+	ips      map[string]string // addresses by sandbox ID
 	specs    []sandbox.Spec
 	holds    map[string]time.Time
 	startErr error
@@ -96,7 +97,7 @@ func (d *fakeDriver) List(ctx context.Context) ([]sandbox.Sandbox, error) {
 	defer d.mu.Unlock()
 	var list []sandbox.Sandbox
 	for id, spec := range d.running {
-		list = append(list, sandbox.Sandbox{ID: id, PoolID: spec.PoolID, State: sandbox.StateIdle, Spec: spec})
+		list = append(list, sandbox.Sandbox{ID: id, PoolID: spec.PoolID, State: sandbox.StateIdle, IP: d.ips[id], Spec: spec})
 	}
 	return list, nil
 }
@@ -398,7 +399,7 @@ func (e *testEnv) addServer(name string, c sandbox.Capacity) (string, *fakeDrive
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	d := &fakeDriver{rec: e.rec, base: c, running: map[string]sandbox.Spec{}, holds: map[string]time.Time{}}
+	d := &fakeDriver{rec: e.rec, base: c, running: map[string]sandbox.Spec{}, ips: map[string]string{}, holds: map[string]time.Time{}}
 	e.fleet.mu.Lock()
 	e.fleet.hosts = append(e.fleet.hosts, Host{ServerID: id, Name: name, Arch: c.Arch, Driver: d})
 	e.fleet.mu.Unlock()
@@ -476,8 +477,22 @@ func (e *testEnv) event(serverID, sandboxID string, ev sandbox.Event) {
 	e.s.HandleEvent(serverID, ev)
 }
 
-func runnerEvent(kind string) sandbox.Event {
-	return sandbox.Event{Type: sandbox.EventRunner, Runner: &sandbox.RunnerEvent{Kind: kind}}
+// listening sends the events of the driver when the runner of the sandbox
+// listens.
+func (e *testEnv) listening(serverID, sandboxID string) {
+	for _, ev := range driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerListening}) {
+		e.event(serverID, sandboxID, ev)
+	}
+}
+
+// driverEvents returns the events that the driver core sends for a runner
+// event: the runner event, and the state change that it causes.
+func driverEvents(ev sandbox.RunnerEvent) []sandbox.Event {
+	list := []sandbox.Event{{Type: sandbox.EventRunner, Runner: &ev}}
+	if st, reason, ok := ev.State(); ok {
+		list = append(list, stateEvent(st, reason))
+	}
+	return list
 }
 
 func stateEvent(state sandbox.State, reason string) sandbox.Event {
@@ -491,7 +506,7 @@ func (e *testEnv) insertSandbox(p store.Pool, set store.ScaleSet, serverID strin
 	e.runnerIDs++
 	b := store.Sandbox{
 		ID: id, PoolID: p.ID, ServerID: serverID, ScaleSetID: set.ID, Mode: sandbox.ModeContainer, State: state,
-		RunnerID: 1000 + e.runnerIDs, RunnerName: p.Label + "-" + id[len(id)-8:], VCPU: p.VCPU, MemoryMB: p.MemoryMB,
+		RunnerID: 1000 + e.runnerIDs, RunnerName: RunnerName(p.Label, id), VCPU: p.VCPU, MemoryMB: p.MemoryMB,
 		DiskGB: p.DiskGB, ImageDigest: e.fleet.imageRef.Digest, RunnerVersion: e.fleet.runner, CreatedAt: created,
 	}
 	if err := e.st.InsertSandbox(e.ctx, b); err != nil {

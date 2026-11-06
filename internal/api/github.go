@@ -179,11 +179,12 @@ type ManifestForm struct {
 
 func (h *Handler) createManifest(ctx context.Context, in *body[ManifestRequest]) (*body[ManifestForm], error) {
 	b := in.Body
-	if b.AccountType == "organization" && b.Organization == "" {
-		return nil, invalid("body.organization", "Enter the organization.", nil)
-	}
-	if b.AccountType == "user" {
-		b.Organization = ""
+	owner := ghrest.Account{Type: ghrest.User}
+	if b.AccountType == "organization" {
+		if b.Organization == "" {
+			return nil, invalid("body.organization", "Enter the organization.", nil)
+		}
+		owner = ghrest.Account{Type: ghrest.Organization, Login: b.Organization}
 	}
 	if h.d.GitHub == nil {
 		return nil, unavailable("The GitHub connection")
@@ -192,11 +193,11 @@ func (h *Handler) createManifest(ctx context.Context, in *body[ManifestRequest])
 	if err != nil {
 		return nil, err
 	}
-	action, manifest, err := h.d.GitHub.Manifest(ctx, base, b.AccountType, b.Organization)
+	action, manifest, err := h.d.GitHub.Manifest(ctx, base, owner)
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	h.record(ctx, "github.manifest", "", map[string]any{"account_type": b.AccountType, "organization": b.Organization})
+	h.record(ctx, "github.manifest", "", map[string]any{"account_type": b.AccountType, "organization": owner.Login})
 	return &body[ManifestForm]{ManifestForm{ActionURL: action, Manifest: manifest}}, nil
 }
 

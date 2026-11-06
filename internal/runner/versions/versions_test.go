@@ -39,7 +39,7 @@ func TestCheck(t *testing.T) {
 			}
 			for _, arch := range []string{"x64", "arm64"} {
 				err := st.SetRunnerBundleBuild(ctx, store.RunnerBundle{Version: "2.330.0", Arch: arch, SHA256: "sha-" + arch,
-					Patched: true, Status: store.BundleReady})
+					Patched: true, Status: store.BundleReady}, time.Now())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -118,10 +118,10 @@ func TestWarnNamesTheVersionsInUse(t *testing.T) {
 	st := openStore(t)
 	soon := time.Now().Add(24 * time.Hour)
 	for _, v := range []string{"2.330.0", "2.331.0"} {
-		if err := st.SetRunnerBundleBuild(ctx, store.RunnerBundle{Version: v, Arch: "x64", Status: store.BundleReady}); err != nil {
+		if err := st.SetRunnerBundleBuild(ctx, store.RunnerBundle{Version: v, Arch: "x64", Status: store.BundleReady}, time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.SetRunnerBundleDates(ctx, v, "x64", nil, &soon); err != nil {
+		if err := st.SetRunnerBundleDates(ctx, v, "x64", nil, &soon, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}

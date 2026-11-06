@@ -39,9 +39,9 @@ func (s *Scheduler) finish(jobID string) {
 	})
 }
 
-// finishJob does the finish step. When ctx ends during the log download,
-// the job keeps log_state live, so that the cleanup runs the step again
-// after a restart; the metrics summary is saved anyway.
+// finishJob does the finish step. When ctx ends first, the job keeps
+// FinishPending, so that the cleanup runs the step again after a restart;
+// the metrics summary is saved anyway.
 func (s *Scheduler) finishJob(ctx context.Context, jobID string) {
 	job, err := s.st.GetJob(ctx, jobID)
 	if err != nil {
@@ -74,6 +74,11 @@ func (s *Scheduler) finishJob(ctx context.Context, jobID string) {
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.log.Warn("summarize job metrics", "job", job.ID, "err", err)
 	}
+	if ctx.Err() == nil {
+		if err := s.st.EndJobFinish(ctx, job.ID); err != nil {
+			s.log.Warn("end job finish step", "job", job.ID, "err", err)
+		}
+	}
 	if job, err = s.st.GetJob(wctx, job.ID); err == nil {
 		s.bus.Publish(events.JobState(job))
 	}
@@ -92,7 +97,7 @@ func (s *Scheduler) readRunData(ctx context.Context, job store.Job) (store.Job, 
 	}
 	if job.ResultGuessed && e.Result != "" {
 		m := store.JobMessage{RunnerRequestID: job.RunnerRequestID, State: store.JobCompleted, Result: e.Result, FinishedAt: e.FinishedAt}
-		if _, _, err := s.st.UpsertJob(ctx, m, s.now()); err != nil {
+		if _, err := s.st.UpsertJob(ctx, m, s.now()); err != nil {
 			return job, err
 		}
 	}

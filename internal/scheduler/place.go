@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"maps"
-	"slices"
 
 	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -103,7 +102,7 @@ func (s *Scheduler) hosts(ctx context.Context) []hostCapacity {
 // on the server, or false if the server cannot take sandboxes of the pool.
 // It does not check the CPU and memory.
 func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (sandbox.ImageRef, string, bool) {
-	if !canHost(h.Host, pool) || !policy.RunnerAllowed(st, h.Driver.Mode()) ||
+	if !pool.CanUse(h.ServerID, h.Arch) || !policy.RunnerAllowed(st, h.Driver.Mode()) ||
 		h.cap.FreeDiskPercent() <= st.MinFreeDiskPercent {
 		return sandbox.ImageRef{}, "", false
 	}
@@ -115,18 +114,15 @@ func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (s
 	return img, version, ok
 }
 
-func canHost(h Host, pool store.Pool) bool {
-	return h.Arch == pool.Arch && (len(pool.ServerIDs) == 0 || slices.Contains(pool.ServerIDs, h.ServerID))
-}
-
-// fits counts the new sandboxes of the pool size that the servers can take
-// now.
-func (s *Scheduler) fits(hosts []hostCapacity, pool store.Pool, st store.Settings) int {
-	n := 0
+// maxRunners is the number of runners that a scale set of the pool can have
+// now: its runners plus the new sandboxes of the pool size that the servers
+// can take, at most max_runners.
+func (s *Scheduler) maxRunners(runners int, hosts []hostCapacity, pool store.Pool, st store.Settings) int {
+	n := runners
 	for _, h := range hosts {
 		if _, _, ok := s.offer(h, pool, st); ok {
 			n += h.cap.Room(pool.VCPU, pool.MemoryMB, st.Reserve())
 		}
 	}
-	return n
+	return min(n, pool.MaxRunners)
 }

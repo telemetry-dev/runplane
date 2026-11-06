@@ -31,10 +31,9 @@ const (
 	lostServerAfter = 15 * time.Minute
 	// A queued job that runplane did not take for this long is closed.
 	unclaimedJobAfter = time.Hour
-	// The cleanup runs the finish step again for jobs that completed in this
-	// time, at most resumeFinishBatch at a time.
-	resumeFinishWithin = 7 * 24 * time.Hour
-	resumeFinishBatch  = 20
+	// The cleanup runs the finish step again for at most this many jobs at
+	// a time.
+	resumeFinishBatch = 20
 	// CheckJob results stay valid this long for the other jobs of a run.
 	checkTTL = 10 * time.Minute
 	// A result that a runner reported stays this long for cancelLostJobs.
@@ -285,6 +284,8 @@ func (s *Scheduler) setState(ctx context.Context, id string, state sandbox.State
 	return s.setStateAt(ctx, id, state, reason, s.now())
 }
 
+// setStateAt is setState at t. A sandbox that is done gets no more samples,
+// so its buffered samples go to its job at once.
 func (s *Scheduler) setStateAt(ctx context.Context, id string, state sandbox.State, reason string, t time.Time) (store.Sandbox, bool) {
 	b, changed, err := s.st.AdvanceSandboxState(ctx, id, state, reason, t)
 	if err != nil {
@@ -297,6 +298,7 @@ func (s *Scheduler) setStateAt(ctx context.Context, id string, state sandbox.Sta
 	s.bus.Publish(events.SandboxState(b))
 	s.publishPoolStats(ctx, b.PoolID)
 	if state.Done() {
+		s.flushSandbox(ctx, b.ID)
 		s.wake(doMaxRunners)
 	}
 	return b, true

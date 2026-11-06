@@ -4,7 +4,7 @@ import { $api, errorMessage, type Schemas } from '~/api/client'
 import { useCapabilities } from '~/api/session'
 import { settingsQuery } from '~/api/settings'
 import { BreadcrumbLink, BreadcrumbPage, Breadcrumbs } from '~/components/app/breadcrumbs'
-import { jobStatus, StatusIcon } from '~/components/app/status-icon'
+import { StatusIcon } from '~/components/app/status-icon'
 import { Button, buttonClassName } from '~/components/ui/button'
 import { GithubIcon } from '~/components/ui/icons'
 import { toastManager } from '~/components/ui/toast'
@@ -43,7 +43,7 @@ export function JobHeader({ job }: { job: Schemas['Job'] }) {
       </Breadcrumbs>
       <div className="flex flex-wrap items-center justify-between gap-m">
         <div className="flex min-w-0 items-center gap-s">
-          <StatusIcon status={jobStatus(job)} size={22} />
+          <StatusIcon status={job.status} size={22} />
           <h1 className="type-page-title truncate text-neutral-10">{job.job_name}</h1>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
