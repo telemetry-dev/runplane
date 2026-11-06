@@ -78,9 +78,6 @@ type Manager struct {
 	init func() (initFile, error)
 	work keylock.Map
 
-	freshMu sync.Mutex
-	fresh   map[string]bool // digests that Ensure returned since the last GC
-
 	pruneOld sync.Once // removes the root disks of an earlier runplane-init
 }
 
@@ -102,7 +99,7 @@ func New(cfg Config) (*Manager, error) {
 	default:
 		return nil, fmt.Errorf("new image manager: unknown mode %q", cfg.Mode)
 	}
-	m := &Manager{cfg: cfg, log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)), fresh: map[string]bool{}}
+	m := &Manager{cfg: cfg, log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler))}
 	// Only VM mode reads runplane-init.
 	m.init = sync.OnceValues(func() (initFile, error) {
 		bin, err := cfg.Init()
@@ -130,9 +127,6 @@ func (m *Manager) Ensure(ctx context.Context, ref string, progress func(Progress
 		r.send(Progress{Status: StatusFailed, Error: err.Error()})
 		return Image{}, err
 	}
-	m.freshMu.Lock()
-	m.fresh[img.Digest] = true
-	m.freshMu.Unlock()
 	m.log.Info("image ready", "ref", ref, "from", img.Ref, "digest", img.Digest, "took", time.Since(start).Round(time.Millisecond))
 	r.status(StatusReady)
 	return img, nil
@@ -168,18 +162,14 @@ func (m *Manager) RootDisk(digest string) (string, error) {
 
 // GC removes the root disks (VM mode) and the runplane Docker images whose
 // digest is not in keep. keep must hold the digests of all images and of all
-// sandboxes that still operate. GC also keeps the images that Ensure returned
-// since the last GC, because the caller can still be about to store them. GC
-// waits until no Ensure operates.
+// sandboxes that still operate, also of an image that Ensure returned and
+// that the caller did not record yet. GC waits until no Ensure operates.
 func (m *Manager) GC(ctx context.Context, keep []string) error {
+	set := map[string]bool{}
+	for _, d := range keep {
+		set[d] = true
+	}
 	return m.work.Idle(ctx, func() error {
-		m.freshMu.Lock()
-		set := m.fresh
-		m.fresh = map[string]bool{}
-		m.freshMu.Unlock()
-		for _, d := range keep {
-			set[d] = true
-		}
 		if m.cfg.Mode == sandbox.ModeVM {
 			if err := m.diskGC(set); err != nil {
 				return err

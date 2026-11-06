@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -23,17 +24,26 @@ import (
 )
 
 // fakeHost records the host changes of the driver. stopping holds the
-// scopes that systemd is about to stop.
+// scopes that systemd is about to stop, and netErr fails the firewall
+// writes.
 type fakeHost struct {
 	mu                           sync.Mutex
 	opened, kept, closed, killed []string
+	nets                         []netrules.Config
+	netErr                       error
 	stopping                     map[string]bool
 	next                         int // the index of the next lease
 }
 
-func (h *fakeHost) setupNet(context.Context, netrules.Config) error { return nil }
-func (h *fakeHost) tapLeases() int                                  { return 16384 }
-func (h *fakeHost) stopJobs() (map[string]bool, error)              { return h.stopping, nil }
+func (h *fakeHost) setupNet(_ context.Context, cfg netrules.Config) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.nets = append(h.nets, cfg)
+	return h.netErr
+}
+
+func (h *fakeHost) tapLeases() int                     { return 16384 }
+func (h *fakeHost) stopJobs() (map[string]bool, error) { return h.stopping, nil }
 func (h *fakeHost) probe(context.Context, netrules.Lease, netip.Addr) error {
 	return errors.ErrUnsupported
 }
@@ -234,6 +244,33 @@ func TestCloseStopsTheVMsThatSystemdStops(t *testing.T) {
 		if exists(filepath.Join(root, "data", "sandboxes", id)) != want || exists(d.jailDir(id)) != want {
 			t.Errorf("the folders of %s exist: %v, want %v", id, !want, want)
 		}
+	}
+}
+
+// netrules keeps the old rules when a firewall write fails. The fleet sends
+// the same settings again at the next connection, and that Configure must
+// write the firewall again: else the VMs keep the old allowlist and DNS
+// servers until these settings change again.
+func TestConfigureWritesTheFirewallAgain(t *testing.T) {
+	ctx := t.Context()
+	sys := &fakeHost{netErr: errors.New("nft: netlink busy")}
+	d := testDriver(t, t.TempDir(), sys)
+	dns := []netip.Addr{netip.MustParseAddr("9.9.9.9")}
+	s := sandbox.Settings{DNS: dns, EgressAllowlist: []string{"192.0.2.1"}}
+	if err := d.Configure(ctx, s); err == nil {
+		t.Fatal("Configure gave no error after a failed firewall write")
+	}
+	sys.mu.Lock()
+	sys.netErr = nil
+	sys.mu.Unlock()
+	if err := d.Configure(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	want := netrules.Config{ServicePort: 8486, DNS: dns, Allowlist: []string{"192.0.2.1"}}
+	sys.mu.Lock()
+	defer sys.mu.Unlock()
+	if len(sys.nets) != 2 || !reflect.DeepEqual(sys.nets[1], want) {
+		t.Errorf("firewall writes %+v, want two writes of %+v", sys.nets, want)
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sync"
 	"time"
 
@@ -118,17 +117,16 @@ func newDriver(opts Options, ids idRange, sys hostOps) *Driver {
 	return d
 }
 
-// Configure also applies firewall changes and the bandwidth limit to the
-// VMs that operate.
+// Configure writes the VM firewall at each call, also with the same
+// settings: after a failed write, netrules keeps the old rules. A change of
+// the bandwidth limit also applies to the VMs that operate.
 func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 	old := d.SetSettings(s)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	var err error
-	if !slices.Equal(old.DNS, s.DNS) || !slices.Equal(old.EgressAllowlist, s.EgressAllowlist) {
-		if err = d.sys.setupNet(ctx, d.netConfig(s)); err != nil {
-			err = fmt.Errorf("apply the VM firewall: %w", err)
-		}
+	err := d.sys.setupNet(ctx, d.netConfig(s))
+	if err != nil {
+		err = fmt.Errorf("apply the VM firewall: %w", err)
 	}
 	if old.BandwidthMbps != s.BandwidthMbps {
 		for _, b := range d.Boxes() {

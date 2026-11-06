@@ -188,8 +188,10 @@ type Servers interface {
 type Images interface {
 	CreateImage(ctx context.Context, by audit.Actor, name, ref string) (store.Image, error)
 	UpdateImage(ctx context.Context, by audit.Actor, imageID string, c fleet.ImageChange) (store.Image, error)
-	// RemoveImage deletes the files of the image on all servers and its
-	// row. It returns fleet.ErrDefaultImage for the default image.
+	// RemoveImage stops the use of an image and deletes its row. The pools
+	// with the image change to the default image. The connected servers
+	// remove the files of the image in the background, after the call
+	// returns. It returns fleet.ErrDefaultImage for the default image.
 	RemoveImage(ctx context.Context, by audit.Actor, imageID string) error
 	// RefreshImage pulls the image again on all servers.
 	RefreshImage(ctx context.Context, by audit.Actor, imageID string) error
