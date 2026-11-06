@@ -103,7 +103,6 @@ func TestCheckJobErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := acmeEnv(t)
-			e.svc.api.RetryWait = time.Millisecond
 			e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
 				if tt.limited {
 					w.Header().Set("X-RateLimit-Remaining", "0")
@@ -172,30 +171,43 @@ func TestEnrichGivesTheGitHubResult(t *testing.T) {
 	}
 }
 
-func TestMatchJob(t *testing.T) {
-	jobs := []workflowJob{
-		{ID: 901, RunAttempt: 1, Name: "build", RunnerName: "runplane-old"},
-		{ID: 902, RunAttempt: 2, Name: "build", RunnerName: "runplane-01abc"},
-		{ID: 903, RunAttempt: 2, Name: "lint", RunnerName: "runplane-01def"},
-		{ID: 904, RunAttempt: 2, Name: "deploy"},
+// Enrich finds the GitHub job of a runplane job in the jobs of all run
+// attempts. The runner name of the sandbox is unique, so it wins. Without
+// it, the job name decides: in the run attempt of the job, or in the newest
+// attempt when the attempt is 0 (unknown).
+func TestEnrichFindsTheGitHubJob(t *testing.T) {
+	e := acmeEnv(t)
+	ctx := context.Background()
+	e.serveRun([]map[string]any{
+		{"id": 901, "run_attempt": 1, "name": "build", "runner_name": "runplane-old"},
+		{"id": 902, "run_attempt": 2, "name": "build", "runner_name": "runplane-01abc"},
+		{"id": 903, "run_attempt": 2, "name": "lint", "runner_name": "runplane-01def"},
+		{"id": 904, "run_attempt": 2, "name": "deploy"},
+	})
+	for id, runner := range map[string]string{"old": "runplane-old", "upper": "RUNPLANE-OLD", "zzz": "runplane-zzz"} {
+		if err := e.st.InsertSandbox(ctx, store.Sandbox{ID: id, PoolID: "p1", ServerID: "s1", Mode: sandbox.ModeContainer,
+			State: sandbox.StateBusy, RunnerName: runner, CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	tests := []struct {
-		name, job, runner string
-		attempt           int
-		want              int64
+		name, job, sandbox string
+		attempt            int
+		want               int64 // 0: no GitHub job
 	}{
-		{"runner name wins over the newest attempt", "build", "runplane-old", 0, 901},
-		{"runner name without regard to case", "build", "RUNPLANE-01ABC", 0, 902},
+		{"runner name wins over the newest attempt", "build", "old", 0, 901},
+		{"runner name without regard to case", "build", "upper", 0, 901},
 		{"name in the newest attempt without a runner", "build", "", 0, 902},
 		{"name in the known attempt", "build", "", 1, 901},
-		{"unknown runner falls back to the name", "lint", "runplane-zzz", 0, 903},
+		{"unknown runner falls back to the name", "lint", "zzz", 0, 903},
 		{"no job of the attempt", "deploy", "", 1, 0},
 		{"no job of the name", "test", "", 0, 0},
 	}
 	for _, tt := range tests {
-		got, ok := matchJob(jobs, tt.job, tt.runner, tt.attempt)
-		if ok != (tt.want != 0) || got.ID != tt.want {
-			t.Errorf("%s: matchJob = %d, %v; want %d", tt.name, got.ID, ok, tt.want)
+		got, err := e.svc.Enrich(ctx, store.Job{ID: "j1", Repository: "acme/web", RunID: 555, JobName: tt.job,
+			RunAttempt: tt.attempt, SandboxID: tt.sandbox})
+		if (err == nil) != (tt.want != 0) || got.GitHubJobID != tt.want {
+			t.Errorf("%s: GitHub job %d, %v; want %d", tt.name, got.GitHubJobID, err, tt.want)
 		}
 	}
 }

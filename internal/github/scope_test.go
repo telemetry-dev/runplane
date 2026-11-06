@@ -2,11 +2,9 @@ package github
 
 import (
 	"context"
-	"net/http"
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -43,16 +41,8 @@ func TestReadScope(t *testing.T) {
 			if !ok {
 				return
 			}
-			var got string
-			e.mux.HandleFunc("GET /api/v3/scope-check", func(w http.ResponseWriter, r *http.Request) {
-				got = r.Header.Get("Authorization")
-				writeJSON(w, http.StatusOK, map[string]any{})
-			})
-			if err := e.svc.api.JSON(context.Background(), ghrest.Call{Method: http.MethodGet, Path: "/scope-check", Auth: auth}, &struct{}{}); err != nil {
-				t.Fatal(err)
-			}
-			if got != "Bearer "+tt.wantToken {
-				t.Errorf("Authorization = %q, want the token of the installation %q", got, tt.wantToken)
+			if got, err := auth.Header(context.Background()); err != nil || got != "Bearer "+tt.wantToken {
+				t.Errorf("Authorization = %q, %v; want the token of the installation %q", got, err, tt.wantToken)
 			}
 		})
 	}

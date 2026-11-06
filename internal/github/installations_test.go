@@ -3,7 +3,9 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,14 +28,12 @@ func (e *env) installations() *fakeInstallations {
 		e.checkJWT(r)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		page := 0
-		if r.URL.Query().Get("page") == "2" {
-			page = 1
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		page = max(page, 1)
+		if page < len(f.list) {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/api/v3/app/installations?per_page=100&page=%d>; rel="next"`, e.srv.URL, page+1))
 		}
-		if page == 0 && len(f.list) > 1 {
-			w.Header().Set("Link", `<`+e.srv.URL+`/api/v3/app/installations?per_page=100&page=2>; rel="next"`)
-		}
-		writeJSON(w, http.StatusOK, f.list[page:min(page+1, len(f.list))])
+		writeJSON(w, http.StatusOK, f.list[min(page-1, len(f.list)):min(page, len(f.list))])
 	})
 	e.mux.HandleFunc("GET /api/v3/installation/repositories", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -59,7 +59,7 @@ func TestSyncInstallations(t *testing.T) {
 	e := newEnv(t)
 	e.connect()
 	ctx := context.Background()
-	f := e.installations()
+	f := e.inst
 	org := map[string]any{"id": 10, "app_id": testAppID, "suspended_at": nil,
 		"account": map[string]any{"login": "acme", "id": 1, "type": "Organization"}}
 	user := map[string]any{"id": 20, "app_id": testAppID, "suspended_at": nil,
@@ -129,7 +129,7 @@ func TestSetupRecordsInstallation(t *testing.T) {
 	e := newEnv(t)
 	e.connect()
 	ctx := context.Background()
-	f := e.installations()
+	f := e.inst
 	f.set(nil, map[string][]map[string]any{"ghs_77_": {{"id": 300, "full_name": "octo/app", "private": true}}})
 	appID := testAppID
 	e.mux.HandleFunc("GET /api/v3/app/installations/77", func(w http.ResponseWriter, r *http.Request) {
