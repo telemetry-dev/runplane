@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -45,20 +46,26 @@ func CheckModeChange(m sandbox.Mode, devInsecure, kvm bool) error {
 	return CheckMode(m, devInsecure)
 }
 
-// PublicRepos tells why jobs of public repositories cannot run with the mode
-// setting m and the servers, or returns "" when they can. A server reports
-// the mode of its running driver, which can differ from the mode setting
-// until a restart. A server without facts does not count yet.
+// PublicRepos tells why an admin cannot turn allow_public_repos on with the
+// mode setting m and the servers, or returns "" when the admin can. It names
+// each server that is not in VM mode: while the setting is on, these servers
+// wait (refer to RunnerRefusal). A server reports the mode of its running
+// driver, which can differ from the mode setting until a restart. A server
+// without facts does not count yet.
 func PublicRepos(m sandbox.Mode, servers []store.Server) string {
 	if m != sandbox.ModeVM {
 		return fmt.Sprintf("Jobs of public repositories need VM mode, and the mode setting is %s.", cmp.Or(string(m), "not set"))
 	}
+	var others []string
 	for _, v := range servers {
 		if v.Mode != "" && v.Mode != sandbox.ModeVM {
-			return fmt.Sprintf("Jobs of public repositories need VM mode on each server, and the server %s runs %s mode.", v.Name, v.Mode)
+			others = append(others, fmt.Sprintf("%s runs %s mode", v.Name, v.Mode))
 		}
 	}
-	return ""
+	if len(others) == 0 {
+		return ""
+	}
+	return "Jobs of public repositories need VM mode on each server, and " + strings.Join(others, ", ") + "."
 }
 
 // BandwidthApplies tells if the bandwidth setting limits sandboxes: only the

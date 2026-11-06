@@ -47,7 +47,7 @@ func TestPlacement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			p, ok := e.s.place(e.ctx, pool, st)
+			p, ok := e.s.place(e.ctx, pool, st, false)
 			got := ""
 			if ok {
 				got = names[p.host.ServerID]

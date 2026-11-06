@@ -39,7 +39,8 @@ type Pool struct {
 // resources now.
 type PoolPlacement struct {
 	OnlineServers      int      `json:"online_servers" doc:"Online servers with the arch, limited to server_ids if the pool has them."`
-	PlaceableServers   int      `json:"placeable_servers" doc:"Of online_servers, the servers whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start."`
+	WaitingServers     int      `json:"waiting_servers" doc:"Of online_servers, the servers that get no runners now. wait_reason of each server tells why."`
+	PlaceableServers   int      `json:"placeable_servers" doc:"Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start."`
 	PlaceableServerIDs []string `json:"placeable_server_ids"`
 }
 
@@ -198,8 +199,8 @@ func (h *Handler) getPlacement(ctx context.Context, in *placementInput) (*body[P
 }
 
 type placer struct {
-	servers []store.Server
-	reserve sandbox.Reserve
+	servers  []store.Server
+	settings store.Settings
 	// limits are the limits of the drivers of the connected servers.
 	limits map[string]sandbox.Limits
 }
@@ -213,7 +214,7 @@ func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
 	if err != nil {
 		return placer{}, err
 	}
-	p := placer{reserve: settings.Reserve(), limits: map[string]sandbox.Limits{}}
+	p := placer{settings: settings, limits: map[string]sandbox.Limits{}}
 	for _, v := range list {
 		if v.Status != store.ServerOnline {
 			continue
@@ -233,8 +234,12 @@ func (p placer) place(pool store.Pool) PoolPlacement {
 			continue
 		}
 		out.OnlineServers++
+		if waitReason(p.settings, v) != "" {
+			out.WaitingServers++
+			continue
+		}
 		empty := sandbox.Capacity{VCPU: v.VCPU, MemoryMB: v.MemoryMB, Limits: p.limits[v.ID]}
-		if empty.Room(pool.VCPU, pool.MemoryMB, p.reserve) > 0 {
+		if empty.Room(pool.VCPU, pool.MemoryMB, p.settings.Reserve()) > 0 {
 			out.PlaceableServerIDs = append(out.PlaceableServerIDs, v.ID)
 		}
 	}

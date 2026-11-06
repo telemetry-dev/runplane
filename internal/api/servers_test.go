@@ -229,6 +229,48 @@ func TestPublicReposNeedVMOnEachServer(t *testing.T) {
 	b.do("PATCH", "/api/settings", map[string]any{"mode": "container"}, nil).want(t, 422)
 }
 
+// An agent can connect in container mode while allow_public_repos is on.
+// The setting stays on, the agent waits, and the API tells why. The
+// placement does not count the agent, as the scheduler does not.
+func TestServerWaitsWhilePublicReposAreOn(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.Config.Mode = sandbox.ModeVM })
+	b := e.login("ada@example.com", auth.RoleAdmin)
+	ctx := context.Background()
+	now := time.Now()
+	addServer := func(id string, mode sandbox.Mode) {
+		must(t, e.st.CreateServer(ctx, store.Server{ID: id, Name: id, Kind: store.ServerAgent, Status: store.ServerOnline,
+			ServerFacts: store.ServerFacts{Arch: "x64", Mode: mode, VCPU: 8, MemoryMB: 16384}, CreatedAt: now, UpdatedAt: now}))
+	}
+	addServer("primary", sandbox.ModeVM)
+	b.do("PATCH", "/api/settings", map[string]any{"allow_public_repos": true}, nil).want(t, 200)
+	addServer("cheap-vps", sandbox.ModeContainer)
+	const placement = "/api/pools/placement?arch=x64&vcpu=2&memory_mb=4096"
+
+	var st Settings
+	b.do("GET", "/api/settings", nil, &st).want(t, 200)
+	if !st.AllowPublicRepos || !strings.Contains(st.PublicReposRefusal, "cheap-vps") {
+		t.Errorf("settings: allow_public_repos %v, public_repos_refusal %q; want on, with the name cheap-vps", st.AllowPublicRepos, st.PublicReposRefusal)
+	}
+	var agent, primary Server
+	b.do("GET", "/api/servers/cheap-vps", nil, &agent).want(t, 200)
+	b.do("GET", "/api/servers/primary", nil, &primary).want(t, 200)
+	if agent.WaitReason == "" || primary.WaitReason != "" {
+		t.Errorf("wait_reason: cheap-vps %q, primary %q; want a reason only for cheap-vps", agent.WaitReason, primary.WaitReason)
+	}
+	var got PoolPlacement
+	b.do("GET", placement, nil, &got).want(t, 200)
+	if got.OnlineServers != 2 || got.WaitingServers != 1 || !slices.Equal(got.PlaceableServerIDs, []string{"primary"}) {
+		t.Errorf("placement = %+v, want 2 online servers, 1 that waits, and primary", got)
+	}
+
+	b.do("PATCH", "/api/settings", map[string]any{"allow_public_repos": false}, nil).want(t, 200)
+	b.do("GET", "/api/servers/cheap-vps", nil, &agent).want(t, 200)
+	b.do("GET", placement, nil, &got).want(t, 200)
+	if agent.WaitReason != "" || got.WaitingServers != 0 || len(got.PlaceableServerIDs) != 2 {
+		t.Errorf("after the setting went off: wait_reason %q, placement %+v; want no wait", agent.WaitReason, got)
+	}
+}
+
 func TestUpdateAgentOnlyWhenAnUpdateApplies(t *testing.T) {
 	servers := &fakeServers{states: map[string]fleet.UpdateState{
 		"same": fleet.UpdateCurrent, "old": fleet.UpdateAvailable, "broken": fleet.UpdateFailed, "busy": fleet.UpdateUpdating, "dev": fleet.UpdateNone,

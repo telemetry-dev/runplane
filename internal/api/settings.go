@@ -21,12 +21,11 @@ type Settings struct {
 	store.Settings
 	BackupS3 BackupS3 `json:"backup_s3" doc:"Optional upload of each backup to S3."`
 
-	BackupTime          string      `json:"backup_time" doc:"Time of day in UTC of the daily backup, for example 03:00. Read-only."`
-	SecretKeyPath       string      `json:"secret_key_path" doc:"File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only."`
-	HTTPS               HTTPSStatus `json:"https" doc:"Certificate of the domain. Read-only."`
-	PublicReposPossible bool        `json:"public_repos_possible" doc:"Jobs of public repositories can run: the mode setting and each server are in VM mode. Read-only."`
-	PublicReposRefusal  string      `json:"public_repos_refusal" doc:"Why jobs of public repositories cannot run. Empty when they can. Read-only."`
-	BandwidthApplies    bool        `json:"bandwidth_applies" doc:"bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only."`
+	BackupTime         string      `json:"backup_time" doc:"Time of day in UTC of the daily backup, for example 03:00. Read-only."`
+	SecretKeyPath      string      `json:"secret_key_path" doc:"File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only."`
+	HTTPS              HTTPSStatus `json:"https" doc:"Certificate of the domain. Read-only."`
+	PublicReposRefusal string      `json:"public_repos_refusal" doc:"Why an admin cannot turn allow_public_repos on: the mode setting or a server is not in VM mode. It names each server that is not in VM mode, and while the setting is on, these servers get no runners. Empty when each server is in VM mode. Read-only."`
+	BandwidthApplies   bool        `json:"bandwidth_applies" doc:"bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only."`
 }
 
 type HTTPSStatus struct {
@@ -57,7 +56,6 @@ func (h *Handler) settingsOut(ctx context.Context, st store.Settings) (Settings,
 		BackupTime: time.Time{}.Add(backup.DailyAt).Format("15:04"), SecretKeyPath: h.d.Config.SecretKeyPath(),
 		PublicReposRefusal: policy.PublicRepos(mode, servers), BandwidthApplies: policy.BandwidthApplies(mode, servers),
 	}
-	out.PublicReposPossible = out.PublicReposRefusal == ""
 	s := h.d.HTTPS.Status(ctx)
 	out.HTTPS = HTTPSStatus{State: s.State, Error: s.Error}
 	if !s.NotAfter.IsZero() {

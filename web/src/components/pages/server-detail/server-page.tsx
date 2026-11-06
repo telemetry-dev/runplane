@@ -6,14 +6,12 @@ import { doctorQuery, serverQuery, useDoctor } from '~/api/servers'
 import { useCapabilities } from '~/api/session'
 import { LoadError, LoadErrorRow, NotFound } from '~/components/app/load-error'
 import { SectionHeader } from '~/components/app/section-header'
-import { serverStatusNames } from '~/components/app/status-dot'
 import { LiveRunnersTable } from '~/components/pages/runners/live-runners-table'
-import { statusFacts } from '~/components/pages/servers/server-info'
 import { Skeleton } from '~/components/ui/skeleton'
 import { DoctorSection } from './doctor-section'
 import { ImagesTable } from './images-table'
 import { ServerFacts, ServerUsage } from './server-facts'
-import type { Server } from './server-format'
+import { noRunnersText, type Server } from './server-format'
 import { ServerHeader } from './server-header'
 
 /** Starts the requests of the page, and returns the server for the title. */
@@ -61,11 +59,7 @@ function ServerDetail({ server }: { server: Server }) {
         <LiveRunnersTable
           sandboxes={sandboxes.data}
           showServer={false}
-          empty={
-            statusFacts[server.status].connected && !statusFacts[server.status].takesRunners
-              ? `No runners on this server. ${serverStatusNames[server.status]} servers take no new runners.`
-              : 'No runners on this server.'
-          }
+          empty={noRunnersText(server)}
           failed={
             sandboxes.isError ? (
               <LoadErrorRow what="the runners" error={sandboxes.error} onRetry={() => void sandboxes.refetch()} retrying={sandboxes.isFetching} />

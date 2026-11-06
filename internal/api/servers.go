@@ -10,6 +10,7 @@ import (
 	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -52,6 +53,7 @@ type Server struct {
 	Version            string        `json:"version" doc:"runplane version on the server."`
 	UpdateState        string        `json:"update_state" enum:"current,available,updating,failed,none" doc:"current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and update_error tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version."`
 	UpdateError        string        `json:"update_error" doc:"Why the last update of the agent failed. Empty when it did not fail."`
+	WaitReason         string        `json:"wait_reason" doc:"Why the server gets no runners in its mode, for example while allow_public_repos is on and the server is not in VM mode. Empty when it gets runners. status tells if the server is draining or disabled."`
 	Actions            ServerActions `json:"actions" doc:"The changes that an admin can make to the server now."`
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
@@ -66,13 +68,17 @@ type ServerActions struct {
 }
 
 // servers converts store servers and adds the latest host sample, the
-// sandbox use, and the update state.
+// sandbox use, the update state, and why a server waits.
 func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, error) {
 	stats, err := h.d.Store.LatestServerStats(ctx)
 	if err != nil {
 		return nil, err
 	}
 	live, err := h.d.Store.ListLiveSandboxes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := h.d.Store.GetSettings(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +94,7 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 			Address: f.Address, Provider: f.Provider, Region: f.Region, OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
 			DockerVersion: f.DockerVersion, SysboxVersion: f.SysboxVersion, FirecrackerVersion: f.FirecrackerVersion,
 			Version: f.Version, UpdateState: string(h.d.Servers.UpdateState(v)), UpdateError: v.UpdateError,
+			WaitReason: waitReason(settings, v),
 			Actions: ServerActions{
 				CanDrain: a.Drain, CanResume: a.Resume, CanRemove: a.Remove, CanUpdate: a.Update, CanRunDoctor: a.RunDoctor,
 			},
@@ -112,6 +119,17 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 		}
 	}
 	return out, nil
+}
+
+// waitReason tells why the scheduler starts no runners on the server, or
+// returns "". A server without facts runs no driver yet. A public job that
+// waits keeps a server out of its own scale set only, so it is no reason
+// here.
+func waitReason(st store.Settings, v store.Server) string {
+	if v.Mode == "" {
+		return ""
+	}
+	return policy.RunnerRefusal(st, v.Mode, false)
 }
 
 func (h *Handler) listServers(ctx context.Context, _ *struct{}) (*body[[]Server], error) {

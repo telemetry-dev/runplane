@@ -24,7 +24,7 @@ type Settings struct {
 	CPUOvercommit           float64      `json:"cpu_overcommit" minimum:"0.5" maximum:"8" doc:"Factor for the vCPUs that sandboxes can get. 1 means no overcommit."`
 	MinFreeDiskPercent      float64      `json:"min_free_disk_percent" minimum:"0" maximum:"90" doc:"No new sandboxes start on a server with less free disk."`
 	DefaultTimeLimitMinutes int          `json:"default_time_limit_minutes" minimum:"1" maximum:"7200" doc:"Time limit of a job in a pool without its own limit."`
-	AllowPublicRepos        bool         `json:"allow_public_repos" doc:"Take jobs of public repositories. Only when the mode setting and each server are in VM mode."`
+	AllowPublicRepos        bool         `json:"allow_public_repos" doc:"Take jobs of public repositories. An admin can turn it on only while the mode setting and each server are in VM mode. While it is on, only servers in VM mode get runners."`
 	AllowForkPRs            bool         `json:"allow_fork_prs" doc:"Take jobs of pull requests from forks."`
 	EgressAllowlist         []string     `json:"egress_allowlist" maxItems:"256" doc:"Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet."`
 	BandwidthMbps           int          `json:"bandwidth_mbps" minimum:"0" maximum:"100000" doc:"Bandwidth limit of each VM. 0: no limit."`

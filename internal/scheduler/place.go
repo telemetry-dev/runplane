@@ -31,12 +31,14 @@ type hostCapacity struct {
 // place selects the server for a new sandbox of the pool and reserves its
 // size there. Of the servers that can take the sandbox, the one with the
 // most free memory wins. It returns false if no server can take it now.
+// publicWaits is the argument of policy.RunnerRefusal for the scale set of
+// the sandbox.
 //
 // Placements run one at a time. A placement reads the reservations before
 // the capacities: a start that ends in between is then counted twice, never
 // zero times, because a driver counts a sandbox from the moment Start
 // returns.
-func (s *Scheduler) place(ctx context.Context, pool store.Pool, st store.Settings) (placement, bool) {
+func (s *Scheduler) place(ctx context.Context, pool store.Pool, st store.Settings, publicWaits bool) (placement, bool) {
 	s.placeMu.Lock()
 	defer s.placeMu.Unlock()
 	var best placement
@@ -46,7 +48,7 @@ func (s *Scheduler) place(ctx context.Context, pool store.Pool, st store.Setting
 		if h.cap.Room(pool.VCPU, pool.MemoryMB, r) == 0 {
 			continue
 		}
-		img, version, ok := s.offer(h, pool, st)
+		img, version, ok := s.offer(h, pool, st, publicWaits)
 		if !ok {
 			continue
 		}
@@ -101,8 +103,8 @@ func (s *Scheduler) hosts(ctx context.Context) []hostCapacity {
 // offer returns the image and the runner version for a sandbox of the pool
 // on the server, or false if the server cannot take sandboxes of the pool.
 // It does not check the CPU and memory.
-func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (sandbox.ImageRef, string, bool) {
-	if !pool.CanUse(h.ServerID, h.Arch) || !policy.RunnerAllowed(st, h.Driver.Mode()) ||
+func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings, publicWaits bool) (sandbox.ImageRef, string, bool) {
+	if !pool.CanUse(h.ServerID, h.Arch) || policy.RunnerRefusal(st, h.Driver.Mode(), publicWaits) != "" ||
 		h.cap.FreeDiskPercent() <= st.MinFreeDiskPercent {
 		return sandbox.ImageRef{}, "", false
 	}
@@ -117,10 +119,10 @@ func (s *Scheduler) offer(h hostCapacity, pool store.Pool, st store.Settings) (s
 // maxRunners is the number of runners that a scale set of the pool can have
 // now: its runners plus the new sandboxes of the pool size that the servers
 // can take, at most max_runners.
-func (s *Scheduler) maxRunners(runners int, hosts []hostCapacity, pool store.Pool, st store.Settings) int {
+func (s *Scheduler) maxRunners(runners int, hosts []hostCapacity, pool store.Pool, st store.Settings, publicWaits bool) int {
 	n := runners
 	for _, h := range hosts {
-		if _, _, ok := s.offer(h, pool, st); ok {
+		if _, _, ok := s.offer(h, pool, st, publicWaits); ok {
 			n += h.cap.Room(pool.VCPU, pool.MemoryMB, st.Reserve())
 		}
 	}

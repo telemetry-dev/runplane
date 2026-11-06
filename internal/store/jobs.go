@@ -121,6 +121,9 @@ type Job struct {
 	MemPeakMB     *int       `json:"mem_peak_mb"`
 	Debug         bool       `json:"debug"`
 	EnrichedAt    *time.Time `json:"enriched_at"`
+	// Public tells that the repository was public when the scheduler
+	// checked the job.
+	Public bool `json:"public"`
 }
 
 // JobStep is one step from the GitHub jobs API, with the JSON names of
@@ -248,7 +251,7 @@ const jobCols = `id, runner_request_id, github_job_id, scale_set_id, pool_id, sa
 	workflow_ref, workflow_file, workflow_name, job_name, run_id, run_number, run_attempt, head_branch, head_sha,
 	commit_message, event, actor, pr_number, base_ref, labels_json, state, result, result_guessed, reject_reason, queued_at,
 	assigned_at, started_at, finished_at, html_url, steps_json, log_state, finish_pending, cpu_peak, cpu_avg, mem_peak_mb,
-	debug, enriched_at`
+	debug, enriched_at, public`
 
 func (j *Job) cols() []any {
 	return []any{&j.ID, &j.RunnerRequestID, &j.GitHubJobID, &j.ScaleSetID, &j.PoolID, &j.SandboxID, &j.ServerID,
@@ -256,7 +259,7 @@ func (j *Job) cols() []any {
 		&j.RunAttempt, &j.HeadBranch, &j.HeadSHA, &j.CommitMessage, &j.Event, &j.Actor, &j.PRNumber,
 		&j.BaseRef, jsonCol(&j.Labels), &j.State, text(&j.Result), &j.ResultGuessed, &j.RejectReason, at(&j.QueuedAt),
 		atPtr(&j.AssignedAt), atPtr(&j.StartedAt), atPtr(&j.FinishedAt), &j.HTMLURL, jsonCol(&j.Steps), &j.LogState,
-		&j.FinishPending, &j.CPUPeak, &j.CPUAvg, &j.MemPeakMB, &j.Debug, atPtr(&j.EnrichedAt)}
+		&j.FinishPending, &j.CPUPeak, &j.CPUAvg, &j.MemPeakMB, &j.Debug, atPtr(&j.EnrichedAt), &j.Public}
 }
 
 // Ran tells if the job started on a runner. A job that never ran has no log.
@@ -398,11 +401,28 @@ func (s *Store) GetJobByRunnerRequestID(ctx context.Context, id int64) (Job, err
 	return queryOne(ctx, s.r, "get job", scanRow[Job], "SELECT "+jobCols+" FROM jobs WHERE runner_request_id = ?", id)
 }
 
-// SetJobRunRef writes the run data that gives the cache refs. An empty
-// event keeps the event from the job message.
-func (s *Store) SetJobRunRef(ctx context.Context, id string, r RunRef) error {
-	return exec1(ctx, s.w, "set job run ref", `UPDATE jobs SET event = coalesce(nullif(?, ''), event), head_branch = ?,
-		pr_number = ?, base_ref = ? WHERE id = ?`, r.Event, r.HeadBranch, r.PRNumber, r.BaseRef, id)
+// SetJobRun writes what the scheduler reads from the run before it takes
+// the job: if the repository is public, and the run data that gives the
+// cache refs. An empty event keeps the event from the job message.
+func (s *Store) SetJobRun(ctx context.Context, id string, public bool, r RunRef) error {
+	return exec1(ctx, s.w, "set job run", `UPDATE jobs SET public = ?, event = coalesce(nullif(?, ''), event),
+		head_branch = ?, pr_number = ?, base_ref = ? WHERE id = ?`, public, r.Event, r.HeadBranch, r.PRNumber, r.BaseRef, id)
+}
+
+// PublicWaits returns the IDs of the scale sets in which a job of a public
+// repository waits for a runner: the scale set acquired the job, and no
+// runner started it yet.
+func (s *Store) PublicWaits(ctx context.Context) (map[string]bool, error) {
+	ids, err := queryAll(ctx, s.r, "list public jobs that wait", scanValue[string],
+		"SELECT DISTINCT scale_set_id FROM jobs WHERE state = ? AND public", JobAssigned)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
 }
 
 // SetJobEnrichment writes the run data and sets enriched_at to now. An

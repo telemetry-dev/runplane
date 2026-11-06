@@ -20,7 +20,7 @@ import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
 import { Code } from './code'
-import { poolHardware, poolScope, poolSize, type Pool } from './runner-format'
+import { placementProblem, poolHardware, poolScope, poolSize, type Pool } from './runner-format'
 
 type LabelsTableProps = {
   /** Undefined while the list loads. */
@@ -146,12 +146,9 @@ const countSpans = ['col-span-2', 'col-span-3', 'col-span-4']
 
 /** The servers of a pool, or why none can start its runners. */
 function PoolScope({ pool, servers }: { pool: Pool; servers: Schemas['Server'][] | undefined }) {
-  if (!pool.enabled || pool.placeable_servers > 0) return poolScope(pool, servers)
-  return (
-    <span className="text-neutral-10">
-      {pool.online_servers === 0 ? `No ${pool.arch} server is online` : `No ${pool.arch} server is large enough`}
-    </span>
-  )
+  const problem = placementProblem(pool.arch, pool)
+  if (!pool.enabled || !problem) return poolScope(pool, servers)
+  return <span className="text-neutral-10">{problem}</span>
 }
 
 /** A live count; zero recedes. `strong` marks waiting jobs, which need attention. */

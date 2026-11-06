@@ -229,15 +229,17 @@ func TestRejectsPublicAndForkJobs(t *testing.T) {
 		check        JobCheck
 		disabled     bool
 		wantRejected bool
+		wantAcquired bool
 		wantChecks   int
 	}{
-		{"container, private", sandbox.ModeContainer, false, false, JobCheck{Private: true}, false, false, 1},
-		{"container, public", sandbox.ModeContainer, true, true, JobCheck{}, false, true, 1},
-		{"vm, public, not allowed", sandbox.ModeVM, false, true, JobCheck{}, false, true, 1},
-		{"vm, public, allowed", sandbox.ModeVM, true, true, JobCheck{}, false, false, 1},
-		{"fork, not allowed", sandbox.ModeContainer, false, false, JobCheck{Private: true, Fork: true}, false, true, 1},
-		{"fork, allowed", sandbox.ModeContainer, false, true, JobCheck{Private: true, Fork: true}, false, false, 1},
-		{"pool disabled", sandbox.ModeContainer, false, false, JobCheck{Private: true}, true, true, 0},
+		{"container, private", sandbox.ModeContainer, false, false, JobCheck{Private: true}, false, false, true, 1},
+		// The setting takes the job, but the container server waits, so the job waits too.
+		{"container, public", sandbox.ModeContainer, true, true, JobCheck{}, false, false, false, 1},
+		{"vm, public, not allowed", sandbox.ModeVM, false, true, JobCheck{}, false, true, false, 1},
+		{"vm, public, allowed", sandbox.ModeVM, true, true, JobCheck{}, false, false, true, 1},
+		{"fork, not allowed", sandbox.ModeContainer, false, false, JobCheck{Private: true, Fork: true}, false, true, false, 1},
+		{"fork, allowed", sandbox.ModeContainer, false, true, JobCheck{Private: true, Fork: true}, false, false, true, 1},
+		{"pool disabled", sandbox.ModeContainer, false, false, JobCheck{Private: true}, true, true, false, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -256,8 +258,8 @@ func TestRejectsPublicAndForkJobs(t *testing.T) {
 			// Two jobs of one run: GitHub is asked about the run one time.
 			e.scale(sc, msg(0, available(21, "acme/site", 4242, "test"), available(22, "acme/site", 4242, "deploy")))
 
-			if tt.wantRejected != (len(client.acquired) == 0) {
-				t.Errorf("acquire calls %v, rejected = %v", client.acquired, tt.wantRejected)
+			if tt.wantAcquired != (len(client.acquired) > 0) {
+				t.Errorf("acquire calls %v, want acquired = %v", client.acquired, tt.wantAcquired)
 			}
 			for _, id := range []int64{21, 22} {
 				j := e.job(id)
@@ -516,7 +518,8 @@ func TestRecordsRunData(t *testing.T) {
 
 // GitHub can give any job of a scale set to any of its runners, so with
 // public repositories allowed, a container server takes no sandboxes, and a
-// public job waits while a container runner exists.
+// public job waits while a container runner of the scale set is live. The
+// container server itself does not stop public jobs.
 func TestPublicJobsNeverReachContainerServers(t *testing.T) {
 	e := newTestEnv(t)
 	e.setSettings(func(s *store.Settings) { s.Mode, s.AllowPublicRepos = sandbox.ModeVM, true })
@@ -542,22 +545,71 @@ func TestPublicJobsNeverReachContainerServers(t *testing.T) {
 		t.Errorf("warm container sandbox: state %q, want stopping", got.State)
 	}
 	if j := e.job(51); j.RejectReason == "" || len(client.acquired) != 0 {
-		t.Errorf("public job: reject %q, acquire calls %v; want a reject while a container server is online", j.RejectReason, client.acquired)
+		t.Errorf("public job: reject %q, acquire calls %v; want a reject while a container runner is live", j.RejectReason, client.acquired)
 	}
 
-	// Without the container server, the VM servers take the job.
-	e.fleet.mu.Lock()
-	e.fleet.disconnected[agentID] = true
-	e.fleet.mu.Unlock()
-	e.s.cleanup(e.ctx)
+	// The container server stays online, but the scale set has only VM
+	// runners now, so it takes the job.
 	e.scale(sc, msg(0, available(51, "acme/site", 4300, "test")))
 	if j := e.job(51); j.RejectReason != "" || j.State != store.JobAssigned {
-		t.Errorf("public job with VM servers only: state %q, reject %q; want assigned", j.State, j.RejectReason)
+		t.Errorf("public job with a container server online: state %q, reject %q; want assigned", j.State, j.RejectReason)
+	}
+	if n := len(agentDriver.specs); n != 0 {
+		t.Errorf("%d sandboxes started on the container server, want 0", n)
 	}
 	for _, b := range e.sandboxes(pool.ID, sandbox.StateStarting) {
 		if b.ServerID != vmID {
 			t.Errorf("sandbox %s on server %s, want the VM server", b.ID, b.ServerID)
 		}
+	}
+}
+
+// After an admin turns allow_public_repos off, a public job that a scale
+// set acquired before can still wait for a runner. GitHub can give it to
+// each runner of the scale set, so a container server gets no runner of
+// that scale set until the job stops waiting. Other scale sets get
+// container runners at once.
+func TestWaitingPublicJobKeepsContainerServersOut(t *testing.T) {
+	e := newTestEnv(t)
+	e.setSettings(func(s *store.Settings) { s.Mode, s.AllowPublicRepos = sandbox.ModeVM, true })
+	e.gh.checks["acme/site"] = JobCheck{}
+	vm := capacity("x64", 2, 4096) // room for one sandbox
+	vm.Mode = sandbox.ModeVM
+	_, vmDriver := e.addServer("primary", vm)
+	_, agentDriver := e.addServer("cheap-vps", capacity("x64", 64, 262144))
+	pool := e.addPool("runplane")
+	client, sc, _ := e.attach(pool)
+	otherPool := e.addPool("runplane-other")
+	_, otherSC, _ := e.attach(otherPool)
+
+	e.scale(sc, msg(0, available(51, "acme/site", 4300, "test")))
+	if j := e.job(51); j.State != store.JobAssigned {
+		t.Fatalf("public job: state %q, reject %q; want assigned while the setting is on", j.State, j.RejectReason)
+	}
+
+	e.setSettings(func(s *store.Settings) { s.AllowPublicRepos = false })
+	// A job of another pool fills the VM server.
+	vmDriver.mu.Lock()
+	vmDriver.running["other"] = sandbox.Spec{ID: "other", VCPU: 2, MemoryMB: 4096}
+	vmDriver.mu.Unlock()
+	e.scale(sc, msg(1))
+	if n := len(agentDriver.specs); n != 0 {
+		t.Errorf("%d sandboxes started on the container server while a public job waits, want 0", n)
+	}
+	if client.max != 0 {
+		t.Errorf("max runners %d while a public job waits and the VM server is full, want 0", client.max)
+	}
+	e.scale(otherSC, msg(1))
+	if specs := agentDriver.specs; len(specs) != 1 || specs[0].PoolID != otherPool.ID {
+		t.Fatalf("container sandboxes %+v, want one for the other scale set", specs)
+	}
+
+	cancel := assigned(51, "acme/site", 4300, "test")
+	cancel.State, cancel.Result = store.JobCompleted, store.ResultCancelled
+	e.scale(sc, msg(1, cancel))
+	e.settle()
+	if specs := agentDriver.specs; len(specs) != 2 || specs[1].PoolID != pool.ID {
+		t.Errorf("container sandboxes %+v, want one more for the scale set after the public job stopped waiting", specs)
 	}
 }
 

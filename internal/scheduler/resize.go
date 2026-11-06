@@ -43,8 +43,12 @@ func (h *scaleSet) resize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	publicWaits, err := h.publicWaits(ctx)
+	if err != nil {
+		return err
+	}
 	if pool != nil {
-		live = h.stopStale(ctx, *pool, st, live)
+		live = h.stopStale(ctx, *pool, st, publicWaits, live)
 	}
 	need := 0
 	if pool != nil && pool.Enabled {
@@ -52,7 +56,7 @@ func (h *scaleSet) resize(ctx context.Context) error {
 	}
 	switch {
 	case need > len(live):
-		h.start(ctx, *pool, st, need-len(live))
+		h.start(ctx, *pool, st, publicWaits, need-len(live))
 	case need < len(live):
 		h.stopIdle(ctx, live, len(live)-need)
 	}
@@ -69,10 +73,10 @@ func (h *scaleSet) live(ctx context.Context) ([]store.Sandbox, error) {
 }
 
 // start places n sandboxes, as many as fit, and starts them at the same time.
-func (h *scaleSet) start(ctx context.Context, pool store.Pool, st store.Settings, n int) {
+func (h *scaleSet) start(ctx context.Context, pool store.Pool, st store.Settings, publicWaits bool, n int) {
 	var wg sync.WaitGroup
 	for range n {
-		p, ok := h.s.place(ctx, pool, st)
+		p, ok := h.s.place(ctx, pool, st, publicWaits)
 		if !ok {
 			h.s.log.Debug("no server can take a sandbox", "pool", pool.Label)
 			break
@@ -177,7 +181,7 @@ func (h *scaleSet) stopIdle(ctx context.Context, live []store.Sandbox, n int) {
 
 // stopStale stops the idle sandboxes for which staleReason has a reason. It
 // returns the sandboxes that stay.
-func (h *scaleSet) stopStale(ctx context.Context, pool store.Pool, st store.Settings, live []store.Sandbox) []store.Sandbox {
+func (h *scaleSet) stopStale(ctx context.Context, pool store.Pool, st store.Settings, publicWaits bool, live []store.Sandbox) []store.Sandbox {
 	arch := map[string]string{}
 	for _, host := range h.s.fleet.Online() {
 		arch[host.ServerID] = host.Arch
@@ -186,7 +190,7 @@ func (h *scaleSet) stopStale(ctx context.Context, pool store.Pool, st store.Sett
 	for _, b := range live {
 		reason := ""
 		if b.State == sandbox.StateIdle {
-			reason = h.s.staleReason(b, pool, st, arch[b.ServerID])
+			reason = h.s.staleReason(b, pool, st, publicWaits, arch[b.ServerID])
 		}
 		if reason != "" && h.stopIfFree(ctx, b, "replaced: "+reason) {
 			h.s.log.Info("replace a warm sandbox", "sandbox", b.ID, "pool", pool.Label, "reason", reason)
@@ -217,11 +221,11 @@ func (h *scaleSet) stopIfFree(ctx context.Context, b store.Sandbox, reason strin
 // staleReason tells why the idle sandbox b must give way to a new sandbox of
 // the pool, or returns "". arch is the arch of its server, empty if the
 // server is not online.
-func (s *Scheduler) staleReason(b store.Sandbox, pool store.Pool, st store.Settings, arch string) string {
+func (s *Scheduler) staleReason(b store.Sandbox, pool store.Pool, st store.Settings, publicWaits bool, arch string) string {
 	if s.now().Sub(b.CreatedAt) >= timeLimit(pool, st) {
 		return "it waited for a job for the whole time limit"
 	}
-	if !policy.RunnerAllowed(st, b.Mode) {
+	if policy.RunnerRefusal(st, b.Mode, publicWaits) != "" {
 		return "public repositories need VM mode"
 	}
 	if b.VCPU != pool.VCPU || b.MemoryMB != pool.MemoryMB || b.DiskGB != pool.DiskGB {
@@ -261,6 +265,11 @@ func (s *Scheduler) updateMaxRunners(ctx context.Context) {
 		s.log.Warn("update max runners", "err", err)
 		return
 	}
+	publicWaits, err := s.st.PublicWaits(ctx)
+	if err != nil {
+		s.log.Warn("update max runners", "err", err)
+		return
+	}
 	runners := map[string]int{}
 	for _, b := range live {
 		runners[b.ScaleSetID]++
@@ -269,7 +278,7 @@ func (s *Scheduler) updateMaxRunners(ctx context.Context) {
 	for _, h := range sets {
 		n := 0
 		if i := slices.IndexFunc(pools, func(p store.Pool) bool { return p.ID == h.set.PoolID }); i >= 0 && pools[i].Enabled {
-			n = s.maxRunners(runners[h.set.ID], hosts, pools[i], st)
+			n = s.maxRunners(runners[h.set.ID], hosts, pools[i], st, publicWaits[h.set.ID])
 		}
 		h.client.SetMaxRunners(n)
 	}

@@ -30,6 +30,16 @@ export function poolScope(pool: Pick<Pool, 'arch' | 'server_ids'>, servers: read
   return pool.server_ids.map((id) => names.get(id) ?? 'Removed server').join(', ')
 }
 
+type Placement = Pick<Schemas['PoolPlacement'], 'online_servers' | 'waiting_servers' | 'placeable_servers'>
+
+/** Why no sandbox of the pool size can start, as "No x64 server is online", or undefined when one can. */
+export function placementProblem(arch: string, placement: Placement): string | undefined {
+  if (placement.placeable_servers > 0) return undefined
+  if (placement.online_servers === 0) return `No ${arch} server is online`
+  if (placement.waiting_servers === placement.online_servers) return `No ${arch} server gets runners now`
+  return `No ${arch} server is large enough`
+}
+
 /** "16 vCPU · 64 GB" */
 export function poolSize(pool: Pick<Pool, 'vcpu' | 'memory_mb'>): string {
   return `${pool.vcpu} vCPU · ${gigabytes(pool.memory_mb)} GB`

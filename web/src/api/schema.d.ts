@@ -1904,7 +1904,7 @@ export interface components {
             placeable_server_ids: string[];
             /**
              * Format: int64
-             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
+             * @description Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
              */
             placeable_servers: number;
             /**
@@ -1928,6 +1928,11 @@ export interface components {
             updated_at: string;
             /** Format: int64 */
             vcpu: number;
+            /**
+             * Format: int64
+             * @description Of online_servers, the servers that get no runners now. wait_reason of each server tells why.
+             */
+            waiting_servers: number;
         };
         PoolPlacement: {
             /**
@@ -1938,9 +1943,14 @@ export interface components {
             placeable_server_ids: string[];
             /**
              * Format: int64
-             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
+             * @description Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
              */
             placeable_servers: number;
+            /**
+             * Format: int64
+             * @description Of online_servers, the servers that get no runners now. wait_reason of each server tells why.
+             */
+            waiting_servers: number;
         };
         PoolStats: {
             /**
@@ -2219,6 +2229,8 @@ export interface components {
             vcpu_in_use: number;
             /** @description runplane version on the server. */
             version: string;
+            /** @description Why the server gets no runners in its mode, for example while allow_public_repos is on and the server is not in VM mode. Empty when it gets runners. status tells if the server is draining or disabled. */
+            wait_reason: string;
         };
         ServerActions: {
             /** @description PATCH status draining. */
@@ -2344,7 +2356,7 @@ export interface components {
             actions_cache: boolean;
             /** @description Take jobs of pull requests from forks. */
             allow_fork_prs: boolean;
-            /** @description Take jobs of public repositories. Only when the mode setting and each server are in VM mode. */
+            /** @description Take jobs of public repositories. An admin can turn it on only while the mode setting and each server are in VM mode. While it is on, only servers in VM mode get runners. */
             allow_public_repos: boolean;
             auto_update: boolean;
             /** @description Daily database backup. */
@@ -2406,9 +2418,7 @@ export interface components {
              * @enum {string}
              */
             mode: "container" | "vm" | "dev";
-            /** @description Jobs of public repositories can run: the mode setting and each server are in VM mode. Read-only. */
-            public_repos_possible: boolean;
-            /** @description Why jobs of public repositories cannot run. Empty when they can. Read-only. */
+            /** @description Why an admin cannot turn allow_public_repos on: the mode setting or a server is not in VM mode. It names each server that is not in VM mode, and while the setting is on, these servers get no runners. Empty when each server is in VM mode. Read-only. */
             public_repos_refusal: string;
             /** @description Browser URL of the dashboard, for example https://ci.example.com. Empty: the URL of each request. */
             public_url: string;
@@ -2434,7 +2444,7 @@ export interface components {
             actions_cache?: boolean;
             /** @description Take jobs of pull requests from forks. */
             allow_fork_prs?: boolean;
-            /** @description Take jobs of public repositories. Only when the mode setting and each server are in VM mode. */
+            /** @description Take jobs of public repositories. An admin can turn it on only while the mode setting and each server are in VM mode. While it is on, only servers in VM mode get runners. */
             allow_public_repos?: boolean;
             auto_update?: boolean;
             /** @description Daily database backup. */

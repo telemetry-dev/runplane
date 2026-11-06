@@ -18,6 +18,7 @@ const pool: Pool = {
   time_limit_minutes: 0,
   server_ids: ['primary'],
   online_servers: 1,
+  waiting_servers: 0,
   placeable_servers: 1,
   placeable_server_ids: ['primary'],
   enabled: true,

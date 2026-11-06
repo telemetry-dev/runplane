@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { diskDetail, shortDigest, statusDetail, type Server } from './server-format'
+import { diskDetail, noRunnersText, shortDigest, statusDetail, type Server } from './server-format'
 
 // A server as GET /api/servers/{id} returns it (the seeded fsn1-ax52-b).
 const agent: Server = {
@@ -34,6 +34,7 @@ const agent: Server = {
   version: 'v0.4.2',
   update_state: 'current',
   update_error: '',
+  wait_reason: '',
   actions: { can_drain: true, can_resume: false, can_remove: true, can_update: false, can_run_doctor: true },
   stats_at: '2026-11-04T04:49:39.447Z',
   created_at: '2026-10-03T06:49:45.447Z',
@@ -60,6 +61,18 @@ describe('statusDetail', () => {
     expect(statusDetail({ ...lost, last_seen_at: '2026-11-04T02:49:51.447Z' }, now)).toBe('last heartbeat 2h ago')
     expect(statusDetail({ ...lost, last_seen_at: null, status_detail: 'ssh: handshake failed' }, now)).toBe('ssh: handshake failed')
   })
+})
+
+test.each([
+  ['an online server', agent, 'No runners on this server.'],
+  ['a draining server', { ...agent, status: 'draining' }, 'No runners on this server. Draining servers take no new runners.'],
+  [
+    'a server that waits',
+    { ...agent, mode: 'container', wait_reason: 'Only servers in VM mode get runners while allow_public_repos is on.' },
+    'No runners on this server. Only servers in VM mode get runners while allow_public_repos is on.',
+  ],
+] as const)('noRunnersText of %s', (_name, server, want) => {
+  expect(noRunnersText(server)).toBe(want)
 })
 
 describe('diskDetail', () => {

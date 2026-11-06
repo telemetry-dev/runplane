@@ -25,7 +25,7 @@ import { Spinner } from '~/components/ui/spinner'
 import { toastManager } from '~/components/ui/toast'
 import { cx } from '~/lib/cx'
 import { draftFrom, formFields, poolRequest, poolUpdate, type Arch, type Draft } from './label-form'
-import { formatTimeLimit, type Pool } from './runner-format'
+import { formatTimeLimit, placementProblem, type Pool } from './runner-format'
 
 type Server = Schemas['Server']
 
@@ -275,9 +275,9 @@ function FitHint({ draft }: { draft: Draft }) {
   }
   const placement = useQuery({ ...placementQuery(query), enabled: sized, placeholderData: keepPreviousData }).data
   if (!sized || !placement) return null
+  const problem = placementProblem(arch, placement)
+  if (problem) return <p className="text-xs text-neutral-10">{problem}.</p>
   const { placeable_servers: fits, online_servers: total } = placement
-  if (total === 0) return <p className="text-xs text-neutral-10">No {arch} server is online.</p>
-  if (fits === 0) return <p className="text-xs text-neutral-10">No {arch} server is large enough.</p>
   return (
     <p className="text-xs text-neutral-7">
       Fits on {fits} of {total} {arch} {total === 1 ? 'server' : 'servers'}.

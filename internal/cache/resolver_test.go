@@ -40,10 +40,10 @@ func TestResolver(t *testing.T) {
 		}
 		jobs = append(jobs, j.ID)
 	}
-	if err := st.SetJobRunRef(ctx, jobs[0], store.RunRef{Event: "push", HeadBranch: "trunk"}); err != nil {
+	if err := st.SetJobRun(ctx, jobs[0], false, store.RunRef{Event: "push", HeadBranch: "trunk"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetJobRunRef(ctx, jobs[1], store.RunRef{Event: "pull_request", HeadBranch: "main", PRNumber: 5, BaseRef: "trunk"}); err != nil {
+	if err := st.SetJobRun(ctx, jobs[1], false, store.RunRef{Event: "pull_request", HeadBranch: "main", PRNumber: 5, BaseRef: "trunk"}); err != nil {
 		t.Fatal(err)
 	}
 	api := Identity{SandboxID: "busy", Repository: "acme/api", DefaultBranch: "trunk", Ref: "refs/heads/trunk"}

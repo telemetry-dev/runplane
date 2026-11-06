@@ -209,7 +209,7 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []JobMessage) error
 	}
 	var modes []sandbox.Mode
 	if pool != nil && pool.Enabled {
-		if modes, err = h.runnerModes(ctx, *pool); err != nil {
+		if modes, err = h.runnerModes(ctx); err != nil {
 			return err
 		}
 	}
@@ -269,7 +269,11 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []JobMessage) error
 	if err != nil {
 		return err
 	}
-	room := s.maxRunners(len(live), s.hosts(ctx), *pool, st) - h.stats.AssignedJobs
+	publicWaits, err := h.publicWaits(ctx)
+	if err != nil {
+		return err
+	}
+	room := s.maxRunners(len(live), s.hosts(ctx), *pool, st, publicWaits) - h.stats.AssignedJobs
 	wanted = wanted[:max(0, min(room, len(wanted)))]
 	if len(wanted) == 0 {
 		return nil
@@ -293,9 +297,9 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []JobMessage) error
 var errCheckLater = errors.New("the job check failed")
 
 // check returns why the scheduler does not take the job, or "" to take it.
-// modes are the modes of the runners that can get a job of the pool. For a
-// job of an enabled pool it reads the run and records the run data that
-// gives the cache refs of the job.
+// modes are the modes of the live runners of the scale set. For a job of an
+// enabled pool it reads the run and records if the repository is public, and
+// the run data that gives the cache refs of the job.
 func (h *scaleSet) check(ctx context.Context, pool *store.Pool, st store.Settings, modes []sandbox.Mode, job *store.Job) (string, error) {
 	switch {
 	case pool == nil:
@@ -310,32 +314,35 @@ func (h *scaleSet) check(ctx context.Context, pool *store.Pool, st store.Setting
 	case err != nil:
 		return "", fmt.Errorf("%w: %w", errCheckLater, err)
 	}
-	if err := h.s.st.SetJobRunRef(ctx, job.ID, c.Ref); err != nil {
+	if err := h.s.st.SetJobRun(ctx, job.ID, !c.Private, c.Ref); err != nil {
 		return "", err
 	}
+	job.Public = !c.Private
 	job.Event = cmp.Or(c.Ref.Event, job.Event)
 	job.HeadBranch, job.PRNumber, job.BaseRef = c.Ref.HeadBranch, c.Ref.PRNumber, c.Ref.BaseRef
 	return policy.Refusal(st, policy.Job{Private: c.Private, Fork: c.Fork}, modes), nil
 }
 
-// runnerModes returns the modes of each runner that can get a job of the
-// pool: the live sandboxes of the scale set, and the new sandboxes of the
-// pool on the online servers.
-func (h *scaleSet) runnerModes(ctx context.Context, pool store.Pool) ([]sandbox.Mode, error) {
-	var modes []sandbox.Mode
-	for _, host := range h.s.fleet.Online() {
-		if pool.CanUse(host.ServerID, host.Arch) {
-			modes = append(modes, host.Driver.Mode())
-		}
-	}
+// runnerModes returns the modes of the live sandboxes of the scale set.
+// GitHub can give a job of the scale set to each of them. New sandboxes
+// start only where policy.RunnerRefusal lets them.
+func (h *scaleSet) runnerModes(ctx context.Context) ([]sandbox.Mode, error) {
 	live, err := h.live(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, b := range live {
-		modes = append(modes, b.Mode)
+	modes := make([]sandbox.Mode, len(live))
+	for i, b := range live {
+		modes[i] = b.Mode
 	}
 	return modes, nil
+}
+
+// publicWaits tells if a job of a public repository waits in the scale set
+// for a runner. Refer to policy.RunnerRefusal.
+func (h *scaleSet) publicWaits(ctx context.Context) (bool, error) {
+	waits, err := h.s.st.PublicWaits(ctx)
+	return waits[h.set.ID], err
 }
 
 // checkJob calls GitHub.CheckJob one time for each run in checkTTL. It

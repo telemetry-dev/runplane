@@ -10,6 +10,7 @@ import {
   RowLink,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { ErrorHint } from '~/components/app/error-hint'
 import { None } from '~/components/app/none'
 import { mutedStatus, serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
@@ -164,6 +165,11 @@ function ServerUsage({ server, shown }: { server: Server; shown: Shown }) {
         <div className="flex flex-col items-end">
           <span className={server.running_jobs === 0 ? 'text-neutral-6' : undefined}>{jobCount(server.running_jobs)}</span>
           {paused && <span className="text-xs text-neutral-7">{paused}</span>}
+          {!paused && server.wait_reason && (
+            <ErrorHint error={server.wait_reason} className="text-xs text-neutral-7 underline decoration-dotted underline-offset-2">
+              Waiting
+            </ErrorHint>
+          )}
         </div>
       </DataTableCell>
     </>

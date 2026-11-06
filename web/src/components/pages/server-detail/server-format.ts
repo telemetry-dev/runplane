@@ -1,6 +1,7 @@
 import type { Schemas } from '~/api/client'
+import { serverStatusNames } from '~/components/app/status-dot'
 import { gigabytes } from '~/components/pages/runners/runner-format'
-import { statusNote } from '~/components/pages/servers/server-info'
+import { statusFacts, statusNote } from '~/components/pages/servers/server-info'
 import { formatBytes, formatTimeAgo } from '~/lib/format'
 
 // Text of the Server detail design, from GET /api/servers/{id}, the doctor, and GET /api/images.
@@ -14,6 +15,14 @@ export function statusDetail(server: Server, now: number): string {
   const note = statusNote(server, now)
   if (note) return note.detail
   return server.kind === 'agent' && server.last_seen_at ? `seen ${formatTimeAgo(server.last_seen_at, now)}` : ''
+}
+
+/** The text of an empty runners table, with the reason when the server gets no new runners. */
+export function noRunnersText(server: Server): string {
+  const { connected, takesRunners } = statusFacts[server.status]
+  if (connected && !takesRunners) return `No runners on this server. ${serverStatusNames[server.status]} servers take no new runners.`
+  if (server.wait_reason) return `No runners on this server. ${server.wait_reason}`
+  return 'No runners on this server.'
 }
 
 /** "VM" with "Firecracker 1.10.1", "Container" with "Sysbox 0.6.4", or "Dev". */

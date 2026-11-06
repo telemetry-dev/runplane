@@ -187,7 +187,7 @@ An agent must run the same release as the primary. The primary updates each agen
 
 **Warning:** Use runplane only with private repositories. A pull request from a fork of a public repository can run code on your server.
 
-In container mode, runplane always rejects jobs from public repositories. All Sysbox containers share the host kernel and one ID mapping, thus the isolation between jobs is weaker. In VM mode, runplane rejects jobs from public repositories and from fork pull requests, unless you change these settings. You can let jobs from public repositories run only if each server operates in VM mode.
+In container mode, runplane never runs jobs from public repositories. All Sysbox containers share the host kernel and one ID mapping, thus the isolation between jobs is weaker. In VM mode, runplane rejects jobs from public repositories and from fork pull requests, unless you change these settings. You can turn on the setting for public repositories only if each server operates in VM mode. While the setting is on, a server that connects in a different mode gets no runners, and the **Servers** page tells the cause. To give runners to that server again, turn the setting off.
 
 | Item | Container mode (Sysbox CE) | VM mode (Firecracker) |
 | --- | --- | --- |
@@ -196,7 +196,7 @@ In container mode, runplane always rejects jobs from public repositories. All Sy
 | Network model | One Docker bridge, with the MAC and IP binding in `bridge runplane` | A TAP with a /30 for each VM |
 | AppArmor | The Sysbox profile | Not applicable |
 | Host daemon on the `/proc` path | `sysbox-fs` (Sysbox issue 1018) | None |
-| Public repositories | Rejected | Permitted with the setting |
+| Public repositories | Never | Permitted with the setting |
 
 Sandboxes cannot connect to the host, to other sandboxes, to private networks, to `169.254.169.254`, or to the Azure host endpoint `168.63.129.16`. They can connect only to the public internet and to the runplane cache service on the host.
 

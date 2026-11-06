@@ -46,6 +46,7 @@ const primary: Server = {
   version: 'v0.4.2',
   update_state: 'current',
   update_error: '',
+  wait_reason: '',
   actions: { can_drain: true, can_resume: false, can_remove: false, can_update: false, can_run_doctor: true },
   stats_at: '2026-11-04T04:49:42.447Z',
   created_at: '2026-10-02T04:49:45.447Z',
