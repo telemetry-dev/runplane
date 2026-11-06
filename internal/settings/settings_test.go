@@ -26,23 +26,38 @@ func newService(t *testing.T, c Config) (*Service, *store.Store) {
 }
 
 // The dashboard refuses allow_public_repos in each mode but VM, so a mode
-// change by install.sh must not keep it.
+// change by install.sh must not keep it. install.sh runs set-mode at each
+// update with --mode, and in VM mode the setting stays: a server in a
+// different mode then waits.
 func TestSetModeTurnsPublicReposOff(t *testing.T) {
 	ctx := context.Background()
 	s, st := newService(t, Config{DevInsecure: true})
-	for _, m := range []sandbox.Mode{sandbox.ModeDev, sandbox.ModeContainer} {
+	if err := st.CreateServer(ctx, store.Server{
+		ID: "01jbz0000000000000000srv02", Name: "fsn1-b", Kind: store.ServerAgent, Status: store.ServerOnline,
+		ServerFacts: store.ServerFacts{Arch: "x64", Mode: sandbox.ModeContainer},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		mode       sandbox.Mode
+		wantPublic bool
+	}{
+		{sandbox.ModeVM, true},
+		{sandbox.ModeDev, false},
+		{sandbox.ModeContainer, false},
+	} {
 		if _, err := st.UpdateSettings(ctx, func(st *store.Settings) error {
 			st.Mode, st.AllowPublicRepos = sandbox.ModeVM, true
 			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		got, err := s.SetMode(ctx, audit.Actor{}, m)
+		got, err := s.SetMode(ctx, audit.Actor{}, tt.mode)
 		if err != nil {
-			t.Fatalf("set-mode %s: %v", m, err)
+			t.Fatalf("set-mode %s: %v", tt.mode, err)
 		}
-		if got.Mode != m || got.AllowPublicRepos {
-			t.Errorf("set-mode %s: mode %s, allow_public_repos %v; want %s without public repositories", m, got.Mode, got.AllowPublicRepos, m)
+		if got.Mode != tt.mode || got.AllowPublicRepos != tt.wantPublic {
+			t.Errorf("set-mode %s: mode %s, allow_public_repos %v; want %s, %v", tt.mode, got.Mode, got.AllowPublicRepos, tt.mode, tt.wantPublic)
 		}
 	}
 }

@@ -100,17 +100,14 @@ func (s *Service) Update(ctx context.Context, by audit.Actor, change func(*store
 	return next, nil
 }
 
-// SetMode changes the mode setting. A mode that cannot run jobs of public
-// repositories also turns allow_public_repos off, because Update refuses to
-// keep it on, and install.sh cannot ask the admin.
+// SetMode changes the mode setting. A mode other than VM also turns
+// allow_public_repos off, because Update refuses to keep it on, and
+// install.sh cannot ask the admin. In VM mode the setting stays, also while
+// a server in a different mode waits (refer to policy.RunnerRefusal).
 func (s *Service) SetMode(ctx context.Context, by audit.Actor, m sandbox.Mode) (store.Settings, error) {
-	servers, err := s.st.ListServers(ctx)
-	if err != nil {
-		return store.Settings{}, err
-	}
 	return s.Update(ctx, by, func(st *store.Settings) error {
 		st.Mode = m
-		if policy.PublicRepos(m, servers) != "" {
+		if m != sandbox.ModeVM {
 			st.AllowPublicRepos = false
 		}
 		return nil
