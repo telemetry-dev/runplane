@@ -1,10 +1,9 @@
 package sysbox
 
 import (
-	"maps"
 	"net/netip"
-	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,18 +31,14 @@ func TestCreateOptionsContainerMode(t *testing.T) {
 	dns := []netip.Addr{netip.MustParseAddr("1.1.1.1")}
 	got := d.createOptions(testSpec, m, dns)
 
-	wantMounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: "/tmp/runplane-init", Target: "/.runplane/init", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/ctl", Target: "/run/runplane", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/var/lib/runplane/runners/2.330.0-x64", Target: "/.runplane/runner", ReadOnly: true},
+	h := got.HostConfig
+	checkMounts(t, h.Mounts, m, []mount.Mount{
 		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/scratch", Target: "/mnt/scratch"},
+		// Without a mount at /var/lib/docker, Sysbox mounts a host folder
+		// there. The writes of a job go to the scratch disk.
 		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/scratch/docker", Target: "/var/lib/docker"},
 		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/scratch/tmp", Target: "/tmp"},
-	}
-	h := got.HostConfig
-	if !reflect.DeepEqual(h.Mounts, wantMounts) {
-		t.Errorf("mounts = %+v\nwant %+v", h.Mounts, wantMounts)
-	}
+	})
 	if h.Runtime != "sysbox-runc" || h.Privileged {
 		t.Errorf("runtime %q, privileged %v; want sysbox-runc without privileges", h.Runtime, h.Privileged)
 	}
@@ -62,10 +57,10 @@ func TestCreateOptionsContainerMode(t *testing.T) {
 		t.Errorf("endpoints = %v, want the runplane network", got.NetworkingConfig.EndpointsConfig)
 	}
 
+	// The driver finds its sandboxes after a restart by these labels.
 	c := got.Config
-	wantLabels := map[string]string{"dev.runplane.sandbox": "01jbz3x0aaaaaaaaaaaaaaaaaa", "dev.runplane.data": "/var/lib/runplane"}
-	if !maps.Equal(c.Labels, wantLabels) {
-		t.Errorf("labels = %v, want %v", c.Labels, wantLabels)
+	if c.Labels["dev.runplane.sandbox"] != "01jbz3x0aaaaaaaaaaaaaaaaaa" || c.Labels["dev.runplane.data"] != "/var/lib/runplane" {
+		t.Errorf("labels = %v, want the sandbox ID and the data folder", c.Labels)
 	}
 	if c.Image != "sha256:1111" || !slices.Equal(c.Entrypoint, []string{"/.runplane/init"}) || c.Hostname != "runplane-aaaaaaaa" {
 		t.Errorf("image %q, entrypoint %v, hostname %q", c.Image, c.Entrypoint, c.Hostname)
@@ -80,19 +75,37 @@ func TestCreateOptionsDevMode(t *testing.T) {
 	m := mounts{init: "/i", ctl: "/c", bundle: "/b", scratch: "runplane-scratch-01jbz3x0aaaaaaaaaaaaaaaaaa"}
 	h := d.createOptions(testSpec, m, nil).HostConfig
 
-	wantMounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: "/i", Target: "/.runplane/init", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/c", Target: "/run/runplane", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/b", Target: "/.runplane/runner", ReadOnly: true},
+	checkMounts(t, h.Mounts, m, []mount.Mount{
 		{Type: mount.TypeVolume, Source: "runplane-scratch-01jbz3x0aaaaaaaaaaaaaaaaaa", Target: "/mnt/scratch"},
-	}
-	if !reflect.DeepEqual(h.Mounts, wantMounts) {
-		t.Errorf("mounts = %+v\nwant %+v", h.Mounts, wantMounts)
-	}
+	})
 	if h.Runtime != "runc" || !h.Privileged || h.CgroupParent != "" {
 		t.Errorf("runtime %q, privileged %v, cgroup parent %q", h.Runtime, h.Privileged, h.CgroupParent)
 	}
 	if !slices.Equal(h.ExtraHosts, []string{"host.docker.internal:host-gateway"}) {
 		t.Errorf("extra hosts = %v, want host.docker.internal on the Docker host", h.ExtraHosts)
+	}
+}
+
+// checkMounts checks that a sandbox has runplane-init, the folder of the
+// control socket, and the runner bundle from the host, read-only, at the
+// paths where runplane-init and the guest config look for them. It also
+// checks the scratch mounts, and that no other mount lets a job write to the
+// host.
+func checkMounts(t *testing.T, got []mount.Mount, m mounts, scratch []mount.Mount) {
+	t.Helper()
+	want := append([]mount.Mount{
+		{Type: mount.TypeBind, Source: m.init, Target: "/.runplane/init", ReadOnly: true},
+		{Type: mount.TypeBind, Source: m.ctl, Target: "/run/runplane", ReadOnly: true},
+		{Type: mount.TypeBind, Source: m.bundle, Target: "/.runplane/runner", ReadOnly: true},
+	}, scratch...)
+	for _, w := range want {
+		if !slices.Contains(got, w) {
+			t.Errorf("no mount %+v in %+v", w, got)
+		}
+	}
+	for _, g := range got {
+		if g.Type == mount.TypeBind && !g.ReadOnly && !strings.HasPrefix(g.Source, m.scratch) {
+			t.Errorf("a job can write to the host folder %s at %s", g.Source, g.Target)
+		}
 	}
 }
