@@ -58,9 +58,14 @@ func TestFirstStartAddsTheDefaultLabel(t *testing.T) {
 	if err != nil || len(pools) != 1 || pools[0].Label != "runplane" || pools[0].Arch != "arm64" {
 		t.Fatalf("pools %+v, %v; want the label runplane for arm64", pools, err)
 	}
-	entries, _, err := h.st.ListAudit(ctx, "", 10)
-	if err != nil || len(entries) != 1 || entries[0].Action != "pool.create" || entries[0].Target != pools[0].ID || entries[0].UserID != "" {
-		t.Errorf("audit entries %+v, %v; want one pool.create by runplane", entries, err)
+	// The pools service publishes the event before it records the entry.
+	var entries []store.AuditEntry
+	waitFor(t, "the audit entry", func() bool {
+		entries, _, err = h.st.ListAudit(ctx, "", 10)
+		return err == nil && len(entries) > 0
+	})
+	if len(entries) != 1 || entries[0].Action != "pool.create" || entries[0].Target != pools[0].ID || entries[0].UserID != "" {
+		t.Errorf("audit entries %+v; want one pool.create by runplane", entries)
 	}
 }
 
