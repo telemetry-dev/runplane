@@ -22,7 +22,7 @@ type GitHubApp struct {
 
 type ManifestState struct {
 	StateHash    string
-	AccountType  string // organization | user
+	AccountType  string // Organization | User, the GitHub account type of the new app
 	Organization string
 	CreatedAt    time.Time
 	ExpiresAt    time.Time

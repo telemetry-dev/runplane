@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"slices"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -80,7 +79,7 @@ func (h *Handler) pools(ctx context.Context, list []store.Pool) ([]Pool, error) 
 			MaxRunners: p.MaxRunners, TimeLimitMinutes: p.TimeLimitMinutes, ServerIDs: orEmpty(p.ServerIDs),
 			Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 			Idle: c.Idle, Busy: c.Busy, Starting: c.Starting, Queued: c.Queued, Assigned: c.Assigned,
-			PoolPlacement: placer.place(p.Arch, p.VCPU, p.MemoryMB, p.ServerIDs),
+			PoolPlacement: placer.place(p),
 		}
 	}
 	return out, nil
@@ -201,7 +200,8 @@ func (h *Handler) getPlacement(ctx context.Context, in *placementInput) (*body[P
 	if err != nil {
 		return nil, err
 	}
-	return &body[PoolPlacement]{placer.place(in.Arch, in.VCPU, in.MemoryMB, in.ServerIDs)}, nil
+	pool := store.Pool{Arch: in.Arch, VCPU: in.VCPU, MemoryMB: in.MemoryMB, ServerIDs: in.ServerIDs}
+	return &body[PoolPlacement]{placer.place(pool)}, nil
 }
 
 type placer struct {
@@ -233,15 +233,15 @@ func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
 	return p, nil
 }
 
-func (p placer) place(arch string, vcpu, memoryMB int, serverIDs []string) PoolPlacement {
+func (p placer) place(pool store.Pool) PoolPlacement {
 	out := PoolPlacement{PlaceableServerIDs: []string{}}
 	for _, v := range p.servers {
-		if v.Arch != arch || len(serverIDs) > 0 && !slices.Contains(serverIDs, v.ID) {
+		if !pool.CanUse(v.ID, v.Arch) {
 			continue
 		}
 		out.OnlineServers++
 		empty := sandbox.Capacity{VCPU: v.VCPU, MemoryMB: v.MemoryMB, Limits: p.limits[v.ID]}
-		if empty.Room(vcpu, memoryMB, p.reserve) > 0 {
+		if empty.Room(pool.VCPU, pool.MemoryMB, p.reserve) > 0 {
 			out.PlaceableServerIDs = append(out.PlaceableServerIDs, v.ID)
 		}
 	}

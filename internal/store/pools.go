@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
@@ -24,6 +25,12 @@ type Pool struct {
 	Enabled          bool      `json:"enabled"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// CanUse tells if the sandboxes of the pool can run on the server. An empty
+// ServerIDs is all servers of the arch.
+func (p Pool) CanUse(serverID, arch string) bool {
+	return p.Arch == arch && (len(p.ServerIDs) == 0 || slices.Contains(p.ServerIDs, serverID))
 }
 
 const poolCols = `id, name, label, arch, vcpu, memory_mb, disk_gb, image_id, min_idle, max_runners, time_limit_minutes,
@@ -74,8 +81,8 @@ type PoolCounts struct {
 	Assigned int    `json:"assigned"`
 }
 
-// A job waits for a runner when it is queued or assigned, has no reject
-// reason, and was queued in the last waitWindow.
+// A job waits for a runner when its status is queued, it has no reject
+// reason, and it was queued in the last waitWindow.
 const waitWindow = 24 * time.Hour
 
 // PoolCounts returns the counts of each pool by pool ID at now. A pool with
@@ -100,7 +107,7 @@ func (s *Store) PoolCounts(ctx context.Context, now time.Time) (map[string]PoolC
 		return nil, err
 	}
 	jobs, err := queryAll(ctx, s.r, op, scan, `SELECT pool_id, state, count(*) FROM jobs
-		WHERE state IN ('queued', 'assigned') AND reject_reason = '' AND queued_at >= ? GROUP BY pool_id, state`,
+		WHERE `+stateTerm(statusStates[StatusQueued])+` AND reject_reason = '' AND queued_at >= ? GROUP BY pool_id, state`,
 		ms(now.Add(-waitWindow)))
 	if err != nil {
 		return nil, err

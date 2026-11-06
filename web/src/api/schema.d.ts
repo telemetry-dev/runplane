@@ -1478,6 +1478,8 @@ export interface components {
              * @description Median run time of the last 20 succeeded runs of this job, 0 if none. Lists and events set it only for jobs that did not complete.
              */
             expected_duration_ms: number;
+            /** @description The job completed, and runplane still gets its run data and its log from GitHub. */
+            finish_pending: boolean;
             /** Format: date-time */
             finished_at: string | null;
             head_branch: string;
@@ -1493,7 +1495,10 @@ export interface components {
             job_name: string;
             /** @description The runs-on labels. */
             labels: string[];
-            /** @enum {string} */
+            /**
+             * @description live while the job runs and its sandbox streams the log.
+             * @enum {string}
+             */
             log_state: "none" | "live" | "stored" | "expired";
             /** Format: int64 */
             mem_peak_mb: number | null;
@@ -1549,6 +1554,11 @@ export interface components {
             started_at: string | null;
             /** @enum {string} */
             state: "queued" | "assigned" | "running" | "completed";
+            /**
+             * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
+             * @enum {string}
+             */
+            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
             steps: components["schemas"]["JobStep"][];
             /**
              * Format: int64
@@ -1649,6 +1659,11 @@ export interface components {
             started_at: string | null;
             /** @enum {string} */
             state: "queued" | "assigned" | "running" | "completed";
+            /**
+             * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
+             * @enum {string}
+             */
+            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
             /** @description For example ".github/workflows/ci.yml". */
             workflow_file: string;
             /** @description Empty until runplane reads the run from GitHub. */
@@ -3431,7 +3446,7 @@ export interface operations {
     "list-jobs": {
         parameters: {
             query?: {
-                /** @description queued also has the assigned jobs. */
+                /** @description The status of the jobs. */
                 status?: "running" | "queued" | "succeeded" | "failed" | "cancelled";
                 repository?: string;
                 pool_id?: string;

@@ -87,7 +87,7 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 	s := h.s
 	defer s.reserve(p.host.ServerID, pool, -1)
 	id := ids.New()
-	name := pool.Label + "-" + id[len(id)-8:]
+	name := RunnerName(pool.Label, id)
 	s.mu.Lock()
 	s.starting[id] = name
 	s.mu.Unlock()
@@ -239,9 +239,8 @@ func (s *Scheduler) staleReason(b store.Sandbox, pool store.Pool, st store.Setti
 	return ""
 }
 
-// updateMaxRunners gives each listener its maxCapacity: the runners of its
-// scale set plus the new sandboxes of its pool size that fit now, at most
-// max_runners. A disabled or deleted pool gets 0.
+// updateMaxRunners gives each listener its maxCapacity, the maxRunners of
+// its scale set. A disabled or deleted pool gets 0.
 func (s *Scheduler) updateMaxRunners(ctx context.Context) {
 	sets := s.attached()
 	if len(sets) == 0 {
@@ -270,7 +269,7 @@ func (s *Scheduler) updateMaxRunners(ctx context.Context) {
 	for _, h := range sets {
 		n := 0
 		if i := slices.IndexFunc(pools, func(p store.Pool) bool { return p.ID == h.set.PoolID }); i >= 0 && pools[i].Enabled {
-			n = min(runners[h.set.ID]+s.fits(hosts, pools[i], st), pools[i].MaxRunners)
+			n = s.maxRunners(runners[h.set.ID], hosts, pools[i], st)
 		}
 		h.client.SetMaxRunners(n)
 	}

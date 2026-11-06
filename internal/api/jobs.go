@@ -30,6 +30,7 @@ type JobSummary struct {
 	ServerID     string     `json:"server_id" doc:"Empty until the job has a sandbox."`
 	ServerName   string     `json:"server_name"`
 	State        string     `json:"state" enum:"queued,assigned,running,completed"`
+	Status       string     `json:"status" enum:"queued,running,succeeded,failed,cancelled,skipped" doc:"queued until a runner starts the job, also when GitHub assigned it, then running, and then the result."`
 	Result       *string    `json:"result" enum:"succeeded,failed,cancelled,skipped" doc:"Null until the job completes."`
 	Debug        bool       `json:"debug" doc:"The sandbox stays after the job for a debug shell."`
 	RejectReason string     `json:"reject_reason" doc:"Why runplane does not take this queued job. Empty if it takes it."`
@@ -58,7 +59,8 @@ type Job struct {
 	SandboxState  string     `json:"sandbox_state" enum:"starting,idle,busy,stopping,gone,failed," doc:"Empty until the job has a sandbox."`
 	HoldUntil     *time.Time `json:"hold_until" doc:"A debug sandbox stays until this time after the job."`
 	SSHCommand    string     `json:"ssh_command" doc:"Command that opens the debug shell over SSH, for example \"ssh -p 2222 <sandbox-id>@ci.example.com\". Empty unless the sandbox is a debug sandbox that has not stopped."`
-	LogState      string     `json:"log_state" enum:"none,live,stored,expired"`
+	LogState      string     `json:"log_state" enum:"none,live,stored,expired" doc:"live while the job runs and its sandbox streams the log."`
+	FinishPending bool       `json:"finish_pending" doc:"The job completed, and runplane still gets its run data and its log from GitHub."`
 	CPUPeak       *float64   `json:"cpu_peak" doc:"Percent of the vCPU allocation."`
 	CPUAvg        *float64   `json:"cpu_avg" doc:"Percent of the vCPU allocation."`
 	MemPeakMB     *int       `json:"mem_peak_mb"`
@@ -93,7 +95,7 @@ func jobSummary(j store.Job, r refs, now time.Time) JobSummary {
 		ID: j.ID, JobName: j.JobName, WorkflowName: j.WorkflowName, WorkflowFile: j.WorkflowFile,
 		Repository: j.Repository, RunNumber: j.RunNumber, HeadBranch: j.HeadBranch, HeadSHA: j.HeadSHA,
 		PoolID: j.PoolID, PoolLabel: r.pools[j.PoolID].Label, ServerID: j.ServerID, ServerName: r.servers[j.ServerID].Name,
-		State: j.State, Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
+		State: j.State, Status: j.Status(), Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
 		QueueMS: queueMS(j, now), DurationMS: durationMS(j, now),
 		QueuedAt: j.QueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
 	}
@@ -153,7 +155,7 @@ func (h *Handler) jobSummaries(ctx context.Context, jobs []store.Job) ([]JobSumm
 }
 
 type listJobsInput struct {
-	Status     string `query:"status" enum:"running,queued,succeeded,failed,cancelled" doc:"queued also has the assigned jobs."`
+	Status     string `query:"status" enum:"running,queued,succeeded,failed,cancelled" doc:"The status of the jobs."`
 	Repository string `query:"repository" maxLength:"200"`
 	PoolID     string `query:"pool_id" maxLength:"100"`
 	ServerID   string `query:"server_id" maxLength:"100"`
@@ -242,7 +244,7 @@ func (h *Handler) getJob(ctx context.Context, in *PathID) (*body[Job], error) {
 		WorkflowRef: j.WorkflowRef, RunID: j.RunID, RunAttempt: j.RunAttempt, CommitMessage: j.CommitMessage,
 		Event: j.Event, Actor: j.Actor, PRNumber: j.PRNumber, HTMLURL: jobURL(j),
 		Steps: make([]JobStep, len(j.Steps)), Labels: orEmpty(j.Labels), SandboxID: j.SandboxID,
-		LogState: j.LogState, CPUPeak: j.CPUPeak, CPUAvg: j.CPUAvg, MemPeakMB: j.MemPeakMB, AssignedAt: j.AssignedAt,
+		LogState: j.LogState, FinishPending: j.FinishPending, CPUPeak: j.CPUPeak, CPUAvg: j.CPUAvg, MemPeakMB: j.MemPeakMB, AssignedAt: j.AssignedAt,
 	}
 	for i, st := range j.Steps {
 		out.Steps[i] = JobStep(st)

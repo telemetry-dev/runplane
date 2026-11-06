@@ -226,7 +226,8 @@ func startPrimary(d *api.Deps, key []byte, mode sandbox.Mode, end func(error)) (
 	p.fleet = fleet.New(fleet.Config{
 		Store: st, Bus: d.Bus, Log: log.With("component", "fleet"), Config: cfg, Local: local.node,
 		AgentFingerprint: fingerprint, Version: version.Version, Repo: version.Repo, PublicKey: update.PublicKey,
-		OnEvent: p.onEvent, CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners,
+		OnEvent:         func(serverID string, ev sandbox.Event) { p.sched.HandleEvent(serverID, ev) },
+		CapacityChanged: func() { p.sched.CapacityChanged() }, Runners: runners,
 	})
 	jobLogs := joblog.New(joblog.Config{Dir: cfg.LogsDir(), Store: st, Driver: p.fleet.Driver, Log: log.With("component", "joblog")})
 	p.sched = scheduler.New(scheduler.Config{
@@ -387,42 +388,6 @@ func (p *primary) serveSSH(opener shell.Opener) error {
 		}
 	})
 	return nil
-}
-
-// onEvent passes a driver event to the scheduler, and records the address
-// of a sandbox when its runner listens.
-func (p *primary) onEvent(serverID string, ev sandbox.Event) {
-	p.sched.HandleEvent(serverID, ev)
-	if ev.Type != sandbox.EventState || ev.State != sandbox.StateIdle {
-		return
-	}
-	drv := p.fleet.Driver(serverID)
-	if drv == nil {
-		return
-	}
-	p.wg.Go(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		p.recordIP(ctx, serverID, ev.SandboxID, drv.List)
-	})
-}
-
-// recordIP saves the address that the driver of serverID lists for a
-// sandbox. An agent sends its own list, so the store takes only a sandbox
-// of that server: an agent cannot give a sandbox of the primary its address.
-func (p *primary) recordIP(ctx context.Context, serverID, sandboxID string, list func(context.Context) ([]sandbox.Sandbox, error)) {
-	boxes, err := list(ctx)
-	if err != nil {
-		p.log.Debug("list sandboxes for an address", "server_id", serverID, "err", err)
-		return
-	}
-	for _, b := range boxes {
-		if b.ID == sandboxID && b.IP != "" {
-			if err := p.st.SetSandboxIP(ctx, serverID, b.ID, b.IP); err != nil {
-				p.log.Debug("record sandbox address", "server_id", serverID, "sandbox", b.ID, "err", err)
-			}
-		}
-	}
 }
 
 // followSettings gives each settings change to the cache server and HTTPS.

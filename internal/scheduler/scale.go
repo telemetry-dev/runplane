@@ -168,7 +168,7 @@ func (h *scaleSet) handle(ctx context.Context, m Message) error {
 	for _, jm := range m.Assigned {
 		jm := h.own(jm)
 		jm.AssignedAt = cmp.Or(jm.AssignedAt, h.s.now())
-		job, _, err := h.s.st.UpsertJob(ctx, jm.JobMessage, h.s.now())
+		job, err := h.s.st.UpsertJob(ctx, jm.JobMessage, h.s.now())
 		if err != nil {
 			return err
 		}
@@ -224,7 +224,7 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []JobMessage) error
 		_, jm.Debug = s.reruns[key]
 		s.mu.Unlock()
 
-		job, _, err := s.st.UpsertJob(ctx, jm.JobMessage, s.now())
+		job, err := s.st.UpsertJob(ctx, jm.JobMessage, s.now())
 		if err != nil {
 			return err
 		}
@@ -269,7 +269,7 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []JobMessage) error
 	if err != nil {
 		return err
 	}
-	room := min(pool.MaxRunners, len(live)+s.fits(s.hosts(ctx), *pool, st)) - h.stats.AssignedJobs
+	room := s.maxRunners(len(live), s.hosts(ctx), *pool, st) - h.stats.AssignedJobs
 	wanted = wanted[:max(0, min(room, len(wanted)))]
 	if len(wanted) == 0 {
 		return nil
@@ -279,7 +279,7 @@ func (h *scaleSet) handleAvailable(ctx context.Context, list []JobMessage) error
 		return fmt.Errorf("acquire jobs: %w", err)
 	}
 	for _, key := range acquired {
-		job, _, err := s.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: key, State: store.JobAssigned, AssignedAt: s.now()}, s.now())
+		job, err := s.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: key, State: store.JobAssigned, AssignedAt: s.now()}, s.now())
 		if err != nil {
 			return err
 		}
@@ -324,7 +324,7 @@ func (h *scaleSet) check(ctx context.Context, pool *store.Pool, st store.Setting
 func (h *scaleSet) runnerModes(ctx context.Context, pool store.Pool) ([]sandbox.Mode, error) {
 	var modes []sandbox.Mode
 	for _, host := range h.s.fleet.Online() {
-		if canHost(host, pool) {
+		if pool.CanUse(host.ServerID, host.Arch) {
 			modes = append(modes, host.Driver.Mode())
 		}
 	}
@@ -361,7 +361,7 @@ func (s *Scheduler) checkJob(ctx context.Context, repository string, runID int64
 func (h *scaleSet) handleStarted(ctx context.Context, jm JobMessage) error {
 	s := h.s
 	jm.StartedAt = cmp.Or(jm.StartedAt, s.now())
-	job, _, err := s.st.UpsertJob(ctx, jm.JobMessage, s.now())
+	job, err := s.st.UpsertJob(ctx, jm.JobMessage, s.now())
 	if err != nil {
 		return err
 	}
@@ -387,7 +387,7 @@ func (h *scaleSet) handleStarted(ctx context.Context, jm JobMessage) error {
 func (h *scaleSet) handleCompleted(ctx context.Context, jm JobMessage) error {
 	s := h.s
 	jm.FinishedAt = cmp.Or(jm.FinishedAt, s.now())
-	job, prev, err := s.st.UpsertJob(ctx, jm.JobMessage, s.now())
+	job, err := s.st.UpsertJob(ctx, jm.JobMessage, s.now())
 	if err != nil {
 		return err
 	}
@@ -405,8 +405,8 @@ func (h *scaleSet) handleCompleted(ctx context.Context, jm JobMessage) error {
 		s.setState(ctx, job.SandboxID, sandbox.StateStopping, "job completed")
 	}
 	s.bus.Publish(events.JobState(job))
-	// A message that comes again after the log is stored needs no second finish step.
-	if prev != store.JobCompleted || job.LogState != store.LogStored {
+	// A message that comes again after the finish step needs no second step.
+	if job.FinishPending {
 		s.finish(job.ID)
 	}
 	return nil

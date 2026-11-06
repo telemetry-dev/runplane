@@ -110,6 +110,7 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		sandboxStates = strs(append(sandbox.LiveStates(), sandbox.DoneStates()...)...)
 		jobStates     = []string{store.JobQueued, store.JobAssigned, store.JobRunning, store.JobCompleted}
 		results       = []string{store.ResultSucceeded, store.ResultFailed, store.ResultCancelled, store.ResultSkipped}
+		jobStatuses   = append([]string{store.StatusQueued, store.StatusRunning}, results...)
 		rangeKeys     = slices.Collect(maps.Keys(ranges))
 		kinds         = notify.Kinds
 		types         = strs(notify.Types...)
@@ -138,8 +139,10 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		"Job.result":                                 results,
 		"Job.sandbox_state":                          append(sandboxStates, ""),
 		"Job.state":                                  jobStates,
+		"Job.status":                                 jobStatuses,
 		"JobSummary.result":                          results,
 		"JobSummary.state":                           jobStates,
+		"JobSummary.status":                          jobStatuses,
 		"ManifestRequest.account_type":               {"organization", "user"}, // github.Service.Manifest takes them
 		"NotificationChannel.kind":                   kinds,
 		"Overview.range":                             rangeKeys,
@@ -166,7 +169,7 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		"UpdateStatus.state":                         strs(update.Idle, update.Applying, update.Restarting),
 		"UpdateUserRequest.role":                     roles,
 		"User.role":                                  roles,
-		"get /api/jobs status":                       {store.JobRunning, store.JobQueued, store.ResultSucceeded, store.ResultFailed, store.ResultCancelled},
+		"get /api/jobs status":                       {store.StatusRunning, store.StatusQueued, store.ResultSucceeded, store.ResultFailed, store.ResultCancelled},
 		"get /api/jobs range":                        rangeKeys,
 		"get /api/jobs/{id}/log " + stepFilterHeader: {stepFilterIgnored},
 		"get /api/overview range":                    rangeKeys,

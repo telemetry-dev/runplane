@@ -24,11 +24,12 @@ export function stepTime(step: Schemas['JobStep'], now: number): number | null {
 }
 
 /** Why a job whose log_state is "none" has no log. */
-export function noLogReason(job: Pick<Schemas['Job'], 'state' | 'started_at' | 'reject_reason'>): string {
+export function noLogReason(job: Pick<Schemas['Job'], 'state' | 'started_at' | 'reject_reason' | 'finish_pending'>): string {
   if (job.reject_reason) return `runplane does not run this job: ${job.reject_reason}`
   if (job.state !== 'completed') return 'The log starts when the job runs.'
-  // The download of a finished job's log failed, or the job was cancelled in the queue.
-  return job.started_at ? 'GitHub has no log for this job.' : 'The job ended before it ran.'
+  if (!job.started_at) return 'The job ended before it ran.'
+  // After a job, runplane downloads its log from GitHub, and the download can fail.
+  return job.finish_pending ? 'Downloading the log from GitHub…' : 'GitHub has no log for this job.'
 }
 
 /** "ci.yml" from ".github/workflows/ci.yml". */

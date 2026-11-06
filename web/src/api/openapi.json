@@ -1367,6 +1367,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "finish_pending": {
+            "description": "The job completed, and runplane still gets its run data and its log from GitHub.",
+            "type": "boolean"
+          },
           "finished_at": {
             "format": "date-time",
             "type": [
@@ -1406,6 +1410,7 @@
             "type": "array"
           },
           "log_state": {
+            "description": "live while the job runs and its sandbox streams the log.",
             "enum": [
               "none",
               "live",
@@ -1527,6 +1532,18 @@
             ],
             "type": "string"
           },
+          "status": {
+            "description": "queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "skipped"
+            ],
+            "type": "string"
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/JobStep"
@@ -1567,6 +1584,7 @@
           "hold_until",
           "ssh_command",
           "log_state",
+          "finish_pending",
           "cpu_peak",
           "cpu_avg",
           "mem_peak_mb",
@@ -1587,6 +1605,7 @@
           "server_id",
           "server_name",
           "state",
+          "status",
           "result",
           "debug",
           "reject_reason",
@@ -1824,6 +1843,18 @@
             ],
             "type": "string"
           },
+          "status": {
+            "description": "queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "skipped"
+            ],
+            "type": "string"
+          },
           "workflow_file": {
             "description": "For example \".github/workflows/ci.yml\".",
             "type": "string"
@@ -1847,6 +1878,7 @@
           "server_id",
           "server_name",
           "state",
+          "status",
           "result",
           "debug",
           "reject_reason",
@@ -5626,12 +5658,12 @@
         "operationId": "list-jobs",
         "parameters": [
           {
-            "description": "queued also has the assigned jobs.",
+            "description": "The status of the jobs.",
             "explode": false,
             "in": "query",
             "name": "status",
             "schema": {
-              "description": "queued also has the assigned jobs.",
+              "description": "The status of the jobs.",
               "enum": [
                 "running",
                 "queued",

@@ -23,7 +23,7 @@ func must(t *testing.T, err error) {
 
 func addJob(t *testing.T, s *Store, m JobMessage) Job {
 	t.Helper()
-	j, _, err := s.UpsertJob(t.Context(), m, time.Now())
+	j, err := s.UpsertJob(t.Context(), m, time.Now())
 	must(t, err)
 	return j
 }

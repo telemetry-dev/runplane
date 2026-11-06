@@ -59,11 +59,12 @@ func (t target) owner() string {
 	return t.inst.AccountLogin
 }
 
-func (t target) runnersPath() string {
+// path is the REST path of the runner owner.
+func (t target) path() string {
 	if t.repo != nil {
-		return "/repos/" + t.repo.FullName + "/actions/runners"
+		return "/repos/" + t.repo.FullName
 	}
-	return "/orgs/" + url.PathEscape(t.inst.AccountLogin) + "/actions/runners"
+	return "/orgs/" + url.PathEscape(t.inst.AccountLogin)
 }
 
 // targets returns the scale sets that the pools, installations, and
@@ -318,17 +319,16 @@ type runnerLabel struct {
 
 // listRunners returns the runners of one scale set. The REST runner object
 // has no scale set ID, so a runner belongs to the scale set when it has the
-// scale set label and a name that starts with "<label>-", the form that the
-// scheduler gives runner names.
+// scale set label and its name scheduler.IsRunnerOf the label.
 func (s *Service) listRunners(ctx context.Context, t target, label string) ([]scheduler.Runner, error) {
-	all, err := ghrest.List[runner](ctx, s.api, installAuth{s, t.inst.ID}, t.runnersPath()+"?per_page=100", "runners")
+	all, err := ghrest.List[runner](ctx, s.api, installAuth{s, t.inst.ID}, t.path()+"/actions/runners?per_page=100", "runners")
 	if err != nil {
 		return nil, err
 	}
 	hasLabel := func(l runnerLabel) bool { return strings.EqualFold(l.Name, label) }
 	var out []scheduler.Runner
 	for _, r := range all {
-		if strings.HasPrefix(strings.ToLower(r.Name), strings.ToLower(label)+"-") && slices.ContainsFunc(r.Labels, hasLabel) {
+		if scheduler.IsRunnerOf(r.Name, label) && slices.ContainsFunc(r.Labels, hasLabel) {
 			out = append(out, scheduler.Runner{ID: r.ID, Name: r.Name, Busy: r.Busy})
 		}
 	}

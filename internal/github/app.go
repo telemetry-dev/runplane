@@ -20,17 +20,9 @@ import (
 )
 
 // Manifest returns the GitHub URL for the manifest form and the manifest
-// JSON. accountType is "organization" or "user".
-func (s *Service) Manifest(ctx context.Context, base, accountType, organization string) (string, string, error) {
-	var owner ghrest.Account
-	switch accountType {
-	case "organization":
-		owner = ghrest.Account{Type: ghrest.Organization, Login: organization}
-	case "user":
-		owner = ghrest.Account{Type: ghrest.User}
-	default:
-		return "", "", fmt.Errorf("unknown account type %q", accountType)
-	}
+// JSON of a new app of owner: an organization with its login, or the
+// personal account of the user, with no login.
+func (s *Service) Manifest(ctx context.Context, base string, owner ghrest.Account) (string, string, error) {
 	settings, err := s.st.GetSettings(ctx)
 	if err != nil {
 		return "", "", err
@@ -41,7 +33,7 @@ func (s *Service) Manifest(ctx context.Context, base, accountType, organization 
 		return "", "", err
 	}
 	err = s.st.CreateManifestState(ctx, store.ManifestState{
-		StateHash: hashState(state), AccountType: accountType, Organization: organization,
+		StateHash: hashState(state), AccountType: owner.Type, Organization: owner.Login,
 		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	})
 	if err != nil {
@@ -115,7 +107,7 @@ func (s *Service) Callback(ctx context.Context, code, state string) (string, err
 	}
 	// For an organization that does not exist, or where the user cannot make
 	// apps, GitHub makes the app on the personal account.
-	if requested.AccountType == "organization" && !strings.EqualFold(conv.Owner.Login, requested.Organization) {
+	if requested.AccountType == ghrest.Organization && !strings.EqualFold(conv.Owner.Login, requested.Organization) {
 		made := store.GitHubApp{Slug: conv.Slug, OwnerLogin: conv.Owner.Login, OwnerType: conv.Owner.Type}
 		return "", fmt.Errorf("GitHub made the app on %s, not on the organization %s: the organization does not exist, "+
 			"or you cannot make apps in it. Delete the app at %s, then start again", conv.Owner.Login, requested.Organization, s.appDeleteURL(made))

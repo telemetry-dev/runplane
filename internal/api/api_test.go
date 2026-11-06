@@ -250,7 +250,7 @@ func (e *env) login(email, role string) *browser {
 
 func (e *env) addJob(requestID int64, repo string, queued time.Time) store.Job {
 	e.t.Helper()
-	j, _, err := e.st.UpsertJob(context.Background(), store.JobMessage{
+	j, err := e.st.UpsertJob(context.Background(), store.JobMessage{
 		RunnerRequestID: requestID, State: store.JobQueued, Repository: repo, JobName: fmt.Sprint("job ", requestID),
 		WorkflowRef: repo + "/.github/workflows/ci.yml@refs/heads/main", QueuedAt: queued,
 	}, time.Now())
