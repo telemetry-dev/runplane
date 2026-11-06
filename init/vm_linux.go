@@ -99,6 +99,19 @@ func setupVM() error {
 			return err
 		}
 	}
+	// devtmpfs has only device nodes. Docker (runc) and systemd add these
+	// links, and jobs need them: bash process substitution, <(...), reads
+	// /dev/fd/N. A kernel has one devtmpfs, so a link can already exist.
+	for name, target := range map[string]string{
+		"/dev/fd":     "/proc/self/fd",
+		"/dev/stdin":  "/proc/self/fd/0",
+		"/dev/stdout": "/proc/self/fd/1",
+		"/dev/stderr": "/proc/self/fd/2",
+	} {
+		if err := os.Symlink(target, name); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	}
 	// /tmp stays on the scratch disk through the root overlay: jobs write
 	// large temporary files, and a tmpfs would take them from VM memory.
 	if err := os.Chmod("/tmp", 0o777|os.ModeSticky); err != nil {
