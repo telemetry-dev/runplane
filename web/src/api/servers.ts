@@ -9,6 +9,9 @@ export function serverQuery(id: string) {
   return $api.queryOptions('get', '/api/servers/{id}', { params: { path: { id } } })
 }
 
+/** The key that reaches the detail of each server. */
+export const serverDetailsKey = serverQuery('').queryKey.slice(0, 2)
+
 /** The last doctor result of a server. */
 export function doctorQuery(serverId: string) {
   return $api.queryOptions('get', '/api/servers/{id}/doctor', { params: { path: { id: serverId } } })

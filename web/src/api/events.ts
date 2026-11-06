@@ -3,7 +3,7 @@ import { useEffect, useEffectEvent } from 'react'
 import { backupsQuery } from './backups'
 import { cachesQuery } from './caches'
 import { apiUrl, type Schemas } from './client'
-import { putGitHub } from './github'
+import { githubQuery, putGitHub } from './github'
 import { dropImage, imagesQuery } from './images'
 import { jobQuery, jobsQuery, metricsQuery } from './jobs'
 import { overviewQuery, putOverviewHostStats } from './overview'
@@ -11,7 +11,7 @@ import { poolsQuery, putPoolStats } from './pools'
 import { runnerVersionsQuery } from './runner-versions'
 import { sandboxesQuery, sandboxQuery } from './sandboxes'
 import type { paths } from './schema'
-import { dropServer, putHostStats, putServer, serverQuery, serversQuery } from './servers'
+import { dropServer, putHostStats, putServer, serverDetailsKey, serverQuery, serversQuery } from './servers'
 import { statusQuery } from './session'
 import { domainDNSQuery, settingsQuery } from './settings'
 
@@ -54,11 +54,11 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
   },
   // An image counts the pools that use it.
   'pools.changed': () => [poolsQuery.queryKey, imagesQuery.queryKey],
-  'server.state': (client, server) => (putServer(client, server) ? serverCounts() : [serversQuery.queryKey, ...serverCounts()]),
+  'server.state': (client, server) => (putServer(client, server) ? fromServers() : [serversQuery.queryKey, ...fromServers()]),
   // An open Server detail of the removed server gets 404 and shows that the server is gone.
   'server.removed': (client, { id }) => {
     dropServer(client, id)
-    return [serverQuery(id).queryKey, ...serverCounts()]
+    return [serverQuery(id).queryKey, ...fromServers()]
   },
   'host.stats': (client, stats) => {
     putHostStats(client, stats)
@@ -80,14 +80,28 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
     client.setQueryData(settingsQuery.queryKey, settings)
     // The status has the name and the mode, the DNS check the domain, the
     // caches their switches and size limit, and the pools their placement
-    // after the host reserve and the CPU overcommit.
-    return [statusQuery.queryKey, domainDNSQuery.queryKey, cachesQuery.queryKey, poolsQuery.queryKey]
+    // after the host reserve, the CPU overcommit, and allow_public_repos.
+    // allow_public_repos also tells which repositories take jobs, and which
+    // servers wait.
+    return [
+      statusQuery.queryKey,
+      domainDNSQuery.queryKey,
+      cachesQuery.queryKey,
+      poolsQuery.queryKey,
+      githubQuery.queryKey,
+      serversQuery.queryKey,
+      serverDetailsKey,
+    ]
   },
 }
 
-/** The queries that count servers: the overview, and the pools by the servers that can place their runners. */
-function serverCounts(): QueryKey[] {
-  return [overviewQuery().queryKey, poolsQuery.queryKey]
+/**
+ * The queries that the API makes from the servers: the overview, the pools by
+ * the servers that can place their runners, and the settings, which name the
+ * servers that are not in VM mode and tell if a server has the bandwidth limit.
+ */
+function fromServers(): QueryKey[] {
+  return [overviewQuery().queryKey, poolsQuery.queryKey, settingsQuery.queryKey]
 }
 
 const eventNames = Object.keys(changes) as LiveEventName[]
@@ -102,9 +116,9 @@ export function applyChange<N extends LiveEventName>(client: QueryClient, name: 
   return refetch(client, applyEvent(client, name, data))
 }
 
-/** Refetches the server list and the queries that count servers, as for a server that the list does not have yet. */
+/** Refetches the server list and the queries that the API makes from it, as for a server that the list does not have yet. */
 export function refreshServers(client: QueryClient) {
-  return refetch(client, [serversQuery.queryKey, ...serverCounts()])
+  return refetch(client, [serversQuery.queryKey, ...fromServers()])
 }
 
 function refetch(client: QueryClient, keys: QueryKey[]) {

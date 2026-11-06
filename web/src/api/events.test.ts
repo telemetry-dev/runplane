@@ -99,13 +99,14 @@ describe('createEventHandler', () => {
     expect(invalidated(jobKey('j2'))).toBe(false)
   })
 
-  test('server.state puts the server into its detail and the server list, and refetches the lists that count servers', async () => {
+  test('server.state puts the server into its detail and the server list, and refetches the queries that the API makes from the servers', async () => {
     const other = { ...drainingServer, id: 's2', name: 'fsn1-ax52-b', status: 'online', update_state: 'current' }
     client.setQueryData(serverKey('s1'), { ...drainingServer, status: 'online', update_state: 'available' })
     client.setQueryData(serverKey('s2'), other)
     client.setQueryData(serverListKey, [{ ...drainingServer, status: 'online', update_state: 'available' }, other])
     client.setQueryData(poolsQuery.queryKey, [])
     client.setQueryData(overviewKey, {})
+    client.setQueryData(settingsQuery.queryKey, {})
     client.setQueryData(jobsQuery().queryKey, { items: [] })
     const handle = createEventHandler(client)
 
@@ -119,6 +120,8 @@ describe('createEventHandler', () => {
     expect(invalidated(serverKey('s1'))).toBe(false)
     expect(invalidated(poolsQuery.queryKey)).toBe(true)
     expect(invalidated(overviewKey)).toBe(true)
+    // A server that reports a new mode changes the servers that the settings name.
+    expect(invalidated(settingsQuery.queryKey)).toBe(true)
     expect(invalidated(jobsQuery().queryKey)).toBe(false)
   })
 
@@ -132,13 +135,14 @@ describe('createEventHandler', () => {
     expect(client.getQueryState(serverListKey)?.isInvalidated).toBe(true)
   })
 
-  test('server.removed drops the server from the list, and refetches its detail and the lists that count servers', async () => {
+  test('server.removed drops the server from the list, and refetches its detail and the queries that the API makes from the servers', async () => {
     const other = { ...drainingServer, id: 's2', name: 'fsn1-ax52-b' }
     client.setQueryData(serverListKey, [drainingServer, other])
     client.setQueryData(serverKey('s1'), drainingServer)
     client.setQueryData(serverKey('s2'), other)
     client.setQueryData(poolsQuery.queryKey, [])
     client.setQueryData(overviewKey, {})
+    client.setQueryData(settingsQuery.queryKey, {})
     const handle = createEventHandler(client)
 
     handle('server.removed', { id: 's1' })
@@ -150,11 +154,21 @@ describe('createEventHandler', () => {
     expect(invalidated(serverKey('s2'))).toBe(false)
     expect(invalidated(poolsQuery.queryKey)).toBe(true)
     expect(invalidated(overviewKey)).toBe(true)
+    expect(invalidated(settingsQuery.queryKey)).toBe(true)
   })
 
   test('settings.changed replaces the cached settings, and refetches the queries that show settings', async () => {
     client.setQueryData(settingsQuery.queryKey, { instance_name: 'runplane' })
-    for (const key of [statusQuery.queryKey, domainDNSQuery.queryKey, cachesQuery.queryKey, poolsQuery.queryKey, serverListKey]) {
+    for (const key of [
+      statusQuery.queryKey,
+      domainDNSQuery.queryKey,
+      cachesQuery.queryKey,
+      poolsQuery.queryKey,
+      githubQuery.queryKey,
+      serverListKey,
+      serverKey('s1'),
+      jobListKey,
+    ]) {
       client.setQueryData(key, {})
     }
     const handle = createEventHandler(client)
@@ -169,7 +183,11 @@ describe('createEventHandler', () => {
     expect(invalidated(domainDNSQuery.queryKey)).toBe(true)
     expect(invalidated(cachesQuery.queryKey)).toBe(true)
     expect(invalidated(poolsQuery.queryKey)).toBe(true)
-    expect(invalidated(serverListKey)).toBe(false)
+    // allow_public_repos tells which repositories the pull request form offers, and which servers wait.
+    expect(invalidated(githubQuery.queryKey)).toBe(true)
+    expect(invalidated(serverListKey)).toBe(true)
+    expect(invalidated(serverKey('s1'))).toBe(true)
+    expect(invalidated(jobListKey)).toBe(false)
   })
 
   test('github.state replaces the cached GitHub status and backup.state refetches the backups', async () => {
