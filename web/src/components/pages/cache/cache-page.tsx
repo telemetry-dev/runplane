@@ -2,14 +2,14 @@ import { useSuspenseQuery, type QueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { cachesQuery } from '~/api/caches'
-import { useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { None } from '~/components/app/none'
 import { SectionHeader } from '~/components/app/section-header'
 import { Stat } from '~/components/app/stat'
 import { PageHeader } from '~/components/ui/page-header'
 import { formatBytes, formatDateTime } from '~/lib/format'
-import { cacheStats, mirrorHitRate, mirrorSince, pulls, type CacheOverview } from './cache-format'
+import { cacheStats, hitRate, mirrorSince, pulls, type CacheOverview } from './cache-format'
 import { RepositoriesTable } from './repositories-table'
 
 export function prefetch(client: QueryClient) {
@@ -19,7 +19,7 @@ export function prefetch(client: QueryClient) {
 /** The Cache design: the Actions cache by repository, and the registry mirror. */
 export function CachePage() {
   const { data: cache } = useSuspenseQuery({ ...cachesQuery, refetchInterval })
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   const stats = cacheStats(cache)
   const repositories = cache.enabled ? cache.repositories.length : 0
 
@@ -98,7 +98,7 @@ function RegistryMirror({ cache }: { cache: CacheOverview }) {
           <KeyValue label="Stored">{mirror ? formatBytes(mirror.size_bytes) : <None />}</KeyValue>
           <KeyValue label="Hits">{mirror ? pulls(mirror.hits) : <None />}</KeyValue>
           <KeyValue label="Misses">{mirror ? pulls(mirror.misses) : <None />}</KeyValue>
-          <KeyValue label="Hit rate">{(mirror && mirrorHitRate(mirror)) ?? <None />}</KeyValue>
+          <KeyValue label="Hit rate">{(mirror && hitRate(mirror.hit_rate)) ?? <None />}</KeyValue>
         </KeyValueList>
       )}
     </section>

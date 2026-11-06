@@ -29,6 +29,8 @@ describe('auditChange', () => {
     ['image.update', { name: 'ubuntu-24.04', is_default: null }, 'changed the image ubuntu-24.04'],
     ['job.rerun', { debug: true }, 're-ran a job with SSH'],
     ['job.rerun', { debug: false }, 're-ran a job'],
+    ['sandbox.ssh', { key: 'SHA256:x', github_login: 'octocat' }, 'let the GitHub user octocat open a debug shell over SSH'],
+    ['sandbox.ssh', { key: 'SHA256:x', admin_key: true }, 'let an admin SSH key open a debug shell over SSH'],
     ['settings.update', { keys: ['cpu_overcommit'] }, 'changed CPU overcommit'],
     // Host reserve is two keys, but one setting.
     ['settings.update', { keys: ['log_retention_days', 'reserve_memory_mb', 'reserve_vcpu'] }, 'changed the log retention and the host reserve'],

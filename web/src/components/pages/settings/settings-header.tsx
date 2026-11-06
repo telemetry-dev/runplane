@@ -1,4 +1,4 @@
-import { useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { PageHeader } from '~/components/ui/page-header'
 import { SegmentedLinks } from '~/components/ui/segmented'
 
@@ -13,7 +13,7 @@ const sections = [
 
 /** The title and section links of the "Settings · GitHub" design; each section is a child route. */
 export function SettingsHeader() {
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   return (
     <div className="flex flex-col gap-l">
       <PageHeader title="Settings" />

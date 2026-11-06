@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { backupsQuery } from './backups'
 import { createEventHandler, reconnectDelay } from './events'
 import { githubQuery } from './github'
+import { imagesQuery } from './images'
 import { jobQuery, jobsQuery, metricsQuery } from './jobs'
 import { overviewQuery } from './overview'
 import { poolsQuery } from './pools'
@@ -156,19 +157,42 @@ describe('createEventHandler', () => {
   })
 
   test('pool.stats moves the counts of its pool in the cached list', () => {
-    const counts = { idle: 0, busy: 0, starting: 1, queued: 0 }
+    const counts = { idle: 0, busy: 0, starting: 1, queued: 0, assigned: 0 }
     client.setQueryData(poolsQuery.queryKey, [
       { id: 'p1', label: 'runplane-4cpu', ...counts },
       { id: 'p2', label: 'runplane-8cpu', ...counts },
     ])
     const handle = createEventHandler(client)
 
-    handle('pool.stats', { pool_id: 'p1', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 0 })
+    handle('pool.stats', { pool_id: 'p1', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 1 })
 
     expect(client.getQueryData(poolsQuery.queryKey)).toEqual([
-      { id: 'p1', label: 'runplane-4cpu', idle: 1, busy: 3, starting: 0, queued: 2 },
+      { id: 'p1', label: 'runplane-4cpu', idle: 1, busy: 3, starting: 0, queued: 2, assigned: 1 },
       { id: 'p2', label: 'runplane-8cpu', ...counts },
     ])
+  })
+
+  test('pools.changed refetches the pools and the images, which count the pools that use them', async () => {
+    client.setQueryData(poolsQuery.queryKey, [])
+    client.setQueryData(imagesQuery.queryKey, [])
+    client.setQueryData(serverListKey, [])
+    const handle = createEventHandler(client)
+
+    handle('pools.changed', {})
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(invalidated(poolsQuery.queryKey)).toBe(true)
+    expect(invalidated(imagesQuery.queryKey)).toBe(true)
+    expect(invalidated(serverListKey)).toBe(false)
+  })
+
+  test('image.removed drops the image from the cached list', () => {
+    client.setQueryData(imagesQuery.queryKey, [{ id: 'i1', name: 'ubuntu-24.04' }, { id: 'i2', name: 'android-sdk' }])
+    const handle = createEventHandler(client)
+
+    handle('image.removed', { id: 'i2' })
+
+    expect(client.getQueryData(imagesQuery.queryKey)).toEqual([{ id: 'i1', name: 'ubuntu-24.04' }])
   })
 
   describe('host.stats', () => {
@@ -178,28 +202,30 @@ describe('createEventHandler', () => {
     const other = { ...drainingServer, id: 's2', name: 'fsn1-ax52-b' }
 
     test('moves the usage of its server in the list, the detail, and the overview', () => {
+      const summary = { id: 's1', kind: 'agent', cpu_percent: 88, memory_percent: 61, disk_percent: 41, stats_at: '2026-11-04T12:00:00Z', last_seen_at: null }
       client.setQueryData(serverListKey, [drainingServer, other])
       client.setQueryData(serverKey('s1'), drainingServer)
-      client.setQueryData(overviewKey, { servers: [{ id: 's1', kind: 'agent', cpu_percent: 88, memory_percent: 61, disk_percent: 41, last_seen_at: null }] })
+      client.setQueryData(overviewKey, { servers: [summary] })
       const handle = createEventHandler(client)
 
       handle('host.stats', sample)
 
       expect(client.getQueryData(serverListKey)).toEqual([{ ...drainingServer, ...sampled }, other])
       expect(client.getQueryData(serverKey('s1'))).toEqual({ ...drainingServer, ...sampled })
-      expect(client.getQueryData(overviewKey)).toEqual({
-        servers: [{ id: 's1', kind: 'agent', cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, last_seen_at: '2026-11-04T12:00:10Z' }],
-      })
+      expect(client.getQueryData(overviewKey)).toEqual({ servers: [{ ...summary, ...sampled }] })
     })
 
-    test('keeps a refetched list sample that is newer than the event', () => {
+    test('keeps a refetched sample that is newer than the event, in the list and in the overview', () => {
       const refetched = { ...drainingServer, stats_at: '2026-11-04T12:00:20Z' }
+      const summary = { id: 's1', kind: 'agent', cpu_percent: 12, memory_percent: 30, disk_percent: 41, stats_at: '2026-11-04T12:00:20Z', last_seen_at: null }
       client.setQueryData(serverListKey, [refetched])
+      client.setQueryData(overviewKey, { servers: [summary] })
       const handle = createEventHandler(client)
 
       handle('host.stats', sample)
 
       expect(client.getQueryData(serverListKey)).toEqual([refetched])
+      expect(client.getQueryData(overviewKey)).toEqual({ servers: [summary] })
     })
 
     test('a sample of a server without one sets its usage', () => {

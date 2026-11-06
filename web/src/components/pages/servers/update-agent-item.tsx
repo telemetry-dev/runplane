@@ -7,9 +7,9 @@ import { toastManager } from '~/components/ui/toast'
 import type { Server } from './server-info'
 
 /**
- * The "Update agent" item of a server menu, for an agent that does not run the
- * release of the primary. The mutation callbacks run also after the menu
- * closes and this item unmounts.
+ * The "Update agent" item of a server menu, for an agent that can update or
+ * updates now. The mutation callbacks run also after the menu closes and this
+ * item unmounts.
  */
 export function UpdateAgentItem({ server }: { server: Server }) {
   const client = useQueryClient()
@@ -21,15 +21,15 @@ export function UpdateAgentItem({ server }: { server: Server }) {
     onError: (error) => toastManager.add({ title: `Could not update ${server.name}`, description: errorMessage(error) }),
   })
 
-  const state = server.update_state
-  if (state !== 'available' && state !== 'failed' && state !== 'updating') return null
+  const updating = server.update_state === 'updating'
+  if (!server.actions.can_update && !updating) return null
   return (
     <MenuItem
       icon={<CircleArrowUp />}
-      disabled={state === 'updating' || update.isPending}
+      disabled={!server.actions.can_update || update.isPending}
       onClick={() => update.mutate({ params: { path: { id: server.id } } })}
     >
-      {state === 'updating' ? 'Updating agent…' : 'Update agent'}
+      {updating ? 'Updating agent…' : 'Update agent'}
     </MenuItem>
   )
 }

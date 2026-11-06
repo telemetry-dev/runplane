@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { RotateCcw, TerminalIcon } from 'lucide-react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
+import { useCapabilities } from '~/api/session'
 import { settingsQuery } from '~/api/settings'
 import { BreadcrumbLink, BreadcrumbPage, Breadcrumbs } from '~/components/app/breadcrumbs'
 import { jobStatus, StatusIcon } from '~/components/app/status-icon'
@@ -11,6 +12,7 @@ import { runNumber, workflowFile } from './job-format'
 
 /** Breadcrumbs, the job name with its status, and the GitHub and re-run actions. */
 export function JobHeader({ job }: { job: Schemas['Job'] }) {
+  const { rerun_jobs: canRerun } = useCapabilities()
   const holdMinutes = useQuery(settingsQuery).data?.debug_hold_minutes
   const rerun = $api.useMutation('post', '/api/jobs/{id}/rerun', {
     onSuccess: (_, { body }) => {
@@ -53,7 +55,7 @@ export function JobHeader({ job }: { job: Schemas['Job'] }) {
             </a>
           )}
           {/* GitHub re-runs only a completed job. */}
-          {job.state === 'completed' && (
+          {job.state === 'completed' && canRerun && (
             <>
               <Button loading={pending === 'debug'} disabled={pending === 'plain'} onClick={() => start(true)}>
                 {pending !== 'debug' && <TerminalIcon aria-hidden />}

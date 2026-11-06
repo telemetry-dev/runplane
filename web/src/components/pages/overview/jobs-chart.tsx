@@ -1,9 +1,8 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
-import type { Schemas } from '~/api/client'
 import { BarChart } from '~/components/app/bar-chart'
 import { ChartLegend } from '~/components/app/chart'
 import { SectionHeader } from '~/components/app/section-header'
-import { jobsChart, type Range } from './data'
+import { jobsChart, type Overview } from './data'
 
 const legend = [
   { label: 'Succeeded', color: 'var(--neutral-5)' },
@@ -13,8 +12,8 @@ const legend = [
 const minPlot = 172
 
 /** The "Jobs per hour" card: completed jobs per bucket of the range, failed ones on top. */
-export function JobsChart({ range, buckets }: { range: Range; buckets: readonly Schemas['OverviewBucket'][] }) {
-  const chart = jobsChart(range, buckets)
+export function JobsChart({ overview }: { overview: Overview }) {
+  const chart = jobsChart(overview)
   const area = useRef<HTMLDivElement>(null)
   const height = usePlotHeight(area)
 

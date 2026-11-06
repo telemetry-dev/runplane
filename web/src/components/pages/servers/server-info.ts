@@ -5,6 +5,9 @@ import { formatBytes, formatMegabytes, formatRelativeTime } from '~/lib/format'
 
 export type Server = Schemas['Server']
 
+/** The systems that install.sh and the README name for a server. */
+export const supportedSystems = 'Ubuntu 22.04 or 24.04, or Debian 12 or 13'
+
 /** "136.243.18.40 · Hetzner FSN1 · Ubuntu 24.04", without the facts the server has not reported. */
 export function serverOrigin(server: Server): string {
   return dotted([server.address, serverLocation(server), server.os])

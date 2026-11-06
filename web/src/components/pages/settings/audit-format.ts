@@ -76,6 +76,8 @@ const changes: Record<string, (detail: Detail) => string> = {
   'server.update_agent': (d) => `started the update of ${d.text('name')} to runplane ${d.text('to').replace(/^v/, '')}`,
   'sandbox.stop': () => 'stopped a runner',
   'sandbox.shell': () => 'opened a debug shell',
+  // The SSH gateway writes no user: the key of a GitHub user or an admin key opened the shell.
+  'sandbox.ssh': (d) => `let ${d.text('github_login') ? `the GitHub user ${d.text('github_login')}` : 'an admin SSH key'} open a debug shell over SSH`,
   'cache.delete': (d) => {
     const count = d.number('deleted') ?? 0
     const entries = count === 1 ? '1 cache entry' : `${count} cache entries`
@@ -109,14 +111,19 @@ const channelKinds: Record<string, string> = { slack: 'Slack', discord: 'Discord
 
 /** "CPU overcommit", "the log retention and the debug hold", "3 settings". */
 function settingNames(keys: string[]): string {
-  const names = [...new Set(keys.map((key) => settingNamesByKey[key] ?? key.replaceAll('_', ' ')))]
+  const names = [...new Set(keys.map(settingName))]
   if (names.length === 0) return 'the settings'
   if (names.length > 2) return `${names.length} settings`
   return names.join(' and ')
 }
 
+/** The name of a setting key, also of a key that the API no longer has. */
+function settingName(key: string): string {
+  return Object.hasOwn(settingNamesByKey, key) ? settingNamesByKey[key as keyof typeof settingNamesByKey] : key.replaceAll('_', ' ')
+}
+
 // The names of the settings pages, with "the" where a sentence needs it.
-const settingNamesByKey: Record<string, string> = {
+const settingNamesByKey: Record<keyof Schemas['SettingsPatch'], string> = {
   instance_name: 'the name',
   public_url: 'the dashboard URL',
   domain: 'the domain',

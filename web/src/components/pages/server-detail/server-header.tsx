@@ -18,7 +18,7 @@ import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
-import { canRunDoctor, type Server } from './server-format'
+import type { Server } from './server-format'
 
 type ServerHeaderProps = {
   server: Server
@@ -42,12 +42,11 @@ export function ServerHeader({ server, admin, doctor }: ServerHeaderProps) {
         </div>
         {admin && (
           <div className="flex flex-wrap items-center gap-xs">
-            <Button loading={doctor.running} disabled={!canRunDoctor(server)} onClick={doctor.run}>
+            <Button loading={doctor.running} disabled={!server.actions.can_run_doctor} onClick={doctor.run}>
               {!doctor.running && <Stethoscope aria-hidden />}
               Run doctor
             </Button>
-            {/* An installing server cannot change its status yet (the API answers 409). */}
-            {server.status !== 'installing' && <DrainButton server={server} />}
+            <DrainButton server={server} />
             <MoreMenu server={server} />
           </div>
         )}
@@ -64,7 +63,7 @@ function DrainButton({ server }: { server: Server }) {
     onError: (error) => toastManager.add({ title: `Could not resume ${server.name}`, description: errorMessage(error) }),
   })
 
-  if (server.status === 'draining' || server.status === 'disabled') {
+  if (server.actions.can_resume) {
     return (
       <Button loading={resume.isPending} onClick={() => resume.mutate({ params: { path: { id: server.id } }, body: { status: 'online' } })}>
         {!resume.isPending && <CirclePlay aria-hidden />}
@@ -72,6 +71,7 @@ function DrainButton({ server }: { server: Server }) {
       </Button>
     )
   }
+  if (!server.actions.can_drain) return null
   return (
     <>
       <Button onClick={() => setConfirming(true)}>
@@ -109,8 +109,7 @@ function MoreMenu({ server }: { server: Server }) {
             Rename
           </MenuItem>
           <UpdateAgentItem server={server} />
-          {/* runplane runs on the primary, so it cannot be removed. */}
-          {server.kind !== 'local' && (
+          {server.actions.can_remove && (
             <MenuItem icon={<Trash2 />} danger onClick={() => setDialog('remove')}>
               Remove server
             </MenuItem>

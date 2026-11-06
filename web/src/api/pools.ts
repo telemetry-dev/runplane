@@ -1,6 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { $api, type Schemas } from './client'
-import { sandboxesQuery } from './sandboxes'
 import type { paths } from './schema'
 
 type Pool = Schemas['Pool']
@@ -24,18 +23,7 @@ export function dropPool(client: QueryClient, id: string) {
   client.setQueryData<Pool[]>(poolsQuery.queryKey, (list) => list?.filter((item) => item.id !== id))
 }
 
-/** Refetches the pools and their runners after a change of a pool, which starts or stops runners. */
-export function refreshRunners(client: QueryClient) {
-  return Promise.all([
-    client.invalidateQueries({ queryKey: poolsQuery.queryKey }),
-    client.invalidateQueries({ queryKey: sandboxesQuery().queryKey }),
-  ])
-}
-
 /** Writes the counts of a pool.stats event into the cached pool. */
-export function putPoolStats(client: QueryClient, stats: Schemas['PoolStats']) {
-  const { idle, busy, starting, queued } = stats
-  client.setQueryData<Pool[]>(poolsQuery.queryKey, (list) =>
-    list?.map((pool) => (pool.id === stats.pool_id ? { ...pool, idle, busy, starting, queued } : pool)),
-  )
+export function putPoolStats(client: QueryClient, { pool_id, ...counts }: Schemas['PoolStats']) {
+  client.setQueryData<Pool[]>(poolsQuery.queryKey, (list) => list?.map((pool) => (pool.id === pool_id ? { ...pool, ...counts } : pool)))
 }

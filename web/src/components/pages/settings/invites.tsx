@@ -12,7 +12,7 @@ import { Form } from '~/components/ui/form'
 import { Select, SelectItem, SelectPopup, SelectTrigger } from '~/components/ui/select'
 import { toastManager } from '~/components/ui/toast'
 import { formatDate, formatRelativeTime } from '~/lib/format'
-import { roles, type Members, type Role } from './member-info'
+import { roles, roleSummary, type Members, type Role } from './member-info'
 import { quietAction, SettingsCard, SettingsSection } from './parts'
 
 type Invite = Schemas['Invite']
@@ -33,7 +33,7 @@ export function Invites({ members }: { members: Schemas['Members'] }) {
   return (
     <SettingsSection title="Invites" count={invites.length || undefined} table>
       <div className="flex flex-col gap-l">
-        <InviteForm onCreated={remember} />
+        <InviteForm onCreated={remember} members={roleSummary('member', members.roles.member)} />
         {invites.length > 0 && (
           <div ref={fit.ref}>
             <DataTable aria-label="Invites" columns={fit.columns}>
@@ -63,7 +63,13 @@ export function Invites({ members }: { members: Schemas['Members'] }) {
   )
 }
 
-function InviteForm({ onCreated }: { onCreated: (invite: Invite, url: string) => void }) {
+type InviteFormProps = {
+  onCreated: (invite: Invite, url: string) => void
+  /** What members can do. */
+  members: string
+}
+
+function InviteForm({ onCreated, members }: InviteFormProps) {
   const client = useQueryClient()
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('member')
@@ -114,7 +120,7 @@ function InviteForm({ onCreated }: { onCreated: (invite: Invite, url: string) =>
           </p>
         )}
         <p className="text-xs text-pretty text-neutral-7">
-          The link works once, for 7 days. Members can re-run jobs and open debug shells, but cannot change settings.
+          The link works once, for 7 days. {members}
         </p>
       </Form>
     </SettingsCard>

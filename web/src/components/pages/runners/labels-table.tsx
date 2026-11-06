@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CirclePause, CirclePlay, Ellipsis, Pencil, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, errorMessage, type Schemas } from '~/api/client'
-import { dropPool, putPool, refreshRunners } from '~/api/pools'
+import { dropPool, putPool } from '~/api/pools'
 import { serversQuery } from '~/api/servers'
 import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import {
@@ -168,10 +168,7 @@ function LabelMenu({ pool, onEdit }: { pool: Pool; onEdit: (pool: Pool) => void 
   const client = useQueryClient()
   const [deleting, setDeleting] = useState(false)
   const update = $api.useMutation('patch', '/api/pools/{id}', {
-    onSuccess: (updated) => {
-      putPool(client, updated)
-      void refreshRunners(client)
-    },
+    onSuccess: (updated) => putPool(client, updated),
     onError: (error, { body }) =>
       toastManager.add({ title: `Could not ${body.enabled ? 'enable' : 'disable'} ${pool.label}`, description: errorMessage(error) }),
   })
@@ -218,10 +215,7 @@ function DeleteDialog({ pool, open, onOpenChange }: DeleteDialogProps) {
         await api.DELETE('/api/pools/{id}', { params: { path: { id: pool.id } } })
         toastManager.add({ title: `Deleted ${pool.label}` })
       }}
-      onDone={() => {
-        dropPool(client, pool.id)
-        void refreshRunners(client)
-      }}
+      onDone={() => dropPool(client, pool.id)}
     />
   )
 }

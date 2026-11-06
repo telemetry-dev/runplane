@@ -2,7 +2,7 @@ import { useQuery, type QueryClient } from '@tanstack/react-query'
 import type { Schemas } from '~/api/client'
 import { cachesQuery } from '~/api/caches'
 import { limits } from '~/api/limits'
-import { statusQuery, useIsAdmin } from '~/api/session'
+import { useCapabilities } from '~/api/session'
 import { settingsQuery } from '~/api/settings'
 import { LoadError } from '~/components/app/load-error'
 import { formatBytes } from '~/lib/format'
@@ -22,7 +22,7 @@ export function prefetch(client: QueryClient) {
 
 /** Settings · Runners: capacity, job limits, images, runner versions, network, and caches. */
 export function RunnerSettings() {
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   const { data: settings, error, refetch, isFetching } = useQuery(settingsQuery)
   const disabled = !admin
 
@@ -138,8 +138,6 @@ function Capacity({ settings, disabled }: { settings: Settings; disabled: boolea
 
 function Network({ settings, disabled }: { settings: Settings; disabled: boolean }) {
   const dns = settingLimits.dns_servers
-  const mode = useQuery(statusQuery).data?.mode
-  const container = (settings.mode || mode) === 'container'
 
   return (
     <SettingsSection title="Network">
@@ -176,7 +174,7 @@ function Network({ settings, disabled }: { settings: Settings; disabled: boolean
           limit={settingLimits.bandwidth_mbps}
           zeroPlaceholder="No limit"
           className="w-[160px]"
-          disabled={disabled || container}
+          disabled={disabled || !settings.bandwidth_applies}
         />
       </SettingRows>
     </SettingsSection>

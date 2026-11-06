@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { TerminalIcon } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import type { Schemas } from '~/api/client'
+import { useCapabilities } from '~/api/session'
 import { settingsQuery } from '~/api/settings'
 import { CodeBlock } from '~/components/app/code-block'
 import { Button } from '~/components/ui/button'
@@ -19,6 +20,7 @@ const SandboxTerminal = lazy(() => import('./sandbox-terminal'))
  */
 export function DebugSandbox({ job, now }: { job: Schemas['Job']; now: number }) {
   const settings = useQuery({ ...settingsQuery, enabled: job.ssh_command !== '' }).data
+  const { open_shells: canOpenShell } = useCapabilities()
   const remaining = job.hold_until ? Date.parse(job.hold_until) - now : null
   if (!job.ssh_command) return null
   if (job.state === 'completed' && remaining !== null && remaining <= 0) return null
@@ -45,24 +47,26 @@ export function DebugSandbox({ job, now }: { job: Schemas['Job']; now: number })
         </p>
       </div>
       <CodeBlock code={job.ssh_command} copyable className="min-w-0 grow" />
-      <Dialog
-        onOpenChange={(open, details) => {
-          // Escape is a key of the shell (vim, less), not a request to close.
-          if (!open && details.reason === 'escape-key' && details.event.target instanceof Element && details.event.target.closest('.xterm')) {
-            details.cancel()
-          }
-        }}
-      >
-        <DialogTrigger render={<Button variant="primary" className="self-start lg:self-auto" />}>
-          <TerminalIcon aria-hidden />
-          Open terminal
-        </DialogTrigger>
-        <DialogPopup title={`Terminal · ${job.job_name}`} width={880}>
-          <Suspense fallback={<Spinner label="Loading the terminal" />}>
-            <SandboxTerminal sandboxId={job.sandbox_id} />
-          </Suspense>
-        </DialogPopup>
-      </Dialog>
+      {canOpenShell && (
+        <Dialog
+          onOpenChange={(open, details) => {
+            // Escape is a key of the shell (vim, less), not a request to close.
+            if (!open && details.reason === 'escape-key' && details.event.target instanceof Element && details.event.target.closest('.xterm')) {
+              details.cancel()
+            }
+          }}
+        >
+          <DialogTrigger render={<Button variant="primary" className="self-start lg:self-auto" />}>
+            <TerminalIcon aria-hidden />
+            Open terminal
+          </DialogTrigger>
+          <DialogPopup title={`Terminal · ${job.job_name}`} width={880}>
+            <Suspense fallback={<Spinner label="Loading the terminal" />}>
+              <SandboxTerminal sandboxId={job.sandbox_id} />
+            </Suspense>
+          </DialogPopup>
+        </Dialog>
+      )}
     </section>
   )
 }

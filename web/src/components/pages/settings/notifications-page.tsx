@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { api, errorMessage, type Schemas } from '~/api/client'
 import { notificationsQuery } from '~/api/notifications'
 import { useOptimisticPatch } from '~/api/optimistic-patch'
-import { isAdmin, useIsAdmin } from '~/api/session'
+import { cachedCapabilities, useCapabilities } from '~/api/session'
 import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import { DataTable, DataTableCell, DataTableHead, DataTableHeader, DataTableRow, useFittingColumns } from '~/components/app/data-table'
 import { ErrorHint } from '~/components/app/error-hint'
@@ -26,12 +26,12 @@ type Channel = Schemas['NotificationChannel']
 
 /** Starts the request of the page, which is for admins only; the page shows its own loading and error states. */
 export function prefetch(client: QueryClient) {
-  if (isAdmin(client)) void client.prefetchQuery(notificationsQuery)
+  if (cachedCapabilities(client).admin) void client.prefetchQuery(notificationsQuery)
 }
 
 /** Settings · Notifications: the Slack, Discord, and webhook channels that get runplane events. */
 export function NotificationSettings() {
-  const admin = useIsAdmin()
+  const { admin } = useCapabilities()
   const channels = useQuery({ ...notificationsQuery, enabled: admin })
   const [adding, setAdding] = useState(false)
   const hasChannels = (channels.data?.length ?? 0) > 0

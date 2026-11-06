@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { Schemas } from '~/api/client'
-import { hasNoJobs, jobProgress, jobsChart, statValues, type Overview } from './data'
+import { hasNoJobs, jobProgress, jobsChart, statValues, type Overview, type Range } from './data'
 
 // Chart labels use local time; pin it before data.ts makes its formatter.
 vi.hoisted(() => {
@@ -20,9 +20,15 @@ function buckets(first: string, hours: number, count: number, fill: Record<numbe
   }))
 }
 
+/** The chart of an overview with buckets of `hours`. */
+function chartOf(range: Range, first: string, hours: number, count: number, fill: Record<number, Partial<Bucket>> = {}) {
+  return jobsChart({ range, bucket_ms: hours * 3_600_000, buckets: buckets(first, hours, count, fill) })
+}
+
 describe('jobsChart', () => {
   test('24h: hourly labels and a tick every 6 hours, as in the design', () => {
-    const chart = jobsChart('24h', buckets('2026-11-03T15:00:00Z', 1, 24, { 20: { succeeded: 125, failed: 6 } }))
+    const chart = chartOf('24h', '2026-11-03T15:00:00Z', 1, 24, { 20: { succeeded: 125, failed: 6 } })
+    expect(chart.title).toBe('Jobs per hour')
     expect(chart.ticks).toEqual([
       { at: 0, label: '15:00' },
       { at: 6, label: '21:00' },
@@ -34,13 +40,15 @@ describe('jobsChart', () => {
   })
 
   test('7d: 6-hour buckets carry the day, and ticks fall a day apart', () => {
-    const chart = jobsChart('7d', buckets('2026-10-29T06:00:00Z', 6, 28))
+    const chart = chartOf('7d', '2026-10-29T06:00:00Z', 6, 28)
+    expect(chart.title).toBe('Jobs per 6 hours')
     expect(chart.bars[0]!.label).toBe('Oct 29, 06:00 – 12:00')
     expect(chart.ticks[1]).toEqual({ at: 4, label: 'Oct 30' })
   })
 
   test('30d: weekly ticks stop a week before the end', () => {
-    const chart = jobsChart('30d', buckets('2026-10-06T00:00:00Z', 24, 30))
+    const chart = chartOf('30d', '2026-10-06T00:00:00Z', 24, 30)
+    expect(chart.title).toBe('Jobs per day')
     expect(chart.ticks).toEqual([
       { at: 2, label: 'Oct 8' },
       { at: 9, label: 'Oct 15' },
@@ -51,14 +59,14 @@ describe('jobsChart', () => {
   })
 
   test('cancelled jobs count in the bar and are named in the tooltip', () => {
-    const chart = jobsChart('24h', buckets('2026-11-03T15:00:00Z', 1, 24, { 3: { succeeded: 1, cancelled: 2 } }))
+    const chart = chartOf('24h', '2026-11-03T15:00:00Z', 1, 24, { 3: { succeeded: 1, cancelled: 2 } })
     expect(chart.bars[3]).toMatchObject({ value: 3, part: 0, detail: '3 jobs · 0 failed · 2 cancelled' })
     expect(chart.bars[4]!.detail).toBe('No jobs')
     expect(chart.empty).toBe(false)
   })
 
   test('is empty when no bucket has a job', () => {
-    expect(jobsChart('7d', buckets('2026-10-29T06:00:00Z', 6, 28)).empty).toBe(true)
+    expect(chartOf('7d', '2026-10-29T06:00:00Z', 6, 28).empty).toBe(true)
   })
 })
 

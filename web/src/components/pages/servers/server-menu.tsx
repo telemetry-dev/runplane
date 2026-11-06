@@ -16,12 +16,12 @@ import { UpdateAgentItem } from './update-agent-item'
 export function ServerMenu({ server }: { server: Server }) {
   const client = useQueryClient()
   const [dialog, setDialog] = useState<'doctor' | 'remove'>()
-  const paused = server.status === 'draining' || server.status === 'disabled'
+  const { actions } = server
 
   const update = $api.useMutation('patch', '/api/servers/{id}', {
     onSuccess: (updated) => applyChange(client, 'server.state', updated),
-    onError: (error) =>
-      toastManager.add({ title: `Could not ${paused ? 'resume' : 'drain'} ${server.name}`, description: errorMessage(error) }),
+    onError: (error, { body }) =>
+      toastManager.add({ title: `Could not ${body.status === 'online' ? 'resume' : 'drain'} ${server.name}`, description: errorMessage(error) }),
   })
 
   function setStatus(status: 'online' | 'draining') {
@@ -38,23 +38,21 @@ export function ServerMenu({ server }: { server: Server }) {
           <MenuLinkItem render={<Link to="/servers/$serverId" params={{ serverId: server.id }} />} icon={<ArrowRight />}>
             Open
           </MenuLinkItem>
-          {paused ? (
+          {actions.can_resume ? (
             <MenuItem icon={<Play />} onClick={() => setStatus('online')}>
               Resume
             </MenuItem>
           ) : (
-            // An installing server cannot change its status yet (the API answers 409).
-            <MenuItem icon={<Pause />} disabled={server.status === 'installing'} onClick={() => setStatus('draining')}>
+            <MenuItem icon={<Pause />} disabled={!actions.can_drain} onClick={() => setStatus('draining')}>
               Drain
             </MenuItem>
           )}
-          <MenuItem icon={<Stethoscope />} onClick={() => setDialog('doctor')}>
+          <MenuItem icon={<Stethoscope />} disabled={!actions.can_run_doctor} onClick={() => setDialog('doctor')}>
             Run doctor
           </MenuItem>
           <UpdateAgentItem server={server} />
           <MenuSeparator />
-          {/* runplane runs on the primary, so it cannot be removed. */}
-          <MenuItem icon={<Trash2 />} danger disabled={server.kind === 'local'} onClick={() => setDialog('remove')}>
+          <MenuItem icon={<Trash2 />} danger disabled={!actions.can_remove} onClick={() => setDialog('remove')}>
             Remove
           </MenuItem>
         </MenuPopup>

@@ -23,7 +23,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
 import { formatBytes, formatCount, formatTimeAgo } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
-import { repositoryHitRate, type CacheOverview, type CacheRepository } from './cache-format'
+import { hitRate, type CacheOverview, type CacheRepository } from './cache-format'
 
 type RepositoriesTableProps = {
   /** Undefined while the overview loads. */
@@ -95,7 +95,6 @@ type RepositoryRowProps = {
 }
 
 function RepositoryRow({ repo, maxBytes, shown, admin, now }: RepositoryRowProps) {
-  const hitRate = repositoryHitRate(repo)
   return (
     <DataTableRow>
       <DataTableCell>
@@ -114,7 +113,7 @@ function RepositoryRow({ repo, maxBytes, shown, admin, now }: RepositoryRowProps
         </div>
       </DataTableCell>
       {shown.entries && <DataTableCell align="end">{formatCount(repo.entries)}</DataTableCell>}
-      {shown.hitRate && <DataTableCell align="end">{hitRate ?? <None />}</DataTableCell>}
+      {shown.hitRate && <DataTableCell align="end">{hitRate(repo.hit_rate) ?? <None />}</DataTableCell>}
       {shown.lastUsed && (
         <DataTableCell align="end">
           {repo.last_used_at ? <span className="text-neutral-7">{formatTimeAgo(repo.last_used_at, now)}</span> : <None />}
