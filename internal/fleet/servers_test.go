@@ -134,9 +134,9 @@ func TestOldSessionEndKeepsNewSession(t *testing.T) {
 }
 
 // A connected agent records its region apart from its provider, runs the
-// doctor, adds its registry mirror to the one of the primary in the stats
-// of GET /api/caches, and gives the limits of its driver for the placement
-// of the pools.
+// doctor and keeps the result, adds its registry mirror to the one of the
+// primary in the stats of GET /api/caches, and gives the limits of its
+// driver for the placement of the pools.
 func TestConnectedAgents(t *testing.T) {
 	ctx := t.Context()
 	local := newFakeNode("arm64")
@@ -166,9 +166,19 @@ func TestConnectedAgents(t *testing.T) {
 	if got, ok := h.f.Limits(idA); !ok || got != a.limits {
 		t.Errorf("limits of the agent %+v, %v; want %+v", got, ok, a.limits)
 	}
-	checks, err := h.f.Doctor(ctx, idA)
-	if err != nil || len(checks) != 1 || checks[0].Detail != "6.1.0-agent" || checks[0].Status != "ok" {
-		t.Errorf("doctor of the agent: %+v, %v", checks, err)
+	ran, err := h.f.Doctor(ctx, idA)
+	if err != nil || len(ran.Checks) != 1 || ran.Checks[0].Detail != "6.1.0-agent" || ran.Checks[0].Status != "ok" {
+		t.Errorf("doctor of the agent: %+v, %v", ran, err)
+	}
+	// The server page shows the last doctor result of each server.
+	if kept, err := h.st.GetDoctorResult(ctx, idA); err != nil || !kept.CheckedAt.Equal(ran.CheckedAt) || !reflect.DeepEqual(kept.Checks, ran.Checks) {
+		t.Errorf("kept doctor result of the agent: %+v, %v; want %+v", kept, err, ran)
+	}
+	if _, err := h.f.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if kept, err := h.st.GetDoctorResult(ctx, h.localID()); err != nil || len(kept.Checks) != 1 || kept.Checks[0].Detail != local.info.Kernel {
+		t.Errorf("kept doctor result of the primary after the setup check: %+v, %v", kept, err)
 	}
 	agentA.stop()
 	waitFor(t, "the end of the session", func() bool { return h.f.Driver(idA) == nil })

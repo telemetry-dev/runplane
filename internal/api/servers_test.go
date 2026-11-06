@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/auth"
-	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/sandbox"
@@ -17,11 +16,11 @@ import (
 )
 
 // fakeServers records the token names and the agent updates, and returns
-// fixed doctor checks and update states.
+// a fixed doctor result and update states.
 type fakeServers struct {
 	Servers
 	names   []string
-	checks  []doctor.Check
+	doctor  store.DoctorResult
 	states  map[string]fleet.UpdateState // update state by server ID
 	updated []string                     // server IDs of the UpdateAgent calls
 	limits  map[string]sandbox.Limits    // the connected servers
@@ -58,7 +57,9 @@ func (f *fakeServers) NewToken(_ context.Context, _, name, _ string) (fleet.Toke
 	return fleet.Token{ID: "tok1", Token: "rp_srv_x", Command: "curl", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (f *fakeServers) Doctor(context.Context, string) ([]doctor.Check, error) { return f.checks, nil }
+func (f *fakeServers) Doctor(context.Context, string) (store.DoctorResult, error) {
+	return f.doctor, nil
+}
 
 func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	servers := &fakeServers{}
@@ -93,15 +94,20 @@ func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	e.login("bob@example.com", auth.RoleMember).do("GET", "/api/servers/tokens/t1/status", nil, nil).want(t, 403)
 }
 
-func TestDoctorResultIsKept(t *testing.T) {
-	servers := &fakeServers{checks: []doctor.Check{
-		{ID: "clock", Name: "Time synchronization", Status: doctor.StatusWarn, Detail: "Not synchronized",
+// The fleet runs the doctor and keeps the result. The API shows the result
+// of a run, and later the kept result.
+func TestDoctorResult(t *testing.T) {
+	checkedAt := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	result := store.DoctorResult{ServerID: "srv1", CheckedAt: checkedAt, Checks: []store.DoctorCheck{
+		{ID: "clock", Name: "Time synchronization", Status: "warn", Detail: "Not synchronized",
 			Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"},
 	}}
-	e := newEnv(t, func(d *Deps) { d.Servers = servers })
+	e := newEnv(t, func(d *Deps) { d.Servers = &fakeServers{doctor: result} })
 	e.addServer("srv1", "x64", store.ServerOnline, 4, 8192)
 	admin := e.login("ada@example.com", auth.RoleAdmin)
 	member := e.login("bob@example.com", auth.RoleMember)
+	want := []Check{{ID: "clock", Name: "Time synchronization", Status: "warn", Detail: "Not synchronized",
+		Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"}}
 
 	var before DoctorResult
 	member.do("GET", "/api/servers/srv1/doctor", nil, &before).want(t, 200)
@@ -110,16 +116,15 @@ func TestDoctorResultIsKept(t *testing.T) {
 	}
 	var ran DoctorResult
 	admin.do("POST", "/api/servers/srv1/doctor", nil, &ran).want(t, 200)
-
-	var after DoctorResult
-	member.do("GET", "/api/servers/srv1/doctor", nil, &after).want(t, 200)
-	if after.CheckedAt == nil || !after.CheckedAt.Equal(*ran.CheckedAt) {
-		t.Fatalf("checked_at %v, want the time of the run %v", after.CheckedAt, ran.CheckedAt)
+	if ran.CheckedAt == nil || !ran.CheckedAt.Equal(checkedAt) || !slices.Equal(ran.Checks, want) {
+		t.Fatalf("doctor run = %+v, want the checks of %v", ran, checkedAt)
 	}
-	want := []Check{{ID: "clock", Name: "Time synchronization", Status: "warn", Detail: "Not synchronized",
-		Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"}}
-	if !slices.Equal(after.Checks, want) {
-		t.Fatalf("kept checks = %+v, want %+v", after.Checks, want)
+
+	must(t, e.st.SaveDoctorResult(context.Background(), result))
+	var kept DoctorResult
+	member.do("GET", "/api/servers/srv1/doctor", nil, &kept).want(t, 200)
+	if kept.CheckedAt == nil || !kept.CheckedAt.Equal(checkedAt) || !slices.Equal(kept.Checks, want) {
+		t.Fatalf("kept doctor result = %+v, want the checks of %v", kept, checkedAt)
 	}
 	member.do("GET", "/api/servers/nope/doctor", nil, nil).want(t, 404)
 }

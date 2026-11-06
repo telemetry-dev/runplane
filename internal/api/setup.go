@@ -117,15 +117,8 @@ func (h *Handler) getSetupHost(ctx context.Context, in *setupHostInput) (*body[H
 		return nil, h.serviceErr(err)
 	}
 	i := c.Info
-	hc := HostCheck{
+	return &body[HostCheck]{HostCheck{
 		Hostname: i.Hostname, Mode: string(c.Mode), KVM: i.KVM, Arch: i.Arch, VCPU: i.VCPU, MemoryMB: i.MemoryMB,
 		DiskBytes: i.DiskBytes, FreeDiskBytes: i.FreeDiskBytes, DiskKind: i.DiskKind, OS: i.OS, Checks: checks(c.Checks),
-	}
-	// Server detail shows these checks as the last doctor result of the primary.
-	if local, err := h.d.Store.GetLocalServer(ctx); err == nil {
-		if _, err := h.saveDoctor(ctx, local.ID, hc.Checks); err != nil {
-			h.d.Log.Warn("save doctor result", "server", local.ID, "err", err)
-		}
-	}
-	return &body[HostCheck]{hc}, nil
+	}}, nil
 }

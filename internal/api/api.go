@@ -21,7 +21,6 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/field"
 	"github.com/runplane/runplane/internal/fleet"
@@ -156,9 +155,9 @@ type Servers interface {
 	// and status detail show its progress.
 	InstallSSH(ctx context.Context, base string, req fleet.SSHInstall) (serverID string, err error)
 	SSHPublicKey(ctx context.Context) (string, error)
-	// Doctor returns fleet.ErrNotConnected for a server without a
-	// connection.
-	Doctor(ctx context.Context, serverID string) ([]doctor.Check, error)
+	// Doctor runs the doctor on a server and keeps the result. It returns
+	// fleet.ErrNotConnected for a server without a connection.
+	Doctor(ctx context.Context, serverID string) (store.DoctorResult, error)
 	// Limits returns the limits of the driver of a connected server.
 	Limits(serverID string) (sandbox.Limits, bool)
 	// UpdateServer renames a server or changes its status. It returns
@@ -239,7 +238,8 @@ type Shell interface {
 }
 
 type HostChecker interface {
-	// Check runs the doctor on this server for the setup page.
+	// Check runs the doctor on this server for the setup page, and keeps
+	// the result.
 	Check(ctx context.Context) (fleet.HostCheck, error)
 }
 

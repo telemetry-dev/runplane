@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/audit"
@@ -423,29 +424,48 @@ func (f *Fleet) RemoveServer(ctx context.Context, by audit.Actor, serverID strin
 	return nil
 }
 
-// Doctor runs the doctor checks on a connected server.
-func (f *Fleet) Doctor(ctx context.Context, serverID string) ([]doctor.Check, error) {
+// Doctor runs the doctor checks on a connected server, and keeps them as
+// the last doctor result of the server.
+func (f *Fleet) Doctor(ctx context.Context, serverID string) (store.DoctorResult, error) {
 	n := f.node(serverID)
 	if n == nil {
-		return nil, ErrNotConnected
+		return store.DoctorResult{}, ErrNotConnected
 	}
-	r, err := f.doctor(ctx, n)
-	return r.Checks, err
+	r, err := n.Doctor(ctx)
+	if err != nil {
+		return store.DoctorResult{}, fmt.Errorf("run the doctor: %w", err)
+	}
+	return f.saveDoctor(ctx, serverID, r.Checks)
 }
 
 // Check runs the doctor on the server of the primary, for the setup page.
+// The server page shows the checks as the last doctor result of the
+// primary.
 func (f *Fleet) Check(ctx context.Context) (HostCheck, error) {
-	r, err := f.doctor(ctx, f.local)
+	r, err := f.local.Doctor(ctx)
 	if err != nil {
-		return HostCheck{}, err
+		return HostCheck{}, fmt.Errorf("run the doctor: %w", err)
+	}
+	if local, err := f.st.GetLocalServer(ctx); err == nil {
+		if _, err := f.saveDoctor(ctx, local.ID, r.Checks); err != nil {
+			f.log.Warn("save the doctor result", "server_id", local.ID, "err", err)
+		}
 	}
 	return HostCheck{Report: r, Mode: f.local.Driver().Mode()}, nil
 }
 
-func (f *Fleet) doctor(ctx context.Context, n agent.Node) (doctor.Report, error) {
-	r, err := n.Doctor(ctx)
-	if err != nil {
-		return doctor.Report{}, fmt.Errorf("run the doctor: %w", err)
+// saveDoctor keeps the checks as the last doctor result of a server. The
+// time has the precision of the store, so that the result is the same as
+// the row that a later read gives.
+func (f *Fleet) saveDoctor(ctx context.Context, serverID string, checks []doctor.Check) (store.DoctorResult, error) {
+	r := store.DoctorResult{ServerID: serverID, CheckedAt: f.now().UTC().Truncate(time.Millisecond), Checks: []store.DoctorCheck{}}
+	for _, c := range checks {
+		r.Checks = append(r.Checks, store.DoctorCheck{
+			ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command,
+		})
+	}
+	if err := f.st.SaveDoctorResult(ctx, r); err != nil {
+		return store.DoctorResult{}, err
 	}
 	return r, nil
 }

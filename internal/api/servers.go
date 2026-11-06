@@ -316,19 +316,22 @@ func (h *Handler) getDoctor(ctx context.Context, in *PathID) (*body[DoctorResult
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	out := DoctorResult{ServerID: v.ID, Checks: []Check{}}
 	r, err := h.d.Store.GetDoctorResult(ctx, v.ID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return &body[DoctorResult]{out}, nil
+		return &body[DoctorResult]{DoctorResult{ServerID: v.ID, Checks: []Check{}}}, nil
 	case err != nil:
 		return nil, err
 	}
-	out.CheckedAt = &r.CheckedAt
+	return &body[DoctorResult]{doctorResult(r)}, nil
+}
+
+func doctorResult(r store.DoctorResult) DoctorResult {
+	out := DoctorResult{ServerID: r.ServerID, CheckedAt: &r.CheckedAt, Checks: []Check{}}
 	for _, c := range r.Checks {
 		out.Checks = append(out.Checks, Check(c))
 	}
-	return &body[DoctorResult]{out}, nil
+	return out
 }
 
 func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult], error) {
@@ -339,14 +342,14 @@ func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	list, err := h.d.Servers.Doctor(ctx, v.ID)
+	r, err := h.d.Servers.Doctor(ctx, v.ID)
 	if errors.Is(err, fleet.ErrNotConnected) {
 		return nil, huma.Error409Conflict("The server is not connected, so its checks cannot run.")
 	}
 	if err != nil {
 		return nil, h.serviceErr(err)
 	}
-	return reply(h.saveDoctor(ctx, v.ID, checks(list)))
+	return &body[DoctorResult]{doctorResult(r)}, nil
 }
 
 func checks(list []doctor.Check) []Check {
@@ -355,15 +358,4 @@ func checks(list []doctor.Check) []Check {
 		out[i] = Check{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
 	}
 	return out
-}
-
-func (h *Handler) saveDoctor(ctx context.Context, serverID string, checks []Check) (DoctorResult, error) {
-	r := store.DoctorResult{ServerID: serverID, CheckedAt: time.Now().UTC().Truncate(time.Millisecond)}
-	for _, c := range checks {
-		r.Checks = append(r.Checks, store.DoctorCheck(c))
-	}
-	if err := h.d.Store.SaveDoctorResult(ctx, r); err != nil {
-		return DoctorResult{}, err
-	}
-	return DoctorResult{ServerID: serverID, CheckedAt: &r.CheckedAt, Checks: orEmpty(checks)}, nil
 }
