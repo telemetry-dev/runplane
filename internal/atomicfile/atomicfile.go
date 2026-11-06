@@ -23,6 +23,29 @@ func Write(path string, r io.Reader, mode os.FileMode) error {
 	return f.Commit()
 }
 
+// CreateOnce writes data to a new file at path with mode, and syncs it. If a
+// file is at path, for example because another process made it first, it
+// returns an error that wraps fs.ErrExist and keeps that file.
+func CreateOnce(path string, data []byte, mode os.FileMode) error {
+	f, err := Create(path, mode)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	// A hard link puts the complete file in place. The link is not
+	// successful if a file is there. Close removes the temporary name.
+	if err := os.Link(f.Name(), path); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
 // File is a temporary file that replaces the file at its path on Commit.
 type File struct {
 	*os.File
