@@ -35,7 +35,6 @@ func (d *Driver) scopeDir(id string) string {
 	return filepath.Join(d.cgroupRoot, slice, unitName(id)+".scope")
 }
 
-// scopeAlive reports if a process operates in the scope of a VM.
 func (d *Driver) scopeAlive(id string) bool {
 	b, err := os.ReadFile(filepath.Join(d.scopeDir(id), "cgroup.procs"))
 	return err == nil && len(bytes.TrimSpace(b)) > 0
@@ -58,7 +57,6 @@ func (d *Driver) scopeIDs() []string {
 	return ids
 }
 
-// readUsage reads the cgroup of a VM.
 func readUsage(dir string) (lifecycle.Usage, error) {
 	var u lifecycle.Usage
 	cpu, err := readKeyed(filepath.Join(dir, "cpu.stat"))

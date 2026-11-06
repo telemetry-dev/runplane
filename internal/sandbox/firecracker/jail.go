@@ -74,9 +74,9 @@ func (d *Driver) jailerCommand(id string, uid, gid int) *exec.Cmd {
 	return exec.Command("systemd-run", args...)
 }
 
-// prepareChroot puts the files of the VM in the chroot. The read-only
-// drives are hard links, so all VMs share one page cache for them. Only the
-// VM with the IDs uid and gid can write the scratch disk.
+// prepareChroot makes the read-only drives hard links, so all VMs share one
+// page cache for them. Only the VM with the IDs uid and gid can write the
+// scratch disk.
 func (d *Driver) prepareChroot(chroot string, uid, gid, diskGB int, root, runner string) error {
 	if err := os.MkdirAll(chroot, 0o700); err != nil {
 		return fmt.Errorf("create chroot: %w", err)

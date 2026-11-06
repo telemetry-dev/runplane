@@ -15,7 +15,6 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
-// apiClient calls the Firecracker API on its Unix socket.
 type apiClient struct{ http *http.Client }
 
 func newAPIClient(socket string) *apiClient {
@@ -53,8 +52,6 @@ func (a *apiClient) call(ctx context.Context, method, path string, body any) err
 	return fmt.Errorf("firecracker %s %s: %s: %s", method, path, resp.Status, fault.Message)
 }
 
-// boot sets up the VM through the API and starts it. The paths are inside
-// the chroot.
 func (a *apiClient) boot(ctx context.Context, spec sandbox.Spec, l netrules.Lease, bandwidthMbps int) error {
 	type step struct {
 		path string

@@ -51,8 +51,6 @@ func Requirements(kernel, jailDir string) doctor.Requirements {
 	}
 }
 
-// vmHost is what the VM checks read of the server, in addition to the Host
-// of the doctor.
 type vmHost struct {
 	*doctor.Host
 	jailerVersion  string
@@ -142,7 +140,6 @@ func checkKernelFile(path string) error {
 	return nil
 }
 
-// idsCheck looks at the uids and gids that the VMs run with (idRange).
 func (h vmHost) idsCheck() doctor.Check {
 	c := doctor.Check{ID: "vm_ids", Name: "VM user IDs"}
 	if h.idsErr != nil {
@@ -239,9 +236,8 @@ func mountOptions(r io.Reader, path string) ([]string, error) {
 	return opts, nil
 }
 
-// firewallCheck looks at the firewall. runplane puts accept rules for its
-// VMs at the top of INPUT and FORWARD of the iptables filter table, so a
-// drop policy there, as from ufw, is fine.
+// runplane puts accept rules for its VMs at the top of INPUT and FORWARD of
+// the iptables filter table, so a drop policy there, as from ufw, is fine.
 func (h vmHost) firewallCheck() doctor.Check {
 	c := doctor.Check{ID: "firewall", Name: "Firewall rules"}
 	fw := h.firewall

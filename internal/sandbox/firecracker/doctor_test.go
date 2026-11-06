@@ -13,7 +13,6 @@ import (
 	"github.com/runplane/runplane/internal/host"
 )
 
-// healthyHost is a good host for VM mode.
 func healthyHost() vmHost {
 	return vmHost{
 		Host: &doctor.Host{

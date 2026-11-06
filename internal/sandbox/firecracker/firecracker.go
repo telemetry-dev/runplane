@@ -34,7 +34,7 @@ const (
 
 type Options struct {
 	DataDir          string // the disk of the VMs, for the capacity
-	Sandboxes        string // the sandboxes folder
+	Sandboxes        string
 	ScratchTemplates string
 	JailDir          string // the chroots of the jailer
 	Kernel           string
@@ -50,7 +50,6 @@ type Options struct {
 	Logger   *slog.Logger
 }
 
-// Driver operates the microVMs of this server.
 type Driver struct {
 	*lifecycle.Core[vm]
 	opts        Options
@@ -119,8 +118,8 @@ func newDriver(opts Options, ids idRange, sys hostOps) *Driver {
 	return d
 }
 
-// Configure applies new dashboard settings. Firewall changes and the
-// bandwidth limit also apply to the VMs that operate.
+// Configure also applies firewall changes and the bandwidth limit to the
+// VMs that operate.
 func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 	old := d.SetSettings(s)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

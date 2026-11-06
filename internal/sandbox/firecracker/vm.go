@@ -38,10 +38,8 @@ type vm struct {
 	tailDone chan struct{} // closed when the console tail ends
 }
 
-// box is a sandbox of this driver.
 type box = lifecycle.Box[vm]
 
-// backend is the lifecycle.Backend of the driver.
 type backend struct{ *Driver }
 
 func (d backend) Shutdown(ctx context.Context, b *box) error {
@@ -66,8 +64,6 @@ func (d backend) Fault(_ context.Context, b *box) string {
 	return ""
 }
 
-// Remove deletes the TAP with its firewall rules, and the chroot with the
-// scratch disk.
 func (d backend) Remove(_ context.Context, b *box) error {
 	v := b.Host
 	v.closeConsole()
@@ -174,8 +170,6 @@ func (v *vm) closeConsole() {
 	}
 }
 
-// makeConsole makes the console FIFO. It returns the read end, and the
-// write end for Firecracker.
 func makeConsole(path string) (r, w *os.File, err error) {
 	os.Remove(path)
 	if err := unix.Mkfifo(path, 0o600); err != nil {

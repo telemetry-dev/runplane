@@ -22,9 +22,8 @@ const runnerDir = "/opt/runplane/runner"
 // maxSocketPath is the longest Unix socket path that Linux takes.
 const maxSocketPath = 107
 
-// Create prepares the network, the scratch disk, and the chroot of a VM,
-// starts Firecracker in the jailer, and boots the VM. It returns when the VM
-// boots; runplane-init then connects to the control channel.
+// Create returns when the VM boots; runplane-init then connects to the
+// control channel.
 func (d backend) Create(ctx context.Context, b *box, spec sandbox.Spec, s sandbox.Settings) error {
 	chroot := d.chroot(b.ID)
 	if p := filepath.Join(chroot, controlSocket); len(p) > maxSocketPath {
