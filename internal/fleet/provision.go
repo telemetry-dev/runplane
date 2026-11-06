@@ -258,7 +258,6 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 	}
 }
 
-// saveBuild records the status of an image build and publishes it.
 func (f *Fleet) saveBuild(ctx context.Context, b *store.ImageBuild, status, msg string) {
 	b.Status, b.Error, b.UpdatedAt = status, msg, f.now()
 	if err := f.st.UpsertImageBuild(ctx, *b); err != nil {

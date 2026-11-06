@@ -84,7 +84,6 @@ type Config struct {
 	Now             func() time.Time // nil: time.Now
 }
 
-// Fleet is the set of servers of the primary.
 type Fleet struct {
 	st              *store.Store
 	bus             *events.Bus
@@ -236,8 +235,6 @@ func (f *Fleet) Run(ctx context.Context) error {
 	}
 }
 
-// start records the servers, and at the first start the builtin images and
-// the default label.
 func (f *Fleet) start(ctx context.Context) error {
 	st, err := f.st.GetSettings(ctx)
 	if err != nil {

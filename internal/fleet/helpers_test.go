@@ -291,7 +291,6 @@ func (n *fakeNode) record(method string, arg any) {
 	n.calls = append(n.calls, call{method, arg})
 }
 
-// args returns the argument of each call of method.
 func (n *fakeNode) args(method string) []any {
 	n.mu.Lock()
 	defer n.mu.Unlock()

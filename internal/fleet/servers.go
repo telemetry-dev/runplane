@@ -30,7 +30,6 @@ type HostCheck struct {
 	Mode sandbox.Mode
 }
 
-// startLocal records the server of the primary and connects its node.
 func (f *Fleet) startLocal(ctx context.Context) error {
 	info, err := f.local.Facts(ctx)
 	if err != nil {
@@ -455,7 +454,6 @@ func (f *Fleet) doctor(ctx context.Context, n agent.Node) (doctor.Report, error)
 	return r, nil
 }
 
-// settingsChanged sends the new settings to each connected server.
 func (f *Fleet) settingsChanged(c events.SettingsChanged) {
 	s := NodeSettings(c.New)
 	if reflect.DeepEqual(NodeSettings(c.Old), s) {

@@ -47,7 +47,6 @@ func replaceMain(script []byte, body string) ([]byte, error) {
 	return []byte(src + body), nil
 }
 
-// sh runs a shell with stdin and the environment, and returns its output.
 func sh(stdin []byte, env []string, args ...string) (string, error) {
 	cmd := exec.Command("sh", args...)
 	cmd.Stdin = bytes.NewReader(stdin)

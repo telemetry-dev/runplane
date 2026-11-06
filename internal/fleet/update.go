@@ -47,7 +47,6 @@ type agentUpdate struct {
 	running bool
 }
 
-// UpdateState tells whether a server runs the release of the primary.
 func (f *Fleet) UpdateState(v store.Server) UpdateState {
 	f.mu.Lock()
 	running := f.updates[v.ID].running
@@ -139,7 +138,6 @@ func (f *Fleet) endUpdate(ctx context.Context, serverID, version string) {
 	}
 }
 
-// failUpdate ends the running update of a server with an error.
 func (f *Fleet) failUpdate(ctx context.Context, serverID, why string) {
 	f.mu.Lock()
 	u := f.updates[serverID]

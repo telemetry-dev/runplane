@@ -47,7 +47,6 @@ type ImageChange struct {
 	Default *bool
 }
 
-// UpdateImage changes an image, and returns the row.
 func (f *Fleet) UpdateImage(ctx context.Context, by audit.Actor, imageID string, c ImageChange) (store.Image, error) {
 	img, err := f.st.GetImage(ctx, imageID)
 	if err != nil {
@@ -141,9 +140,8 @@ func (f *Fleet) RefreshImage(ctx context.Context, by audit.Actor, imageID string
 	return nil
 }
 
-// pullEverywhere pulls the image again on each connected server. The servers
-// keep the image that they have until the new pull is ready, unless its ref
-// changed. The builds show a failure.
+// After pullEverywhere, the servers keep the image that they have until the
+// new pull is ready, unless its ref changed. The builds show a failure.
 func (f *Fleet) pullEverywhere(img store.Image) {
 	var list []*node
 	f.mu.Lock()
