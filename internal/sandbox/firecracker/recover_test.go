@@ -59,7 +59,7 @@ func TestRecoverAfterRestart(t *testing.T) {
 
 	// The guest of the live VM, which has its config, connects again on the
 	// same socket.
-	c := dialGuest(t, filepath.Join(data, "jail", "firecracker", "live", "root", "v.sock_1024"), func() {})
+	c := dialGuest(t, root, "live", func() {})
 	if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: sandbox.RunnerExited}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestRestartKeepsTheRunnerExit(t *testing.T) {
 	root := shortTempDir(t)
 	writeVM(t, root, "vm1", 0, sandbox.StateIdle, time.Now().UTC())
 	before := recovered(t, root, &fakeHost{})
-	c := dialGuest(t, filepath.Join(before.chroot("vm1"), controlSocket), func() {})
+	c := dialGuest(t, root, "vm1", func() {})
 	for _, kind := range []string{sandbox.RunnerJobStarted, sandbox.RunnerExited} {
 		if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: kind}); err != nil {
 			t.Fatal(err)
@@ -114,7 +114,7 @@ func TestRunnerErrorFailsTheVM(t *testing.T) {
 	root := shortTempDir(t)
 	writeVM(t, root, "vm1", 0, sandbox.StateStarting, time.Now().UTC())
 	before := recovered(t, root, &fakeHost{})
-	c := dialGuest(t, filepath.Join(before.chroot("vm1"), controlSocket), func() {})
+	c := dialGuest(t, root, "vm1", func() {})
 	if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: sandbox.RunnerExited, Error: "the runner did not connect to GitHub"}); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestLostConfigStopsTheVM(t *testing.T) {
 	writeVM(t, root, "vm1", 0, sandbox.StateStarting, time.Now().UTC())
 	d := recovered(t, root, &fakeHost{})
 
-	c := dialGuest(t, filepath.Join(d.chroot("vm1"), controlSocket), func() {})
+	c := dialGuest(t, root, "vm1", func() {})
 	if _, err := c.Config(context.Background()); !errors.Is(err, guest.ErrNoConfig) {
 		t.Errorf("config after the restart: %v, want ErrNoConfig", err)
 	}

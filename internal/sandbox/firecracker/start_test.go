@@ -110,10 +110,10 @@ func fakeJailer(args []string) {
 func startDriver(t *testing.T) (*Driver, *fakeHost, string) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
-		t.Skip("Go polls FIFOs on Linux only; scratch disks need Linux")
+		t.Skip("needs Linux, where Go polls FIFOs and scratch disks work")
 	}
 	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
-		t.Skip("no mkfs.ext4")
+		t.Skip("needs mkfs.ext4")
 	}
 	root := shortTempDir(t)
 	bin := filepath.Join(root, "bin")

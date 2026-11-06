@@ -140,11 +140,13 @@ func scopeProcs(root, id string) string {
 	return filepath.Join(root, "cgroup", "runplane.slice", "runplane-vm-"+id+".scope", "cgroup.procs")
 }
 
-// dialGuest connects to a control socket as runplane-init does through
-// vsock. It calls onShutdown when the host asks the guest to power off.
-func dialGuest(t *testing.T, socket string, onShutdown func()) *guest.Client {
+// dialGuest connects to the control socket of the VM id as runplane-init
+// does through vsock: Firecracker forwards the guest port 1024 to the socket
+// v.sock_1024 in the chroot. It calls onShutdown when the host asks the
+// guest to power off.
+func dialGuest(t *testing.T, root, id string, onShutdown func()) *guest.Client {
 	t.Helper()
-	conn, err := net.Dial("unix", socket)
+	conn, err := net.Dial("unix", filepath.Join(root, "data", "jail", "firecracker", id, "root", "v.sock_1024"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +223,7 @@ func TestCloseStopsTheVMsThatSystemdStops(t *testing.T) {
 	d := recovered(t, root, sys)
 	shutdowns := make(chan string, len(ids))
 	for _, id := range ids {
-		c := dialGuest(t, filepath.Join(d.chroot(id), controlSocket), func() {
+		c := dialGuest(t, root, id, func() {
 			shutdowns <- id
 			writeFile(t, scopeProcs(root, id), "") // the guest powers off
 		})
@@ -241,7 +243,7 @@ func TestCloseStopsTheVMsThatSystemdStops(t *testing.T) {
 		t.Errorf("scopes killed: %v, want none", killed)
 	}
 	for id, want := range map[string]bool{"vm1": false, "vm2": true} {
-		if exists(filepath.Join(root, "data", "sandboxes", id)) != want || exists(d.jailDir(id)) != want {
+		if exists(filepath.Join(root, "data", "sandboxes", id)) != want || exists(filepath.Join(root, "data", "jail", "firecracker", id)) != want {
 			t.Errorf("the folders of %s exist: %v, want %v", id, !want, want)
 		}
 	}

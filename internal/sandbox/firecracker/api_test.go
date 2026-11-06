@@ -70,9 +70,35 @@ func TestBoot(t *testing.T) {
 	if err := api.boot(context.Background(), sandbox.Spec{VCPU: 2, MemoryMB: 4096}, testLease, 100); err != nil {
 		t.Fatal(err)
 	}
+	got := requests()
+	if len(got) == 0 || got[0].method != "PUT" || got[0].path != "/boot-source" {
+		t.Fatalf("first request %v, want PUT /boot-source", got)
+	}
+	var boot struct {
+		Kernel string `json:"kernel_image_path"`
+		Args   string `json:"boot_args"`
+	}
+	if err := json.Unmarshal([]byte(got[0].body), &boot); err != nil {
+		t.Fatal(err)
+	}
+	if boot.Kernel != "/vmlinux" {
+		t.Errorf("kernel %q, want /vmlinux", boot.Kernel)
+	}
+	args := strings.Fields(boot.Args)
+	for _, want := range []string{
+		"console=ttyS0",            // the console FIFO reads the serial port
+		"reboot=k",                 // the reboot of init ends Firecracker
+		"panic=1",                  // the exit of init resets the VM
+		"init=/sbin/runplane-init", // where the root disk has runplane-init
+		"runplane.mode=vm",         // runplane-init reads it to find VM mode
+		"ip=10.214.0.14::10.214.0.13:255.255.255.252::eth0:off", // the guest address of the lease, without DHCP
+	} {
+		if !slices.Contains(args, want) {
+			t.Errorf("boot args %q have no %s", boot.Args, want)
+		}
+	}
 	limit := `{"bandwidth":{"size":12500000,"refill_time":1000}}`
-	checkRequests(t, requests(), []apiRequest{
-		{"PUT", "/boot-source", `{"kernel_image_path":"/vmlinux","boot_args":"console=ttyS0 quiet reboot=k panic=1 init=/sbin/runplane-init runplane.mode=vm ip=10.214.0.14::10.214.0.13:255.255.255.252::eth0:off random.trust_cpu=on"}`},
+	checkRequests(t, got[1:], []apiRequest{
 		// The order makes vda the root disk, vdb the runner, vdc scratch.
 		{"PUT", "/drives/rootfs", `{"drive_id":"rootfs","path_on_host":"/rootfs.ext4","is_root_device":true,"is_read_only":true}`},
 		{"PUT", "/drives/runner", `{"drive_id":"runner","path_on_host":"/runner.ext4","is_root_device":false,"is_read_only":true}`},
