@@ -15,7 +15,7 @@ jobs:
     uses: ./.github/workflows/kernel.yml
 
   build:
-    runs-on: runplane
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -59,7 +59,7 @@ jobs:
 
   publish:
     needs: [build, kernel]
-    runs-on: runplane
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
