@@ -24,6 +24,7 @@ const (
 	plainID   = "01jbd6aaaaaaaaaaaaaaaaaaaa"
 	expiredID = "01jbd7bbbbbbbbbbbbbbbbbbbb"
 	noActorID = "01jbd8cccccccccccccccccccc"
+	noJobID   = "01jbd9dddddddddddddddddddd"
 )
 
 // fakeTerm is the gateway end of a pipe. The test holds the other end.
@@ -76,8 +77,8 @@ type auditEntry struct {
 }
 
 // gateway serves debugID (also by its first 8 characters) to the actor
-// octocat, plainID (not a debug sandbox), expiredID (its hold ended), and
-// noActorID (its job has no actor yet).
+// octocat, plainID (not a debug sandbox), expiredID (its hold ended),
+// noActorID (its job has no actor yet), and noJobID (it has no job yet).
 type gateway struct {
 	addr                   string
 	hostKey                ssh.PublicKey
@@ -96,7 +97,8 @@ func startGateway(t *testing.T) *gateway {
 	ended := time.Now().Add(-time.Minute)
 	expired.SandboxID, expired.State, expired.HoldUntil = expiredID, sandbox.StateStopping, &ended
 	noActor.SandboxID, noActor.Actor = noActorID, ""
-	targets := map[string]Target{debugID: debug, debugID[:8]: debug, plainID: plain, expiredID: expired, noActorID: noActor}
+	noJob := Target{SandboxID: noJobID, State: sandbox.StateIdle, Debug: true}
+	targets := map[string]Target{debugID: debug, debugID[:8]: debug, plainID: plain, expiredID: expired, noActorID: noActor, noJobID: noJob}
 
 	hostKeyPath := filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
 	srv, err := New(Config{
@@ -341,6 +343,7 @@ func TestRefusedConnections(t *testing.T) {
 		{"unknown key on a refused sandbox", plainID, g.stranger, false},
 		{"not a debug sandbox", plainID, g.actor, true},
 		{"hold ended", expiredID, g.actor, true},
+		{"no job yet", noJobID, g.admin, true},
 		{"unknown sandbox with admin key", "01zzzzzz", g.admin, true},
 		{"unknown sandbox with actor key", "01zzzzzz", g.actor, false},
 		{"user name that is not an ID", "root", g.admin, false},
@@ -362,26 +365,27 @@ func TestRefusedConnections(t *testing.T) {
 	}
 }
 
-func TestRefusal(t *testing.T) {
+// The gateway and the browser use one rule for the debug shells.
+func TestAccess(t *testing.T) {
 	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	later, earlier := now.Add(10*time.Minute), now.Add(-time.Second)
 	tests := []struct {
 		name   string
 		target Target
-		accept bool
+		want   Access
 	}{
-		{"busy debug sandbox", Target{Debug: true, State: sandbox.StateBusy}, true},
-		{"held after the job", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &later}, true},
-		{"hold ended", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &earlier}, false},
-		{"debug sandbox before its job", Target{Debug: true, State: sandbox.StateIdle}, false},
-		{"busy sandbox without debug", Target{State: sandbox.StateBusy}, false},
-		{"held sandbox without debug", Target{State: sandbox.StateBusy, HoldUntil: &later}, false},
-		{"gone during its hold", Target{Debug: true, State: sandbox.StateGone, HoldUntil: &later}, false},
+		{"busy debug sandbox", Target{Debug: true, State: sandbox.StateBusy}, Allowed},
+		{"held after the job", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &later}, Allowed},
+		{"hold ended", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &earlier}, HoldEnded},
+		{"debug sandbox before its job", Target{Debug: true, State: sandbox.StateIdle}, NoJobYet},
+		{"busy sandbox without debug", Target{State: sandbox.StateBusy}, NotDebug},
+		{"held sandbox without debug", Target{State: sandbox.StateBusy, HoldUntil: &later}, NotDebug},
+		{"gone during its hold", Target{Debug: true, State: sandbox.StateGone, HoldUntil: &later}, Stopped},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if msg := refusal(tt.target, now); (msg == "") != tt.accept {
-				t.Errorf("refusal = %q, want accept: %v", msg, tt.accept)
+			if got := tt.target.Access(now); got != tt.want {
+				t.Errorf("Access = %d, want %d", got, tt.want)
 			}
 		})
 	}
