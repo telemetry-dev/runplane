@@ -62,6 +62,8 @@ jobs:
             echo "::error::${{ matrix.image }} uses $mb MB. The limit is 3072 MB."
             exit 1
           fi
+      - name: Check that jobs find rustup
+        run: docker run --rm -u runner size-check bash -c 'rustup show profile | grep -qx minimal && test -w ~/.rustup && test -w ~/.cargo'
       - name: Keep the digest
         if: github.event_name != 'pull_request'
         run: |
