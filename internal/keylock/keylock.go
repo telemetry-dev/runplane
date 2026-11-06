@@ -41,14 +41,26 @@ func (k *Map) Lock(ctx context.Context, key string) (unlock func(), err error) {
 	}
 }
 
-// Idle runs f if no key is locked, and keeps new Lock calls waiting until f
-// returns. It reports whether f ran.
-func (k *Map) Idle(f func()) bool {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	if len(k.busy) > 0 {
-		return false
+// Idle waits until no key is locked or ctx ends. Then it runs f and returns
+// its error, and new Lock calls wait until f returns.
+func (k *Map) Idle(ctx context.Context, f func() error) error {
+	for {
+		k.mu.Lock()
+		if len(k.busy) == 0 {
+			err := f()
+			k.mu.Unlock()
+			return err
+		}
+		var wait chan struct{}
+		for _, done := range k.busy {
+			wait = done
+			break
+		}
+		k.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	f()
-	return true
 }

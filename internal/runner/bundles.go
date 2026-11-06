@@ -258,13 +258,9 @@ func openDirs(dir string) error {
 }
 
 // Prune removes the bundles of each arch except the two newest and the
-// versions in keep. It does nothing while Ensure operates.
-func (b *Bundles) Prune(keep []string) error {
-	var err error
-	if !b.work.Idle(func() { err = b.prune(keep) }) {
-		b.log.Debug("runner prune skipped, a bundle is in progress")
-	}
-	return err
+// versions in keep. It waits until no Ensure operates.
+func (b *Bundles) Prune(ctx context.Context, keep []string) error {
+	return b.work.Idle(ctx, func() error { return b.prune(keep) })
 }
 
 func (b *Bundles) prune(keep []string) error {

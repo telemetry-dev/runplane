@@ -254,7 +254,7 @@ func (f *Fleet) pull(ctx context.Context, n *node, img store.Image) {
 		f.capacityChanged()
 	}
 	if before != "" && before != ready.Digest {
-		f.gcImages(ctx, n, "")
+		f.gcImages(ctx, n)
 	}
 }
 
@@ -322,8 +322,8 @@ func (f *Fleet) ensureRunner(ctx context.Context, n *node, versions []string) er
 }
 
 // gcImages removes the images on the server of n that no image row and no
-// live sandbox uses. skip is an image whose build does not count.
-func (f *Fleet) gcImages(ctx context.Context, n *node, skip string) {
+// live sandbox uses.
+func (f *Fleet) gcImages(ctx context.Context, n *node) {
 	builds, err := f.st.ListImageBuilds(ctx)
 	if err != nil {
 		f.log.Warn("list image builds", "err", err)
@@ -336,7 +336,7 @@ func (f *Fleet) gcImages(ctx context.Context, n *node, skip string) {
 	}
 	var keep []string
 	for _, b := range builds {
-		if b.ServerID == n.id && b.ImageID != skip && b.Digest != "" {
+		if b.ServerID == n.id && b.Digest != "" {
 			keep = append(keep, b.Digest)
 		}
 	}

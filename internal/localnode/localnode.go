@@ -191,8 +191,8 @@ func (n *Node) GCImages(ctx context.Context, keep []string) error {
 	return n.cfg.Images.GC(ctx, keep)
 }
 
-func (n *Node) PruneRunners(_ context.Context, keep []string) error {
-	return n.cfg.Bundles.Prune(keep)
+func (n *Node) PruneRunners(ctx context.Context, keep []string) error {
+	return n.cfg.Bundles.Prune(ctx, keep)
 }
 
 func (n *Node) MirrorStats(context.Context) (agent.MirrorStats, error) {

@@ -255,6 +255,9 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	if got := digest(); got != "" {
 		t.Errorf("digest %q after Remove, want none", got)
 	}
+	waitFor(t, "the image GC on the two servers", func() bool {
+		return len(local.args("GCImages")) > before && len(agentNode.args("GCImages")) > agentBefore
+	})
 	if kept := local.args("GCImages")[before:]; !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0", "sha256:in-use"}}) {
 		t.Errorf("image GC on the primary kept %v, want one GC that keeps sha256:b0b0 and sha256:in-use", kept)
 	}
