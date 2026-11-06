@@ -24,6 +24,7 @@ import (
 	"github.com/runplane/runplane/internal/api"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/fleet"
+	"github.com/runplane/runplane/internal/initbin"
 	"github.com/runplane/runplane/internal/sandbox/firecracker"
 	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
@@ -221,6 +222,8 @@ func TestInstallFilesAgreeWithGo(t *testing.T) {
 			}
 		}
 		agree(t, "REPO of the Makefile", match(t, makefile, `(?m)^REPO\s*\?=\s*(\S+)$`), version.Repo, "Makefile", "internal/version/version.go")
+		// A binary without the embedded runplane-init starts no sandbox.
+		agree(t, "the runplane-init of make init", match(t, makefile, `(?m)^\tgzip .*> (\S+)$`), path.Join("internal/initbin", initbin.File), "Makefile", "internal/initbin/initbin.go")
 
 		// make dist puts the values of the release into these lines of
 		// install.sh, and release.yml checks them.
