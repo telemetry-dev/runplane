@@ -52,7 +52,6 @@ type Profile struct {
 }
 
 var (
-	// Container is the profile of container mode.
 	Container = Profile{
 		mode: sandbox.ModeContainer, runtime: "sysbox-runc", loopScratch: true, cgroupParent: "runplane.slice",
 		firewall: true, watchdog: true,
@@ -76,7 +75,7 @@ const labelData = "dev.runplane.data"
 type Options struct {
 	Docker           *client.Client
 	DataDir          string // the data disk; its path also marks the Docker objects of the driver
-	Sandboxes        string // the sandboxes folder
+	Sandboxes        string
 	ScratchTemplates string
 	ServicePort      int
 	Profile          Profile
@@ -92,7 +91,6 @@ type Options struct {
 	Logger   *slog.Logger
 }
 
-// Driver operates the sandbox containers of one server.
 type Driver struct {
 	*lifecycle.Core[instance]
 	opts        Options
@@ -179,8 +177,8 @@ func (d *Driver) setup() error {
 	return d.recover(ctx)
 }
 
-// Configure takes new settings. New sandboxes get the DNS servers and the
-// cache and mirror settings; the firewall policy changes at once.
+// After Configure, new sandboxes get the DNS servers and the cache and mirror
+// settings; the firewall policy changes at once.
 func (d *Driver) Configure(ctx context.Context, s sandbox.Settings) error {
 	d.SetSettings(s)
 	if !d.opts.Profile.firewall {
@@ -213,7 +211,6 @@ func (d *Driver) Close() error {
 	return err
 }
 
-// owned limits a Docker filter to the objects of this driver.
 func (d *Driver) owned(f client.Filters) client.Filters {
 	return f.Add("label", labelData+"="+d.opts.DataDir)
 }

@@ -116,7 +116,6 @@ func Watch(events <-chan sandbox.Event) *Watcher {
 	return w
 }
 
-// States lists the state events of a sandbox.
 func (w *Watcher) States(id string) []sandbox.State {
 	w.mu.Lock()
 	defer w.mu.Unlock()

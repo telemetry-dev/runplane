@@ -10,7 +10,6 @@ import (
 	"github.com/runplane/runplane/internal/host"
 )
 
-// healthyHost is a good host for container mode.
 func healthyHost() containerHost {
 	return containerHost{
 		Host: &doctor.Host{

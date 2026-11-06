@@ -16,7 +16,7 @@ import (
 // more than watchdogLimit, the watchdog aborts the connection, so that
 // Docker can remove the container.
 type watchdog struct {
-	connections string // /sys/fs/fuse/connections
+	connections string
 	mountinfo   string
 	blocked     map[string]time.Time // connection → first sample with waiting requests
 }
@@ -34,9 +34,8 @@ func newWatchdog() *watchdog {
 	}
 }
 
-// check reads the connections. It aborts each connection that blocks a
-// container in ours for more than watchdogLimit, and returns these
-// containers.
+// check aborts each connection that blocks a container in ours for more than
+// watchdogLimit, and returns these containers.
 func (w *watchdog) check(now time.Time, ours func(containerID string) bool) []string {
 	conns := w.sysboxConnections()
 	var hung []string

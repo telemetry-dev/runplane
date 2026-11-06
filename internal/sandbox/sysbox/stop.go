@@ -26,7 +26,6 @@ func (d backend) Kill(ctx context.Context, b *box) error {
 	return err
 }
 
-// Fault reads why the container ended.
 func (d backend) Fault(ctx context.Context, b *box) string {
 	res, err := d.docker.ContainerInspect(ctx, containerName(b.ID), client.ContainerInspectOptions{})
 	if cerrdefs.IsNotFound(err) {
@@ -49,8 +48,6 @@ func (d backend) Fault(ctx context.Context, b *box) string {
 	return ""
 }
 
-// Remove removes the container, the binding of its bridge port, and the
-// scratch disk or volume.
 func (d backend) Remove(ctx context.Context, b *box) error {
 	var errs []error
 	_, err := d.docker.ContainerRemove(ctx, containerName(b.ID), client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})

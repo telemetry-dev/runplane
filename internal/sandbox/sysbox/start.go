@@ -19,16 +19,12 @@ import (
 	"github.com/runplane/runplane/internal/sandbox/scratch"
 )
 
-// box is a sandbox of this driver.
 type box = lifecycle.Box[instance]
 
-// backend is the lifecycle.Backend of the driver.
 type backend struct{ *Driver }
 
 var _ lifecycle.Backend[instance] = backend{}
 
-// Create makes the scratch disk, the control channel, and the container, and
-// starts the container.
 func (d backend) Create(ctx context.Context, b *box, spec sandbox.Spec, s sandbox.Settings) error {
 	runnerDir, patched, err := d.opts.Runner(ctx, spec.RunnerVersion, spec.Arch)
 	if err != nil {

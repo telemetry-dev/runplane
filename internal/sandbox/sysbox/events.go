@@ -22,8 +22,8 @@ const (
 	diskEvery = time.Minute
 )
 
-// watchDocker follows the Docker events of sandbox containers. After each
-// (re)connect it sweeps, so an exit while no stream was open is not lost.
+// watchDocker sweeps after each (re)connect, so an exit while no stream was
+// open is not lost.
 func (d *Driver) watchDocker(ctx context.Context) {
 	for ctx.Err() == nil {
 		streamCtx, cancel := context.WithCancel(ctx)
@@ -59,7 +59,6 @@ func (d *Driver) readEvents(ctx context.Context, res client.EventsResult) {
 	}
 }
 
-// tick runs the sweep, the sysbox watchdog, and the disk check.
 func (d *Driver) tick(ctx context.Context) {
 	sweep := time.NewTicker(sweepEvery)
 	dog := time.NewTicker(watchdogEvery)

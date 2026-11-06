@@ -97,7 +97,6 @@ func (d *Driver) recover(ctx context.Context) error {
 	return nil
 }
 
-// removeOrphan removes a container of this driver that no sandbox owns.
 func (d *Driver) removeOrphan(ctx context.Context, containerID string) {
 	_, err := d.docker.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 	if err != nil && !cerrdefs.IsNotFound(err) {

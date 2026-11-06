@@ -21,10 +21,9 @@ import (
 // labelProbe marks the short containers of Probe.
 const labelProbe = "dev.runplane.probe"
 
-// ProbeOptions are the sandbox settings of a probe container.
 type ProbeOptions struct {
 	Docker  *client.Client
-	Profile Profile // the profile of the mode
+	Profile Profile
 	// DataDir is the data folder of the driver. The probe container carries
 	// it, so that the recovery of another runplane leaves it alone.
 	DataDir string

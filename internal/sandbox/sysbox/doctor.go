@@ -18,8 +18,6 @@ const (
 	sysboxUnit   = "sysbox"
 )
 
-// Requirements are what container mode needs on the server, for the
-// doctor.
 func Requirements() doctor.Requirements {
 	return doctor.Requirements{
 		Mode:   doctor.ModeCheck.OK("Container mode (Sysbox): use it for trusted code only"),
@@ -33,8 +31,6 @@ func Requirements() doctor.Requirements {
 	}
 }
 
-// containerHost is what the container checks read of the server, in
-// addition to the Host of the doctor.
 type containerHost struct {
 	*doctor.Host
 	sysboxUnit string // systemctl is-active of the sysbox service
@@ -100,8 +96,8 @@ func (h containerHost) sysboxCheck() doctor.Check {
 	return c.OK("Sysbox " + h.SysboxVersion)
 }
 
-// firewallCheck looks at the firewall. The traffic of the containers goes
-// through the DOCKER-USER chain, where runplane puts its sandbox rules.
+// The traffic of the containers goes through the DOCKER-USER chain, where
+// runplane puts its sandbox rules.
 func (h containerHost) firewallCheck() doctor.Check {
 	c := doctor.Check{ID: "firewall", Name: "Firewall rules"}
 	fw := h.firewall
