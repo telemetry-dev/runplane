@@ -21,7 +21,6 @@ import (
 )
 
 type GitHubStatus struct {
-	Connected      bool             `json:"connected" doc:"An app with at least one installation exists."`
 	App            *GitHubApp       `json:"app,omitempty" doc:"Absent before the manifest flow."`
 	Installations  []Installation   `json:"installations"`
 	ScaleSets      []ScaleSetStatus `json:"scale_sets" doc:"One for each pool and installation, or for each pool and repository of a personal account."`
@@ -118,9 +117,6 @@ func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 			InstallURL:     ghapp.AppInstallURL(ghrest.Web, app.Slug),
 		}
 	case !errors.Is(err, store.ErrNotFound):
-		return GitHubStatus{}, err
-	}
-	if out.Connected, err = st.GitHubConnected(ctx); err != nil {
 		return GitHubStatus{}, err
 	}
 	installs, err := st.ListInstallations(ctx)

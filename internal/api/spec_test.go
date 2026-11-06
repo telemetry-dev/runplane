@@ -148,12 +148,10 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		"Invite.role":                        roles,
 		"InviteInfo.role":                    roles,
 		"Job.log_state":                      {store.LogNone, store.LogLive, store.LogStored, store.LogExpired},
-		"Job.result":                         results,
 		"Job.sandbox_state":                  append(sandboxStates, ""),
 		"Job.state":                          jobStates,
 		"Job.status":                         jobStatuses,
 		"JobStep.status":                     jobStatuses,
-		"JobSummary.result":                  results,
 		"JobSummary.state":                   jobStates,
 		"JobSummary.status":                  jobStatuses,
 		"ManifestRequest.account_type":       {"organization", "user"}, // github.Service.Manifest takes them

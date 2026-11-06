@@ -978,10 +978,6 @@
             "$ref": "#/components/schemas/AppPermissions",
             "description": "The permissions that the manifest of a new app asks for."
           },
-          "connected": {
-            "description": "An app with at least one installation exists.",
-            "type": "boolean"
-          },
           "hosted_labels": {
             "description": "The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool.",
             "items": {
@@ -1004,7 +1000,6 @@
           }
         },
         "required": [
-          "connected",
           "installations",
           "scale_sets",
           "app_permissions",
@@ -1555,19 +1550,6 @@
             "description": "owner/name",
             "type": "string"
           },
-          "result": {
-            "description": "Null until the job completes.",
-            "enum": [
-              "succeeded",
-              "failed",
-              "cancelled",
-              "skipped"
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "run_attempt": {
             "format": "int64",
             "type": "integer"
@@ -1702,7 +1684,6 @@
           "server_name",
           "state",
           "status",
-          "result",
           "debug",
           "reject_reason",
           "queue_ms",
@@ -1901,19 +1882,6 @@
             "description": "owner/name",
             "type": "string"
           },
-          "result": {
-            "description": "Null until the job completes.",
-            "enum": [
-              "succeeded",
-              "failed",
-              "cancelled",
-              "skipped"
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "run_number": {
             "description": "0 until runplane reads the run from GitHub.",
             "format": "int64",
@@ -1978,7 +1946,6 @@
           "server_name",
           "state",
           "status",
-          "result",
           "debug",
           "reject_reason",
           "queue_ms",

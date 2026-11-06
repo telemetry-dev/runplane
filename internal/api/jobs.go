@@ -31,7 +31,6 @@ type JobSummary struct {
 	ServerName   string     `json:"server_name"`
 	State        string     `json:"state" enum:"queued,assigned,running,completed"`
 	Status       jobStatus  `json:"status" doc:"queued until a runner starts the job, also when GitHub assigned it, then running, and then the result."`
-	Result       *string    `json:"result" enum:"succeeded,failed,cancelled,skipped" doc:"Null until the job completes."`
 	Debug        bool       `json:"debug" doc:"The sandbox stays after the job for a debug shell."`
 	RejectReason string     `json:"reject_reason" doc:"Why runplane does not take this queued job. Empty if it takes it."`
 	QueueMS      int64      `json:"queue_ms" doc:"Time from queued to assigned. For a job that still waits, the time until now."`
@@ -97,15 +96,11 @@ type JobPage struct {
 }
 
 func jobSummary(j store.Job, r refs, now time.Time) JobSummary {
-	var result *string
-	if j.Result != "" {
-		result = &j.Result
-	}
 	return JobSummary{
 		ID: j.ID, JobName: j.JobName, WorkflowName: j.WorkflowName, WorkflowFile: j.WorkflowFile,
 		Repository: j.Repository, RunNumber: j.RunNumber, HeadBranch: j.HeadBranch, HeadSHA: j.HeadSHA,
 		PoolID: j.PoolID, PoolLabel: r.pools[j.PoolID].Label, ServerID: j.ServerID, ServerName: r.servers[j.ServerID].Name,
-		State: j.State, Status: jobStatus(j.Status()), Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
+		State: j.State, Status: jobStatus(j.Status()), Debug: j.Debug, RejectReason: j.RejectReason,
 		QueueMS: queueMS(j, now), DurationMS: durationMS(j, now),
 		QueuedAt: j.QueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
 	}

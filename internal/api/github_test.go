@@ -128,8 +128,8 @@ func TestGitHubAndBackupEvents(t *testing.T) {
 			t.Fatalf("a member got backup.state: %s", ev.data)
 		case "github.state":
 			var gh GitHubStatus
-			if err := json.Unmarshal([]byte(ev.data), &gh); err != nil || gh.Connected || gh.Installations == nil {
-				t.Fatalf("github.state data %s: want the GitHub status without a connection", ev.data)
+			if err := json.Unmarshal([]byte(ev.data), &gh); err != nil || gh.App != nil || gh.Installations == nil {
+				t.Fatalf("github.state data %s: want the GitHub status without an app", ev.data)
 			}
 			seen++
 		}

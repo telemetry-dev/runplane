@@ -37,8 +37,8 @@ func TestJobPages(t *testing.T) {
 		sizes = append(sizes, len(page.Items))
 		for _, j := range page.Items {
 			got = append(got, j.ID)
-			if j.WorkflowFile != ".github/workflows/ci.yml" || j.State != "queued" || j.Result != nil {
-				t.Fatalf("job %+v: wrong workflow file, state, or result", j)
+			if j.WorkflowFile != ".github/workflows/ci.yml" || j.State != "queued" || j.Status != store.StatusQueued {
+				t.Fatalf("job %+v: wrong workflow file, state, or status", j)
 			}
 		}
 		if page.NextCursor == "" {

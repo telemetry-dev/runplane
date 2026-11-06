@@ -1348,8 +1348,6 @@ export interface components {
             app?: components["schemas"]["GitHubApp"];
             /** @description The permissions that the manifest of a new app asks for. */
             app_permissions: components["schemas"]["AppPermissions"];
-            /** @description An app with at least one installation exists. */
-            connected: boolean;
             /** @description The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool. */
             hosted_labels: string[];
             installations: components["schemas"]["Installation"][];
@@ -1569,11 +1567,6 @@ export interface components {
             reject_reason: string;
             /** @description owner/name */
             repository: string;
-            /**
-             * @description Null until the job completes.
-             * @enum {string|null}
-             */
-            result: "succeeded" | "failed" | "cancelled" | "skipped" | null;
             /** Format: int64 */
             run_attempt: number;
             /** Format: int64 */
@@ -1689,11 +1682,6 @@ export interface components {
             reject_reason: string;
             /** @description owner/name */
             repository: string;
-            /**
-             * @description Null until the job completes.
-             * @enum {string|null}
-             */
-            result: "succeeded" | "failed" | "cancelled" | "skipped" | null;
             /**
              * Format: int64
              * @description 0 until runplane reads the run from GitHub.

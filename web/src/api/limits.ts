@@ -196,9 +196,6 @@ export const limits = {
     "log_state": {
       "enum": ["none", "live", "stored", "expired"]
     },
-    "result": {
-      "enum": ["succeeded", "failed", "cancelled", "skipped"]
-    },
     "sandbox_state": {
       "enum": ["starting", "idle", "busy", "stopping", "gone", "failed", ""]
     },
@@ -215,9 +212,6 @@ export const limits = {
     }
   },
   "JobSummary": {
-    "result": {
-      "enum": ["succeeded", "failed", "cancelled", "skipped"]
-    },
     "state": {
       "enum": ["queued", "assigned", "running", "completed"]
     },

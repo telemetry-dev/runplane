@@ -44,12 +44,12 @@ describe('createEventHandler', () => {
     client.setQueryData(statusQuery.queryKey, { has_jobs: false })
     const handle = createEventHandler(client)
 
-    handle('job.state', { id: 'j1', state: 'completed', result: 'failed' })
+    handle('job.state', { id: 'j1', state: 'completed', status: 'failed' })
 
     expect(client.getQueryData(jobKey('j1'))).toEqual({
       id: 'j1',
       state: 'completed',
-      result: 'failed',
+      status: 'failed',
       steps: [{ name: 'Checkout' }],
     })
     expect(client.getQueryData(jobKey('j2'))).toEqual({ id: 'j2', state: 'queued' })
@@ -173,8 +173,8 @@ describe('createEventHandler', () => {
   })
 
   test('github.state replaces the cached GitHub status and backup.state refetches the backups', async () => {
-    const status = { connected: true, installations: [{ id: 7, account_login: 'kestrel-hq' }], scale_sets: [] }
-    client.setQueryData(githubQuery.queryKey, { connected: false, installations: [], scale_sets: [] })
+    const status = { installations: [{ id: 7, account_login: 'kestrel-hq' }], scale_sets: [] }
+    client.setQueryData(githubQuery.queryKey, { installations: [], scale_sets: [] })
     client.setQueryData(backupsQuery.queryKey, [])
     client.setQueryData(serverListKey, [])
     const handle = createEventHandler(client)
