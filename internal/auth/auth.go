@@ -395,7 +395,6 @@ func (s *Service) NewInviteLink(ctx context.Context, by audit.Actor, id string) 
 	return inv, token, nil
 }
 
-// DeleteInvite withdraws an invite.
 func (s *Service) DeleteInvite(ctx context.Context, by audit.Actor, id string) error {
 	inv, err := s.store.DeleteInvite(ctx, id)
 	if err != nil {

@@ -64,7 +64,6 @@ func (s *Service) Create(ctx context.Context, by audit.Actor, p store.Pool) (sto
 	return p, nil
 }
 
-// Update changes the pool id with change.
 func (s *Service) Update(ctx context.Context, by audit.Actor, id string, change func(*store.Pool)) (store.Pool, error) {
 	old, err := s.st.GetPool(ctx, id)
 	if err != nil {
