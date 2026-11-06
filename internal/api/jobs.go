@@ -418,8 +418,8 @@ type Overview struct {
 // OverviewStats cover the jobs queued in the time of the buckets.
 type OverviewStats struct {
 	Jobs          int      `json:"jobs"`
-	VCPUInUse     int      `json:"vcpu_in_use" doc:"vCPUs of the live sandboxes on the online and draining servers."`
-	VCPUTotal     int      `json:"vcpu_total" doc:"vCPUs of the online and draining servers."`
+	VCPUInUse     int      `json:"vcpu_in_use" doc:"vCPUs of the live sandboxes on the online, draining, and disabled servers."`
+	VCPUTotal     int      `json:"vcpu_total" doc:"vCPUs of the online, draining, and disabled servers."`
 	MedianQueueMS *int64   `json:"median_queue_ms" doc:"Median time from queued to assigned. Null when no job of the range has a runner yet."`
 	FailureRate   *float64 `json:"failure_rate" doc:"failed / (succeeded + failed), 0 to 1. Null when no job of the range succeeded or failed."`
 	CacheHitRate  *float64 `json:"cache_hit_rate" doc:"Actions cache hits / (hits + misses), 0 to 1. Null when the range has no cache lookups."`
@@ -476,8 +476,10 @@ func (h *Handler) getOverview(ctx context.Context, in *overviewInput) (*body[Ove
 	for i, v := range servers {
 		out.Servers[i] = v.ServerSummary
 		// An unreachable server keeps its sandbox rows until it connects
-		// again, so its sandboxes count only with its vCPUs.
-		if v.Status == store.ServerOnline || v.Status == store.ServerDraining {
+		// again, so its sandboxes count only with its vCPUs. A draining or
+		// disabled server stays connected and finishes its jobs.
+		switch v.Status {
+		case store.ServerOnline, store.ServerDraining, store.ServerDisabled:
 			out.Stats.VCPUInUse += v.VCPUInUse
 			out.Stats.VCPUTotal += v.VCPU
 		}

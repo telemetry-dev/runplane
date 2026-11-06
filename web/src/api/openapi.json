@@ -2296,12 +2296,12 @@
             ]
           },
           "vcpu_in_use": {
-            "description": "vCPUs of the live sandboxes on the online and draining servers.",
+            "description": "vCPUs of the live sandboxes on the online, draining, and disabled servers.",
             "format": "int64",
             "type": "integer"
           },
           "vcpu_total": {
-            "description": "vCPUs of the online and draining servers.",
+            "description": "vCPUs of the online, draining, and disabled servers.",
             "format": "int64",
             "type": "integer"
           }

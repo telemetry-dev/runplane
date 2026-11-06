@@ -1822,12 +1822,12 @@ export interface components {
             median_queue_ms: number | null;
             /**
              * Format: int64
-             * @description vCPUs of the live sandboxes on the online and draining servers.
+             * @description vCPUs of the live sandboxes on the online, draining, and disabled servers.
              */
             vcpu_in_use: number;
             /**
              * Format: int64
-             * @description vCPUs of the online and draining servers.
+             * @description vCPUs of the online, draining, and disabled servers.
              */
             vcpu_total: number;
         };

@@ -230,15 +230,17 @@ func TestOverviewHasNoRatesWithoutData(t *testing.T) {
 
 // An unreachable agent keeps its sandbox rows until it connects again. Its
 // sandboxes must not count against the vCPUs of the servers that are left.
+// A disabled server still runs its jobs.
 func TestOverviewVCPUsSkipUnreachableServers(t *testing.T) {
 	e := newEnv(t)
 	b := e.login("ada@example.com", auth.RoleMember)
 	e.addServer("online", "x64", store.ServerOnline, 8, 16384)
 	e.addServer("lost", "x64", store.ServerUnreachable, 16, 32768)
+	e.addServer("off", "x64", store.ServerDisabled, 4, 8192)
 	for i, x := range []struct {
 		server string
 		vcpu   int
-	}{{"online", 2}, {"lost", 4}, {"lost", 4}} {
+	}{{"online", 2}, {"lost", 4}, {"lost", 4}, {"off", 1}} {
 		must(t, e.st.InsertSandbox(context.Background(), store.Sandbox{
 			ID: fmt.Sprint("box", i), PoolID: "p", ServerID: x.server, Mode: sandbox.ModeContainer,
 			State: sandbox.StateBusy, VCPU: x.vcpu, MemoryMB: 4096, CreatedAt: time.Now(),
@@ -246,7 +248,7 @@ func TestOverviewVCPUsSkipUnreachableServers(t *testing.T) {
 	}
 	var o Overview
 	b.do("GET", "/api/overview", nil, &o).want(t, 200)
-	if o.Stats.VCPUInUse != 2 || o.Stats.VCPUTotal != 8 {
-		t.Fatalf("vCPUs %d / %d, want 2 / 8", o.Stats.VCPUInUse, o.Stats.VCPUTotal)
+	if o.Stats.VCPUInUse != 3 || o.Stats.VCPUTotal != 12 {
+		t.Fatalf("vCPUs %d / %d, want 3 / 12", o.Stats.VCPUInUse, o.Stats.VCPUTotal)
 	}
 }
