@@ -20,3 +20,20 @@ test('a save error without field problems shows its detail; repeated messages sh
   expect(saveError(twice)).toBe('Enter an IPv4 address.')
   expect(saveError(null)).toBeUndefined()
 })
+
+test('a save error gives the index of a list item to line, so the text can name the item', () => {
+  const error = new ApiError(
+    422,
+    {
+      type: 'about:blank',
+      errors: [
+        { location: 'body.egress_allowlist[1]', message: 'Enter a host name, IPv4 address, or IPv4 CIDR.' },
+        { location: 'body.egress_allowlist', message: 'Enter at most 100 entries.' },
+      ],
+    },
+    'Unprocessable Entity',
+  )
+  expect(saveError(error, (index, message) => `Item ${index}: ${message}`)).toBe(
+    'Item 1: Enter a host name, IPv4 address, or IPv4 CIDR. Enter at most 100 entries.',
+  )
+})
