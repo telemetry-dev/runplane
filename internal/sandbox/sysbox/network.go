@@ -3,6 +3,7 @@ package sysbox
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -23,7 +24,31 @@ var defaultSubnet = netip.MustParsePrefix("10.213.0.0/16")
 type bridgeNet struct {
 	bridge  string
 	subnet  netip.Prefix
-	gateway netip.Addr // also the service address of the sandboxes
+	gateway netip.Addr
+}
+
+// dockerHost is the name of the Docker host in a container.
+const dockerHost = "host.docker.internal"
+
+// serviceHost is the address of runplane for the sandboxes: the gateway of
+// the runplane network when it is an address of this machine, else the
+// Docker host, for a Docker in a VM as on macOS. On a Linux Docker, the
+// Docker host is the docker0 address of the host, 172.17.0.1 by default.
+// A dockerd in a sandbox takes that subnet for its own networks, and then
+// the sandbox cannot reach runplane at that address.
+func serviceHost(gateway netip.Addr) (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", fmt.Errorf("read the addresses of this machine: %w", err)
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok && ip.Unmap() == gateway {
+				return gateway.String(), nil
+			}
+		}
+	}
+	return dockerHost, nil
 }
 
 // ensureNetwork makes the Docker network "runplane", or reads the one that

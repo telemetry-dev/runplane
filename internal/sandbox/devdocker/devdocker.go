@@ -4,9 +4,10 @@
 // this driver is never for production. It operates only with
 // RUNPLANE_DEV_INSECURE=1.
 //
-// Docker sends the requests of all dev sandboxes to runplane from one
-// address, so runplane cannot tell the sandboxes apart: they get no Actions
-// cache, and the service port takes the loopback address (Allow).
+// A Docker in a VM, as on macOS, sends the requests of all dev sandboxes to
+// runplane from one address, so runplane cannot tell the sandboxes apart:
+// they get no Actions cache, and the service port takes the loopback address
+// (Allow).
 package devdocker
 
 import (

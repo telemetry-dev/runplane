@@ -5,7 +5,6 @@
 package sysbox
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -41,10 +40,6 @@ type Profile struct {
 	firewall bool
 	// watchdog aborts hung sysbox-fs connections (watchdog.go).
 	watchdog bool
-	// serviceHost is the address of the cache server and the registry
-	// mirror for the sandboxes. Empty is the gateway of the runplane
-	// network. A name points to the Docker host.
-	serviceHost string
 	// tcpControl serves the control channels of all sandboxes on the service
 	// port + 1, because a Docker in a VM, as on macOS, cannot share Unix
 	// sockets with the host.
@@ -59,7 +54,7 @@ var (
 	// Dev is the profile of dev mode: plain Docker, with each sandbox root on
 	// the Docker host. The devdocker package has the rules of the mode.
 	Dev = Profile{
-		mode: sandbox.ModeDev, runtime: "runc", privileged: true, serviceHost: "host.docker.internal", tcpControl: true,
+		mode: sandbox.ModeDev, runtime: "runc", privileged: true, tcpControl: true,
 	}
 )
 
@@ -160,7 +155,9 @@ func (d *Driver) setup() error {
 	if err != nil {
 		return err
 	}
-	d.serviceHost = cmp.Or(p.serviceHost, net.gateway.String())
+	if d.serviceHost, err = serviceHost(net.gateway); err != nil {
+		return err
+	}
 	if p.firewall {
 		if err := d.Configure(ctx, d.Settings()); err != nil {
 			return err

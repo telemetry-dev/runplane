@@ -82,9 +82,8 @@ func (d *Driver) createOptions(spec sandbox.Spec, m mounts, dns []netip.Addr) cl
 			CgroupParent: p.cgroupParent,
 		},
 	}
-	if _, err := netip.ParseAddr(d.serviceHost); err != nil {
-		// A name such as host.docker.internal points to the Docker host.
-		hostConfig.ExtraHosts = []string{d.serviceHost + ":host-gateway"}
+	if d.serviceHost == dockerHost {
+		hostConfig.ExtraHosts = []string{dockerHost + ":host-gateway"}
 	}
 	return client.ContainerCreateOptions{
 		Name: containerName(spec.ID),
