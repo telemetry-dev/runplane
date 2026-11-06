@@ -14,7 +14,6 @@ func openTest(t *testing.T) *Store {
 	return s
 }
 
-// must stops the test if err is not nil.
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -22,7 +21,6 @@ func must(t *testing.T, err error) {
 	}
 }
 
-// addJob records a job message.
 func addJob(t *testing.T, s *Store, m JobMessage) Job {
 	t.Helper()
 	j, _, err := s.UpsertJob(t.Context(), m, time.Now())

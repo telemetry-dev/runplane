@@ -279,7 +279,6 @@ func (s *Store) ListOpenInvites(ctx context.Context, now time.Time) ([]Invite, e
 		"SELECT "+inviteCols+" FROM invites WHERE accepted_at IS NULL AND expires_at > ? ORDER BY created_at DESC", ms(now))
 }
 
-// DeleteInvite deletes an invite and returns it.
 func (s *Store) DeleteInvite(ctx context.Context, id string) (Invite, error) {
 	return queryOne(ctx, s.w, "delete invite", scanRow[Invite], "DELETE FROM invites WHERE id = ? RETURNING "+inviteCols, id)
 }

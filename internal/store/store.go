@@ -244,7 +244,6 @@ func dbErr(err error) error {
 	return err
 }
 
-// insert returns an INSERT with one placeholder for each column.
 func insert(table, cols string) string {
 	return "INSERT INTO " + table + " (" + cols + ") VALUES (" + placeholders(strings.Count(cols, ",")+1) + ")"
 }
@@ -313,7 +312,6 @@ type row[T any] interface {
 	cols() []any
 }
 
-// scanRow scans one row into a T.
 func scanRow[T any, P row[T]](sc scanner) (T, error) {
 	var v T
 	err := sc.Scan(P(&v).cols()...)
