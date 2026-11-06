@@ -48,9 +48,12 @@ const (
 // ErrNotConnected means that the server has no connection to the primary.
 var ErrNotConnected = errors.New("the server is not connected")
 
-// Runners records the runner bundle builds of the servers: the Built method
-// of the runner versions service.
+// Runners gives the runner versions for the servers, and records the
+// bundle builds of the servers: the runner versions service.
 type Runners interface {
+	// Versions returns the runner versions to try on a server of arch,
+	// best first, or nil while runplane knows no version.
+	Versions(ctx context.Context, arch string) ([]string, error)
 	// Built records the build of a bundle on one server: a ready row with
 	// its SHA-256, or a failed row with the error.
 	Built(ctx context.Context, b store.RunnerBundle)
@@ -130,7 +133,6 @@ type Fleet struct {
 	defaultID string
 	dropped   map[string]bool        // images that RemoveImage dropped
 	updates   map[string]agentUpdate // the last update of each agent, by server ID
-	latest    string                 // newest runner version
 	samples   []store.ServerStat     // host stats for the next flush
 	seen      map[string]time.Time   // last sample of each agent, for the next flush
 }

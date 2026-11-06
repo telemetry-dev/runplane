@@ -1,8 +1,8 @@
 // Package versions keeps the runner versions of the primary in the
 // runner_bundles rows: the build result of each version and arch, the
 // latest actions/runner release, and the end dates. It warns about a
-// version in use that GitHub stops soon. The fleet makes the newest version
-// of the rows ready on each server.
+// version in use that GitHub stops soon, and it tells the fleet which
+// versions to make ready on a server.
 package versions
 
 import (
@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
@@ -21,6 +22,7 @@ import (
 	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // GitHub gives the credentials of the GitHub App. A read with a token has a
@@ -54,6 +56,9 @@ type Config struct {
 type Service struct {
 	cfg Config
 	log *slog.Logger
+
+	mu     sync.Mutex
+	latest string // the latest actions/runner release of the last check
 }
 
 func New(cfg Config) *Service {
@@ -73,6 +78,37 @@ func (s *Service) Run(ctx context.Context) {
 		case <-time.After(time.Hour):
 		}
 	}
+}
+
+// Versions returns the runner versions to try on a server of arch, best
+// first: the latest release, then up to two older versions that are ready
+// on other servers of the arch. The latest release is the newer one of the
+// last check and of the rows. Versions returns nil while runplane knows no
+// version.
+func (s *Service) Versions(ctx context.Context, arch string) ([]string, error) {
+	bundles, err := s.cfg.Store.ListRunnerBundles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	latest := s.latest
+	s.mu.Unlock()
+	if len(bundles) > 0 && version.Compare(bundles[0].Version, latest) > 0 {
+		latest = bundles[0].Version
+	}
+	if latest == "" {
+		return nil, nil
+	}
+	list := []string{latest}
+	for _, b := range bundles { // newest first
+		if len(list) == 3 {
+			break
+		}
+		if b.Arch == arch && b.Status == store.BundleReady && version.Compare(b.Version, latest) < 0 {
+			list = append(list, b.Version)
+		}
+	}
+	return list, nil
 }
 
 // Built records the build of a bundle on one server: a ready row with its
@@ -97,6 +133,10 @@ func (s *Service) check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read the latest runner release: %w", err)
 	}
+	s.mu.Lock()
+	s.latest = rel.Version
+	s.mu.Unlock()
+	// The rows of the arches that the servers have show the release.
 	arches, err := s.serverArches(ctx)
 	if err != nil {
 		return err

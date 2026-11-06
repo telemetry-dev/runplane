@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -108,6 +109,33 @@ func TestCheck(t *testing.T) {
 				t.Errorf("the second check sent %d warnings and published events, want %d and none", len(notes.sent), tt.wantWarns)
 			}
 		})
+	}
+}
+
+// On a new install, the first check can run before the primary records the
+// arch of its server. The first runner bundle must not wait for the next
+// check one hour later.
+func TestVersionsBeforeTheServersHaveAnArch(t *testing.T) {
+	ctx := context.Background()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/actions/runner/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"tag_name": "v2.331.0", "published_at": "2026-11-01T12:00:00Z"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	s := New(Config{
+		Store: openStore(t), Bus: &events.Bus{}, GitHub: fakeGitHub{}, Notifier: &fakeNotifier{}, API: ghrest.Client{URL: srv.URL},
+		InUse: func() []string { return nil },
+	})
+
+	if got, err := s.Versions(ctx, "x64"); err != nil || got != nil {
+		t.Errorf("versions before the first check: %v, %v; want none", got, err)
+	}
+	if err := s.check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Versions(ctx, "x64"); err != nil || !slices.Equal(got, []string{"2.331.0"}) {
+		t.Errorf("versions after the check: %v, %v; want the latest release 2.331.0", got, err)
 	}
 }
 

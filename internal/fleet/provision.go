@@ -81,9 +81,9 @@ func (f *Fleet) provision(ctx context.Context) {
 		f.log.Warn("list pools", "err", err)
 		return
 	}
-	bundles, err := f.st.ListRunnerBundles(ctx)
+	runners, err := f.runnerVersions(ctx)
 	if err != nil {
-		f.log.Warn("list runner bundles", "err", err)
+		f.log.Warn("read the runner versions", "err", err)
 		return
 	}
 	type pull struct {
@@ -106,9 +106,6 @@ func (f *Fleet) provision(ctx context.Context) {
 			f.defaultID = img.ID
 		}
 	}
-	if len(bundles) > 0 && version.Compare(bundles[0].Version, f.latest) > 0 {
-		f.latest = bundles[0].Version
-	}
 	now := f.now()
 	for _, n := range f.nodes {
 		if n.status != store.ServerOnline {
@@ -124,9 +121,10 @@ func (f *Fleet) provision(ctx context.Context) {
 			n.pulls[id] = img.Ref
 			pulls = append(pulls, pull{n, img})
 		}
-		if f.latest != "" && n.runner != f.latest && !n.runnerBusy && now.Sub(n.runnerFailed) >= retryAfter {
+		versions := runners[n.arch]
+		if len(versions) > 0 && n.runner != versions[0] && !n.runnerBusy && now.Sub(n.runnerFailed) >= retryAfter {
 			n.runnerBusy = true
-			downloads = append(downloads, download{n, runnerVersions(f.latest, n.arch, bundles)})
+			downloads = append(downloads, download{n, versions})
 		}
 	}
 	f.mu.Unlock()
@@ -168,19 +166,26 @@ func (f *Fleet) wanted(n *node, pools []store.Pool) []string {
 	return list
 }
 
-// runnerVersions returns the versions to try for a server: the newest, then
-// up to two older versions that are ready on other servers of the arch.
-func runnerVersions(latest, arch string, bundles []store.RunnerBundle) []string {
-	list := []string{latest}
-	for _, b := range bundles { // newest first
-		if len(list) == 3 {
-			break
-		}
-		if b.Arch == arch && b.Status == store.BundleReady && version.Compare(b.Version, latest) < 0 {
-			list = append(list, b.Version)
+// runnerVersions returns the runner versions to try for each arch of the
+// online servers.
+func (f *Fleet) runnerVersions(ctx context.Context) (map[string][]string, error) {
+	f.mu.Lock()
+	var arches []string
+	for _, n := range f.nodes {
+		if n.status == store.ServerOnline && !slices.Contains(arches, n.arch) {
+			arches = append(arches, n.arch)
 		}
 	}
-	return list
+	f.mu.Unlock()
+	versions := map[string][]string{}
+	for _, arch := range arches {
+		list, err := f.runners.Versions(ctx, arch)
+		if err != nil {
+			return nil, err
+		}
+		versions[arch] = list
+	}
+	return versions, nil
 }
 
 // pull makes an image ready on a server and records each step in the image
