@@ -65,25 +65,54 @@ func TestSlowSubscriberDoesNotBlock(t *testing.T) {
 	}
 }
 
+// Publish puts an event in the channel of each subscriber before it
+// returns, so an event that does not come shows that the subscription ended.
 func TestSubscriptionEndsWithContext(t *testing.T) {
-	var b Bus
-	ctx, cancel := context.WithCancel(t.Context())
-	Subscribe[JobState](ctx, &b)
-	b.Watch(ctx, 4)
-	cancel()
-	deadline := time.Now().Add(5 * time.Second)
-	for subscribers(&b) > 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d subscribers after the end of their context", subscribers(&b))
-		}
-		time.Sleep(time.Millisecond)
+	for _, tt := range []struct {
+		name string
+		// subscribe returns got, which reports if an event waits for the subscriber.
+		subscribe func(t *testing.T, ctx context.Context, b *Bus) (got func() bool)
+	}{
+		{"Subscribe", func(t *testing.T, ctx context.Context, b *Bus) func() bool {
+			ch := Subscribe[JobState](ctx, b)
+			return func() bool {
+				select {
+				case <-ch:
+					return true
+				default:
+					return false
+				}
+			}
+		}},
+		{"Watch", func(t *testing.T, ctx context.Context, b *Bus) func() bool {
+			ch := b.Watch(ctx, 1)
+			return func() bool {
+				select {
+				case _, ok := <-ch:
+					if !ok {
+						t.Fatal("the channel closed, so the test cannot see more events")
+					}
+					return true
+				default:
+					return false
+				}
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var b Bus
+			ctx, cancel := context.WithCancel(t.Context())
+			got := tt.subscribe(t, ctx, &b)
+			cancel()
+			deadline := time.Now().Add(5 * time.Second)
+			for b.Publish(JobState{}); got(); b.Publish(JobState{}) {
+				if time.Now().After(deadline) {
+					t.Fatal("the subscriber gets events after the end of its context")
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
 	}
-}
-
-func subscribers(b *Bus) int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.sinks)
 }
 
 func TestPublishWhileCancel(t *testing.T) {
