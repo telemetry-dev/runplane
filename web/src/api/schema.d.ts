@@ -1002,6 +1002,16 @@ export interface components {
             name: string;
             password: string;
         };
+        AppPermission: {
+            /** @enum {string} */
+            access: "read" | "write";
+            /** @enum {string} */
+            name: "organization_self_hosted_runners" | "administration" | "actions" | "metadata";
+        };
+        AppPermissions: {
+            organization: components["schemas"]["AppPermission"][];
+            user: components["schemas"]["AppPermission"][];
+        };
         AuditEntry: {
             /**
              * @description <object>.<verb>, for example "pool.create".
@@ -1308,6 +1318,8 @@ export interface components {
         GitHubStatus: {
             /** @description Absent before the manifest flow. */
             app?: components["schemas"]["GitHubApp"];
+            /** @description The permissions that the manifest of a new app asks for. */
+            app_permissions: components["schemas"]["AppPermissions"];
             /** @description An app with at least one installation exists. */
             connected: boolean;
             installations: components["schemas"]["Installation"][];
@@ -1331,6 +1343,7 @@ export interface components {
         HostCheck: {
             /** @enum {string} */
             arch: "x64" | "arm64";
+            /** @description The doctor checks without the mode check: mode has its result. */
             checks: components["schemas"]["Check"][];
             /**
              * Format: int64
@@ -1908,16 +1921,31 @@ export interface components {
             placeable_servers: number;
         };
         PoolStats: {
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Of queued, the jobs that GitHub assigned to the scale set of the pool.
+             */
             assigned: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of sandboxes that run a job.
+             */
             busy: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of idle sandboxes.
+             */
             idle: number;
             pool_id: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Jobs of the last 24 hours that wait for a runner.
+             */
             queued: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of sandboxes that start.
+             */
             starting: number;
         };
         PoolsChanged: Record<string, never>;
@@ -2170,6 +2198,9 @@ export interface components {
             /** @description POST /api/servers/{id}/update: the agent is connected, and update_state is available or failed. */
             can_update: boolean;
         };
+        ServerRemoved: {
+            id: string;
+        };
         ServerSummary: {
             /** @description x64 or arm64. Empty until the server reports its facts. */
             arch: string;
@@ -2355,11 +2386,6 @@ export interface components {
             reserve_vcpu: number;
             /** @description File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only. */
             secret_key_path: string;
-            /**
-             * Format: int64
-             * @description Port of the SSH gateway for debug shells. Read-only.
-             */
-            ssh_port: number;
         };
         SettingsPatch: {
             /** @description Contact for the certificate authority. Optional. */
@@ -2456,8 +2482,6 @@ export interface components {
             reason: string;
         };
         Status: {
-            /** @description True when a GitHub App with at least one installation exists. */
-            github_connected: boolean;
             /** @description True when runplane has recorded at least one job. */
             has_jobs: boolean;
             instance_name: string;
@@ -2468,11 +2492,6 @@ export interface components {
             mode: "container" | "vm" | "dev";
             /** @description True until the first admin exists. */
             needs_setup: boolean;
-            /**
-             * Format: int64
-             * @description Port of the SSH gateway for debug shells.
-             */
-            ssh_port: number;
             /** @description The operating systems of a server that install.sh names. */
             systems: components["schemas"]["System"][];
             /** @description Version of runplane, for example "v1.2.0 (3f2a9c1)". */
@@ -2931,12 +2950,34 @@ export interface operations {
                         /** @description The retry time in milliseconds. */
                         retry?: number;
                     } | {
+                        data: components["schemas"]["ServerRemoved"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "server.removed";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
                         data: components["schemas"]["Server"];
                         /**
                          * @description The event name.
                          * @constant
                          */
                         event: "server.state";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
+                        data: components["schemas"]["Settings"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "settings.changed";
                         /** @description The event ID. */
                         id?: number | string;
                         /** @description The retry time in milliseconds. */

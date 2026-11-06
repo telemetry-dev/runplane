@@ -13,14 +13,12 @@ import (
 )
 
 type Status struct {
-	NeedsSetup      bool     `json:"needs_setup" doc:"True until the first admin exists."`
-	Version         string   `json:"version" doc:"Version of runplane, for example \"v1.2.0 (3f2a9c1)\"."`
-	Mode            string   `json:"mode" enum:"container,vm,dev" doc:"Sandbox mode."`
-	InstanceName    string   `json:"instance_name"`
-	GitHubConnected bool     `json:"github_connected" doc:"True when a GitHub App with at least one installation exists."`
-	HasJobs         bool     `json:"has_jobs" doc:"True when runplane has recorded at least one job."`
-	SSHPort         int      `json:"ssh_port" doc:"Port of the SSH gateway for debug shells."`
-	Systems         []System `json:"systems" doc:"The operating systems of a server that install.sh names."`
+	NeedsSetup   bool     `json:"needs_setup" doc:"True until the first admin exists."`
+	Version      string   `json:"version" doc:"Version of runplane, for example \"v1.2.0 (3f2a9c1)\"."`
+	Mode         string   `json:"mode" enum:"container,vm,dev" doc:"Sandbox mode."`
+	InstanceName string   `json:"instance_name"`
+	HasJobs      bool     `json:"has_jobs" doc:"True when runplane has recorded at least one job."`
+	Systems      []System `json:"systems" doc:"The operating systems of a server that install.sh names."`
 }
 
 type System struct {
@@ -39,10 +37,6 @@ func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], er
 	if err != nil {
 		return nil, err
 	}
-	connected, err := h.githubConnected(ctx)
-	if err != nil {
-		return nil, err
-	}
 	jobs, _, err := st.ListJobs(ctx, store.JobFilter{Limit: 1})
 	if err != nil {
 		return nil, err
@@ -52,14 +46,12 @@ func (h *Handler) getStatus(ctx context.Context, _ *struct{}) (*body[Status], er
 		systems[i] = System{Name: s.Name, Version: s.Version, BestEffort: s.BestEffort}
 	}
 	return &body[Status]{Status{
-		NeedsSetup:      users == 0,
-		Version:         version.String(),
-		Mode:            string(h.d.Settings.Mode(settings)),
-		InstanceName:    settings.InstanceName,
-		GitHubConnected: connected,
-		HasJobs:         len(jobs) > 0,
-		SSHPort:         h.sshPort(),
-		Systems:         systems,
+		NeedsSetup:   users == 0,
+		Version:      version.String(),
+		Mode:         string(h.d.Settings.Mode(settings)),
+		InstanceName: settings.InstanceName,
+		HasJobs:      len(jobs) > 0,
+		Systems:      systems,
 	}}, nil
 }
 
@@ -91,7 +83,7 @@ type HostCheck struct {
 	FreeDiskBytes int64   `json:"free_disk_bytes" doc:"Free space on the disk of the data folder."`
 	DiskKind      string  `json:"disk_kind" doc:"NVMe, SSD, or HDD. Empty if unknown."`
 	OS            string  `json:"os" doc:"For example \"Ubuntu 24.04.1 LTS\"."`
-	Checks        []Check `json:"checks"`
+	Checks        []Check `json:"checks" doc:"The doctor checks without the mode check: mode has its result."`
 }
 
 type Check struct {

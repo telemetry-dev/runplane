@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -42,11 +43,7 @@ func (s *Service) Setup(ctx context.Context, installationID int64, setupAction s
 	}
 	connected := len(known) > 0
 	if setupAction == "request" || installationID == 0 {
-		// An organization owner must approve the request on GitHub first.
-		if connected {
-			return "/settings/github?requested=1", nil
-		}
-		return "/setup/github?requested=1", nil
+		return pages.GitHubRequested(connected), nil
 	}
 
 	var inst installation
@@ -69,9 +66,9 @@ func (s *Service) Setup(ctx context.Context, installationID int64, setupAction s
 	}
 	s.reconcile(ctx)
 	if connected {
-		return "/settings/github", nil
+		return pages.GitHubSettings, nil
 	}
-	return "/setup/first-job", nil
+	return pages.FirstJob, nil
 }
 
 // Sync reads the installations, their repositories, and suspensions now,

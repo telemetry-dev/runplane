@@ -11,14 +11,28 @@ import (
 	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
 type GitHubStatus struct {
-	Connected     bool             `json:"connected" doc:"An app with at least one installation exists."`
-	App           *GitHubApp       `json:"app,omitempty" doc:"Absent before the manifest flow."`
-	Installations []Installation   `json:"installations"`
-	ScaleSets     []ScaleSetStatus `json:"scale_sets" doc:"One for each pool and installation, or for each pool and repository of a personal account."`
+	Connected      bool             `json:"connected" doc:"An app with at least one installation exists."`
+	App            *GitHubApp       `json:"app,omitempty" doc:"Absent before the manifest flow."`
+	Installations  []Installation   `json:"installations"`
+	ScaleSets      []ScaleSetStatus `json:"scale_sets" doc:"One for each pool and installation, or for each pool and repository of a personal account."`
+	AppPermissions AppPermissions   `json:"app_permissions" doc:"The permissions that the manifest of a new app asks for."`
+}
+
+// AppPermissions has the permissions of the app for each account_type of
+// ManifestRequest.
+type AppPermissions struct {
+	Organization []AppPermission `json:"organization"`
+	User         []AppPermission `json:"user"`
+}
+
+type AppPermission struct {
+	Name   string `json:"name" enum:"organization_self_hosted_runners,administration,actions,metadata"`
+	Access string `json:"access" enum:"read,write"`
 }
 
 type GitHubApp struct {
@@ -80,7 +94,10 @@ type ScaleSetStats struct {
 
 func (h *Handler) gitHubStatus(ctx context.Context) (GitHubStatus, error) {
 	st := h.d.Store
-	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}}
+	out := GitHubStatus{Installations: []Installation{}, ScaleSets: []ScaleSetStatus{}, AppPermissions: AppPermissions{
+		Organization: appPermissions(ghrest.Account{Type: ghrest.Organization}),
+		User:         appPermissions(ghrest.Account{Type: ghrest.User}),
+	}}
 	app, err := st.GetGitHubApp(ctx)
 	switch {
 	case err == nil:
@@ -150,6 +167,15 @@ func runnerGroup(id int64) string {
 		return "Default"
 	}
 	return "Group " + strconv.FormatInt(id, 10)
+}
+
+func appPermissions(owner ghrest.Account) []AppPermission {
+	list := owner.AppPermissions()
+	out := make([]AppPermission, len(list))
+	for i, p := range list {
+		out[i] = AppPermission(p)
+	}
+	return out
 }
 
 func (h *Handler) getGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {
@@ -255,7 +281,7 @@ func (h *Handler) githubSetup(ctx context.Context, in *githubSetupInput) (*redir
 func (h *Handler) browserAdmin(ctx context.Context, self string) (context.Context, string) {
 	u, err := h.d.Auth.UserForToken(ctx, clientOf(ctx).token)
 	if err != nil {
-		return ctx, "/login?" + url.Values{"redirect": {self}}.Encode()
+		return ctx, pages.Login(self)
 	}
 	ctx = context.WithValue(ctx, userKey{}, u)
 	if !auth.CanDo(u.Role, auth.ActionAdmin) {
@@ -264,14 +290,9 @@ func (h *Handler) browserAdmin(ctx context.Context, self string) (context.Contex
 	return ctx, ""
 }
 
-// githubErrorPage is the setup page before GitHub is connected, and the
-// GitHub settings page after.
 func (h *Handler) githubErrorPage(ctx context.Context, msg string) string {
-	page := "/setup/github"
-	if ok, err := h.githubConnected(ctx); err == nil && ok {
-		page = "/settings/github"
-	}
-	return page + "?" + url.Values{"error": {msg}}.Encode()
+	ok, err := h.githubConnected(ctx)
+	return pages.GitHubError(err == nil && ok, msg)
 }
 
 func (h *Handler) syncGitHub(ctx context.Context, _ *struct{}) (*body[GitHubStatus], error) {

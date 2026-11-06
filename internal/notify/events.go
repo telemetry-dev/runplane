@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -29,7 +30,7 @@ type Event struct {
 	Type  Type
 	Title string
 	Text  string
-	Path  string         // dashboard page of the event, for example "/jobs/<id>"
+	Path  string         // dashboard page of the event, from package pages
 	Data  map[string]any // details for webhook receivers
 	At    time.Time      // the send sets the current time if zero
 }
@@ -60,7 +61,7 @@ func JobFailedEvent(j store.Job) Event {
 		Type:  JobFailed,
 		Title: "Job failed: " + j.JobName,
 		Text:  strings.Join(parts, " · "),
-		Path:  "/jobs/" + j.ID,
+		Path:  pages.Job(j.ID),
 		Data: map[string]any{
 			"job_id":      j.ID,
 			"repository":  j.Repository,
@@ -80,7 +81,7 @@ func ServerUnreachableEvent(serverID, name string, lastSeen time.Time) Event {
 		Type:  ServerUnreachable,
 		Title: "Server unreachable: " + name,
 		Text:  fmt.Sprintf("runplane has had no connection to %s since %s. Jobs do not start on this server.", name, lastSeen.UTC().Format("2006-01-02 15:04 UTC")),
-		Path:  "/servers/" + serverID,
+		Path:  pages.Server(serverID),
 		Data: map[string]any{
 			"server_id":    serverID,
 			"server_name":  name,
@@ -94,7 +95,7 @@ func DiskLowEvent(serverID, name string, freePercent, minFreePercent float64) Ev
 		Type:  DiskLow,
 		Title: "Disk almost full on " + name,
 		Text:  fmt.Sprintf("%.0f%% of the disk is free. New sandboxes start only when more than %g%% is free.", freePercent, minFreePercent),
-		Path:  "/servers/" + serverID,
+		Path:  pages.Server(serverID),
 		Data: map[string]any{
 			"server_id":        serverID,
 			"server_name":      name,
@@ -110,7 +111,7 @@ func RunnerDeprecationEvent(version string, end time.Time) Event {
 		Type:  RunnerDeprecation,
 		Title: fmt.Sprintf("Runner %s stops working on %s", version, date),
 		Text:  fmt.Sprintf("GitHub stops sending jobs to runner %s on %s. Make sure that a newer runner version is ready.", version, date),
-		Path:  "/settings/runners",
+		Path:  pages.RunnerSettings,
 		Data:  map[string]any{"version": version, "end_date": date},
 	}
 }
@@ -120,7 +121,7 @@ func UpdateAvailableEvent(current, latest, releaseURL string) Event {
 		Type:  UpdateAvailable,
 		Title: fmt.Sprintf("runplane %s is available", latest),
 		Text:  fmt.Sprintf("This server runs %s. You can update in Settings, General.", current),
-		Path:  "/settings/general",
+		Path:  pages.GeneralSettings,
 		Data: map[string]any{
 			"current_version": current,
 			"latest_version":  latest,
@@ -135,7 +136,7 @@ func BackupFailedEvent(reason string) Event {
 		Type:  BackupFailed,
 		Title: "Database backup failed",
 		Text:  reason,
-		Path:  "/settings/general",
+		Path:  pages.GeneralSettings,
 		Data:  map[string]any{"error": reason},
 	}
 }
@@ -145,7 +146,7 @@ func TestEvent() Event {
 		Type:  Test,
 		Title: "Test notification from runplane",
 		Text:  "This channel receives runplane notifications.",
-		Path:  "/settings/notifications",
+		Path:  pages.NotificationSettings,
 	}
 }
 

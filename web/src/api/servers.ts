@@ -34,6 +34,10 @@ export function putServer(client: QueryClient, server: Server): boolean {
   return listed
 }
 
+export function dropServer(client: QueryClient, id: string) {
+  client.setQueryData<Server[]>(serversQuery.queryKey, (list) => list?.filter((item) => item.id !== id))
+}
+
 /** Writes a host.stats event into the cached server list and detail. */
 export function putHostStats(client: QueryClient, stats: Schemas['HostStats']) {
   client.setQueryData<Server>(serverQuery(stats.server_id).queryKey, (old) => old && withHostStats(old, stats))

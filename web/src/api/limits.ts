@@ -11,6 +11,14 @@ export const limits = {
       "maxLength": 1024
     }
   },
+  "AppPermission": {
+    "access": {
+      "enum": ["read", "write"]
+    },
+    "name": {
+      "enum": ["organization_self_hosted_runners", "administration", "actions", "metadata"]
+    }
+  },
   "AuditEntry": {
     "action": {
       "enum": ["setup.done", "user.update", "user.delete", "user.password", "invite.create", "invite.link", "invite.delete", "pool.create", "pool.update", "pool.delete", "server.token", "server.install", "server.update", "server.delete", "server.update_agent", "sandbox.stop", "sandbox.shell", "sandbox.ssh", "cache.delete", "image.create", "image.update", "image.delete", "image.refresh", "settings.update", "job.rerun", "backup.create", "backup.download", "update.apply", "github.manifest", "github.app.create", "github.installation.install", "github.installation.update", "github.installation.request", "github.sync", "github.disconnect", "notification.create", "notification.update", "notification.delete"]

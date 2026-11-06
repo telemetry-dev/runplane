@@ -623,15 +623,28 @@ func TestEventsStreamConvertsStoreModels(t *testing.T) {
 	pool := store.Pool{ID: ids.New(), Name: "Default", Label: "runplane", Arch: "x64", VCPU: 2, MemoryMB: 4096, DiskGB: 20, MaxRunners: 1, Enabled: true, CreatedAt: now, UpdatedAt: now}
 	must(t, e.st.CreatePool(context.Background(), pool))
 	sb := store.Sandbox{ID: "sb1", PoolID: pool.ID, ServerID: "srv", State: sandbox.StateBusy, VCPU: 2, MemoryMB: 4096, CreatedAt: now}
-	e.publish(events.SettingsChanged{}, events.SandboxState(sb))
+	renamed := store.DefaultSettings()
+	renamed.InstanceName = "Acme CI"
+	e.publish(events.SettingsChanged{New: renamed}, events.SandboxState(sb))
 
-	ev := recv(t, ch)
-	if ev.name != "sandbox.state" {
-		t.Fatalf("got event %q with %s; settings.changed must not reach the browser", ev.name, ev.data)
-	}
-	var got Sandbox
-	must(t, json.Unmarshal([]byte(ev.data), &got))
-	if got.ID != "sb1" || got.PoolLabel != "runplane" || got.State != "busy" {
-		t.Fatalf("sandbox.state data = %+v, want sb1 busy in pool runplane", got)
+	for seen := map[string]bool{}; len(seen) < 2; {
+		ev := recv(t, ch)
+		switch ev.name {
+		case "sandbox.state":
+			var got Sandbox
+			must(t, json.Unmarshal([]byte(ev.data), &got))
+			if got.ID != "sb1" || got.PoolLabel != "runplane" || got.State != "busy" {
+				t.Fatalf("sandbox.state data = %+v, want sb1 busy in pool runplane", got)
+			}
+		case "settings.changed":
+			var got Settings
+			must(t, json.Unmarshal([]byte(ev.data), &got))
+			if got.InstanceName != "Acme CI" {
+				t.Fatalf("settings.changed data has the instance name %q, want the new name Acme CI", got.InstanceName)
+			}
+		default:
+			t.Fatalf("got event %q with %s", ev.name, ev.data)
+		}
+		seen[ev.name] = true
 	}
 }

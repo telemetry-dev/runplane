@@ -107,12 +107,23 @@ func TestJobShowsItsDebugSandbox(t *testing.T) {
 
 func TestSSHPortComesFromTheListenAddress(t *testing.T) {
 	e := newEnv(t, func(d *Deps) { d.Config.SSHListen = "0.0.0.0:2022" })
-	var st Status
-	e.browser().do("GET", "/api/status", nil, &st).want(t, 200)
-	var settings Settings
-	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/settings", nil, &settings).want(t, 200)
-	if st.SSHPort != 2022 || settings.SSHPort != 2022 {
-		t.Fatalf("ssh_port in status %d, in settings %d; want 2022", st.SSHPort, settings.SSHPort)
+	ctx := context.Background()
+	_, err := e.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.PublicURL = "https://ci.example.com"
+		return nil
+	})
+	must(t, err)
+	j := e.addJob(1, "acme/api", time.Now())
+	const id = "01jbz00000000000000000debg"
+	e.addSandbox(id, sandbox.StateBusy)
+	_, _, err = e.st.LinkJobSandbox(ctx, j.ID, id)
+	must(t, err)
+	must(t, e.st.SetSandboxDebug(ctx, id))
+
+	var got Job
+	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)
+	if want := "ssh -p 2022 " + id + "@ci.example.com"; got.SSHCommand != want {
+		t.Fatalf("ssh command %q, want %q", got.SSHCommand, want)
 	}
 }
 

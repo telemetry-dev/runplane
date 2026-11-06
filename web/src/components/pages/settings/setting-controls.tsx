@@ -4,11 +4,10 @@ import { Input } from '~/components/ui/input'
 import { NumberInput } from '~/components/ui/number-field'
 import { Switch } from '~/components/ui/switch'
 import type { Schemas } from '~/api/client'
-import { useSaveSettings, useSaveSwitch, type SwitchKey } from '~/api/settings'
 import { cx } from '~/lib/cx'
 import { lineNumber, listItems } from './list-text'
 import { SettingRow } from './parts'
-import { saveError, showSaved } from './save'
+import { saveError, showSaved, useSaveSettings, useSaveSwitch, type SwitchKey } from './save'
 
 type SettingsPatch = Schemas['SettingsPatch']
 

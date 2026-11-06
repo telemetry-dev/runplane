@@ -13,28 +13,24 @@ import { OrganizationSearch } from './organization-search'
 import { borderedList, borderedRow } from './parts'
 
 type AccountType = Schemas['ManifestRequest']['account_type']
+type Permission = Schemas['AppPermission']
 
-// The permissions of the manifest. Runners of a personal account are
-// repository runners, which need Administration.
-const permissions: Record<AccountType, ReadonlyArray<[name: string, access: string]>> = {
-  organization: [
-    ['Self-hosted runners', 'Read and write'],
-    ['Actions', 'Read and write'],
-    ['Metadata', 'Read'],
-  ],
-  user: [
-    ['Administration', 'Read and write'],
-    ['Actions', 'Read and write'],
-    ['Metadata', 'Read'],
-  ],
+const permissionNames: Record<Permission['name'], string> = {
+  organization_self_hosted_runners: 'Self-hosted runners',
+  administration: 'Administration',
+  actions: 'Actions',
+  metadata: 'Metadata',
 }
+
+const accessNames: Record<Permission['access'], string> = { read: 'Read', write: 'Read and write' }
 
 /**
  * Step 2 of the setup before an app exists. The API returns a GitHub URL and the
  * app manifest; the browser then posts the manifest to GitHub in a plain form,
- * because GitHub's manifest flow takes no other request.
+ * because GitHub's manifest flow takes no other request. `permissions` are the
+ * permissions of the manifest for each account type.
  */
-export function ConnectForm() {
+export function ConnectForm({ permissions }: { permissions: Schemas['AppPermissions'] }) {
   const [accountType, setAccountType] = useState<AccountType>('organization')
   const [organization, setOrganization] = useState<string | null>(null)
   const [unselected, setUnselected] = useState(false)
@@ -115,11 +111,11 @@ export function ConnectForm() {
             The app asks for
           </span>
           <ul aria-labelledby={permissionsId} className={borderedList}>
-            {permissions[accountType].map(([name, access]) => (
+            {permissions[accountType].map(({ name, access }) => (
               <li key={name} className={cx('flex items-center gap-s px-m py-xs text-s', borderedRow)}>
                 <Check size={14} className="text-neutral-8" aria-hidden />
-                <span className="min-w-0 flex-1 text-neutral-10">{name}</span>
-                <span className="text-neutral-7">{access}</span>
+                <span className="min-w-0 flex-1 text-neutral-10">{permissionNames[name]}</span>
+                <span className="text-neutral-7">{accessNames[access]}</span>
               </li>
             ))}
           </ul>

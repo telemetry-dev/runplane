@@ -2,10 +2,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { backupsQuery } from '~/api/backups'
-import { $api, errorMessage, type Schemas } from '~/api/client'
+import { $api, apiUrl, errorMessage, type Schemas } from '~/api/client'
 import { useFormProblems } from '~/api/form-problems'
 import { limits } from '~/api/limits'
-import { useSaveSettings } from '~/api/settings'
 import {
   DataTable,
   DataTableCell,
@@ -29,7 +28,7 @@ import { Tooltip } from '~/components/ui/tooltip'
 import { formatBytes, formatDateTime } from '~/lib/format'
 import { backupStatus, storedOn } from './backup-info'
 import { CardTitle, SettingRows, SettingsCard, SettingsSection } from './parts'
-import { showSaved } from './save'
+import { showSaved, useSaveSettings } from './save'
 import { NumberSetting, SwitchSetting } from './setting-controls'
 
 /** The Backups section: the daily backup, how many to keep, the S3 upload, and the list of backups. */
@@ -243,7 +242,7 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
           <IconButton
             label={`Download backup from ${created}`}
             nativeButton={false}
-            render={<a href={`/api/backups/${encodeURIComponent(backup.id)}/download`} download />}
+            render={<a href={apiUrl('/api/backups/{id}/download', { path: { id: backup.id } })} download />}
             className="-m-xs"
           >
             <Download aria-hidden />

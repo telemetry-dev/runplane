@@ -312,7 +312,10 @@ func (n *fakeNode) Close() error                             { return nil }
 func (n *fakeNode) MirrorStats(context.Context) (agent.MirrorStats, error) { return n.mirror, nil }
 
 func (n *fakeNode) Doctor(context.Context) (doctor.Report, error) {
-	return doctor.Report{Info: n.info, Checks: []doctor.Check{{ID: "kernel", Name: "Kernel", Status: doctor.StatusOK, Detail: n.info.Kernel}}}, nil
+	return doctor.Report{Info: n.info, Checks: []doctor.Check{
+		doctor.ModeCheck.OK("Test mode"),
+		{ID: "kernel", Name: "Kernel", Status: doctor.StatusOK, Detail: n.info.Kernel},
+	}}, nil
 }
 
 func (n *fakeNode) EnsureImage(ctx context.Context, ref string, progress func(agent.Progress)) (sandbox.ImageRef, error) {

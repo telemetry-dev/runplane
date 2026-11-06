@@ -1,6 +1,7 @@
 import { QueryClient, QueryObserver, type QueryKey } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { backupsQuery } from './backups'
+import { cachesQuery } from './caches'
 import { createEventHandler, reconnectDelay } from './events'
 import { githubQuery } from './github'
 import { imagesQuery } from './images'
@@ -10,6 +11,7 @@ import { poolsQuery } from './pools'
 import { sandboxesQuery, sandboxQuery } from './sandboxes'
 import { serverQuery, serversQuery } from './servers'
 import { statusQuery } from './session'
+import { domainDNSQuery, settingsQuery } from './settings'
 
 const jobKey = (id: string) => jobQuery(id).queryKey
 const metricsKey = (id: string) => metricsQuery(id).queryKey
@@ -61,6 +63,16 @@ describe('createEventHandler', () => {
     expect(invalidated(jobKey('j2'))).toBe(false)
     expect(invalidated(metricsKey('j2'))).toBe(false)
     expect(invalidated(serverListKey)).toBe(false)
+  })
+
+  test('job.state keeps the status after the first job, because has_jobs stays true', async () => {
+    client.setQueryData(statusQuery.queryKey, { has_jobs: true })
+    const handle = createEventHandler(client)
+
+    handle('job.state', { id: 'j1', state: 'running' })
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(invalidated(statusQuery.queryKey)).toBe(false)
   })
 
   test('sandbox.state refetches that sandbox, the server list and its server, and the job it runs', async () => {
@@ -118,6 +130,46 @@ describe('createEventHandler', () => {
 
     await vi.advanceTimersByTimeAsync(300)
     expect(client.getQueryState(serverListKey)?.isInvalidated).toBe(true)
+  })
+
+  test('server.removed drops the server from the list, and refetches its detail and the lists that count servers', async () => {
+    const other = { ...drainingServer, id: 's2', name: 'fsn1-ax52-b' }
+    client.setQueryData(serverListKey, [drainingServer, other])
+    client.setQueryData(serverKey('s1'), drainingServer)
+    client.setQueryData(serverKey('s2'), other)
+    client.setQueryData(poolsQuery.queryKey, [])
+    client.setQueryData(overviewKey, {})
+    const handle = createEventHandler(client)
+
+    handle('server.removed', { id: 's1' })
+
+    expect(client.getQueryData(serverListKey)).toEqual([other])
+    await vi.advanceTimersByTimeAsync(300)
+    // An open Server detail then shows that the server is gone.
+    expect(invalidated(serverKey('s1'))).toBe(true)
+    expect(invalidated(serverKey('s2'))).toBe(false)
+    expect(invalidated(poolsQuery.queryKey)).toBe(true)
+    expect(invalidated(overviewKey)).toBe(true)
+  })
+
+  test('settings.changed replaces the cached settings, and refetches the queries that show settings', async () => {
+    client.setQueryData(settingsQuery.queryKey, { instance_name: 'runplane' })
+    for (const key of [statusQuery.queryKey, domainDNSQuery.queryKey, cachesQuery.queryKey, poolsQuery.queryKey, serverListKey]) {
+      client.setQueryData(key, {})
+    }
+    const handle = createEventHandler(client)
+
+    handle('settings.changed', { instance_name: 'Kestrel CI' })
+
+    expect(client.getQueryData(settingsQuery.queryKey)).toEqual({ instance_name: 'Kestrel CI' })
+    await vi.advanceTimersByTimeAsync(300)
+    expect(invalidated(settingsQuery.queryKey)).toBe(false)
+    // The sidebar shows the name from the status.
+    expect(invalidated(statusQuery.queryKey)).toBe(true)
+    expect(invalidated(domainDNSQuery.queryKey)).toBe(true)
+    expect(invalidated(cachesQuery.queryKey)).toBe(true)
+    expect(invalidated(poolsQuery.queryKey)).toBe(true)
+    expect(invalidated(serverListKey)).toBe(false)
   })
 
   test('github.state replaces the cached GitHub status and backup.state refetches the backups', async () => {

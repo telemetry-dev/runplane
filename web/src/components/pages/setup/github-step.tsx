@@ -14,7 +14,7 @@ export function prefetch(client: QueryClient) {
 /** Setup step 2: make the GitHub App and install it. `search` is what the GitHub callbacks report. */
 export function GitHubStep({ search: { error, requested } }: { search: CallbackSearch }) {
   const navigate = useNavigate()
-  const { app, installations } = useSuspenseQuery(githubQuery).data
+  const { app, installations, app_permissions } = useSuspenseQuery(githubQuery).data
   const dismiss = () => void navigate({ to: '/setup/github', search: {}, replace: true })
 
   return (
@@ -22,7 +22,7 @@ export function GitHubStep({ search: { error, requested } }: { search: CallbackS
       <Header />
       {error && <CallbackError message={error} onDismiss={dismiss} />}
       {requested && <InstallRequested installations={installations.length} canSync onDismiss={dismiss} />}
-      {app ? <ExistingApp app={app} installations={installations} /> : <ConnectForm />}
+      {app ? <ExistingApp app={app} installations={installations} /> : <ConnectForm permissions={app_permissions} />}
     </>
   )
 }

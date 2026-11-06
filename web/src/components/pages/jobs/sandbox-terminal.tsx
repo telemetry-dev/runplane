@@ -2,6 +2,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
+import { apiUrl } from '~/api/client'
 import { terminalColors } from '~/components/app/log-viewer'
 import { TextButton } from '~/components/app/text-button'
 
@@ -74,9 +75,9 @@ function connect(
   fit.fit()
   term.attachCustomKeyEventHandler((event) => !(event.key === 'Tab' && event.shiftKey))
 
-  const url = new URL(`/api/sandboxes/${encodeURIComponent(sandboxId)}/shell`, window.location.href)
+  const shell = apiUrl('/api/sandboxes/{id}/shell', { path: { id: sandboxId }, query: { rows: term.rows, cols: term.cols } })
+  const url = new URL(shell, window.location.href)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  url.search = new URLSearchParams({ rows: String(term.rows), cols: String(term.cols) }).toString()
   const socket = new WebSocket(url)
   socket.binaryType = 'arraybuffer'
   let opened = false

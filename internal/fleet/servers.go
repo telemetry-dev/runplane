@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ import (
 var ErrLocalServer = errors.New("the primary server cannot be removed")
 
 // HostCheck is the doctor report of the server of the primary, for the setup
-// page.
+// page. Mode takes the place of the mode check of the report.
 type HostCheck struct {
 	doctor.Report
 	Mode sandbox.Mode
@@ -419,6 +420,7 @@ func (f *Fleet) RemoveServer(ctx context.Context, by audit.Actor, serverID strin
 	if err := f.st.DeleteServer(ctx, v.ID, f.now()); err != nil {
 		return err
 	}
+	f.bus.Publish(events.ServerRemoved{ID: v.ID})
 	f.bus.Publish(events.PoolsChanged{})
 	f.audit.Record(ctx, by, audit.ServerDelete, v.ID, map[string]any{"name": v.Name})
 	return nil
@@ -451,6 +453,7 @@ func (f *Fleet) Check(ctx context.Context) (HostCheck, error) {
 			f.log.Warn("save the doctor result", "server_id", local.ID, "err", err)
 		}
 	}
+	r.Checks = slices.DeleteFunc(r.Checks, func(c doctor.Check) bool { return c.ID == doctor.ModeCheck.ID })
 	return HostCheck{Report: r, Mode: f.local.Driver().Mode()}, nil
 }
 

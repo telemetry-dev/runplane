@@ -40,6 +40,10 @@ func (s *Service) Manifest(ctx context.Context, base string, owner ghrest.Accoun
 		return "", "", err
 	}
 
+	permissions := map[string]string{}
+	for _, p := range owner.AppPermissions() {
+		permissions[p.Name] = p.Access
+	}
 	manifest, err := json.Marshal(map[string]any{
 		"name":                appName(settings.InstanceName),
 		"url":                 base,
@@ -48,25 +52,12 @@ func (s *Service) Manifest(ctx context.Context, base string, owner ghrest.Accoun
 		"setup_url":           base + "/api/github/setup",
 		"setup_on_update":     true,
 		"public":              false,
-		"default_permissions": permissions(owner),
+		"default_permissions": permissions,
 	})
 	if err != nil {
 		return "", "", err
 	}
 	return owner.SettingsURL(s.web) + "/apps/new?state=" + url.QueryEscape(state), string(manifest), nil
-}
-
-// permissions are the GitHub App permissions for the runners of an account.
-// An organization uses organization runners; a personal account can only
-// use repository runners, which need administration.
-func permissions(owner ghrest.Account) map[string]string {
-	p := map[string]string{"actions": "write", "metadata": "read"}
-	if owner.Type == ghrest.Organization {
-		p["organization_self_hosted_runners"] = "write"
-	} else {
-		p["administration"] = "write"
-	}
-	return p
 }
 
 // appName makes a name from the instance name. GitHub App names are unique

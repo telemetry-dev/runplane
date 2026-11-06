@@ -167,17 +167,22 @@ func TestConnectedAgents(t *testing.T) {
 		t.Errorf("limits of the agent %+v, %v; want %+v", got, ok, a.limits)
 	}
 	ran, err := h.f.Doctor(ctx, idA)
-	if err != nil || len(ran.Checks) != 1 || ran.Checks[0].Detail != "6.1.0-agent" || ran.Checks[0].Status != "ok" {
+	if err != nil || len(ran.Checks) != 2 || ran.Checks[1].Detail != "6.1.0-agent" || ran.Checks[1].Status != "ok" {
 		t.Errorf("doctor of the agent: %+v, %v", ran, err)
 	}
 	// The server page shows the last doctor result of each server.
 	if kept, err := h.st.GetDoctorResult(ctx, idA); err != nil || !kept.CheckedAt.Equal(ran.CheckedAt) || !reflect.DeepEqual(kept.Checks, ran.Checks) {
 		t.Errorf("kept doctor result of the agent: %+v, %v; want %+v", kept, err, ran)
 	}
-	if _, err := h.f.Check(ctx); err != nil {
+	setup, err := h.f.Check(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if kept, err := h.st.GetDoctorResult(ctx, h.localID()); err != nil || len(kept.Checks) != 1 || kept.Checks[0].Detail != local.info.Kernel {
+	// The setup page names the mode in its summary, not in the list.
+	if len(setup.Checks) != 1 || setup.Checks[0].ID != "kernel" {
+		t.Errorf("checks of the setup page %+v, want only the kernel check", setup.Checks)
+	}
+	if kept, err := h.st.GetDoctorResult(ctx, h.localID()); err != nil || len(kept.Checks) != 2 || kept.Checks[1].Detail != local.info.Kernel {
 		t.Errorf("kept doctor result of the primary after the setup check: %+v, %v", kept, err)
 	}
 	agentA.stop()
@@ -202,11 +207,22 @@ func TestRemoveServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	removed := events.Subscribe[events.ServerRemoved](ctx, h.bus)
+
 	if err := h.f.RemoveServer(ctx, audit.Actor{}, h.localID()); !errors.Is(err, ErrLocalServer) {
 		t.Errorf("RemoveServer of the local server: %v, want ErrLocalServer", err)
 	}
 	if err := h.f.RemoveServer(ctx, audit.Actor{}, id); err != nil {
 		t.Fatal(err)
+	}
+	// The browsers drop the server from their lists.
+	select {
+	case e := <-removed:
+		if e.ID != id {
+			t.Errorf("server.removed of %s, want %s", e.ID, id)
+		}
+	default:
+		t.Error("no server.removed event")
 	}
 	if got := node.args("Stop"); !reflect.DeepEqual(got, []any{"sb1", "sb2"}) {
 		t.Errorf("stopped sandboxes %v, want sb1 and sb2", got)

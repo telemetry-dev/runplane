@@ -3,7 +3,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { CirclePause, CirclePlay, Ellipsis, Pencil, Stethoscope, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { $api, api, errorMessage } from '~/api/client'
-import { applyChange, dropServer } from '~/api/events'
+import { applyChange } from '~/api/events'
 import { useFormProblems } from '~/api/form-problems'
 import { limits } from '~/api/limits'
 import type { Doctor } from '~/api/servers'
@@ -171,7 +171,7 @@ function RemoveDialog({ server, open, onOpenChange }: DialogProps) {
       onConfirm={async () => {
         await api.DELETE('/api/servers/{id}', { params: { path: { id: server.id } } })
         toastManager.add({ title: `Removed ${server.name}` })
-        void navigate({ to: '/servers' }).then(() => dropServer(client, server.id))
+        void navigate({ to: '/servers' }).then(() => applyChange(client, 'server.removed', { id: server.id }))
       }}
     />
   )

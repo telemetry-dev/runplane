@@ -21,7 +21,6 @@ type Settings struct {
 	store.Settings
 	BackupS3 BackupS3 `json:"backup_s3" doc:"Optional upload of each backup to S3."`
 
-	SSHPort             int         `json:"ssh_port" doc:"Port of the SSH gateway for debug shells. Read-only."`
 	BackupTime          string      `json:"backup_time" doc:"Time of day in UTC of the daily backup, for example 03:00. Read-only."`
 	SecretKeyPath       string      `json:"secret_key_path" doc:"File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only."`
 	HTTPS               HTTPSStatus `json:"https" doc:"Certificate of the domain. Read-only."`
@@ -54,7 +53,7 @@ func (h *Handler) settingsOut(ctx context.Context, st store.Settings) (Settings,
 	st.Mode = mode
 	st.EgressAllowlist, st.DNSServers = orEmpty(st.EgressAllowlist), orEmpty(st.DNSServers)
 	out := Settings{
-		Settings: st, BackupS3: backupS3Out(st.BackupS3), SSHPort: h.sshPort(),
+		Settings: st, BackupS3: backupS3Out(st.BackupS3),
 		BackupTime: time.Time{}.Add(backup.DailyAt).Format("15:04"), SecretKeyPath: h.d.Config.SecretKeyPath(),
 		PublicReposRefusal: policy.PublicRepos(mode, servers), BandwidthApplies: policy.BandwidthApplies(mode, servers),
 	}

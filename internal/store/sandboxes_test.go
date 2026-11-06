@@ -112,8 +112,8 @@ func TestPoolCounts(t *testing.T) {
 	got, err := s.PoolCounts(ctx, now)
 	must(t, err)
 	want := map[string]PoolCounts{
-		"p1": {PoolID: "p1", Idle: 2, Busy: 1, Starting: 1, Queued: 2, Assigned: 1},
-		"p2": {PoolID: "p2", Busy: 1, Queued: 1},
+		"p1": {Idle: 2, Busy: 1, Starting: 1, Queued: 2, Assigned: 1},
+		"p2": {Busy: 1, Queued: 1},
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("counts = %+v, want %+v", got, want)

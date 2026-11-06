@@ -72,8 +72,6 @@ export function HostCheck({ query, ready }: HostCheckProps) {
 }
 
 function HostReport({ host, rechecking }: { host: Schemas['HostCheck']; rechecking: boolean }) {
-  // The summary names the mode, so the list leaves out its check.
-  const checks = host.checks.filter((check) => check.id !== 'mode')
   return (
     <>
       <div className="flex flex-col gap-l px-m py-l not-last:border-b not-last:border-neutral-4">
@@ -90,7 +88,7 @@ function HostReport({ host, rechecking }: { host: Schemas['HostCheck']; rechecki
           <KeyValue label="System">{host.os}</KeyValue>
         </KeyValueList>
       </div>
-      {checks.length > 0 && <DoctorChecks checks={checks} running={rechecking} bordered={false} />}
+      {host.checks.length > 0 && <DoctorChecks checks={host.checks} running={rechecking} bordered={false} />}
     </>
   )
 }

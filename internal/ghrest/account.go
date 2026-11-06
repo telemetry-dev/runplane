@@ -25,6 +25,20 @@ type Account struct {
 // Supported tells if runplane can run jobs for the account type.
 func (a Account) Supported() bool { return a.Type == Organization || a.Type == User }
 
+// Permission is a permission of a GitHub App, with its access: read or write.
+type Permission struct{ Name, Access string }
+
+// AppPermissions are the permissions of the GitHub App of runplane on the
+// account. An organization uses organization runners. A personal account
+// can only use repository runners, which need administration.
+func (a Account) AppPermissions() []Permission {
+	runners := Permission{"administration", "write"}
+	if a.Type == Organization {
+		runners = Permission{"organization_self_hosted_runners", "write"}
+	}
+	return []Permission{runners, {"actions", "write"}, {"metadata", "read"}}
+}
+
 // SettingsURL is the settings page of the account on the web host web. The
 // pages of its apps and of its installations are below it.
 func (a Account) SettingsURL(web string) string {

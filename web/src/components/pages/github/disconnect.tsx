@@ -2,7 +2,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { api } from '~/api/client'
 import { githubQuery } from '~/api/github'
-import { statusQuery } from '~/api/session'
 import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import { Button } from '~/components/ui/button'
 
@@ -26,10 +25,7 @@ export function DisconnectGitHub({ appName }: { appName: string }) {
         action="Disconnect GitHub"
         onConfirm={async () => {
           await api.DELETE('/api/github')
-          await Promise.all([
-            queryClient.invalidateQueries({ queryKey: githubQuery.queryKey }),
-            queryClient.invalidateQueries({ queryKey: statusQuery.queryKey }),
-          ])
+          await queryClient.invalidateQueries({ queryKey: githubQuery.queryKey })
         }}
       />
     </section>

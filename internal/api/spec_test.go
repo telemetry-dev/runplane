@@ -116,8 +116,17 @@ func TestSpecEnumsHaveTheGoValues(t *testing.T) {
 		types         = strs(notify.Types...)
 		serverKinds   = []string{store.ServerLocal, store.ServerAgent}
 		serverStates  = []string{store.ServerOnline, store.ServerInstalling, store.ServerUnreachable, store.ServerDraining, store.ServerDisabled}
+		permissions   = map[string]bool{}
+		accesses      = map[string]bool{}
 	)
+	for _, owner := range []ghrest.Account{{Type: ghrest.Organization}, {Type: ghrest.User}} {
+		for _, p := range owner.AppPermissions() {
+			permissions[p.Name], accesses[p.Access] = true, true
+		}
+	}
 	want := map[string][]string{
+		"AppPermission.access":                       slices.Collect(maps.Keys(accesses)),
+		"AppPermission.name":                         slices.Collect(maps.Keys(permissions)),
 		"AuditEntry.action":                          audit.Actions,
 		"Backup.status":                              {store.BackupRunning, store.BackupDone, store.BackupUploading, store.BackupUploaded, store.BackupFailed},
 		"Check.status":                               strs(doctor.StatusOK, doctor.StatusWarn, doctor.StatusFail),

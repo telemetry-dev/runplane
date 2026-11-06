@@ -1,4 +1,4 @@
-import createFetchClient from 'openapi-fetch'
+import createFetchClient, { createFinalURL, createQuerySerializer, defaultPathSerializer, type QuerySerializerOptions } from 'openapi-fetch'
 import createQueryHooks from 'openapi-react-query'
 import type { components, paths } from './schema'
 
@@ -27,6 +27,10 @@ export class ApiError extends Error implements Problem {
   }
 }
 
+// The spec gives each array query param as one comma-separated value
+// (explode: false), as the API reads it.
+const queryStyle: QuerySerializerOptions = { array: { style: 'form', explode: false } }
+
 /**
  * Typed fetch client for the Go API. Every request sends the session cookie and
  * the CSRF header. Every non-2xx response rejects with an ApiError, so a resolved
@@ -36,6 +40,7 @@ export const api = createFetchClient<paths>({
   baseUrl: '',
   credentials: 'include',
   headers: { 'X-Runplane-CSRF': '1' },
+  querySerializer: queryStyle,
 })
 
 api.use({
@@ -50,6 +55,27 @@ api.use({
  * path, so invalidateQueries with it reaches each of them.
  */
 export const $api = createQueryHooks(api)
+
+type GetPath = { [P in keyof paths]: paths[P] extends { get: { parameters: unknown } } ? P : never }[keyof paths]
+type GetParams<P extends GetPath> = Pick<paths[P]['get']['parameters'], 'path' | 'query'>
+
+/** The URL of a GET route that the browser requests itself: a link, the EventSource, or the WebSocket. */
+export function apiUrl<P extends GetPath>(
+  path: P,
+  ...[params]: GetParams<P> extends { path: object } | { query: object } ? [GetParams<P>] : [GetParams<P>?]
+): string {
+  return createFinalURL(path, {
+    baseUrl: '',
+    params: params ?? {},
+    querySerializer: createQuerySerializer(queryStyle),
+    pathSerializer: defaultPathSerializer,
+  })
+}
+
+/** The retry rule of the queries: network and server failures, not answers like 404 or 403. */
+export function retryQuery(failures: number, error: unknown): boolean {
+  return failures < 2 && !(isApiError(error) && error.status < 500)
+}
 
 export async function toApiError(response: Response): Promise<ApiError> {
   const problem = parseProblem(await response.text())

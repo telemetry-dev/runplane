@@ -1,7 +1,8 @@
 import { hashKey, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query'
 import { useEffect, useEffectEvent } from 'react'
 import { backupsQuery } from './backups'
-import type { Schemas } from './client'
+import { cachesQuery } from './caches'
+import { apiUrl, type Schemas } from './client'
 import { putGitHub } from './github'
 import { dropImage, imagesQuery } from './images'
 import { jobQuery, jobsQuery, metricsQuery } from './jobs'
@@ -10,8 +11,9 @@ import { poolsQuery, putPoolStats } from './pools'
 import { runnerVersionsQuery } from './runner-versions'
 import { sandboxesQuery, sandboxQuery } from './sandboxes'
 import type { paths } from './schema'
-import { putHostStats, putServer, serverQuery, serversQuery } from './servers'
+import { dropServer, putHostStats, putServer, serverQuery, serversQuery } from './servers'
 import { statusQuery } from './session'
+import { domainDNSQuery, settingsQuery } from './settings'
 
 /** An event of GET /api/events: its name, and the API object of the name as data. */
 type LiveEvent = paths['/api/events']['get']['responses'][200]['content']['text/event-stream'][number]
@@ -26,8 +28,15 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
   'job.state': (client, job) => {
     // The event has the list fields; the detail adds steps, log state, and metrics.
     client.setQueryData<object>(jobQuery(job.id).queryKey, (old) => old && { ...old, ...job })
-    // The status tells whether runplane has a job.
-    return [jobQuery(job.id).queryKey, metricsQuery(job.id).queryKey, jobsQuery().queryKey, overviewQuery().queryKey, statusQuery.queryKey]
+    // The status tells whether runplane has a job, which changes only once.
+    const firstJob = client.getQueryData<Schemas['Status']>(statusQuery.queryKey)?.has_jobs === false
+    return [
+      jobQuery(job.id).queryKey,
+      metricsQuery(job.id).queryKey,
+      jobsQuery().queryKey,
+      overviewQuery().queryKey,
+      ...(firstJob ? [statusQuery.queryKey] : []),
+    ]
   },
   'sandbox.state': (_client, sandbox) => [
     sandboxesQuery().queryKey,
@@ -46,6 +55,11 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
   // An image counts the pools that use it.
   'pools.changed': () => [poolsQuery.queryKey, imagesQuery.queryKey],
   'server.state': (client, server) => (putServer(client, server) ? serverCounts() : [serversQuery.queryKey, ...serverCounts()]),
+  // An open Server detail of the removed server gets 404 and shows that the server is gone.
+  'server.removed': (client, { id }) => {
+    dropServer(client, id)
+    return [serverQuery(id).queryKey, ...serverCounts()]
+  },
   'host.stats': (client, stats) => {
     putHostStats(client, stats)
     putOverviewHostStats(client, stats)
@@ -62,6 +76,13 @@ const changes: { [N in LiveEventName]: (client: QueryClient, data: LiveEventData
     return []
   },
   'backup.state': () => [backupsQuery.queryKey],
+  'settings.changed': (client, settings) => {
+    client.setQueryData(settingsQuery.queryKey, settings)
+    // The status has the name and the mode, the DNS check the domain, the
+    // caches their switches and size limit, and the pools their placement
+    // after the host reserve and the CPU overcommit.
+    return [statusQuery.queryKey, domainDNSQuery.queryKey, cachesQuery.queryKey, poolsQuery.queryKey]
+  },
 }
 
 /** The queries that count servers: the overview, and the pools by the servers that can place their runners. */
@@ -84,13 +105,6 @@ export function applyChange<N extends LiveEventName>(client: QueryClient, name: 
 /** Refetches the server list and the queries that count servers, as for a server that the list does not have yet. */
 export function refreshServers(client: QueryClient) {
   return refetch(client, [serversQuery.queryKey, ...serverCounts()])
-}
-
-/** Removes a server from the cache, and refetches the queries that count servers. */
-export function dropServer(client: QueryClient, id: string) {
-  client.removeQueries({ queryKey: serverQuery(id).queryKey })
-  client.setQueryData<Schemas['Server'][]>(serversQuery.queryKey, (list) => list?.filter((item) => item.id !== id))
-  return refetch(client, serverCounts())
 }
 
 function refetch(client: QueryClient, keys: QueryKey[]) {
@@ -167,7 +181,7 @@ function openStream(client: QueryClient): Stream {
   let missed = false
 
   function connect() {
-    source = new EventSource('/api/events')
+    source = new EventSource(apiUrl('/api/events'))
     source.onopen = () => {
       if (missed) void client.invalidateQueries()
       missed = false

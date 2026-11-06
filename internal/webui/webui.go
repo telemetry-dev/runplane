@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
-	"slices"
 	"strings"
 	"time"
 )
@@ -35,8 +34,9 @@ type file struct {
 	etag string
 }
 
-// The TanStack Start SPA build writes the shell as index.html or _shell.html.
-var shellNames = []string{"index.html", "_shell.html"}
+// shellName is the SPA shell of the build: prerender.outputPath in
+// web/vite.config.ts.
+const shellName = "index.html"
 
 func newHandler(fsys fs.FS) *handler {
 	h := &handler{files: map[string]file{}}
@@ -49,11 +49,8 @@ func newHandler(fsys fs.FS) *handler {
 		h.files[name] = file{data: data, etag: `"` + base64.RawURLEncoding.EncodeToString(sum[:12]) + `"`}
 		return nil
 	})
-	for _, name := range shellNames {
-		if f, ok := h.files[name]; ok {
-			h.shell = &f
-			break
-		}
+	if f, ok := h.files[shellName]; ok {
+		h.shell = &f
 	}
 	return h
 }
@@ -66,7 +63,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 	f, ok := h.files[name]
-	if !ok || slices.Contains(shellNames, name) {
+	if !ok || name == shellName {
 		h.serveShell(w, r)
 		return
 	}
@@ -88,7 +85,7 @@ func (h *handler) serveShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("ETag", h.shell.etag)
-	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(h.shell.data))
+	http.ServeContent(w, r, shellName, time.Time{}, bytes.NewReader(h.shell.data))
 }
 
 var notBuilt = []byte(`<!doctype html>

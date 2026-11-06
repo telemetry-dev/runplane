@@ -23,7 +23,8 @@ export function dropPool(client: QueryClient, id: string) {
   client.setQueryData<Pool[]>(poolsQuery.queryKey, (list) => list?.filter((item) => item.id !== id))
 }
 
-/** Writes the counts of a pool.stats event into the cached pool. */
+/** Writes the counts of a pool.stats event into the cached pool. A count that the pool does not have does not compile. */
 export function putPoolStats(client: QueryClient, { pool_id, ...counts }: Schemas['PoolStats']) {
-  client.setQueryData<Pool[]>(poolsQuery.queryKey, (list) => list?.map((pool) => (pool.id === pool_id ? { ...pool, ...counts } : pool)))
+  const update = counts satisfies Pick<Pool, keyof typeof counts>
+  client.setQueryData<Pool[]>(poolsQuery.queryKey, (list) => list?.map((pool) => (pool.id === pool_id ? { ...pool, ...update } : pool)))
 }

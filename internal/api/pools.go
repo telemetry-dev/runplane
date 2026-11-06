@@ -30,12 +30,7 @@ type Pool struct {
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 
-	Idle     int `json:"idle" doc:"Live count of idle sandboxes."`
-	Busy     int `json:"busy" doc:"Live count of sandboxes that run a job."`
-	Starting int `json:"starting" doc:"Live count of sandboxes that start."`
-	Queued   int `json:"queued" doc:"Jobs of the last 24 hours that wait for a runner."`
-	Assigned int `json:"assigned" doc:"Of queued, the jobs that GitHub assigned to the scale set of the pool."`
-
+	store.PoolCounts
 	PoolPlacement
 }
 
@@ -72,14 +67,12 @@ func (h *Handler) pools(ctx context.Context, list []store.Pool) ([]Pool, error) 
 	}
 	out := make([]Pool, len(list))
 	for i, p := range list {
-		c := counts[p.ID]
 		out[i] = Pool{
 			ID: p.ID, Name: p.Name, Label: p.Label, Arch: p.Arch, VCPU: p.VCPU, MemoryMB: p.MemoryMB, DiskGB: p.DiskGB,
 			ImageID: p.ImageID, ImageName: cmp.Or(imageNames[p.ImageID], defaultImage), MinIdle: p.MinIdle,
 			MaxRunners: p.MaxRunners, TimeLimitMinutes: p.TimeLimitMinutes, ServerIDs: orEmpty(p.ServerIDs),
 			Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
-			Idle: c.Idle, Busy: c.Busy, Starting: c.Starting, Queued: c.Queued, Assigned: c.Assigned,
-			PoolPlacement: placer.place(p),
+			PoolCounts: counts[p.ID], PoolPlacement: placer.place(p),
 		}
 	}
 	return out, nil

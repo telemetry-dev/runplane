@@ -52,6 +52,7 @@ func (h *Handler) streamList() []stream {
 		streamOf("server.state", func(ctx context.Context, e events.ServerState) (Server, error) {
 			return first(h.servers(ctx, []store.Server{store.Server(e)}))
 		}),
+		streamOf("server.removed", same[events.ServerRemoved]),
 		streamOf("host.stats", same[events.HostStats]),
 		streamOf("runner.version", func(_ context.Context, e events.RunnerVersion) (RunnerVersion, error) {
 			return runnerVersion(store.RunnerBundle(e), time.Now()), nil
@@ -65,6 +66,9 @@ func (h *Handler) streamList() []stream {
 		streamOf("image.removed", same[events.ImageRemoved]),
 		streamOf("github.state", func(ctx context.Context, _ events.GitHubState) (GitHubStatus, error) {
 			return h.gitHubStatus(ctx)
+		}),
+		streamOf("settings.changed", func(ctx context.Context, e events.SettingsChanged) (Settings, error) {
+			return h.settingsOut(ctx, e.New)
 		}),
 		// One stream route serves all roles.
 		streamOf("backup.state", func(ctx context.Context, e events.BackupState) (Backup, error) {
