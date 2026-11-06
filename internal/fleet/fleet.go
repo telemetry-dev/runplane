@@ -218,9 +218,14 @@ func New(c Config) *Fleet {
 
 // Run records the server of the primary, then keeps the state of all
 // servers until ctx ends: their status, facts, host stats, images, and
-// runner bundles.
+// runner bundles. When it ends, it writes the host samples that wait for
+// the next flush.
 func (f *Fleet) Run(ctx context.Context) error {
-	defer f.stop()
+	defer func() {
+		// The background work adds samples until stop returns.
+		f.stop()
+		f.flushStats(context.WithoutCancel(ctx))
+	}()
 	if err := f.start(ctx); err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -240,7 +245,6 @@ func (f *Fleet) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			f.flushStats(context.WithoutCancel(ctx))
 			return nil
 		case c := <-f.settings:
 			f.settingsChanged(c)

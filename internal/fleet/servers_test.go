@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"net/netip"
@@ -477,34 +478,58 @@ func TestRemoveServerWhileItConnects(t *testing.T) {
 	}
 }
 
+// Run writes the samples that wait for the next flush when it ends, also
+// when the stop comes while Run starts.
 func TestHostStats(t *testing.T) {
-	ctx := t.Context()
-	local := newFakeNode("arm64")
-	h := newHarness(t, local)
-	h.run()
-	stats := events.Subscribe[events.HostStats](ctx, h.bus)
-	id := h.localID()
-	at := h.clock.now().Add(-time.Second)
-	sample := func(diskPercent float64) {
-		local.stats <- host.Stats{At: at, CPUPercent: 52, MemoryPercent: 38, DiskPercent: diskPercent, Resources: host.Resources{DiskBytes: 500e9}}
-		at = at.Add(10 * time.Second)
-		waitEvent(t, stats, func(st events.HostStats) bool {
-			return st.ServerID == id && st.DiskPercent == diskPercent
+	tests := []struct {
+		name string
+		opts []func(*Config)
+		// beforeStop, if not nil, waits until Run is at the point of the stop.
+		beforeStop func(t *testing.T, local *fakeNode)
+	}{
+		// Run pulls the default image after its start.
+		{"stop after the start", nil, func(t *testing.T, local *fakeNode) {
+			waitFor(t, "the first pull", func() bool { return len(local.args("EnsureImage")) > 0 })
+		}},
+		// The local server sends samples from its connect, and Run makes the
+		// default label after it.
+		{"stop in the start", []func(*Config){holdStart}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			local := newFakeNode("arm64")
+			h := newHarness(t, local, tt.opts...)
+			h.run()
+			stats := events.Subscribe[events.HostStats](ctx, h.bus)
+			id := h.localID()
+
+			local.stats <- host.Stats{At: h.clock.now(), CPUPercent: 52, MemoryPercent: 38, DiskPercent: 90, Resources: host.Resources{DiskBytes: 500e9}}
+			waitEvent(t, stats, func(st events.HostStats) bool { return st.ServerID == id })
+			if tt.beforeStop != nil {
+				tt.beforeStop(t, local)
+			}
+			h.stop()
+			latest, err := h.st.LatestServerStats(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st := latest[id]; st.CPUPercent != 52 || st.MemoryPercent != 38 || st.DiskPercent != 90 {
+				t.Errorf("stored sample %+v, want the one sample", st)
+			}
 		})
 	}
+}
 
-	sample(90)
-	// Run writes the samples that wait for the next write when it ends
-	// after its start. Run pulls the default image after its start.
-	waitFor(t, "the first pull", func() bool { return len(local.args("EnsureImage")) > 0 })
-	h.stop()
-	latest, err := h.st.LatestServerStats(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st := latest[id]; st.CPUPercent != 52 || st.MemoryPercent != 38 || st.DiskPercent != 90 {
-		t.Errorf("stored sample %+v, want the one sample", st)
-	}
+// holdStart holds Run in its first start until the stop: the default label
+// waits for the end of ctx.
+func holdStart(c *Config) { c.Pools = heldPools{} }
+
+type heldPools struct{}
+
+func (heldPools) Create(ctx context.Context, _ audit.Actor, _ store.Pool) (store.Pool, error) {
+	<-ctx.Done()
+	return store.Pool{}, ctx.Err()
 }
 
 // release makes the primary and its agents run the release v1.4.2.
