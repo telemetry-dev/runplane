@@ -31,8 +31,9 @@ type fakeBackend struct {
 	alive     map[string]bool          // the sandboxes that Adopt finds
 	usage     map[string]Usage
 	fault     string
-	noGuest   bool // Shutdown fails, as for a guest that does not answer
-	exitOnEnd bool // Shutdown and Kill end the sandbox
+	noGuest   bool        // Shutdown fails, as for a guest that does not answer
+	exitOnEnd bool        // Shutdown and Kill end the sandbox
+	shut      chan string // gets the sandbox ID at each Shutdown; nil: no signal
 }
 
 func (f *fakeBackend) record(call string, b *Box[note]) {
@@ -65,6 +66,9 @@ func (f *fakeBackend) Adopt(_ context.Context, b *Box[note]) (bool, error) {
 
 func (f *fakeBackend) Shutdown(_ context.Context, b *Box[note]) error {
 	f.record("shutdown", b)
+	if f.shut != nil {
+		f.shut <- b.ID
+	}
 	if f.noGuest {
 		return errors.New("no guest")
 	}
@@ -247,7 +251,7 @@ func TestStartChecksTheSpec(t *testing.T) {
 // Stop asks the guest first and kills the sandbox only after the grace. A
 // Stop whose ctx ends returns, and the stop goes on.
 func TestStop(t *testing.T) {
-	f := &fakeBackend{}
+	f := &fakeBackend{shut: make(chan string, 1)}
 	c := newCore(t, t.TempDir(), f, sandbox.Limits{})
 	if err := c.Start(context.Background(), testSpec("sb1")); err != nil {
 		t.Fatal(err)
@@ -261,7 +265,12 @@ func TestStop(t *testing.T) {
 	if ev := next(t, c); ev.State != sandbox.StateStopping || ev.Reason != "stopped by runplane" {
 		t.Fatalf("got %+v, want stopping", ev)
 	}
-	c.Box("sb1").MarkExited() // the guest powers off
+	select {
+	case <-f.shut:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not ask the guest to shut down")
+	}
+	c.Box("sb1").MarkExited() // the guest powers off after the shutdown request
 	if ev := next(t, c); ev.State != sandbox.StateGone || ev.Reason != "stopped by runplane" {
 		t.Errorf("got %+v, want gone", ev)
 	}
