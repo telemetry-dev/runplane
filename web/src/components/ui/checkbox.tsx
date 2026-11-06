@@ -11,9 +11,8 @@ type CheckboxProps = Omit<BaseCheckbox.Root.Props, 'className' | 'children'> & {
 }
 
 /**
- * Checkbox of gui/components/runplane/checkbox.md. The color-1 fill grows from
- * the center, then the mark scales in. Inside a CheckboxGroup, pass `value`;
- * a `parent` checkbox checks all of the group's `allValues`.
+ * Checkbox of gui/components/runplane/checkbox.md. Inside a CheckboxGroup, pass
+ * `value`; a `parent` checkbox checks all of the group's `allValues`.
  */
 export function Checkbox({ label, className, ...props }: CheckboxProps) {
   if (!label) return <Control className={className} {...props} />

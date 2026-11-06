@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -11,19 +10,21 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
-type nopHandler struct{}
+// connectCounter counts the guest connections.
+type connectCounter struct{ n atomic.Int32 }
 
-func (nopHandler) OnEvent(sandbox.RunnerEvent) {}
-func (nopHandler) OnLog(LogLine)               {}
-func (nopHandler) OnLostConfig()               {}
+func (c *connectCounter) OnConnect()                { c.n.Add(1) }
+func (*connectCounter) OnEvent(sandbox.RunnerEvent) {}
+func (*connectCounter) OnLog(guest.LogLine)         {}
+func (*connectCounter) OnLostConfig()               {}
 
 func TestTCPListenerChecksToken(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
@@ -33,17 +34,18 @@ func TestTCPListenerChecksToken(t *testing.T) {
 	}
 	defer tl.Close()
 	dir := t.TempDir()
-	cfg := GuestConfig{SandboxID: "01jbz3x0000000000000000001", JITConfig: "jit"}
-	srv, err := tl.Listen(dir, cfg, nopHandler{}, log)
+	cfg := guest.Config{SandboxID: "01jbz3x0000000000000000001", JITConfig: "jit"}
+	connects := &connectCounter{}
+	srv, err := tl.Listen(dir, cfg.SandboxID, &cfg, connects, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(dir, AddrFile))
+	content, err := os.ReadFile(filepath.Join(dir, guest.AddrFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr, hello, err := ParseAddr(content)
+	addr, hello, err := guest.ParseAddr(content)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,22 +61,29 @@ func TestTCPListenerChecksToken(t *testing.T) {
 		}
 		conn.Close()
 	}
-	if srv.Connected() {
+	if connects.n.Load() != 0 {
 		t.Fatal("a guest with a wrong hello line got connected")
 	}
 
-	conn := dialTCP(t, addr, hello)
-	got := getConfig(t, conn)
+	c, err := guest.NewClient(dialTCP(t, addr, hello), http.NotFoundHandler(), log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got, err := c.Config(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(got, cfg) {
 		t.Errorf("config = %+v, want %+v", got, cfg)
 	}
-	if !srv.Connected() {
-		t.Error("Connected() = false after a good hello line")
+	if n := connects.n.Load(); n != 1 {
+		t.Errorf("%d connections after a good hello line, want 1", n)
 	}
 
 	// A closed sandbox refuses its old token.
 	srv.Close()
-	conn = dialTCP(t, addr, hello)
+	conn := dialTCP(t, addr, hello)
 	if !closedByPeer(conn) {
 		t.Error("the host kept a connection for a closed sandbox")
 	}
@@ -96,28 +105,4 @@ func closedByPeer(conn net.Conn) bool {
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, err := conn.Read(make([]byte, 1))
 	return err == io.EOF
-}
-
-func getConfig(t *testing.T, conn net.Conn) GuestConfig {
-	t.Helper()
-	cfg := yamux.DefaultConfig()
-	cfg.LogOutput = io.Discard
-	sess, err := yamux.Client(conn, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sess.Close() })
-	client := &http.Client{Transport: &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
-	}}
-	resp, err := client.Get("http://host/v1/config")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var got GuestConfig
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
-	return got
 }

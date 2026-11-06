@@ -20,7 +20,6 @@ type PopoverPopupProps = {
   children?: ReactNode
 }
 
-/** A 300px panel, narrower when the space is smaller; it scrolls when taller than the space. */
 export function PopoverPopup({ title, description, className, children }: PopoverPopupProps) {
   return (
     <BasePopover.Portal>

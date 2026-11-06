@@ -1,11 +1,13 @@
 package scheduler
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,22 +17,28 @@ import (
 )
 
 // The cleanup stops each sandbox that has no live row, and sets each live
-// row with no sandbox on a connected or removed server to gone.
+// row with no sandbox on a connected or removed server to gone. A draining
+// server is connected, so its sandboxes get the cleanup too.
 func TestCleanupSyncsServers(t *testing.T) {
 	e := newTestEnv(t)
 	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	offlineID, _ := e.addServer("fsn1-b", capacity("x64", 16, 65536))
-	e.fleet.offline[offlineID] = true
+	e.fleet.disconnected[offlineID] = true
+	drainingID, draining := e.addServer("fsn1-c", capacity("x64", 16, 65536))
+	e.fleet.notOnline[drainingID] = true
 	pool := e.addPool("runplane")
 	_, _, set := e.attach(pool)
 
 	present := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
 	gone := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	e.st.AdvanceSandboxState(e.ctx, gone.ID, sandbox.StateGone, "removed", start)
+	e.advance(gone.ID, sandbox.StateGone, "removed", start)
 	orphan := "01jbz4v5k2n8q3r6t9w0x1y2z3"
 	for _, id := range []string{present.ID, gone.ID, orphan} {
-		driver.running[id] = sandbox.Spec{ID: id}
+		driver.run(sandbox.Spec{ID: id})
 	}
+	drainingOrphan := "01jbz4v5k2n8q3r6t9w0x1y2z4"
+	draining.run(sandbox.Spec{ID: drainingOrphan})
+	drainingMissing := e.insertSandbox(pool, set, drainingID, sandbox.StateIdle, start)
 	missing := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
 	unreachable := e.insertSandbox(pool, set, offlineID, sandbox.StateIdle, start)
 	removedServer := e.insertSandbox(pool, set, "01jbz0000000000000000srv99", sandbox.StateIdle, start)
@@ -41,7 +49,7 @@ func TestCleanupSyncsServers(t *testing.T) {
 	e.s.cleanup(e.ctx)
 	got := e.rec.matching("stop ")
 	slices.Sort(got)
-	want := []string{"stop " + orphan, "stop " + gone.ID}
+	want := []string{"stop " + orphan, "stop " + gone.ID, "stop " + drainingOrphan}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Errorf("stops %v, want %v", got, want)
@@ -51,6 +59,7 @@ func TestCleanupSyncsServers(t *testing.T) {
 		want sandbox.State
 	}{
 		{missing, sandbox.StateGone},
+		{drainingMissing, sandbox.StateGone},
 		{removedServer, sandbox.StateGone},
 		{present, sandbox.StateIdle},
 		{unreachable, sandbox.StateIdle},
@@ -72,9 +81,9 @@ func TestCleanupRemovesRunnersWithoutSandbox(t *testing.T) {
 	pool := e.addPool("runplane")
 	client, _, set := e.attach(pool)
 	withSandbox := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	driver.running[withSandbox.ID] = sandbox.Spec{ID: withSandbox.ID}
+	driver.run(sandbox.Spec{ID: withSandbox.ID})
 	goneSandbox := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	e.st.AdvanceSandboxState(e.ctx, goneSandbox.ID, sandbox.StateGone, "removed", start)
+	e.advance(goneSandbox.ID, sandbox.StateGone, "removed", start)
 	client.runners = map[int64]Runner{
 		withSandbox.RunnerID: {ID: withSandbox.RunnerID, Name: withSandbox.RunnerName},
 		goneSandbox.RunnerID: {ID: goneSandbox.RunnerID, Name: goneSandbox.RunnerName},
@@ -102,22 +111,26 @@ func TestCleanupStopsOverdueSandboxes(t *testing.T) {
 	now := start.Add(61 * time.Minute)
 
 	over := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	e.st.AdvanceSandboxState(e.ctx, over.ID, sandbox.StateBusy, "", start)
+	e.advance(over.ID, sandbox.StateBusy, "", start)
 	// A warm sandbox that waited 55 minutes gives its job the whole limit.
 	warm := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	e.st.AdvanceSandboxState(e.ctx, warm.ID, sandbox.StateBusy, "", start.Add(55*time.Minute))
+	e.advance(warm.ID, sandbox.StateBusy, "", start.Add(55*time.Minute))
 	under := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start.Add(2*time.Minute))
 	held := e.insertSandbox(pool, set, serverID, sandbox.StateStopping, start)
-	e.st.SetSandboxHold(e.ctx, held.ID, now.Add(10*time.Minute))
+	if err := e.st.SetSandboxHold(e.ctx, held.ID, now.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	holdEnded := e.insertSandbox(pool, set, serverID, sandbox.StateStopping, start.Add(30*time.Minute))
-	e.st.SetSandboxHold(e.ctx, holdEnded.ID, now.Add(-time.Minute))
+	if err := e.st.SetSandboxHold(e.ctx, holdEnded.ID, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	orphanPool := e.addPool("runplane-old")
 	waiting := e.insertSandbox(orphanPool, set, serverID, sandbox.StateIdle, start.Add(50*time.Minute))
 	if err := e.st.DeletePool(e.ctx, orphanPool.ID); err != nil {
 		t.Fatal(err)
 	}
 	for _, b := range []store.Sandbox{over, warm, under, held, holdEnded, waiting} {
-		driver.running[b.ID] = sandbox.Spec{ID: b.ID}
+		driver.run(sandbox.Spec{ID: b.ID})
 	}
 	e.clock.add(61 * time.Minute)
 
@@ -156,7 +169,7 @@ func TestCleanupCompletesLostJobs(t *testing.T) {
 	e.runningJob(pool, set, serverID, 602, start.Add(7*time.Minute))
 	e.runningJob(pool, set, serverID, 603, start)
 	j603 := e.job(603)
-	if err := e.st.SetSandboxJob(e.ctx, j603.SandboxID, j603.ID); err != nil {
+	if _, _, err := e.st.LinkJobSandbox(e.ctx, j603.ID, j603.SandboxID); err != nil {
 		t.Fatal(err)
 	}
 	e.event(serverID, j603.SandboxID, sandbox.Event{Type: sandbox.EventRunner,
@@ -176,10 +189,29 @@ func TestCleanupCompletesLostJobs(t *testing.T) {
 	}
 
 	b := e.sandbox(e.job(601).SandboxID)
-	e.scale(sc, msg(0, completed(601, "acme/api", 7000, "e2e", b, "Failed")))
+	e.scale(sc, msg(0, completed(601, "acme/api", 7000, "e2e", b, store.ResultFailed)))
 	e.settle()
 	if j := e.job(601); j.Result != store.ResultFailed || !j.FinishedAt.Equal(start.Add(3*time.Minute)) {
 		t.Errorf("after the late JobCompleted: result %q, finished %v; want failed at the message time", j.Result, j.FinishedAt)
+	}
+}
+
+// The result of a lost job is a guess. The finish step reads the job on
+// GitHub, and the result from GitHub replaces the guess.
+func TestFinishStepTakesTheGitHubResultOfALostJob(t *testing.T) {
+	e := newTestEnv(t)
+	serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
+	pool := e.addPool("runplane")
+	_, _, set := e.attach(pool)
+	e.runningJob(pool, set, serverID, 611, start)
+	e.gh.results[611] = store.ResultFailed
+	e.clock.add(11 * time.Minute)
+
+	e.s.cleanup(e.ctx)
+	e.settle()
+	j := e.job(611)
+	if j.Result != store.ResultFailed || j.ResultGuessed || j.FinishedAt == nil || !j.FinishedAt.Equal(start.Add(4*time.Minute)) {
+		t.Errorf("job = %s (guessed %v) finished %v; want failed from GitHub at %v", j.Result, j.ResultGuessed, j.FinishedAt, start.Add(4*time.Minute))
 	}
 }
 
@@ -190,39 +222,35 @@ func (e *testEnv) runningJob(p store.Pool, set store.ScaleSet, serverID string, 
 	j, err := e.st.UpsertJob(e.ctx, store.JobMessage{
 		RunnerRequestID: requestID, State: store.JobRunning, PoolID: p.ID, ScaleSetID: set.ID,
 		Repository: "acme/api", JobName: "e2e", RunID: 7000, QueuedAt: start.Add(-2 * time.Minute), StartedAt: start.Add(-time.Minute),
-	})
+	}, start)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	if err := e.st.SetJobSandbox(e.ctx, j.ID, b.ID, serverID); err != nil {
+	if _, _, err := e.st.LinkJobSandbox(e.ctx, j.ID, b.ID); err != nil {
 		e.t.Fatal(err)
 	}
-	if _, _, err := e.st.AdvanceSandboxState(e.ctx, b.ID, sandbox.StateGone, "removed", stopped); err != nil {
-		e.t.Fatal(err)
-	}
+	e.advance(b.ID, sandbox.StateGone, "removed", stopped)
 }
 
 func TestRetentionDeletesOldJobsAndLogs(t *testing.T) {
 	e := newTestEnv(t)
+	e.setSettings(func(s *store.Settings) { s.JobRetentionDays, s.LogRetentionDays = 60, 20 })
 	day := 24 * time.Hour
 	job := func(requestID int64, finished time.Time) string {
 		j, err := e.st.UpsertJob(e.ctx, store.JobMessage{
 			RunnerRequestID: requestID, State: store.JobCompleted, Result: store.ResultSucceeded,
 			Repository: "acme/api", JobName: "build", QueuedAt: finished.Add(-time.Hour), FinishedAt: finished,
-		})
+		}, start)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := e.st.SetJobLogState(e.ctx, j.ID, store.LogStored); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(e.logs, j.ID+".log"), []byte("log"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		e.jobLogs.Fetch(e.ctx, j.ID, func(context.Context) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(fakeLog)), nil
+		})
 		return j.ID
 	}
-	old := job(701, start.Add(-100*day))   // past job_retention_days (90)
-	oldLog := job(702, start.Add(-40*day)) // past log_retention_days (30)
+	old := job(701, start.Add(-70*day))    // past job_retention_days
+	oldLog := job(702, start.Add(-25*day)) // past log_retention_days
 	recent := job(703, start.Add(-2*day))
 
 	e.s.retention(e.ctx)
@@ -232,12 +260,14 @@ func TestRetentionDeletesOldJobsAndLogs(t *testing.T) {
 	if j, _ := e.st.GetJob(e.ctx, oldLog); j.LogState != store.LogExpired {
 		t.Errorf("job with an old log: log state %q, want expired", j.LogState)
 	}
-	for id, wantFile := range map[string]bool{old: false, oldLog: false, recent: true} {
-		_, err := os.Stat(filepath.Join(e.logs, id+".log"))
-		if exists := err == nil; exists != wantFile {
-			t.Errorf("log file of %s exists = %v, want %v", id, exists, wantFile)
-		}
+	if files, err := os.ReadDir(e.logs); err != nil || len(files) != 1 {
+		t.Errorf("logs folder has %v, %v; want only the log of the recent job", files, err)
 	}
+	log, err := e.jobLogs.Job(e.ctx, recent, 0, false)
+	if err != nil {
+		t.Fatalf("log of the recent job: %v", err)
+	}
+	log.Close()
 }
 
 // A job that runplane never takes, for lack of room or because GitHub gave
@@ -249,7 +279,7 @@ func TestCleanupClosesUnclaimedJobs(t *testing.T) {
 	if len(client.acquired) != 0 {
 		t.Fatalf("acquired %v with no room", client.acquired)
 	}
-	states, stop := e.bus.Subscribe(16)
+	states := events.Subscribe[events.JobState](t.Context(), e.bus)
 
 	e.clock.add(59 * time.Minute)
 	e.s.cleanup(e.ctx)
@@ -259,13 +289,12 @@ func TestCleanupClosesUnclaimedJobs(t *testing.T) {
 	e.clock.add(2 * time.Minute)
 	e.s.cleanup(e.ctx)
 	j := e.job(31)
-	if j.State != store.JobCompleted || j.Result != store.ResultCancelled || j.RejectReason != store.NotRunReason {
-		t.Errorf("job %s %s %q after 61 minutes, want completed cancelled with %q", j.State, j.Result, j.RejectReason, store.NotRunReason)
+	if j.State != store.JobCompleted || j.Result != store.ResultCancelled || j.RejectReason != "" {
+		t.Errorf("job %s %s %q after 61 minutes, want completed cancelled with no reject reason", j.State, j.Result, j.RejectReason)
 	}
-	stop()
 	published := false
-	for ev := range states {
-		if x, ok := ev.Data.(store.Job); ok && ev.Type == events.JobState && x.ID == j.ID && x.State == store.JobCompleted {
+	for len(states) > 0 {
+		if x := <-states; x.ID == j.ID && x.State == store.JobCompleted {
 			published = true
 		}
 	}
@@ -300,40 +329,67 @@ func TestClosedRejectedJobRunsWhenAllowed(t *testing.T) {
 }
 
 // GitHub sends JobCompleted one time, so a finish step that a restart cuts
-// off must run again after the restart. Its metrics summary stays.
+// off must run again after the restart. Its metrics summary stays. A job
+// whose JobStarted runplane did not get gets its sandbox only with
+// JobCompleted, and it had no live log.
 func TestFinishStepRunsAgainAfterRestart(t *testing.T) {
-	waits := logWaits
-	logWaits = []time.Duration{0, time.Hour}
-	t.Cleanup(func() { logWaits = waits })
+	for _, jobStarted := range []bool{true, false} {
+		t.Run(fmt.Sprintf("JobStarted %v", jobStarted), func(t *testing.T) {
+			e := newTestEnv(t)
+			e.newScheduler(0, time.Hour)
+			serverID, _ := e.addServer("fsn1-a", capacity("x64", 16, 65536))
+			pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
+			_, sc, _ := e.attach(pool)
+			e.scale(sc, msg(0))
+			b := e.sandboxes(pool.ID)[0]
+			if jobStarted {
+				e.scale(sc, msg(1, started(71, "acme/api", 970, "build", b)))
+			}
+			e.event(serverID, b.ID, sandbox.Event{Type: sandbox.EventMetrics, Metrics: &sandbox.Metrics{CPUPercent: 80, MemoryMB: 900}})
+			e.gh.noLog = true
+			stop := e.run()
+			e.scale(sc, msg(0, completed(71, "acme/api", 970, "build", b, store.ResultSucceeded)))
+			e.rec.await(t, "download ")
+			// runplane stops while the finish step waits for the log.
+			stop()
+			if j := e.job(71); !j.FinishPending || j.CPUPeak == nil || *j.CPUPeak != 80 {
+				t.Fatalf("after the stop: finish pending %v, cpu peak %v; want true and 80", j.FinishPending, j.CPUPeak)
+			}
+
+			e.gh.noLog = false
+			e.newScheduler(0, time.Hour)
+			jobs := events.Subscribe[events.JobState](t.Context(), e.bus)
+			e.run()
+			j := next(t, jobs, "the end of the finish step after the restart", func(j events.JobState) bool {
+				return j.RunnerRequestID == 71 && !j.FinishPending
+			})
+			if j.LogState != store.LogStored {
+				t.Errorf("after the restart: log %q, want stored", j.LogState)
+			}
+		})
+	}
+}
+
+// The job log goes to its file in one step, so a download that breaks
+// leaves no part of a log.
+func TestBrokenLogDownloadLeavesNoFile(t *testing.T) {
 	e := newTestEnv(t)
+	e.newScheduler(0)
 	e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.MinIdle = 1 })
 	_, sc, _ := e.attach(pool)
 	e.scale(sc, msg(0))
 	b := e.sandboxes(pool.ID)[0]
-	e.scale(sc, msg(1, started(71, "acme/api", 970, "build", b)))
-	if err := e.st.AppendJobMetrics(e.ctx, e.job(71).ID, []store.JobMetric{{At: start, CPUPercent: 80, MemoryMB: 900}}); err != nil {
-		t.Fatal(err)
-	}
-	e.gh.noLog = true
-	e.scale(sc, msg(0, completed(71, "acme/api", 970, "build", b, "Succeeded")))
-	for len(e.rec.matching("download ")) == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	// runplane stops while the finish step waits for the log.
-	e.s.stopBg()
-	e.settle()
-	if j := e.job(71); j.LogState != store.LogLive || j.CPUPeak == nil || *j.CPUPeak != 80 {
-		t.Fatalf("after the stop: log %q, cpu peak %v; want live and 80", j.LogState, j.CPUPeak)
-	}
+	e.scale(sc, msg(1, started(91, "acme/api", 990, "build", b)))
+	e.gh.brokenLog = true
 
-	e.gh.noLog = false
-	e.s = New(Config{Store: e.st, Bus: e.bus, Fleet: e.fleet, GitHub: e.gh, LogsDir: e.logs, Now: e.clock.now})
-	t.Cleanup(e.s.stopBg)
-	e.s.cleanup(e.ctx)
+	e.scale(sc, msg(0, completed(91, "acme/api", 990, "build", b, store.ResultSucceeded)))
 	e.settle()
-	if j := e.job(71); j.LogState != store.LogStored {
-		t.Errorf("after the restart: log %q, want stored", j.LogState)
+	if j := e.job(91); j.LogState != store.LogNone {
+		t.Errorf("log state %q after a broken download, want none", j.LogState)
+	}
+	if files, err := os.ReadDir(e.logs); err != nil || len(files) != 0 {
+		t.Errorf("logs folder has %v, %v; want no file", files, err)
 	}
 }
 
@@ -354,7 +410,7 @@ func TestLostServerSandboxesStopCountingAsRunners(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.fleet.mu.Lock()
-	e.fleet.offline[agentID] = true
+	e.fleet.disconnected[agentID] = true
 	e.fleet.mu.Unlock()
 
 	e.clock.add(5 * time.Minute)

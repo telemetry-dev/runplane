@@ -22,22 +22,26 @@ const (
 )
 
 type Server struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Kind         string     `json:"kind"`
-	Status       string     `json:"status"`
-	StatusDetail string     `json:"status_detail"`
-	ServerFacts             // filled by the host checks of the server
-	SecretHash   string     `json:"-"` // agents only
-	LastSeenAt   *time.Time `json:"last_seen_at"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Kind         string `json:"kind"`
+	Status       string `json:"status"`
+	StatusDetail string `json:"status_detail"`
+	ServerFacts         // filled by the host checks of the server
+	// UpdateError tells why the last update of an agent failed. It is
+	// empty after an update that worked.
+	UpdateError string     `json:"update_error"`
+	SecretHash  string     `json:"-"` // agents only
+	LastSeenAt  *time.Time `json:"last_seen_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // ServerFacts are the host facts that a server reports.
 type ServerFacts struct {
 	Address            string       `json:"address"`
 	Provider           string       `json:"provider"`
+	Region             string       `json:"region"` // of the cloud provider, for example fsn1
 	OS                 string       `json:"os"`
 	Kernel             string       `json:"kernel"`
 	Arch               string       `json:"arch"` // x64 | arm64
@@ -89,20 +93,20 @@ type DoctorResult struct {
 	Checks    []DoctorCheck
 }
 
-const factCols = `address, provider, os, kernel, arch, mode, vcpu, memory_mb, disk_bytes, disk_kind, kvm,
+const factCols = `address, provider, region, os, kernel, arch, mode, vcpu, memory_mb, disk_bytes, disk_kind, kvm,
 	docker_version, sysbox_version, firecracker_version, version`
 
 const serverCols = "id, name, kind, status, status_detail, " + factCols +
-	", secret_hash, last_seen_at, created_at, updated_at"
+	", update_error, secret_hash, last_seen_at, created_at, updated_at"
 
 func (v *Server) cols() []any {
 	return slices.Concat([]any{&v.ID, &v.Name, &v.Kind, &v.Status, &v.StatusDetail}, v.ServerFacts.cols(),
-		[]any{text(&v.SecretHash), atPtr(&v.LastSeenAt), at(&v.CreatedAt), at(&v.UpdatedAt)})
+		[]any{&v.UpdateError, text(&v.SecretHash), atPtr(&v.LastSeenAt), at(&v.CreatedAt), at(&v.UpdatedAt)})
 }
 
 // cols returns the fields in the order of factCols.
 func (f *ServerFacts) cols() []any {
-	return []any{&f.Address, &f.Provider, &f.OS, &f.Kernel, &f.Arch, &f.Mode, &f.VCPU, &f.MemoryMB, &f.DiskBytes,
+	return []any{&f.Address, &f.Provider, &f.Region, &f.OS, &f.Kernel, &f.Arch, &f.Mode, &f.VCPU, &f.MemoryMB, &f.DiskBytes,
 		&f.DiskKind, &f.KVM, &f.DockerVersion, &f.SysboxVersion, &f.FirecrackerVersion, &f.Version}
 }
 
@@ -126,56 +130,49 @@ func (s *Store) ListServers(ctx context.Context) ([]Server, error) {
 		"SELECT "+serverCols+" FROM servers ORDER BY kind = 'local' DESC, name, id")
 }
 
-func (s *Store) SetServerName(ctx context.Context, id, name string) error {
+func (s *Store) SetServerName(ctx context.Context, id, name string, now time.Time) error {
 	return exec1(ctx, s.w, "set server name", "UPDATE servers SET name = ?, updated_at = ? WHERE id = ?",
-		name, ms(time.Now()), id)
+		name, ms(now), id)
 }
 
-func (s *Store) UpdateServerFacts(ctx context.Context, id string, f ServerFacts) error {
+func (s *Store) UpdateServerFacts(ctx context.Context, id string, f ServerFacts, now time.Time) error {
 	return exec1(ctx, s.w, "update server facts", "UPDATE servers SET "+assign(factCols)+", updated_at = ? WHERE id = ?",
-		append(f.cols(), ms(time.Now()), id)...)
+		append(f.cols(), ms(now), id)...)
 }
 
-func (s *Store) SetServerStatus(ctx context.Context, id, status, detail string) error {
+func (s *Store) SetServerStatus(ctx context.Context, id, status, detail string, now time.Time) error {
 	return exec1(ctx, s.w, "set server status", "UPDATE servers SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?",
-		status, detail, ms(time.Now()), id)
+		status, detail, ms(now), id)
 }
 
 // SetServerStatusIf sets the status and the detail of a server only while
 // its status is from. It reports whether the row changed.
-func (s *Store) SetServerStatusIf(ctx context.Context, id, from, to, detail string) (bool, error) {
+func (s *Store) SetServerStatusIf(ctx context.Context, id, from, to, detail string, now time.Time) (bool, error) {
 	return changed(ctx, s.w, "set server status", `UPDATE servers SET status = ?, status_detail = ?, updated_at = ?
-		WHERE id = ? AND status = ?`, to, detail, ms(time.Now()), id, from)
+		WHERE id = ? AND status = ?`, to, detail, ms(now), id, from)
+}
+
+// SetServerUpdateError records why the last update of an agent failed, or
+// "" after an update that worked. It writes only a change.
+func (s *Store) SetServerUpdateError(ctx context.Context, id, msg string, now time.Time) error {
+	_, err := changed(ctx, s.w, "set server update error",
+		"UPDATE servers SET update_error = ?, updated_at = ? WHERE id = ? AND update_error != ?", msg, ms(now), id, msg)
+	return err
 }
 
 func (s *Store) TouchServer(ctx context.Context, id string, seen time.Time) error {
 	return exec1(ctx, s.w, "touch server", "UPDATE servers SET last_seen_at = ? WHERE id = ?", ms(seen), id)
 }
 
-func (s *Store) SetServerSecretHash(ctx context.Context, id, hash string) error {
+func (s *Store) SetServerSecretHash(ctx context.Context, id, hash string, now time.Time) error {
 	return exec1(ctx, s.w, "set server secret", "UPDATE servers SET secret_hash = ?, updated_at = ? WHERE id = ?",
-		nullStr(hash), ms(time.Now()), id)
-}
-
-// SetServerRegion records the cloud region of a server. It reports whether
-// the region changed.
-func (s *Store) SetServerRegion(ctx context.Context, id, region string) (bool, error) {
-	return changed(ctx, s.w, "set server region", "UPDATE servers SET region = ? WHERE id = ? AND region != ?",
-		region, id, region)
-}
-
-func (s *Store) ServerRegions(ctx context.Context) (map[string]string, error) {
-	return queryMap(ctx, s.r, "list server regions", func(sc scanner) (string, string, error) {
-		var id, region string
-		err := sc.Scan(&id, &region)
-		return id, region, err
-	}, "SELECT id, region FROM servers WHERE region != ''")
+		nullStr(hash), ms(now), id)
 }
 
 // DeleteServer also deletes its image builds and host samples, and removes
 // its ID from the server_ids of each pool. A pool that loses its last server
-// becomes disabled, because empty server_ids means all servers.
-func (s *Store) DeleteServer(ctx context.Context, id string) error {
+// becomes disabled, because empty server_ids means all servers (Pool.CanUse).
+func (s *Store) DeleteServer(ctx context.Context, id string, now time.Time) error {
 	return s.tx(ctx, "delete server", func(tx *sql.Tx) error {
 		if err := exec1(ctx, tx, "delete row", "DELETE FROM servers WHERE id = ?", id); err != nil {
 			return err
@@ -196,7 +193,7 @@ func (s *Store) DeleteServer(ctx context.Context, id string) error {
 		for _, p := range pools {
 			rest := slices.DeleteFunc(p.serverIDs, func(v string) bool { return v == id })
 			if _, err := tx.ExecContext(ctx, "UPDATE pools SET server_ids = ?, enabled = enabled AND ?, updated_at = ? WHERE id = ?",
-				jsonCol(&rest), len(rest) > 0, ms(time.Now()), p.id); err != nil {
+				jsonCol(&rest), len(rest) > 0, ms(now), p.id); err != nil {
 				return err
 			}
 		}
@@ -213,6 +210,13 @@ func (t *ServerToken) cols() []any {
 
 func (s *Store) CreateServerToken(ctx context.Context, t ServerToken) error {
 	return exec(ctx, s.w, "create server token", insert("server_tokens", tokenCols), t.cols()...)
+}
+
+// DeleteExpiredServerTokens deletes the tokens that expired at now. It keeps
+// the used tokens as a record.
+func (s *Store) DeleteExpiredServerTokens(ctx context.Context, now time.Time) error {
+	return exec(ctx, s.w, "delete expired server tokens",
+		"DELETE FROM server_tokens WHERE used_at IS NULL AND expires_at <= ?", ms(now))
 }
 
 func (s *Store) GetServerToken(ctx context.Context, id string) (ServerToken, error) {

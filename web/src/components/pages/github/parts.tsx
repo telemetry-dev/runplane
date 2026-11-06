@@ -1,8 +1,7 @@
-import { useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import type { AnchorHTMLAttributes, ReactNode } from 'react'
-import { $api, errorMessage } from '~/api/client'
-import { githubQuery } from '~/api/queries'
+import { errorMessage } from '~/api/client'
+import { useSyncGitHub } from '~/api/github'
 import { StatusIcon } from '~/components/app/status-icon'
 import { Button, IconButton } from '~/components/ui/button'
 import { Spinner } from '~/components/ui/spinner'
@@ -60,12 +59,8 @@ type InstallRequestedProps = {
  * installed the app, so GitHub asks an owner to approve the installation.
  */
 export function InstallRequested({ installations, canSync, onDismiss }: InstallRequestedProps) {
-  const queryClient = useQueryClient()
-  const sync = $api.useMutation('post', '/api/github/sync', {
-    onSuccess: (status) => {
-      queryClient.setQueryData(githubQuery.queryKey, status)
-      if (status.installations.length > installations) onDismiss()
-    },
+  const sync = useSyncGitHub((status) => {
+    if (status.installations.length > installations) onDismiss()
   })
 
   return (

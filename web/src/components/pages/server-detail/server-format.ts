@@ -1,28 +1,28 @@
 import type { Schemas } from '~/api/client'
-import type { HostStats } from '~/api/events'
+import { serverStatusNames } from '~/components/app/status-dot'
 import { gigabytes } from '~/components/pages/runners/runner-format'
-import { formatBytes, formatRelativeTime } from '~/lib/format'
+import { statusFacts, statusNote } from '~/components/pages/servers/server-info'
+import { formatBytes, formatTimeAgo } from '~/lib/format'
 
 // Text of the Server detail design, from GET /api/servers/{id}, the doctor, and GET /api/images.
 
 export type Server = Schemas['Server']
-export type Check = Schemas['Check']
 type Image = Schemas['Image']
 type ImageBuild = Schemas['ImageBuild']
 
-/** The state after the status word: "seen 4s ago" for an agent, or the install or error detail. */
-export function statusDetail(server: Server, seenAt: string | null, now: number): string {
-  const ago = seenAt ? formatRelativeTime(seenAt, now) : ''
-  const seen = server.kind === 'agent' && ago ? `seen ${ago === 'now' ? 'just now' : ago}` : ''
-  if (server.status === 'installing' || server.status === 'unreachable') return server.status_detail || seen
-  return seen
+/** The state after the status word: the status note of a server without a connection, or "seen 4s ago" for an agent. */
+export function statusDetail(server: Server, now: number): string {
+  const note = statusNote(server, now)
+  if (note) return note.detail
+  return server.kind === 'agent' && server.last_seen_at ? `seen ${formatTimeAgo(server.last_seen_at, now)}` : ''
 }
 
-/** The newer of the agent's last message and its last host sample, which also proves it is alive. */
-export function lastSeen(server: Server, live: HostStats | undefined): string | null {
-  if (!live) return server.last_seen_at
-  if (!server.last_seen_at) return live.at
-  return Date.parse(live.at) > Date.parse(server.last_seen_at) ? live.at : server.last_seen_at
+/** The text of an empty runners table, with the reason when the server gets no new runners. */
+export function noRunnersText(server: Server): string {
+  const { connected, takesRunners } = statusFacts[server.status]
+  if (connected && !takesRunners) return `No runners on this server. ${serverStatusNames[server.status]} servers take no new runners.`
+  if (server.wait_reason) return `No runners on this server. ${server.wait_reason}`
+  return 'No runners on this server.'
 }
 
 /** "VM" with "Firecracker 1.10.1", "Container" with "Sysbox 0.6.4", or "Dev". */
@@ -51,16 +51,6 @@ export function diskDetail(server: Server, percent: number | null): string {
   return [used, server.disk_kind].filter(Boolean).join(' · ')
 }
 
-/** The doctor needs a server that answers and has finished its install. */
-export function canRunDoctor(server: Server): boolean {
-  return server.status !== 'unreachable' && server.status !== 'installing'
-}
-
-/** Problems first, failures before warnings; passed checks keep the doctor's order. */
-export function sortChecks(checks: readonly Check[]): Check[] {
-  return checks.toSorted((a, b) => checkRank[a.status] - checkRank[b.status])
-}
-
 /** "sha256:4be1c0d9e2a1" from a full image digest. */
 export function shortDigest(digest: string): string {
   const [algorithm, hex] = digest.split(':')
@@ -71,6 +61,4 @@ export function shortDigest(digest: string): string {
 export function buildOn(image: Image, serverId: string): ImageBuild | undefined {
   return image.builds.find((build) => build.server_id === serverId)
 }
-
-const checkRank: Record<Check['status'], number> = { fail: 0, warn: 1, ok: 2 }
 

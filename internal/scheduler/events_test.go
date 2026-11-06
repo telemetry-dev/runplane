@@ -19,34 +19,36 @@ func TestRunnerAndStateEvents(t *testing.T) {
 
 	steps := []struct {
 		server string
-		event  sandbox.Event
+		events []sandbox.Event
 		want   sandbox.State
 	}{
-		{serverID, runnerEvent(sandbox.RunnerListening), sandbox.StateIdle},
-		{otherID, runnerEvent(sandbox.RunnerJobStarted), sandbox.StateIdle}, // another server cannot change it
-		{serverID, runnerEvent(sandbox.RunnerJobStarted), sandbox.StateBusy},
-		{serverID, runnerEvent(sandbox.RunnerListening), sandbox.StateBusy}, // a late event does not go back
-		{serverID, runnerEvent(sandbox.RunnerExited), sandbox.StateStopping},
-		{serverID, stateEvent(sandbox.StateGone, "removed"), sandbox.StateGone},
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerListening}), sandbox.StateIdle},
+		{otherID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerJobStarted}), sandbox.StateIdle}, // another server cannot change it
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerJobStarted}), sandbox.StateBusy},
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerListening}), sandbox.StateBusy}, // a late event does not go back
+		{serverID, driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerExited}), sandbox.StateStopping},
+		{serverID, []sandbox.Event{stateEvent(sandbox.StateGone, "removed")}, sandbox.StateGone},
 	}
 	for i, step := range steps {
 		e.clock.add(time.Second)
-		e.event(step.server, b.ID, step.event)
+		for _, ev := range step.events {
+			e.event(step.server, b.ID, ev)
+		}
 		if got := e.sandbox(b.ID).State; got != step.want {
 			t.Fatalf("step %d: state %q, want %q", i, got, step.want)
 		}
 	}
 	got := e.sandbox(b.ID)
-	if got.StoppedAt == nil || !got.StoppedAt.Equal(start.Add(6*time.Second)) || got.ExitReason != "runner exited with code 0" {
+	if got.StoppedAt == nil || !got.StoppedAt.Equal(start.Add(6*time.Second)) || got.ExitReason != "the runner exited with code 0" {
 		t.Errorf("stopped at %v, exit reason %q", got.StoppedAt, got.ExitReason)
 	}
 
 	// The runner error from runplane-init is the exit reason, not the exit
 	// code, which is 0 after a bad JIT config.
 	noJIT := e.insertSandbox(pool, set, serverID, sandbox.StateStarting, start)
-	exited := runnerEvent(sandbox.RunnerExited)
-	exited.Runner.Error = "the runner did not connect to GitHub"
-	e.event(serverID, noJIT.ID, exited)
+	for _, ev := range driverEvents(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, Error: "the runner did not connect to GitHub"}) {
+		e.event(serverID, noJIT.ID, ev)
+	}
 	if got := e.sandbox(noJIT.ID); got.State != sandbox.StateStopping || got.ExitReason != "the runner did not connect to GitHub" {
 		t.Errorf("state %q, exit reason %q; want stopping because the runner did not connect", got.State, got.ExitReason)
 	}
@@ -65,13 +67,14 @@ func TestRunnerAndStateEvents(t *testing.T) {
 
 func TestDebugRerunHoldsSandbox(t *testing.T) {
 	e := newTestEnv(t)
+	e.setSettings(func(s *store.Settings) { s.DebugHoldMinutes = 20 })
 	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane")
 	_, sc, _ := e.attach(pool)
 	first, err := e.st.UpsertJob(e.ctx, store.JobMessage{
 		RunnerRequestID: 300, State: store.JobCompleted, Result: store.ResultFailed, PoolID: pool.ID,
 		Repository: "acme/api", JobName: "integration", RunID: 5150, QueuedAt: start,
-	})
+	}, start)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +104,7 @@ func TestDebugRerunHoldsSandbox(t *testing.T) {
 	e.clock.add(3 * time.Minute)
 	e.event(serverID, b.ID, sandbox.Event{Type: sandbox.EventRunner, Runner: &sandbox.RunnerEvent{
 		Kind: sandbox.RunnerJobCompleted, JobName: "integration", Result: "failed"}})
-	want := e.clock.now().Add(30 * time.Minute)
+	want := e.clock.now().Add(20 * time.Minute)
 	if got := driver.holds[b.ID]; !got.Equal(want) {
 		t.Errorf("driver hold until %v, want %v", got, want)
 	}
@@ -121,17 +124,27 @@ func TestDebugRerunHoldsSandbox(t *testing.T) {
 // debug flag. That sandbox needs a hold before its runner exits.
 func TestDebugJobOnWarmSandbox(t *testing.T) {
 	e := newTestEnv(t)
+	e.setSettings(func(s *store.Settings) { s.DebugHoldMinutes = 20 })
 	serverID, driver := e.addServer("fsn1-a", capacity("x64", 16, 65536))
 	pool := e.addPool("runplane", func(p *store.Pool) { p.TimeLimitMinutes = 60; p.MinIdle = 1 })
 	_, sc, set := e.attach(pool)
 	warm := e.insertSandbox(pool, set, serverID, sandbox.StateIdle, start)
-	driver.running[warm.ID] = sandbox.Spec{ID: warm.ID, VCPU: 2, MemoryMB: 4096}
-	e.s.reruns[rerunKey{"acme/api", 5150, "integration"}] = start
+	driver.run(sandbox.Spec{ID: warm.ID, VCPU: 2, MemoryMB: 4096})
+	first, err := e.st.UpsertJob(e.ctx, store.JobMessage{
+		RunnerRequestID: 300, State: store.JobCompleted, Result: store.ResultFailed, PoolID: pool.ID,
+		Repository: "acme/api", JobName: "integration", RunID: 5150, QueuedAt: start,
+	}, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.RerunJob(e.ctx, first.ID, true); err != nil {
+		t.Fatal(err)
+	}
 
 	e.scale(sc, msg(0, available(301, "acme/api", 5150, "integration")))
 	e.scale(sc, msg(1, started(301, "acme/api", 5150, "integration", warm)))
 
-	want := start.Add(60*time.Minute + 30*time.Minute)
+	want := start.Add(60*time.Minute + 20*time.Minute)
 	if got := driver.holds[warm.ID]; !got.Equal(want) {
 		t.Errorf("hold until %v, want the time limit plus the debug hold (%v)", got, want)
 	}
@@ -186,7 +199,7 @@ func TestStopSandboxStopsBusySandbox(t *testing.T) {
 	client, _, set := e.attach(pool)
 	b := e.insertSandbox(pool, set, serverID, sandbox.StateBusy, start)
 	client.busy[b.RunnerID] = true
-	driver.running[b.ID] = sandbox.Spec{ID: b.ID}
+	driver.run(sandbox.Spec{ID: b.ID})
 
 	if err := e.s.StopSandbox(e.ctx, b.ID); err != nil {
 		t.Fatal(err)

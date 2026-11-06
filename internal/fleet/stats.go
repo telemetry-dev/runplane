@@ -7,8 +7,6 @@ import (
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/mirror"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -17,8 +15,7 @@ import (
 const maxSamples = 10_000
 
 // addStats publishes a host sample of a server and keeps it for the next
-// flush. It also sends a notification when the free disk space falls below
-// min_free_disk_percent.
+// flush.
 func (f *Fleet) addStats(n *node, s host.Stats) {
 	if s.At.IsZero() {
 		s.At = f.now()
@@ -26,50 +23,41 @@ func (f *Fleet) addStats(n *node, s host.Stats) {
 	st := store.ServerStat{
 		ServerID: n.id, At: s.At.UTC(), CPUPercent: s.CPUPercent, MemoryPercent: s.MemoryPercent, DiskPercent: s.DiskPercent,
 	}
-	f.bus.Publish(events.Event{Type: events.HostStats, Data: st})
-
-	free := 100 - s.DiskPercent
 	f.mu.Lock()
 	if len(f.samples) >= maxSamples {
 		f.samples = f.samples[1:]
 	}
 	f.samples = append(f.samples, st)
-	minFree, name := f.minFree, n.name
-	low := s.DiskBytes > 0 && free < minFree
-	alert := low && !f.diskLow[n.id]
-	f.diskLow[n.id] = low
-	f.mu.Unlock()
-	if alert {
-		f.log.Warn("disk almost full", "server_id", n.id, "free_percent", free)
-		f.notify(func(dashboard string) notify.Event {
-			return notify.DiskLowEvent(dashboard, n.id, name, free, int(minFree))
-		})
+	// The sample of an agent is its last contact.
+	if !n.Local() && st.At.After(f.seen[n.id]) {
+		f.seen[n.id] = st.At
 	}
+	f.mu.Unlock()
+	f.bus.Publish(events.HostStats(st))
 }
 
-// flushStats writes the kept samples, and the time of the last sample of
-// each agent as its last contact.
+// flushStats writes the kept samples, and the last contact of each agent.
 func (f *Fleet) flushStats(ctx context.Context) {
 	f.mu.Lock()
 	batch := make([]store.ServerStat, 0, len(f.samples))
-	seen := map[string]time.Time{}
 	for _, st := range f.samples {
 		// The row of a removed server is gone, and its samples would fail the batch.
-		if f.removed[st.ServerID] {
-			continue
-		}
-		batch = append(batch, st)
-		if st.ServerID != f.localID && st.At.After(seen[st.ServerID]) {
-			seen[st.ServerID] = st.At
+		if !f.removed[st.ServerID] {
+			batch = append(batch, st)
 		}
 	}
-	f.samples = nil
+	seen := f.seen
+	for id := range seen {
+		if f.removed[id] {
+			delete(seen, id)
+		}
+	}
+	f.samples, f.seen = nil, map[string]time.Time{}
 	f.mu.Unlock()
-	if len(batch) == 0 {
-		return
-	}
-	if err := f.st.AppendServerStats(ctx, batch); err != nil {
-		f.log.Warn("record host stats", "samples", len(batch), "err", err)
+	if len(batch) > 0 {
+		if err := f.st.AppendServerStats(ctx, batch); err != nil {
+			f.log.Warn("record host stats", "samples", len(batch), "err", err)
+		}
 	}
 	for id, at := range seen {
 		if err := f.st.TouchServer(ctx, id, at); err != nil {
@@ -78,24 +66,16 @@ func (f *Fleet) flushStats(ctx context.Context) {
 	}
 }
 
-// AgentMirrorStats sums the registry mirror stats of the connected agents.
-// An agent that does not answer adds nothing.
-func (f *Fleet) AgentMirrorStats(ctx context.Context) mirror.Stats {
-	f.mu.Lock()
-	var sessions []*agent.Session
-	for _, n := range f.nodes {
-		if n.sess != nil {
-			sessions = append(sessions, n.sess)
-		}
-	}
-	f.mu.Unlock()
+// MirrorStats sums the registry mirror stats of the connected servers:
+// the api Mirrors service. A server that does not answer adds nothing.
+func (f *Fleet) MirrorStats(ctx context.Context) agent.MirrorStats {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	var sum mirror.Stats
-	for _, s := range sessions {
-		m, err := s.MirrorStats(ctx)
+	var sum agent.MirrorStats
+	for _, n := range f.connected() {
+		m, err := n.MirrorStats(ctx)
 		if err != nil {
-			f.log.Warn("read mirror stats", "server_id", s.ServerID(), "err", err)
+			f.log.Warn("read mirror stats", "server_id", n.id, "err", err)
 			continue
 		}
 		sum.Add(m)

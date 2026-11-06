@@ -1,4 +1,3 @@
-/* Indeterminate progress: a 35% bar that sweeps across the track and back. */
 @keyframes progress-sweep {
   from {
     translate: 0;

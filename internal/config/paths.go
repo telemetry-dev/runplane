@@ -10,32 +10,47 @@ import (
 func (c Config) SecretKeyPath() string   { return filepath.Join(c.ConfigDir, "secret.key") }
 func (c Config) AgentConfigPath() string { return filepath.Join(c.ConfigDir, "agent.json") }
 
+// EnvFilePath is the environment file of the systemd units. install.sh
+// writes it.
+func (c Config) EnvFilePath() string { return filepath.Join(c.ConfigDir, "runplane.env") }
+
 // AdminKeysPath is the authorized_keys file of the admins: these keys open
 // the debug shell of every sandbox through the SSH gateway.
 func (c Config) AdminKeysPath() string { return filepath.Join(c.ConfigDir, "authorized_keys") }
 
-func (c Config) DBPath() string              { return filepath.Join(c.DataDir, "runplane.db") }
-func (c Config) SandboxesDir() string        { return filepath.Join(c.DataDir, "sandboxes") }
-func (c Config) SandboxDir(id string) string { return filepath.Join(c.SandboxesDir(), id) }
-func (c Config) ImagesDir() string           { return filepath.Join(c.DataDir, "images") }
-func (c Config) RunnersDir() string          { return filepath.Join(c.DataDir, "runners") }
-func (c Config) CacheDir() string            { return filepath.Join(c.DataDir, "cache") }
-func (c Config) MirrorDir() string           { return filepath.Join(c.DataDir, "mirror") }
-func (c Config) LogsDir() string             { return filepath.Join(c.DataDir, "logs") }
-func (c Config) BackupsDir() string          { return filepath.Join(c.DataDir, "backups") }
-func (c Config) TLSDir() string              { return filepath.Join(c.DataDir, "tls") }
+// SSHKeyPath is the key with which the primary installs agents over SSH.
+func (c Config) SSHKeyPath() string { return filepath.Join(c.ConfigDir, "ssh_key") }
 
-// JobLogPath is the stored GitHub log of a completed job.
-func (c Config) JobLogPath(jobID string) string { return filepath.Join(c.LogsDir(), jobID+".log") }
+func (c Config) DBPath() string       { return filepath.Join(c.DataDir, "runplane.db") }
+func (c Config) SandboxesDir() string { return filepath.Join(c.DataDir, "sandboxes") }
+func (c Config) ImagesDir() string    { return filepath.Join(c.DataDir, "images") }
+func (c Config) RunnersDir() string   { return filepath.Join(c.DataDir, "runners") }
+func (c Config) CacheDir() string     { return filepath.Join(c.DataDir, "cache") }
+func (c Config) MirrorDir() string    { return filepath.Join(c.DataDir, "mirror") }
+func (c Config) LogsDir() string      { return filepath.Join(c.DataDir, "logs") }
+func (c Config) BackupsDir() string   { return filepath.Join(c.DataDir, "backups") }
+func (c Config) TLSDir() string       { return filepath.Join(c.DataDir, "tls") }
 
 // ScratchTemplatesDir holds the empty ext4 templates of the scratch disks.
 func (c Config) ScratchTemplatesDir() string { return filepath.Join(c.DataDir, "scratch-templates") }
+
+// JailDir holds the chroots that the Firecracker jailer makes for the VMs.
+func (c Config) JailDir() string { return filepath.Join(c.DataDir, "jail") }
 
 // KernelPath is the guest kernel of VM mode. install.sh puts it there.
 func (c Config) KernelPath() string { return filepath.Join(c.DataDir, "kernel", "vmlinux") }
 
 // SSHHostKeyPath is the host key of the SSH gateway.
 func (c Config) SSHHostKeyPath() string { return filepath.Join(c.DataDir, "ssh_host_ed25519_key") }
+
+// KnownHostsPath holds the host keys of the servers that the primary
+// installed over SSH.
+func (c Config) KnownHostsPath() string { return filepath.Join(c.DataDir, "known_hosts") }
+
+// AgentSettingsPath holds the last settings that an agent got from the
+// primary. At its start, the agent gives them to its sandbox driver, which
+// has sandboxes from before the restart.
+func (c Config) AgentSettingsPath() string { return filepath.Join(c.DataDir, "agent-settings.json") }
 
 // EnsureDirs makes the configuration and data folders and sets their modes.
 // It also corrects the mode of folders that exist.

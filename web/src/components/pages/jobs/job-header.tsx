@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { RotateCcw, TerminalIcon } from 'lucide-react'
 import { $api, errorMessage, type Schemas } from '~/api/client'
+import { useCapabilities } from '~/api/session'
+import { settingsQuery } from '~/api/settings'
 import { BreadcrumbLink, BreadcrumbPage, Breadcrumbs } from '~/components/app/breadcrumbs'
-import { jobStatus, StatusIcon } from '~/components/app/status-icon'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
+import { StatusIcon } from '~/components/app/status-icon'
 import { Button, buttonClassName } from '~/components/ui/button'
 import { GithubIcon } from '~/components/ui/icons'
 import { toastManager } from '~/components/ui/toast'
@@ -11,6 +12,7 @@ import { runNumber, workflowFile } from './job-format'
 
 /** Breadcrumbs, the job name with its status, and the GitHub and re-run actions. */
 export function JobHeader({ job }: { job: Schemas['Job'] }) {
+  const { rerun_jobs: canRerun } = useCapabilities()
   const holdMinutes = useQuery(settingsQuery).data?.debug_hold_minutes
   const rerun = $api.useMutation('post', '/api/jobs/{id}/rerun', {
     onSuccess: (_, { body }) => {
@@ -41,7 +43,7 @@ export function JobHeader({ job }: { job: Schemas['Job'] }) {
       </Breadcrumbs>
       <div className="flex flex-wrap items-center justify-between gap-m">
         <div className="flex min-w-0 items-center gap-s">
-          <StatusIcon status={jobStatus(job)} size={22} />
+          <StatusIcon status={job.status} size={22} />
           <h1 className="type-page-title truncate text-neutral-10">{job.job_name}</h1>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
@@ -53,7 +55,7 @@ export function JobHeader({ job }: { job: Schemas['Job'] }) {
             </a>
           )}
           {/* GitHub re-runs only a completed job. */}
-          {job.state === 'completed' && (
+          {job.state === 'completed' && canRerun && (
             <>
               <Button loading={pending === 'debug'} disabled={pending === 'plain'} onClick={() => start(true)}>
                 {pending !== 'debug' && <TerminalIcon aria-hidden />}

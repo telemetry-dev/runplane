@@ -3,12 +3,10 @@
 //
 // The guest dials a Unix socket (container mode), vsock (VM mode, which
 // Firecracker forwards to a Unix socket on the host), or one shared TCP port
-// (dev mode, see TCPListener). Both sides use yamux on the connection, and
-// each side serves HTTP/1.1 on the streams that the other side opens.
+// (dev mode, see TCPListener). The guest package has the protocol.
 package control
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,9 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,48 +25,26 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
-
-// GuestConfig is the job config that runplane-init reads one time at start.
-type GuestConfig struct {
-	SandboxID        string            `json:"sandbox_id"`
-	Hostname         string            `json:"hostname"`
-	JITConfig        string            `json:"jit_config"`
-	RunnerDir        string            `json:"runner_dir"` // read-only runner bundle in the guest
-	Env              map[string]string `json:"env"`        // written to the runner .env
-	DNS              []string          `json:"dns"`
-	RegistryMirror   string            `json:"registry_mirror"` // http://<service-ip>:<port>, empty = none
-	TimeLimitSeconds int               `json:"time_limit_seconds"`
-	Debug            bool              `json:"debug"`
-}
-
-// LogLine is one line of sandbox output.
-type LogLine struct {
-	Time   time.Time
-	Source string // runner, diag, init, or dockerd
-	Text   string
-}
 
 // Handler gets what the guest sends. The server calls it from its own
 // goroutines; OnLog calls come in the order of the lines.
 type Handler interface {
+	// OnConnect comes with each new connection of the guest.
+	OnConnect()
 	OnEvent(sandbox.RunnerEvent)
-	OnLog(LogLine)
-	// OnLostConfig comes one time when the guest asks for its config, but
-	// the config has no JIT config. The JIT config is only in memory, so
-	// runplane restarted before the guest asked, and the sandbox can never
-	// run a job. The handler stops the sandbox.
+	OnLog(guest.LogLine)
+	// OnLostConfig comes one time when the guest asks for its config, and
+	// the server has none (see Listen). The handler stops the sandbox.
 	OnLostConfig()
 }
 
 var ErrNotConnected = errors.New("guest is not connected")
 
-// MaxLine is the longest line that the log stream carries. Longer lines are split.
-const MaxLine = 64 << 10
-
 // Server is the host end of the control channel of one sandbox.
 type Server struct {
-	cfg GuestConfig
+	cfg *guest.Config
 	h   Handler
 	log *slog.Logger
 	mux *http.ServeMux
@@ -92,7 +66,12 @@ type guestConn struct {
 // Listen serves the control channel on a Unix socket. It removes an old socket
 // file first, so it also works after a runplane restart. A new guest
 // connection replaces the old one.
-func Listen(socketPath string, cfg GuestConfig, h Handler, log *slog.Logger) (*Server, error) {
+//
+// cfg is nil for a sandbox from before a runplane restart, because the JIT
+// config was only in memory. Its guest asks for its config only one time, so
+// it usually has it. A guest that asks then can never run a job: the server
+// calls OnLostConfig.
+func Listen(socketPath string, cfg *guest.Config, h Handler, log *slog.Logger) (*Server, error) {
 	if err := os.Remove(socketPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("remove old control socket: %w", err)
 	}
@@ -113,32 +92,26 @@ func Listen(socketPath string, cfg GuestConfig, h Handler, log *slog.Logger) (*S
 	return s, nil
 }
 
-func newServer(cfg GuestConfig, h Handler, log *slog.Logger) *Server {
+func newServer(cfg *guest.Config, h Handler, log *slog.Logger) *Server {
 	s := &Server{cfg: cfg, h: h, log: log, mux: http.NewServeMux()}
-	s.mux.HandleFunc("GET /v1/config", s.handleConfig)
-	s.mux.HandleFunc("POST /v1/events", s.handleEvent)
-	s.mux.HandleFunc("POST /v1/logs", s.handleLogs)
+	s.mux.HandleFunc("GET "+guest.PathConfig, s.handleConfig)
+	s.mux.HandleFunc("POST "+guest.PathEvents, s.handleEvent)
+	s.mux.HandleFunc("POST "+guest.PathLogs, s.handleLogs)
 	return s
-}
-
-func (s *Server) Connected() bool {
-	return s.current() != nil
 }
 
 // Hold tells the guest to wait until this time after the runner exits.
 func (s *Server) Hold(ctx context.Context, until time.Time) error {
-	body, err := json.Marshal(struct {
-		Until time.Time `json:"until"`
-	}{until.UTC()})
+	body, err := json.Marshal(guest.Hold{Until: until.UTC()})
 	if err != nil {
 		return err
 	}
-	return s.call(ctx, "/v1/hold", body)
+	return s.call(ctx, guest.PathHold, body)
 }
 
 // Shutdown tells the guest to stop the runner and power off.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.call(ctx, "/v1/shutdown", nil)
+	return s.call(ctx, guest.PathShutdown, nil)
 }
 
 // Shell opens a login shell as the runner user in the guest. ctx limits only
@@ -148,12 +121,12 @@ func (s *Server) Shell(ctx context.Context, size sandbox.TermSize) (sandbox.Term
 	if g == nil {
 		return nil, ErrNotConnected
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guest/v1/shell?"+sizeQuery(size).Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guest"+guest.PathShell+"?"+guest.SizeQuery(size).Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "runplane-shell")
+	req.Header.Set("Upgrade", guest.ShellProtocol)
 	resp, err := g.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("open shell: %w", err)
@@ -162,15 +135,15 @@ func (s *Server) Shell(ctx context.Context, size sandbox.TermSize) (sandbox.Term
 		defer resp.Body.Close()
 		return nil, fmt.Errorf("open shell: %w", responseError(resp))
 	}
-	session := resp.Header.Get("X-Runplane-Session")
+	session := resp.Header.Get(guest.SessionHeader)
 	return &terminal{
 		ReadWriteCloser: resp.Body.(io.ReadWriteCloser),
 		resize: func(size sandbox.TermSize) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			q := sizeQuery(size)
-			q.Set("session", session)
-			return g.call(ctx, "/v1/shell/resize?"+q.Encode(), nil)
+			q := guest.SizeQuery(size)
+			q.Set(guest.QuerySession, session)
+			return g.call(ctx, guest.PathShellResize+"?"+q.Encode(), nil)
 		},
 	}, nil
 }
@@ -208,12 +181,8 @@ func (s *Server) accept(ln net.Listener) {
 	}
 }
 
-// serve starts yamux on a new guest connection. It replaces the old one.
 func (s *Server) serve(conn net.Conn) {
-	cfg := yamux.DefaultConfig()
-	cfg.LogOutput = nil
-	cfg.Logger = slog.NewLogLogger(s.log.Handler(), slog.LevelDebug)
-	sess, err := yamux.Server(conn, cfg)
+	sess, err := yamux.Server(conn, guest.YamuxConfig(s.log))
 	if err != nil {
 		conn.Close()
 		s.log.Warn("start yamux session", "err", err)
@@ -237,6 +206,7 @@ func (s *Server) serve(conn net.Conn) {
 	} else {
 		s.log.Debug("guest connected")
 	}
+	s.h.OnConnect()
 	go func() {
 		srv := &http.Server{
 			Handler:           s.mux,
@@ -271,7 +241,6 @@ func (s *Server) call(ctx context.Context, path string, body []byte) error {
 	return g.call(ctx, path, body)
 }
 
-// call sends a POST to the guest and expects 204.
 func (g *guestConn) call(ctx context.Context, path string, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guest"+path, bytes.NewReader(body))
 	if err != nil {
@@ -289,10 +258,10 @@ func (g *guestConn) call(ctx context.Context, path string, body []byte) error {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
-	if s.cfg.JITConfig == "" {
+	if s.cfg == nil {
 		// The guest asks again each second until the handler stops it.
 		s.lost.Do(func() { go s.h.OnLostConfig() })
-		http.Error(w, "runplane restarted before this sandbox got its config", http.StatusConflict)
+		http.Error(w, guest.ErrNoConfig.Error(), guest.StatusNoConfig)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -312,48 +281,11 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 // handleLogs reads the log stream until the guest ends it. The stream breaks
 // when the connection drops; the guest then streams again on a new connection.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	// The prefix "<unix-ms> <source> " comes on top of MaxLine.
-	err := readLines(r.Body, MaxLine+64, func(line string) { s.h.OnLog(parseLogLine(line)) })
-	if err != nil {
+	if err := guest.ReadLogLines(r.Body, s.h.OnLog); err != nil {
 		s.log.Debug("log stream ended", "err", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// parseLogLine reads "<unix-ms> <source> <text>". It keeps a line in another
-// form as text with no source.
-func parseLogLine(line string) LogLine {
-	ms, rest, ok := strings.Cut(line, " ")
-	source, text, _ := strings.Cut(rest, " ")
-	n, err := strconv.ParseInt(ms, 10, 64)
-	if !ok || err != nil || source == "" {
-		return LogLine{Time: time.Now().UTC(), Text: line}
-	}
-	return LogLine{Time: time.UnixMilli(n).UTC(), Source: source, Text: text}
-}
-
-// ReadLines calls fn for each line of r, without the line end, until r ends.
-// It splits lines longer than MaxLine.
-func ReadLines(r io.Reader, fn func(line string)) error {
-	return readLines(r, MaxLine, fn)
-}
-
-func readLines(r io.Reader, max int, fn func(string)) error {
-	br := bufio.NewReaderSize(r, max)
-	for {
-		b, err := br.ReadSlice('\n')
-		if len(b) > 0 {
-			fn(strings.TrimSuffix(strings.TrimSuffix(string(b), "\n"), "\r"))
-		}
-		switch {
-		case err == nil, errors.Is(err, bufio.ErrBufferFull):
-		case errors.Is(err, io.EOF):
-			return nil
-		default:
-			return err
-		}
-	}
 }
 
 type terminal struct {
@@ -362,13 +294,6 @@ type terminal struct {
 }
 
 func (t *terminal) Resize(size sandbox.TermSize) error { return t.resize(size) }
-
-func sizeQuery(size sandbox.TermSize) url.Values {
-	return url.Values{
-		"rows": {strconv.Itoa(int(size.Rows))},
-		"cols": {strconv.Itoa(int(size.Cols))},
-	}
-}
 
 func responseError(resp *http.Response) error {
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

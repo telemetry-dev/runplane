@@ -362,7 +362,7 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Type roles of the designs. Each sets family, weight, size, line height, and tracking. */
+/* Type roles of the designs. */
 @utility type-display {
   font-family: var(--font-brand);
   font-weight: var(--weight-brand-heavy);

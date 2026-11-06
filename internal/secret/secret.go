@@ -9,7 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 const KeySize = 32
@@ -32,30 +33,20 @@ func LoadOrCreate(path string) ([]byte, error) {
 	return key, nil
 }
 
-// create writes the key to a temporary file and links it into place, so a
-// reader never sees a partial key and two processes cannot both make a key.
+// create writes a new key. If another process made the key first, it uses
+// that key.
 func create(path string) ([]byte, error) {
 	key := make([]byte, KeySize)
 	rand.Read(key)
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".secret-*") // mode 0600
-	if err != nil {
-		return nil, fmt.Errorf("create secret key: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(key)
-	if err := errors.Join(err, tmp.Sync(), tmp.Close()); err != nil {
-		return nil, fmt.Errorf("write secret key: %w", err)
-	}
-	if err := os.Link(tmp.Name(), path); err != nil {
+	if err := atomicfile.CreateOnce(path, key, 0o600); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return LoadOrCreate(path)
 		}
-		return nil, fmt.Errorf("write secret key: %w", err)
+		return nil, fmt.Errorf("create secret key: %w", err)
 	}
 	return key, nil
 }
 
-// Box seals and opens values with AES-256-GCM.
 type Box struct {
 	aead cipher.AEAD
 }

@@ -4,13 +4,12 @@ type PageHeaderProps = {
   title: ReactNode
   /** Shown after the title in regular weight, as in "Servers 6". */
   count?: number
-  /** Before the title, as the 22px StatusIcon of Job detail. */
+  /** Before the title, as a status icon. */
   icon?: ReactNode
   /** Buttons on the right. */
   actions?: ReactNode
 }
 
-/** The 36px title row at the top of each app page. */
 export function PageHeader({ title, count, icon, actions }: PageHeaderProps) {
   return (
     <header className="flex min-h-[36px] shrink-0 flex-wrap items-center justify-between gap-m">

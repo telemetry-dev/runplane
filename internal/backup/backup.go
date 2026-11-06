@@ -1,11 +1,11 @@
-// Package backup copies the SQLite database to gzip files, keeps the newest
-// ones, and uploads them to S3-compatible storage.
+// Package backup makes the backups of the database: it copies the SQLite
+// database to gzip files, keeps the newest ones, and uploads them to
+// S3-compatible storage.
 package backup
 
 import (
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -15,13 +15,14 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
-// Result describes one backup.
-type Result struct {
-	Path    string   // the new backup file
-	Size    int64    // its size in bytes
-	Removed []string // older backup files that Run removed
+type result struct {
+	path    string   // the new backup file
+	size    int64    // its size in bytes
+	removed []string // older backup files that write removed
 }
 
 const (
@@ -29,31 +30,30 @@ const (
 	filePattern = "runplane-????????T??????.???Z.db.gz"
 )
 
-// Run copies the database with VACUUM INTO, writes it to
-// dir/runplane-<UTC time>.db.gz, and removes the oldest backups so that
-// keep files stay. If keep is 0 or less, Run removes no backups.
-func Run(ctx context.Context, db *sql.DB, dir string, keep int) (Result, error) {
+// write copies the database with vacuumInto to dir/runplane-<UTC time>.db.gz
+// and removes the oldest backups so that keep files stay. If keep is 0 or
+// less, write removes no backups.
+func write(ctx context.Context, vacuumInto func(ctx context.Context, path string) error, dir string, keep int) (result, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Result{}, fmt.Errorf("make backup dir: %w", err)
+		return result{}, fmt.Errorf("make backup dir: %w", err)
 	}
 	name, path := freeName(dir, time.Now().UTC())
 
-	// VACUUM INTO writes a consistent copy that includes the WAL, and it
-	// does not block writers. It fails if the target file exists.
+	// VACUUM INTO fails if the target file exists.
 	snapshot := filepath.Join(dir, "."+name+".db")
 	os.Remove(snapshot)
 	defer os.Remove(snapshot)
-	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", snapshot); err != nil {
-		return Result{}, fmt.Errorf("vacuum into snapshot: %w", err)
+	if err := vacuumInto(ctx, snapshot); err != nil {
+		return result{}, err
 	}
 
 	size, err := gzipFile(snapshot, path)
 	if err != nil {
-		return Result{}, err
+		return result{}, err
 	}
-	res := Result{Path: path, Size: size}
+	res := result{path: path, size: size}
 	if keep > 0 {
-		if res.Removed, err = prune(dir, keep); err != nil {
+		if res.removed, err = prune(dir, keep); err != nil {
 			return res, err
 		}
 	}
@@ -73,8 +73,7 @@ func freeName(dir string, t time.Time) (string, string) {
 	}
 }
 
-// gzipFile compresses src to dst through a temporary file and returns the
-// size of dst.
+// gzipFile compresses src to dst and returns the size of dst.
 func gzipFile(src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {
@@ -82,13 +81,11 @@ func gzipFile(src, dst string) (int64, error) {
 	}
 	defer in.Close()
 
-	tmp := dst + ".part"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	out, err := atomicfile.Create(dst, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("create backup: %w", err)
 	}
-	defer os.Remove(tmp)
-
+	defer out.Close()
 	zw := gzip.NewWriter(out)
 	zw.Name = strings.TrimSuffix(filepath.Base(dst), ".gz")
 	_, err = io.Copy(zw, in)
@@ -96,18 +93,12 @@ func gzipFile(src, dst string) (int64, error) {
 		err = zw.Close()
 	}
 	if err == nil {
-		err = out.Sync()
-	}
-	if cerr := out.Close(); err == nil {
-		err = cerr
+		err = out.Commit()
 	}
 	if err != nil {
 		return 0, fmt.Errorf("write backup: %w", err)
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		return 0, fmt.Errorf("write backup: %w", err)
-	}
-	info, err := os.Stat(dst)
+	info, err := out.Stat()
 	if err != nil {
 		return 0, fmt.Errorf("stat backup: %w", err)
 	}
@@ -135,8 +126,11 @@ func prune(dir string, keep int) ([]string, error) {
 	return removed, nil
 }
 
-// Daily calls job each day at 03:00 UTC until ctx ends.
-func Daily(ctx context.Context, job func(context.Context)) {
+// DailyAt is the time of day in UTC of the daily backup.
+const DailyAt = 3 * time.Hour
+
+// daily calls job each day at DailyAt until ctx ends.
+func daily(ctx context.Context, job func(context.Context)) {
 	for {
 		t := time.NewTimer(time.Until(nextRun(time.Now())))
 		select {
@@ -149,10 +143,10 @@ func Daily(ctx context.Context, job func(context.Context)) {
 	}
 }
 
-// nextRun returns the first 03:00 UTC after now.
+// nextRun returns the first DailyAt after now.
 func nextRun(now time.Time) time.Time {
 	now = now.UTC()
-	next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, time.UTC)
+	next := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).Add(DailyAt)
 	if !next.After(now) {
 		next = next.AddDate(0, 0, 1)
 	}

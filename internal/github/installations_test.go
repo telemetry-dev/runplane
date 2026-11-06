@@ -3,7 +3,9 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,14 +28,12 @@ func (e *env) installations() *fakeInstallations {
 		e.checkJWT(r)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		page := 0
-		if r.URL.Query().Get("page") == "2" {
-			page = 1
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		page = max(page, 1)
+		if page < len(f.list) {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/api/v3/app/installations?per_page=100&page=%d>; rel="next"`, e.srv.URL, page+1))
 		}
-		if page == 0 && len(f.list) > 1 {
-			w.Header().Set("Link", `<`+e.srv.URL+`/api/v3/app/installations?per_page=100&page=2>; rel="next"`)
-		}
-		writeJSON(w, http.StatusOK, f.list[page:min(page+1, len(f.list))])
+		writeJSON(w, http.StatusOK, f.list[min(page-1, len(f.list)):min(page, len(f.list))])
 	})
 	e.mux.HandleFunc("GET /api/v3/installation/repositories", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -59,7 +59,7 @@ func TestSyncInstallations(t *testing.T) {
 	e := newEnv(t)
 	e.connect()
 	ctx := context.Background()
-	f := e.installations()
+	f := e.inst
 	org := map[string]any{"id": 10, "app_id": testAppID, "suspended_at": nil,
 		"account": map[string]any{"login": "acme", "id": 1, "type": "Organization"}}
 	user := map[string]any{"id": 20, "app_id": testAppID, "suspended_at": nil,
@@ -114,7 +114,6 @@ func TestSyncInstallations(t *testing.T) {
 		t.Errorf("the scale set of the removed installation is still there: %v", err)
 	}
 
-	// The suspension ends.
 	org["suspended_at"] = nil
 	if err := e.svc.Sync(ctx); err != nil {
 		t.Fatal(err)
@@ -130,7 +129,7 @@ func TestSetupRecordsInstallation(t *testing.T) {
 	e := newEnv(t)
 	e.connect()
 	ctx := context.Background()
-	f := e.installations()
+	f := e.inst
 	f.set(nil, map[string][]map[string]any{"ghs_77_": {{"id": 300, "full_name": "octo/app", "private": true}}})
 	appID := testAppID
 	e.mux.HandleFunc("GET /api/v3/app/installations/77", func(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +146,7 @@ func TestSetupRecordsInstallation(t *testing.T) {
 		{"request", "/settings/github?requested=1"},
 	}
 	for _, tt := range tests {
-		if to, err := e.svc.Setup(ctx, "https://ci.example.com", 77, tt.action); err != nil || to != tt.want {
+		if to, err := e.svc.Setup(ctx, 77, tt.action); err != nil || to != tt.want {
 			t.Errorf("Setup(%s) = %q, %v; want %q", tt.action, to, err, tt.want)
 		}
 	}
@@ -161,7 +160,27 @@ func TestSetupRecordsInstallation(t *testing.T) {
 	}
 
 	appID = 99
-	if _, err := e.svc.Setup(ctx, "https://ci.example.com", 77, "install"); err == nil {
+	if _, err := e.svc.Setup(ctx, 77, "install"); err == nil {
 		t.Error("setup accepted an installation of a different app")
+	}
+}
+
+// runplane runs jobs only for organizations and personal accounts, so
+// Setup refuses an installation that Sync would delete.
+func TestSetupRefusesOtherAccountTypes(t *testing.T) {
+	e := newEnv(t)
+	e.connect()
+	ctx := context.Background()
+	e.mux.HandleFunc("GET /api/v3/app/installations/78", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": 78, "app_id": testAppID, "repository_selection": "all", "suspended_at": nil,
+			"account": map[string]any{"login": "acme-corp", "id": 6, "type": "Enterprise"},
+		})
+	})
+	if _, err := e.svc.Setup(ctx, 78, "install"); err == nil || !strings.Contains(err.Error(), "Enterprise") {
+		t.Errorf("Setup of an enterprise installation: err = %v, want a refusal", err)
+	}
+	if _, err := e.st.GetInstallation(ctx, 78); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("installation row: err = %v, want none", err)
 	}
 }

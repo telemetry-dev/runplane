@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 import type { Schemas } from '~/api/client'
 import { Spinner } from '~/components/ui/spinner'
 
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped'
+/** The status of a job from the API: queued, running, or its result once it completes. */
+export type JobStatus = Schemas['JobSummary']['status']
 
 type StatusIconProps = {
   status: JobStatus
@@ -13,9 +14,9 @@ type StatusIconProps = {
 
 /** The job and step state glyphs of the designs. Each has an accessible name ("Failed"). */
 export function StatusIcon({ status, size = 16, className }: StatusIconProps) {
-  if (status === 'running') return <Spinner size={size} label={labels.running} className={className} />
+  if (status === 'running') return <Spinner size={size} label={jobStatusNames.running} className={className} />
   return (
-    <Glyph size={size} label={labels[status]} className={className}>
+    <Glyph size={size} label={jobStatusNames[status]} className={className}>
       {glyphs[status](size)}
     </Glyph>
   )
@@ -49,7 +50,7 @@ function Glyph({ size, label, className, children }: { size: number; label: stri
   )
 }
 
-const labels: Record<JobStatus, string> = {
+export const jobStatusNames: Record<JobStatus, string> = {
   queued: 'Queued',
   running: 'Running',
   succeeded: 'Succeeded',
@@ -111,32 +112,21 @@ function warning(size: number) {
   )
 }
 
-/**
- * The icon status of a job from the API: `state` is queued, assigned, running,
- * or completed, and `result` is set once it completes. An assigned job shows as
- * running, because its sandbox is starting.
- */
-export function jobStatus(job: { state: string; result?: string | null }): JobStatus {
-  if (job.state === 'queued') return 'queued'
-  if (job.state !== 'completed') return 'running'
-  return isResult(job.result) ? job.result : 'failed'
+type BuildState = Schemas['ImageBuild']['status']
+
+/** The icon status of the build of an image on one server. */
+export function buildStatus(state: BuildState): JobStatus {
+  if (state === 'ready') return 'succeeded'
+  if (state === 'pending') return 'queued'
+  if (state === 'failed') return 'failed'
+  return 'running'
 }
 
-/** The icon status of a GitHub step: `status` is queued, in_progress, or completed; `conclusion` is success, failure, … */
-export function stepStatus(step: { status: string; conclusion?: string | null }): JobStatus {
-  if (step.status === 'queued') return 'queued'
-  if (step.status !== 'completed') return 'running'
-  return stepConclusions[step.conclusion ?? ''] ?? 'failed'
-}
-
-const stepConclusions: Record<string, JobStatus> = {
-  success: 'succeeded',
-  failure: 'failed',
-  cancelled: 'cancelled',
-  skipped: 'skipped',
-  neutral: 'succeeded',
-}
-
-function isResult(result: string | null | undefined): result is 'succeeded' | 'failed' | 'cancelled' | 'skipped' {
-  return result === 'succeeded' || result === 'failed' || result === 'cancelled' || result === 'skipped'
+export const buildStateNames: Record<BuildState, string> = {
+  pending: 'Waiting',
+  pulling: 'Pulling',
+  building: 'Building',
+  converting: 'Converting',
+  ready: 'Ready',
+  failed: 'Failed',
 }

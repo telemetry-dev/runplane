@@ -1,19 +1,29 @@
-import { useQuery } from '@tanstack/react-query'
-import { $api } from '~/api/client'
-import { statusQuery } from '~/api/queries'
+import { useQuery, type QueryClient } from '@tanstack/react-query'
+import type { Schemas } from '~/api/client'
+import { cachesQuery } from '~/api/caches'
+import { limits } from '~/api/limits'
+import { useCapabilities } from '~/api/session'
+import { settingsQuery } from '~/api/settings'
+import { LoadError } from '~/components/app/load-error'
 import { formatBytes } from '~/lib/format'
 import { Images } from './images'
-import { LoadError, ReadOnlyNote, SettingRow, SettingRows, SettingsColumn, SettingsSection, SettingRowsSkeleton } from './parts'
+import { ReadOnlyNote, SettingRow, SettingRows, SettingsColumn, SettingsSection, SettingRowsSkeleton } from './parts'
 import { RunnerVersions } from './runner-versions'
 import { ListSetting, NumberSetting, SwitchSetting, useNumberSetting } from './setting-controls'
-import { settingsQuery, useIsAdmin, type Settings } from './settings-api'
 
-const cachesQuery = $api.queryOptions('get', '/api/caches')
+type Settings = Schemas['Settings']
+
+const settingLimits = limits.SettingsPatch
+
+/** Starts the request of the page; its sections show their own loading and error states. */
+export function prefetch(client: QueryClient) {
+  void client.prefetchQuery(settingsQuery)
+}
 
 /** Settings · Runners: capacity, job limits, images, runner versions, network, and caches. */
 export function RunnerSettings() {
-  const admin = useIsAdmin()
-  const { data: settings, isError, refetch, isFetching } = useQuery(settingsQuery)
+  const { admin } = useCapabilities()
+  const { data: settings, error, refetch, isFetching } = useQuery(settingsQuery)
   const disabled = !admin
 
   return (
@@ -30,8 +40,7 @@ export function RunnerSettings() {
                 value={settings.default_time_limit_minutes}
                 toPatch={(default_time_limit_minutes) => ({ default_time_limit_minutes })}
                 unit="min"
-                min={1}
-                max={7200}
+                limit={settingLimits.default_time_limit_minutes}
                 disabled={disabled}
               />
               <NumberSetting
@@ -40,15 +49,14 @@ export function RunnerSettings() {
                 value={settings.debug_hold_minutes}
                 toPatch={(debug_hold_minutes) => ({ debug_hold_minutes })}
                 unit="min"
-                min={1}
-                max={1440}
+                limit={settingLimits.debug_hold_minutes}
                 disabled={disabled}
               />
             </SettingRows>
           </SettingsSection>
         </>
-      ) : isError ? (
-        <LoadError onRetry={() => void refetch()} retrying={isFetching} />
+      ) : error ? (
+        <LoadError what="the settings" error={error} onRetry={() => void refetch()} retrying={isFetching} />
       ) : (
         <>
           <SettingsSection title="Capacity">
@@ -78,8 +86,7 @@ function Capacity({ settings, disabled }: { settings: Settings; disabled: boolea
     value: settings.reserve_vcpu,
     toPatch: (reserve_vcpu) => ({ reserve_vcpu }),
     unit: 'vCPU',
-    min: 0,
-    max: 256,
+    limit: settingLimits.reserve_vcpu,
     disabled,
     'aria-label': 'vCPUs',
   })
@@ -88,8 +95,7 @@ function Capacity({ settings, disabled }: { settings: Settings; disabled: boolea
     value: settings.reserve_memory_mb / 1024,
     toPatch: (gb) => ({ reserve_memory_mb: Math.round(gb * 1024) }),
     unit: 'GB memory',
-    min: 0,
-    max: 1024,
+    limit: { minimum: settingLimits.reserve_memory_mb.minimum / 1024, maximum: settingLimits.reserve_memory_mb.maximum / 1024 },
     step: 0.5,
     format: { maximumFractionDigits: 1 },
     disabled,
@@ -111,8 +117,7 @@ function Capacity({ settings, disabled }: { settings: Settings; disabled: boolea
           value={settings.cpu_overcommit}
           toPatch={(cpu_overcommit) => ({ cpu_overcommit })}
           unit="×"
-          min={0.5}
-          max={8}
+          limit={settingLimits.cpu_overcommit}
           step={0.25}
           format={{ minimumFractionDigits: 1, maximumFractionDigits: 2 }}
           disabled={disabled}
@@ -123,8 +128,7 @@ function Capacity({ settings, disabled }: { settings: Settings; disabled: boolea
           value={settings.min_free_disk_percent}
           toPatch={(min_free_disk_percent) => ({ min_free_disk_percent })}
           unit="%"
-          min={0}
-          max={90}
+          limit={settingLimits.min_free_disk_percent}
           disabled={disabled}
         />
       </SettingRows>
@@ -133,26 +137,29 @@ function Capacity({ settings, disabled }: { settings: Settings; disabled: boolea
 }
 
 function Network({ settings, disabled }: { settings: Settings; disabled: boolean }) {
-  const mode = useQuery(statusQuery).data?.mode
-  const container = (settings.mode || mode) === 'container'
+  const dns = settingLimits.dns_servers
 
   return (
     <SettingsSection title="Network">
       <SettingRows>
         <ListSetting
           label="DNS servers"
-          description="Up to 4 IPv4 addresses, separated by commas."
+          description={`Up to ${dns.maxItems} IPv4 addresses, separated by commas.`}
           value={settings.dns_servers}
           toPatch={(dns_servers) => ({ dns_servers })}
           check={(items) =>
-            items.length === 0 ? 'Enter at least one DNS server.' : items.length > 4 ? 'Enter at most 4 DNS servers.' : undefined
+            items.length < dns.minItems
+              ? `Enter at least ${dnsServers(dns.minItems)}.`
+              : items.length > dns.maxItems
+                ? `Enter at most ${dnsServers(dns.maxItems)}.`
+                : undefined
           }
           disabled={disabled}
         />
         <ListSetting
           lines
           label="Egress allowlist"
-          description="Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach, one on each line."
+          description="Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach, one on each line."
           value={settings.egress_allowlist}
           toPatch={(egress_allowlist) => ({ egress_allowlist })}
           placeholder="Empty: all of the public internet"
@@ -164,11 +171,10 @@ function Network({ settings, disabled }: { settings: Settings; disabled: boolean
           value={settings.bandwidth_mbps}
           toPatch={(bandwidth_mbps) => ({ bandwidth_mbps })}
           unit="Mbit/s"
-          min={0}
-          max={100_000}
+          limit={settingLimits.bandwidth_mbps}
           zeroPlaceholder="No limit"
           className="w-[160px]"
-          disabled={disabled || container}
+          disabled={disabled || !settings.bandwidth_applies}
         />
       </SettingRows>
     </SettingsSection>
@@ -200,11 +206,14 @@ function Caches({ settings, disabled }: { settings: Settings; disabled: boolean 
           value={settings.cache_max_gb}
           toPatch={(cache_max_gb) => ({ cache_max_gb })}
           unit="GB"
-          min={1}
-          max={100_000}
+          limit={settingLimits.cache_max_gb}
           disabled={disabled}
         />
       </SettingRows>
     </SettingsSection>
   )
+}
+
+function dnsServers(count: number): string {
+  return count === 1 ? '1 DNS server' : `${count} DNS servers`
 }

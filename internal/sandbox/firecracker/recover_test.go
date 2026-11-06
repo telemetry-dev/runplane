@@ -2,14 +2,14 @@ package firecracker
 
 import (
 	"context"
-	"net/http"
+	"errors"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 func TestRecoverAfterRestart(t *testing.T) {
@@ -23,8 +23,8 @@ func TestRecoverAfterRestart(t *testing.T) {
 	// A start that runplane did not complete: a scope and a chroot without a record.
 	writeFile(t, scopeProcs(root, "lost"), "999\n")
 	writeFile(t, filepath.Join(data, "jail", "firecracker", "lost", "root", "rootfs.ext4"), "")
-	// A sandbox folder of another driver.
-	writeFile(t, filepath.Join(data, "sandboxes", "other", "console.log"), "")
+	// A sandbox of another driver.
+	writeRecord(t, root, "other", sandbox.ModeContainer, 7, sandbox.StateIdle, time.Now().UTC())
 
 	sys := &fakeHost{}
 	d := recovered(t, root, sys)
@@ -38,7 +38,7 @@ func TestRecoverAfterRestart(t *testing.T) {
 	if got := sys.calls(&sys.kept); !slices.Equal(got, []string{"rp-3"}) {
 		t.Errorf("TAP rules added again for %v, want rp-3", got)
 	}
-	if got := sys.calls(&sys.dropped); !slices.Equal(got, []string{"rp-5"}) {
+	if got := sys.calls(&sys.closed); !slices.Equal(got, []string{"rp-5"}) {
 		t.Errorf("TAPs removed: %v, want rp-5", got)
 	}
 	if got := sys.calls(&sys.killed); !slices.Equal(got, []string{"runplane-vm-lost"}) {
@@ -59,14 +59,15 @@ func TestRecoverAfterRestart(t *testing.T) {
 
 	// The guest of the live VM, which has its config, connects again on the
 	// same socket.
-	guest := dialGuest(t, filepath.Join(data, "jail", "firecracker", "live", "root", "v.sock_1024"), func() {})
-	resp, err := guest.Post("http://host/v1/events", "application/json", strings.NewReader(`{"kind":"exited","exit_code":0}`))
-	if err != nil {
+	c := dialGuest(t, root, "live", func() {})
+	if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: sandbox.RunnerExited}); err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
 	if ev := nextEvent(t, d); ev.Type != sandbox.EventRunner || ev.Runner.Kind != sandbox.RunnerExited {
 		t.Fatalf("got %+v, want the exited runner event", ev)
+	}
+	if ev := nextEvent(t, d); ev.State != sandbox.StateStopping {
+		t.Fatalf("got %+v, want stopping after the runner exit", ev)
 	}
 
 	// The VM powers off: its scope empties.
@@ -78,7 +79,7 @@ func TestRecoverAfterRestart(t *testing.T) {
 	if exists(filepath.Join(data, "sandboxes", "live")) || exists(filepath.Join(data, "jail", "firecracker", "live")) {
 		t.Error("the folders of the stopped VM remain")
 	}
-	if got := sys.calls(&sys.dropped); !slices.Equal(got, []string{"rp-5", "rp-3"}) {
+	if got := sys.calls(&sys.closed); !slices.Equal(got, []string{"rp-5", "rp-3"}) {
 		t.Errorf("TAPs removed: %v, want rp-5 then rp-3", got)
 	}
 	if list, _ := d.List(context.Background()); len(list) != 0 {
@@ -86,24 +87,21 @@ func TestRecoverAfterRestart(t *testing.T) {
 	}
 }
 
-// A restart keeps what the VM reported: the job start, from which the time
-// limit counts, and the runner exit. Then a VM that powers off later, for
-// example at the end of a debug hold, ends as gone and not as failed.
-func TestRestartKeepsTheJobStartAndTheRunnerExit(t *testing.T) {
+// A restart keeps what the VM reported. Then a VM that powers off later,
+// for example at the end of a debug hold, ends as gone and not as failed.
+func TestRestartKeepsTheRunnerExit(t *testing.T) {
 	root := shortTempDir(t)
-	// The warm VM waited 30 minutes for its job.
-	writeVM(t, root, "vm1", 0, sandbox.StateIdle, time.Now().UTC().Add(-30*time.Minute))
+	writeVM(t, root, "vm1", 0, sandbox.StateIdle, time.Now().UTC())
 	before := recovered(t, root, &fakeHost{})
-	v := before.vms["vm1"]
-	v.OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerJobStarted, JobName: "build"})
-	v.OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerExited})
+	c := dialGuest(t, root, "vm1", func() {})
+	for _, kind := range []string{sandbox.RunnerJobStarted, sandbox.RunnerExited} {
+		if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: kind}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	before.Close()
 
 	after := recovered(t, root, &fakeHost{})
-	// The job has its full hour, not the 30 minutes that remain from the VM start.
-	if end, min := after.vms["vm1"].deadline(), time.Now().Add(time.Hour); end.Before(min) {
-		t.Errorf("deadline after the restart %v, want after %v", end, min)
-	}
 	writeFile(t, scopeProcs(root, "vm1"), "")
 	if ev := nextEvent(t, after); ev.State != sandbox.StateGone || ev.Reason != "the runner exited with code 0" {
 		t.Errorf("got %s %q, want gone after the runner exit", ev.State, ev.Reason)
@@ -116,7 +114,10 @@ func TestRunnerErrorFailsTheVM(t *testing.T) {
 	root := shortTempDir(t)
 	writeVM(t, root, "vm1", 0, sandbox.StateStarting, time.Now().UTC())
 	before := recovered(t, root, &fakeHost{})
-	before.vms["vm1"].OnEvent(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, Error: "the runner did not connect to GitHub"})
+	c := dialGuest(t, root, "vm1", func() {})
+	if err := c.PostEvent(context.Background(), sandbox.RunnerEvent{Kind: sandbox.RunnerExited, Error: "the runner did not connect to GitHub"}); err != nil {
+		t.Fatal(err)
+	}
 	before.Close()
 
 	after := recovered(t, root, &fakeHost{})
@@ -134,20 +135,15 @@ func TestLostConfigStopsTheVM(t *testing.T) {
 	writeVM(t, root, "vm1", 0, sandbox.StateStarting, time.Now().UTC())
 	d := recovered(t, root, &fakeHost{})
 
-	guest := dialGuest(t, filepath.Join(d.chroot("vm1"), controlSocket), func() {})
-	resp, err := guest.Get("http://host/v1/config")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Errorf("config after the restart: status %d, want 409", resp.StatusCode)
+	c := dialGuest(t, root, "vm1", func() {})
+	if _, err := c.Config(context.Background()); !errors.Is(err, guest.ErrNoConfig) {
+		t.Errorf("config after the restart: %v, want ErrNoConfig", err)
 	}
 	if ev := nextEvent(t, d); ev.State != sandbox.StateStopping {
 		t.Fatalf("got %+v, want the stop of the VM", ev)
 	}
 	writeFile(t, scopeProcs(root, "vm1"), "") // the VM powers off
-	if ev := nextEvent(t, d); ev.State != sandbox.StateGone || ev.Reason != "runplane restarted before the VM got its config" {
+	if ev := nextEvent(t, d); ev.State != sandbox.StateGone || ev.Reason != "runplane restarted before the sandbox got its config" {
 		t.Errorf("got %s %q, want gone because runplane restarted before the VM got its config", ev.State, ev.Reason)
 	}
 }

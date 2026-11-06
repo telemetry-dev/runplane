@@ -1,4 +1,3 @@
-import { useHostStats } from '~/api/events'
 import {
   CellTitle,
   DataTable,
@@ -11,8 +10,9 @@ import {
   RowLink,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { ErrorHint } from '~/components/app/error-hint'
 import { None } from '~/components/app/none'
-import { StatusDot } from '~/components/app/status-dot'
+import { mutedStatus, serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { Spinner } from '~/components/ui/spinner'
 import { ServerMenu } from './server-menu'
@@ -24,6 +24,7 @@ import {
   serverOrigin,
   serverSize,
   sortServers,
+  statusFacts,
   statusNote,
   type Server,
 } from './server-info'
@@ -48,7 +49,7 @@ const columns = {
 
 type Shown = Record<keyof typeof columns, boolean>
 
-/** The table of the Servers design. CPU and memory follow the host.stats events. */
+/** The table of the Servers design. */
 export function ServersTable({ servers, admin }: ServersTableProps) {
   const { ref, shown, columns: widths } = useFittingColumns(columns)
 
@@ -109,7 +110,7 @@ function ServerRow({ server, shown, admin }: { server: Server; shown: Shown; adm
           <CellTitle
             title={<NameWithUpdate server={server} />}
             detail={noteBelow ? noteText(note) : serverOrigin(server)}
-            muted={server.status === 'unreachable'}
+            muted={mutedStatus[server.status]}
           />
         </RowLink>
       </DataTableCell>
@@ -146,8 +147,8 @@ function NameWithUpdate({ server }: { server: Server }) {
 }
 
 function ServerUsage({ server, shown }: { server: Server; shown: Shown }) {
-  const { cpu, memory } = currentUsage(server, useHostStats(server.id))
-  const paused = server.status === 'draining' ? 'Draining' : server.status === 'disabled' ? 'Disabled' : undefined
+  const { cpu, memory } = currentUsage(server)
+  const paused = statusFacts[server.status].takesRunners ? undefined : serverStatusNames[server.status]
   return (
     <>
       {shown.cpu && (
@@ -164,6 +165,11 @@ function ServerUsage({ server, shown }: { server: Server; shown: Shown }) {
         <div className="flex flex-col items-end">
           <span className={server.running_jobs === 0 ? 'text-neutral-6' : undefined}>{jobCount(server.running_jobs)}</span>
           {paused && <span className="text-xs text-neutral-7">{paused}</span>}
+          {!paused && server.wait_reason && (
+            <ErrorHint error={server.wait_reason} className="text-xs text-neutral-7 underline decoration-dotted underline-offset-2">
+              Waiting
+            </ErrorHint>
+          )}
         </div>
       </DataTableCell>
     </>

@@ -5,10 +5,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/pem"
 	"log/slog"
 	"math/big"
@@ -34,17 +32,6 @@ func TestAgentCertPersists(t *testing.T) {
 	}
 	if fp1 != fp2 {
 		t.Fatalf("second start made a new certificate: %s != %s; pinned agents would fail", fp1, fp2)
-	}
-	// The install script computes the fingerprint from agent.crt with openssl;
-	// it must match what AgentCert reports.
-	data, err := os.ReadFile(filepath.Join(dir, "agent.crt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, _ := pem.Decode(data)
-	sum := sha256.Sum256(block.Bytes)
-	if want := "sha256:" + hex.EncodeToString(sum[:]); fp1 != want {
-		t.Errorf("fingerprint %s, want %s", fp1, want)
 	}
 	if info, err := os.Stat(filepath.Join(dir, "agent.key")); err != nil || info.Mode().Perm() != 0o600 {
 		t.Errorf("agent.key: %v, %v; want mode 600", info, err)

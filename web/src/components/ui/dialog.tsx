@@ -2,6 +2,7 @@ import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import { X } from 'lucide-react'
 import type { CSSProperties, ReactNode } from 'react'
 import { cx } from '~/lib/cx'
+import { IconButton } from './button'
 
 export const Dialog = BaseDialog.Root
 export const DialogTrigger = BaseDialog.Trigger
@@ -14,7 +15,7 @@ type DialogPopupProps = Omit<BaseDialog.Popup.Props, 'className' | 'style' | 'ti
   className?: string
 }
 
-/** Modal of gui/components/runplane/dialog.md and the "Servers · Add server" design: title row with close, then content. */
+/** Modal of gui/components/runplane/dialog.md and the "Servers · Add server" design. */
 export function DialogPopup({ title, width = 400, className, children, ...props }: DialogPopupProps) {
   return (
     <BaseDialog.Portal>
@@ -26,11 +27,8 @@ export function DialogPopup({ title, width = 400, className, children, ...props 
       >
         <div className="flex items-center justify-between gap-m">
           <BaseDialog.Title className="text-m font-medium tracking-l">{title}</BaseDialog.Title>
-          <BaseDialog.Close
-            aria-label="Close"
-            className="-m-xxs grid place-items-center rounded-s p-xxs text-neutral-7 transition-colors hover:bg-neutral-3 hover:text-neutral-10"
-          >
-            <X size={16} aria-hidden />
+          <BaseDialog.Close render={<IconButton label="Close" className="-m-xxs p-xxs" />}>
+            <X aria-hidden />
           </BaseDialog.Close>
         </div>
         {children}
@@ -47,7 +45,6 @@ export function DialogFooter({ children }: { children: ReactNode }) {
   return <div className="flex flex-wrap justify-end gap-xs">{children}</div>
 }
 
-// Shared with AlertDialog: a centered popup over a backdrop, both with Large motion.
 export const modalBackdrop = cx(
   'fixed inset-zero z-20 bg-neutral-10-transparent dark:bg-neutral-1-transparent',
   'transition-opacity duration-(--motion-large-duration) ease-large',

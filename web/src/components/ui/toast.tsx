@@ -1,7 +1,7 @@
 import { Toast } from '@base-ui/react/toast'
 import { X } from 'lucide-react'
 import { cx } from '~/lib/cx'
-import { buttonClassName } from './button'
+import { buttonClassName, IconButton } from './button'
 import { Spinner } from './spinner'
 
 // Toasts of gui/components/runplane/toast.md. Mount <Toaster /> once near the
@@ -16,7 +16,7 @@ import { Spinner } from './spinner'
 /** The app's one toast queue. Toaster renders it. */
 export const toastManager = Toast.createToastManager()
 
-/** Bottom-right stack of toasts. Toasts close after 5 seconds, and pause while hovered or focused. */
+/** The timeout of a toast pauses while it is hovered or focused. */
 export function Toaster() {
   return (
     <Toast.Provider toastManager={toastManager} timeout={5000} limit={4}>
@@ -62,11 +62,8 @@ function ToastList() {
           </div>
         )}
       </Toast.Content>
-      <Toast.Close
-        aria-label="Dismiss"
-        className="absolute top-s right-s grid place-items-center rounded-s p-xxs text-neutral-7 transition-colors hover:bg-neutral-3 hover:text-neutral-10"
-      >
-        <X size={14} aria-hidden />
+      <Toast.Close render={<IconButton label="Dismiss" className="absolute top-s right-s p-xxs [&_svg]:size-[14px]" />}>
+        <X aria-hidden />
       </Toast.Close>
     </Toast.Root>
   ))

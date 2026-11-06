@@ -1,4 +1,3 @@
-/** The runplane mark: three lines and a dot on a 24px neutral-10 tile. */
 export function LogoMark() {
   return (
     <span className="grid size-[24px] shrink-0 place-items-center rounded-s bg-neutral-10" aria-hidden>

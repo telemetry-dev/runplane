@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { Ellipsis, ScrollText, Square } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { useCapabilities } from '~/api/session'
 import {
   CellTitle,
   DataTable,
@@ -14,15 +15,15 @@ import {
 } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
 import { RunnerLabel } from '~/components/app/runner-label'
-import { RunnerStateIcon } from '~/components/app/runner-state-icon'
+import { RunnerStateIcon, sandboxStateNames } from '~/components/app/runner-state-icon'
+import { SkeletonRows } from '~/components/app/skeleton-rows'
 import { workflowFile } from '~/components/pages/jobs/job-format'
 import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { useNow } from '~/lib/use-now'
 import { Code } from './code'
-import { formatUptime, sortSandboxes, stateNames, type Sandbox } from './runner-format'
+import { formatUptime, sortSandboxes, type Sandbox } from './runner-format'
 import { RunnerLogDrawer } from './runner-log'
-import { SkeletonRows } from './skeleton-rows'
 import { StopRunnerDialog } from './stop-runner-dialog'
 
 type LiveRunnersTableProps = {
@@ -32,18 +33,19 @@ type LiveRunnersTableProps = {
   showServer?: boolean
   /** The row of an empty list. */
   empty: ReactNode
-  /** The row while the list did not load, in place of the loading rows. */
+  /** A LoadErrorRow in place of the loading rows, when the list did not load. */
   failed?: ReactNode
 }
 
 /**
- * The Live runners table of the Runners design and of Server detail.
- * sandbox.state events refetch the list; the uptimes tick each second. A narrow
- * table drops Label (the runner name starts with it), then Server, then Job,
- * whose name then follows the state under the runner.
+ * The Live runners table of the Runners design and of Server detail. The
+ * uptimes tick each second. A narrow table drops Label (the runner name starts
+ * with it), then Server, then Job, whose name then follows the state under the
+ * runner.
  */
 export function LiveRunnersTable({ sandboxes, showServer = true, empty, failed }: LiveRunnersTableProps) {
   const now = useNow(1000)
+  const { stop_sandboxes: canStop } = useCapabilities()
   // The log drawer and the stop dialog keep their runner outside the rows: the
   // log stays open after the runner leaves the list, and the dialog closes with
   // its animation.
@@ -76,11 +78,7 @@ export function LiveRunnersTable({ sandboxes, showServer = true, empty, failed }
           </DataTableHead>
         </DataTableHeader>
         {!sandboxes ? (
-          failed ? (
-            <DataTableEmpty>{failed}</DataTableEmpty>
-          ) : (
-            <SkeletonRows lines={2} label="Loading runners" />
-          )
+          failed ?? <SkeletonRows lines={2} label="Loading runners" />
         ) : sandboxes.length === 0 ? (
           <DataTableEmpty>{empty}</DataTableEmpty>
         ) : (
@@ -91,7 +89,7 @@ export function LiveRunnersTable({ sandboxes, showServer = true, empty, failed }
               shown={shown}
               now={now}
               onViewLog={() => setLog({ open: true, sandbox })}
-              onStop={() => setStop({ open: true, sandbox })}
+              onStop={canStop ? () => setStop({ open: true, sandbox }) : undefined}
             />
           ))
         )}
@@ -126,7 +124,7 @@ type RunnerRowProps = {
 } & RunnerMenuProps
 
 function RunnerRow({ sandbox, shown, now, onViewLog, onStop }: RunnerRowProps) {
-  const state = stateNames[sandbox.state]
+  const state = sandboxStateNames[sandbox.state]
   return (
     <DataTableRow>
       <DataTableCell>
@@ -176,10 +174,11 @@ function RunnerRow({ sandbox, shown, now, onViewLog, onStop }: RunnerRowProps) {
 
 type RunnerMenuProps = {
   onViewLog: () => void
-  onStop: () => void
+  /** Undefined when the user cannot stop runners. */
+  onStop: (() => void) | undefined
 }
 
-/** View log and Stop runner. Members may do both. */
+/** View log, and Stop runner for a user who can stop runners. */
 function RunnerMenu({ sandbox, onViewLog, onStop }: { sandbox: Sandbox } & RunnerMenuProps) {
   return (
     <Menu>
@@ -190,9 +189,11 @@ function RunnerMenu({ sandbox, onViewLog, onStop }: { sandbox: Sandbox } & Runne
         <MenuItem icon={<ScrollText />} onClick={onViewLog}>
           View log
         </MenuItem>
-        <MenuItem icon={<Square />} danger disabled={sandbox.state === 'stopping'} onClick={onStop}>
-          Stop runner
-        </MenuItem>
+        {onStop && (
+          <MenuItem icon={<Square />} danger disabled={sandbox.state === 'stopping'} onClick={onStop}>
+            Stop runner
+          </MenuItem>
+        )}
       </MenuPopup>
     </Menu>
   )

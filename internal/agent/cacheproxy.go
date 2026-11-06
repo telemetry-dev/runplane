@@ -13,7 +13,6 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -23,7 +22,7 @@ import (
 // source address of the request and refuses requests from other addresses.
 // Run connects it to the primary.
 type CacheProxy struct {
-	driver    sandbox.Driver
+	driver    Driver
 	proxy     *httputil.ReverseProxy
 	transport *http.Transport
 
@@ -31,7 +30,7 @@ type CacheProxy struct {
 	sess *yamux.Session // nil while the agent has no connection
 }
 
-func NewCacheProxy(driver sandbox.Driver, log *slog.Logger) *CacheProxy {
+func NewCacheProxy(driver Driver, log *slog.Logger) *CacheProxy {
 	p := &CacheProxy{driver: driver}
 	p.transport = &http.Transport{
 		DialContext:         p.dial,
@@ -66,19 +65,19 @@ func (p *CacheProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), sandboxKey{}, id)))
 }
 
-// rewriteCache sends a request to /v1/cache on the primary. The cache
+// rewriteCache sends a request to cachePath on the primary. The cache
 // server makes its signed URLs from X-Forwarded-Host and X-Forwarded-Proto,
 // so they point back at this service port.
 func rewriteCache(pr *httputil.ProxyRequest) {
 	in, out := pr.In, pr.Out
 	out.URL.Scheme = "http"
 	out.URL.Host = "primary"
-	out.URL.Path = "/v1/cache" + in.URL.Path
+	out.URL.Path = cachePath + in.URL.Path
 	if in.URL.RawPath != "" {
-		out.URL.RawPath = "/v1/cache" + in.URL.RawPath
+		out.URL.RawPath = cachePath + in.URL.RawPath
 	}
 	out.Host = ""
-	out.Header.Set(cache.SandboxHeader, in.Context().Value(sandboxKey{}).(string))
+	out.Header.Set(sandboxHeader, in.Context().Value(sandboxKey{}).(string))
 	out.Header.Set("X-Forwarded-Host", in.Host)
 	proto := "http"
 	if in.TLS != nil {
@@ -99,13 +98,8 @@ func (p *CacheProxy) sandboxAt(ctx context.Context, remoteAddr string) (string, 
 	if err != nil {
 		return "", err
 	}
-	for _, sb := range list {
-		ip, err := netip.ParseAddr(sb.IP)
-		if err == nil && ip.Unmap() == addrPort.Addr().Unmap() && !sb.State.Done() {
-			return sb.ID, nil
-		}
-	}
-	return "", nil
+	sb, _ := sandbox.FindByIP(list, addrPort.Addr())
+	return sb.ID, nil
 }
 
 func (p *CacheProxy) dial(context.Context, string, string) (net.Conn, error) {

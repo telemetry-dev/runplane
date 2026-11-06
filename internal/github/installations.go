@@ -7,13 +7,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghapp"
+	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
 type account struct {
-	Login     string `json:"login"`
+	ghapp.Account
 	ID        int64  `json:"id"`
-	Type      string `json:"type"` // Organization | User
 	AvatarURL string `json:"avatar_url"`
 }
 
@@ -30,33 +32,31 @@ type installation struct {
 // Setup records the installation that GitHub sends the browser back with,
 // reads its repositories, and makes its scale sets. It returns the first job
 // page the first time GitHub connects, and the GitHub settings page after.
-func (s *Service) Setup(ctx context.Context, _ string, installationID int64, setupAction string) (string, error) {
+func (s *Service) Setup(ctx context.Context, installationID int64, setupAction string) (string, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	c, err := s.creds(ctx)
 	if err != nil {
 		return "", err
 	}
-	known, err := s.st.ListInstallations(ctx)
+	connected, err := s.st.GitHubConnected(ctx)
 	if err != nil {
 		return "", err
 	}
-	connected := len(known) > 0
 	if setupAction == "request" || installationID == 0 {
-		// An organization owner must approve the request on GitHub first.
-		if connected {
-			return "/settings/github?requested=1", nil
-		}
-		return "/setup/github?requested=1", nil
+		return pages.GitHubRequested(connected), nil
 	}
 
-	var inst installation
-	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/app/installations/%d", installationID), auth: appAuth{s}}, &inst)
+	inst, err := s.readInstallation(ctx, installationID)
 	if err != nil {
-		return "", fmt.Errorf("read the installation: %w", err)
+		return "", err
 	}
 	if inst.AppID != c.app.AppID {
 		return "", fmt.Errorf("installation %d belongs to a different GitHub App", installationID)
+	}
+	if !inst.Account.Supported() {
+		return "", fmt.Errorf("installation %d is on the %s account %s: runplane runs jobs only for organizations "+
+			"and personal accounts", installationID, inst.Account.Type, inst.Account.Login)
 	}
 	if err := s.saveInstallation(ctx, inst); err != nil {
 		return "", err
@@ -66,9 +66,9 @@ func (s *Service) Setup(ctx context.Context, _ string, installationID int64, set
 	}
 	s.reconcile(ctx)
 	if connected {
-		return "/settings/github", nil
+		return pages.GitHubSettings, nil
 	}
-	return "/setup/first-job", nil
+	return pages.FirstJob, nil
 }
 
 // Sync reads the installations, their repositories, and suspensions now,
@@ -88,7 +88,7 @@ func (s *Service) syncInstallations(ctx context.Context) error {
 	if _, err := s.creds(ctx); err != nil {
 		return err
 	}
-	remote, err := list[installation](ctx, s.api, appAuth{s}, "/app/installations?per_page=100", "")
+	remote, err := ghrest.List[installation](ctx, s.api, appAuth{s}, "/app/installations?per_page=100", "")
 	if err != nil {
 		return fmt.Errorf("list installations: %w", err)
 	}
@@ -99,7 +99,7 @@ func (s *Service) syncInstallations(ctx context.Context) error {
 	seen := map[int64]bool{}
 	var errs []error
 	for _, inst := range remote {
-		if inst.Account.Type != "Organization" && inst.Account.Type != "User" {
+		if !inst.Account.Supported() {
 			continue
 		}
 		seen[inst.ID] = true
@@ -127,6 +127,15 @@ func (s *Service) syncInstallations(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+func (s *Service) readInstallation(ctx context.Context, id int64) (installation, error) {
+	var inst installation
+	err := s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/app/installations/%d", id), Auth: appAuth{s}}, &inst)
+	if err != nil {
+		return installation{}, fmt.Errorf("read the installation: %w", err)
+	}
+	return inst, nil
+}
+
 func (s *Service) saveInstallation(ctx context.Context, inst installation) error {
 	return s.st.UpsertInstallation(ctx, store.Installation{
 		ID: inst.ID, AppID: inst.AppID, AccountLogin: inst.Account.Login, AccountID: inst.Account.ID,
@@ -139,7 +148,7 @@ func (s *Service) saveInstallation(ctx context.Context, inst installation) error
 // syncRepositories stores the repositories that the installation can use.
 // The GitHub repository object has the JSON names of store.Repository.
 func (s *Service) syncRepositories(ctx context.Context, installationID int64) error {
-	repos, err := list[store.Repository](ctx, s.api, installAuth{s, installationID}, "/installation/repositories?per_page=100", "repositories")
+	repos, err := ghrest.List[store.Repository](ctx, s.api, installAuth{s, installationID}, "/installation/repositories?per_page=100", "repositories")
 	if err != nil {
 		return fmt.Errorf("list repositories of installation %d: %w", installationID, err)
 	}

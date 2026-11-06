@@ -5,29 +5,11 @@ import (
 	"net/http"
 	"testing"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
-func TestSignJWT(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
-	raw, err := signJWT(testKey(), testClientID, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var claims jwt.RegisteredClaims
-	_, err = jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },
-		jwt.WithValidMethods([]string{"RS256"}), jwt.WithTimeFunc(func() time.Time { return now }))
-	if err != nil {
-		t.Fatalf("parse JWT: %v", err)
-	}
-	// GitHub accepts at most 10 minutes from iat to exp.
-	if claims.Issuer != testClientID || claims.IssuedAt.Unix() != 1_800_000_000-60 || claims.ExpiresAt.Unix() != 1_800_000_000+540 {
-		t.Errorf("claims = iss %q, iat %d, exp %d; want 60 s before and 9 min after now", claims.Issuer,
-			claims.IssuedAt.Unix(), claims.ExpiresAt.Unix())
-	}
-}
-
+// GitHub tokens live one hour. runplane uses a token again until 5 minutes
+// before its end, and asks for a new one after GitHub refuses it. The fake
+// GitHub checks the app JWT of each new token (refer to checkJWT).
 func TestInstallationToken(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -38,24 +20,23 @@ func TestInstallationToken(t *testing.T) {
 	}{
 		{"reused while it lives longer than 5 minutes", time.Hour, "", 3, 1},
 		{"renewed in its last 5 minutes", 4 * time.Minute, "", 3, 3},
-		{"renewed once after GitHub refused it", time.Hour, "Bearer ghs_7_1", 4, 2},
+		{"renewed once after GitHub refused it", time.Hour, "Bearer ghs_10_1", 4, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e := newEnv(t)
-			e.connect()
+			e := acmeEnv(t)
 			e.tokenTTL = tt.ttl
 			calls := 0
-			e.mux.HandleFunc("GET /api/v3/repos/acme/web", func(w http.ResponseWriter, r *http.Request) {
+			e.mux.HandleFunc("GET /api/v3/repos/acme/web/actions/runs/555", func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if r.Header.Get("Authorization") == tt.refuse {
 					writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "Bad credentials"})
 					return
 				}
-				writeJSON(w, http.StatusOK, map[string]any{})
+				writeJSON(w, http.StatusOK, runJSON("push", true, 100))
 			})
 			for range 3 {
-				if err := e.svc.api.json(context.Background(), call{method: http.MethodGet, path: "/repos/acme/web", auth: installAuth{e.svc, 7}}, nil); err != nil {
+				if _, err := e.svc.CheckJob(context.Background(), "acme/web", 555); err != nil {
 					t.Fatal(err)
 				}
 			}

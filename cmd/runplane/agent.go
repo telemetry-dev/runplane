@@ -4,30 +4,38 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"net/netip"
-	"slices"
 
 	"github.com/runplane/runplane/internal/agent"
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/localnode"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/version"
 )
 
 // runAgent operates the sandboxes of this server for the primary in
-// agent.json. The primary sends the settings when the agent connects.
+// agent.json. The primary sends the settings when the agent connects. The
+// agent keeps them, so that after a restart the sandboxes keep their egress
+// allowlist before the primary connects.
 func runAgent(ctx context.Context, args []string) error {
-	cfg, err := config.Parse(flag.NewFlagSet("agent", flag.ContinueOnError), args)
+	cfg, err := config.Parse(flag.NewFlagSet("agent", flag.ContinueOnError), args,
+		config.ServicePort, config.DataDir, config.Mode, config.Dev, config.DevInsecure)
 	if err != nil {
 		return err
 	}
 	log := newLogger(ctx, cfg)
-	if err := checkMode(cfg.Mode, cfg.DevInsecure); err != nil {
+	if err := policy.CheckMode(cfg.Mode, cfg.DevInsecure); err != nil {
 		return err
 	}
 	if err := cfg.EnsureDirs(); err != nil {
 		return err
 	}
-	l, err := newLocal(ctx, cfg, localConfig{mode: cfg.Mode, unit: "runplane-agent", listen: []string{servicePortAddr(cfg)}}, log)
+	settings, err := localnode.ReadSettings(cfg.AgentSettingsPath())
+	if err != nil {
+		log.Warn("the sandboxes have no egress allowlist until the primary connects", "err", err)
+	}
+	l, err := newLocal(ctx, cfg, localConfig{
+		mode: cfg.Mode, settings: settings, settingsFile: cfg.AgentSettingsPath(), doctor: doctorOptions(cfg, cfg.Mode, true, ""),
+	}, log)
 	if err != nil {
 		return err
 	}
@@ -38,18 +46,14 @@ func runAgent(ctx context.Context, args []string) error {
 	defer func() { stopNode(); <-nodeDone }()
 
 	proxy := agent.NewCacheProxy(l.driver, log.With("component", "cache"))
-	hasSandbox := func(ip netip.Addr) bool {
-		list, err := l.driver.List(context.Background())
-		return err == nil && slices.ContainsFunc(list, func(b sandbox.Sandbox) bool { return b.IP == ip.String() })
-	}
-	mir, stopPort, err := serveServicePort(cfg, cfg.Mode, hasSandbox, proxy, log)
+	stopPort, err := serveServicePort(cfg, l.node.Mirror(), proxy, log)
 	if err != nil {
 		return err
 	}
 	defer stopPort()
 
 	log.Info("runplane agent started", "version", version.String(), "mode", cfg.Mode, "config", cfg.AgentConfigPath())
-	err = agent.Run(ctx, agent.Config{Path: cfg.AgentConfigPath(), Node: l.node, CacheProxy: proxy, Mirror: mir.Stats, Logger: log})
+	err = agent.Run(ctx, agent.Config{Path: cfg.AgentConfigPath(), Node: l.node, CacheProxy: proxy, Version: version.Version, Logger: log})
 	if errors.Is(err, agent.ErrUpdated) {
 		// systemd starts the new binary. The sandboxes keep operating, and
 		// the driver takes them over after the restart.

@@ -4,13 +4,10 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
-	"runtime"
-	"slices"
-	"strings"
 	"time"
 
-	"github.com/runplane/runplane/internal/ids"
+	"github.com/danielgtaylor/huma/v2"
+
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -33,11 +30,7 @@ type Pool struct {
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 
-	Idle     int `json:"idle" doc:"Live count of idle sandboxes."`
-	Busy     int `json:"busy" doc:"Live count of sandboxes that run a job."`
-	Starting int `json:"starting" doc:"Live count of sandboxes that start."`
-	Queued   int `json:"queued" doc:"Jobs of the last 24 hours that wait for a runner."`
-
+	store.PoolCounts
 	PoolPlacement
 }
 
@@ -46,7 +39,8 @@ type Pool struct {
 // resources now.
 type PoolPlacement struct {
 	OnlineServers      int      `json:"online_servers" doc:"Online servers with the arch, limited to server_ids if the pool has them."`
-	PlaceableServers   int      `json:"placeable_servers" doc:"Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start."`
+	WaitingServers     int      `json:"waiting_servers" doc:"Of online_servers, the servers that get no runners now. wait_reason of each server tells why."`
+	PlaceableServers   int      `json:"placeable_servers" doc:"Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start."`
 	PlaceableServerIDs []string `json:"placeable_server_ids"`
 }
 
@@ -68,43 +62,18 @@ func (h *Handler) pools(ctx context.Context, list []store.Pool) ([]Pool, error) 
 			defaultImage = img.Name
 		}
 	}
-	counts, err := h.d.Store.CountLiveSandboxes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	queued, _, err := h.d.Store.ListJobs(ctx, store.JobFilter{Status: "queued", Since: time.Now().Add(-24 * time.Hour), Limit: 200})
+	counts, err := h.d.Store.PoolCounts(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Pool, len(list))
-	byID := map[string]*Pool{}
 	for i, p := range list {
 		out[i] = Pool{
 			ID: p.ID, Name: p.Name, Label: p.Label, Arch: p.Arch, VCPU: p.VCPU, MemoryMB: p.MemoryMB, DiskGB: p.DiskGB,
 			ImageID: p.ImageID, ImageName: cmp.Or(imageNames[p.ImageID], defaultImage), MinIdle: p.MinIdle,
 			MaxRunners: p.MaxRunners, TimeLimitMinutes: p.TimeLimitMinutes, ServerIDs: orEmpty(p.ServerIDs),
 			Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
-			PoolPlacement: placer.place(p.Arch, p.VCPU, p.MemoryMB, p.ServerIDs),
-		}
-		byID[p.ID] = &out[i]
-	}
-	for _, c := range counts {
-		p := byID[c.PoolID]
-		if p == nil {
-			continue
-		}
-		switch c.State {
-		case sandbox.StateIdle:
-			p.Idle += c.Count
-		case sandbox.StateBusy:
-			p.Busy += c.Count
-		case sandbox.StateStarting:
-			p.Starting += c.Count
-		}
-	}
-	for _, j := range queued {
-		if p := byID[j.PoolID]; p != nil && j.RejectReason == "" {
-			p.Queued++
+			PoolCounts: counts[p.ID], PoolPlacement: placer.place(p),
 		}
 	}
 	return out, nil
@@ -126,12 +95,18 @@ func (h *Handler) getPool(ctx context.Context, in *PathID) (*body[Pool], error) 
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
+// PoolSize is the size of the sandboxes of a pool. The pool requests and the
+// placement query have it, with the same limits.
+type PoolSize struct {
+	VCPU     int `json:"vcpu" query:"vcpu" required:"true" minimum:"1" maximum:"64"`
+	MemoryMB int `json:"memory_mb" query:"memory_mb" required:"true" minimum:"512" maximum:"262144"`
+}
+
 type CreatePoolRequest struct {
-	Name             string   `json:"name,omitempty" maxLength:"64" doc:"Defaults to the label."`
-	Label            string   `json:"label" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes" doc:"The runs-on label. Unique."`
-	Arch             string   `json:"arch,omitempty" enum:"x64,arm64" doc:"Defaults to the arch of the primary server."`
-	VCPU             int      `json:"vcpu" minimum:"1" maximum:"64"`
-	MemoryMB         int      `json:"memory_mb" minimum:"512" maximum:"262144"`
+	Name  string `json:"name,omitempty" maxLength:"64" doc:"Defaults to the label."`
+	Label string `json:"label" maxLength:"63" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes" doc:"The runs-on label. Unique."`
+	Arch  string `json:"arch,omitempty" enum:"x64,arm64" doc:"Defaults to the arch of the primary server."`
+	PoolSize
 	DiskGB           int      `json:"disk_gb" minimum:"8" maximum:"1024"`
 	ImageID          string   `json:"image_id,omitempty" maxLength:"100" doc:"Empty: the default image."`
 	MinIdle          int      `json:"min_idle,omitempty" minimum:"0" maximum:"1000"`
@@ -143,169 +118,72 @@ type CreatePoolRequest struct {
 
 func (h *Handler) createPool(ctx context.Context, in *body[CreatePoolRequest]) (*body[Pool], error) {
 	b := in.Body
-	now := time.Now()
-	p := store.Pool{
-		ID: ids.New(), Name: cmp.Or(strings.TrimSpace(b.Name), b.Label), Label: b.Label, Arch: b.Arch,
-		VCPU: b.VCPU, MemoryMB: b.MemoryMB, DiskGB: b.DiskGB, ImageID: b.ImageID, MinIdle: b.MinIdle,
-		MaxRunners: b.MaxRunners, TimeLimitMinutes: b.TimeLimitMinutes, ServerIDs: orEmpty(b.ServerIDs),
-		Enabled: b.Enabled == nil || *b.Enabled, CreatedAt: now, UpdatedAt: now,
-	}
-	if p.Arch == "" {
-		arch, err := h.defaultArch(ctx)
-		if err != nil {
-			return nil, err
-		}
-		p.Arch = arch
-	}
-	if err := h.checkPool(ctx, p, nil); err != nil {
-		return nil, err
-	}
-	if err := h.d.Store.CreatePool(ctx, p); err != nil {
+	p, err := h.d.Pools.Create(ctx, actor(ctx), store.Pool{
+		Name: b.Name, Label: b.Label, Arch: b.Arch, VCPU: b.VCPU, MemoryMB: b.MemoryMB, DiskGB: b.DiskGB,
+		ImageID: b.ImageID, MinIdle: b.MinIdle, MaxRunners: b.MaxRunners, TimeLimitMinutes: b.TimeLimitMinutes,
+		ServerIDs: b.ServerIDs, Enabled: b.Enabled == nil || *b.Enabled,
+	})
+	if err != nil {
 		return nil, poolErr(err)
 	}
-	h.poolsChanged(ctx)
-	h.audit(ctx, "pool.create", p.ID, map[string]any{"label": p.Label})
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
+// UpdatePoolRequest has the limits of CreatePoolRequest.
 type UpdatePoolRequest struct {
-	Name             *string   `json:"name,omitempty" minLength:"1" maxLength:"64"`
-	Label            *string   `json:"label,omitempty" pattern:"^[a-z0-9][a-z0-9-]{0,62}$" patternDescription:"lowercase letters, digits, and dashes"`
-	Arch             *string   `json:"arch,omitempty" enum:"x64,arm64"`
-	VCPU             *int      `json:"vcpu,omitempty" minimum:"1" maximum:"64"`
-	MemoryMB         *int      `json:"memory_mb,omitempty" minimum:"512" maximum:"262144"`
-	DiskGB           *int      `json:"disk_gb,omitempty" minimum:"8" maximum:"1024"`
-	ImageID          *string   `json:"image_id,omitempty" maxLength:"100" doc:"Empty: the default image."`
-	MinIdle          *int      `json:"min_idle,omitempty" minimum:"0" maximum:"1000"`
-	MaxRunners       *int      `json:"max_runners,omitempty" minimum:"1" maximum:"1000"`
-	TimeLimitMinutes *int      `json:"time_limit_minutes,omitempty" minimum:"0" maximum:"7200"`
-	ServerIDs        *[]string `json:"server_ids,omitempty" maxItems:"100"`
+	Name             *string   `json:"name,omitempty"`
+	Label            *string   `json:"label,omitempty"`
+	Arch             *string   `json:"arch,omitempty"`
+	VCPU             *int      `json:"vcpu,omitempty"`
+	MemoryMB         *int      `json:"memory_mb,omitempty"`
+	DiskGB           *int      `json:"disk_gb,omitempty"`
+	ImageID          *string   `json:"image_id,omitempty" doc:"Empty: the default image."`
+	MinIdle          *int      `json:"min_idle,omitempty"`
+	MaxRunners       *int      `json:"max_runners,omitempty"`
+	TimeLimitMinutes *int      `json:"time_limit_minutes,omitempty"`
+	ServerIDs        *[]string `json:"server_ids,omitempty"`
 	Enabled          *bool     `json:"enabled,omitempty"`
+}
+
+func (UpdatePoolRequest) TransformSchema(r huma.Registry, s *huma.Schema) *huma.Schema {
+	return patchOf[CreatePoolRequest](r, s)
 }
 
 func (h *Handler) updatePool(ctx context.Context, in *struct {
 	PathID
 	Body UpdatePoolRequest
 }) (*body[Pool], error) {
-	p, err := h.d.Store.GetPool(ctx, in.ID)
-	if err != nil {
-		return nil, notFound(err, "No pool has this ID.")
-	}
-	old := p
 	b := in.Body
-	set(&p.Name, b.Name)
-	set(&p.Label, b.Label)
-	set(&p.Arch, b.Arch)
-	set(&p.VCPU, b.VCPU)
-	set(&p.MemoryMB, b.MemoryMB)
-	set(&p.DiskGB, b.DiskGB)
-	set(&p.ImageID, b.ImageID)
-	set(&p.MinIdle, b.MinIdle)
-	set(&p.MaxRunners, b.MaxRunners)
-	set(&p.TimeLimitMinutes, b.TimeLimitMinutes)
-	set(&p.ServerIDs, b.ServerIDs)
-	set(&p.Enabled, b.Enabled)
-	p.Name = strings.TrimSpace(p.Name)
-	if err := h.checkPool(ctx, p, old.ServerIDs); err != nil {
-		return nil, err
-	}
-	if err := h.d.Store.UpdatePool(ctx, p); err != nil {
+	p, err := h.d.Pools.Update(ctx, actor(ctx), in.ID, func(p *store.Pool) {
+		set(&p.Name, b.Name)
+		set(&p.Label, b.Label)
+		set(&p.Arch, b.Arch)
+		set(&p.VCPU, b.VCPU)
+		set(&p.MemoryMB, b.MemoryMB)
+		set(&p.DiskGB, b.DiskGB)
+		set(&p.ImageID, b.ImageID)
+		set(&p.MinIdle, b.MinIdle)
+		set(&p.MaxRunners, b.MaxRunners)
+		set(&p.TimeLimitMinutes, b.TimeLimitMinutes)
+		set(&p.ServerIDs, b.ServerIDs)
+		set(&p.Enabled, b.Enabled)
+	})
+	if err != nil {
 		return nil, poolErr(err)
-	}
-	h.poolsChanged(ctx)
-	if changes := h.poolChanges(ctx, old, p); len(changes) > 0 {
-		h.audit(ctx, "pool.update", p.ID, map[string]any{"label": p.Label, "changes": changes})
 	}
 	return reply(first(h.pools(ctx, []store.Pool{p})))
 }
 
-// poolChanges gives the old and new value of each changed field of a pool,
-// with the names of the image and the servers in place of their IDs. An
-// image or server that runplane cannot name keeps its ID. An empty image is
-// the default image.
-func (h *Handler) poolChanges(ctx context.Context, old, p store.Pool) map[string][2]any {
-	old.ServerIDs, p.ServerIDs = orEmpty(old.ServerIDs), orEmpty(p.ServerIDs)
-	changes := fieldChanges(old, p, "updated_at")
-	if _, ok := changes["image_id"]; ok {
-		names := map[string]string{}
-		images, err := h.d.Store.ListImages(ctx)
-		if err != nil {
-			h.d.Log.Warn("read the image names for the audit log", "err", err)
-		}
-		for _, img := range images {
-			names[img.ID] = img.Name
-		}
-		delete(changes, "image_id")
-		changes["image"] = [2]any{cmp.Or(names[old.ImageID], old.ImageID), cmp.Or(names[p.ImageID], p.ImageID)}
-	}
-	if _, ok := changes["server_ids"]; ok {
-		r, err := h.loadRefs(ctx)
-		if err != nil {
-			h.d.Log.Warn("read the server names for the audit log", "err", err)
-		}
-		names := func(ids []string) []string {
-			out := make([]string, len(ids))
-			for i, id := range ids {
-				out[i] = cmp.Or(r.servers[id].Name, id)
-			}
-			return out
-		}
-		delete(changes, "server_ids")
-		changes["servers"] = [2]any{names(old.ServerIDs), names(p.ServerIDs)}
-	}
-	return changes
-}
-
 func (h *Handler) deletePool(ctx context.Context, in *PathID) (*empty, error) {
-	p, err := h.d.Store.GetPool(ctx, in.ID)
-	if err != nil {
+	if err := h.d.Pools.Delete(ctx, actor(ctx), in.ID); err != nil {
 		return nil, notFound(err, "No pool has this ID.")
 	}
-	// The scheduler stops the sandboxes of the pool and the GitHub code
-	// deletes its scale sets when they see that the pool is gone.
-	if err := h.d.Store.DeletePool(ctx, p.ID); err != nil {
-		return nil, notFound(err, "No pool has this ID.")
-	}
-	h.poolsChanged(ctx)
-	h.audit(ctx, "pool.delete", p.ID, map[string]any{"label": p.Label})
 	return nil, nil
 }
 
-// checkPool checks the rules that need more than one field or the database.
-// saved holds the server IDs of the stored pool: an unknown ID among them is
-// from a server that no longer exists, and it does not block the change.
-func (h *Handler) checkPool(ctx context.Context, p store.Pool, saved []string) error {
-	var errs problems
-	if p.Name == "" {
-		errs.add("body.name", "Enter a name.", p.Name)
-	}
-	if p.MinIdle > p.MaxRunners {
-		errs.add("body.min_idle", "Warm runners cannot be more than max runners.", p.MinIdle)
-	}
-	if p.ImageID != "" {
-		if _, err := h.d.Store.GetImage(ctx, p.ImageID); errors.Is(err, store.ErrNotFound) {
-			errs.add("body.image_id", "No image has this ID.", p.ImageID)
-		} else if err != nil {
-			return err
-		}
-	}
-	for i, id := range p.ServerIDs {
-		if slices.Contains(saved, id) {
-			continue
-		}
-		if _, err := h.d.Store.GetServer(ctx, id); errors.Is(err, store.ErrNotFound) {
-			errs.add(fmt.Sprintf("body.server_ids[%d]", i), "No server has this ID.", id)
-		} else if err != nil {
-			return err
-		}
-	}
-	return errs.err()
-}
-
 type placementInput struct {
-	Arch      string   `query:"arch" required:"true" enum:"x64,arm64"`
-	VCPU      int      `query:"vcpu" required:"true" minimum:"1" maximum:"64"`
-	MemoryMB  int      `query:"memory_mb" required:"true" minimum:"512" maximum:"262144"`
+	Arch string `query:"arch" required:"true" enum:"x64,arm64"`
+	PoolSize
 	ServerIDs []string `query:"server_ids" maxItems:"100" doc:"Comma-separated. Empty: all servers."`
 }
 
@@ -316,12 +194,15 @@ func (h *Handler) getPlacement(ctx context.Context, in *placementInput) (*body[P
 	if err != nil {
 		return nil, err
 	}
-	return &body[PoolPlacement]{placer.place(in.Arch, in.VCPU, in.MemoryMB, in.ServerIDs)}, nil
+	pool := store.Pool{Arch: in.Arch, VCPU: in.VCPU, MemoryMB: in.MemoryMB, ServerIDs: in.ServerIDs}
+	return &body[PoolPlacement]{placer.place(pool)}, nil
 }
 
 type placer struct {
 	servers  []store.Server
 	settings store.Settings
+	// limits are the limits of the drivers of the connected servers.
+	limits map[string]sandbox.Limits
 }
 
 func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
@@ -333,27 +214,32 @@ func (h *Handler) newPlacer(ctx context.Context) (placer, error) {
 	if err != nil {
 		return placer{}, err
 	}
-	p := placer{settings: settings}
+	p := placer{settings: settings, limits: map[string]sandbox.Limits{}}
 	for _, v := range list {
-		if v.Status == store.ServerOnline {
-			p.servers = append(p.servers, v)
+		if v.Status != store.ServerOnline {
+			continue
+		}
+		p.servers = append(p.servers, v)
+		if l, ok := h.d.Servers.Limits(v.ID); ok {
+			p.limits[v.ID] = l
 		}
 	}
 	return p, nil
 }
 
-func (p placer) place(arch string, vcpu, memoryMB int, serverIDs []string) PoolPlacement {
+func (p placer) place(pool store.Pool) PoolPlacement {
 	out := PoolPlacement{PlaceableServerIDs: []string{}}
 	for _, v := range p.servers {
-		if v.Arch != arch || len(serverIDs) > 0 && !slices.Contains(serverIDs, v.ID) {
+		if !pool.CanUse(v.ID, v.Arch) {
 			continue
 		}
 		out.OnlineServers++
-		c := sandbox.Capacity{
-			VCPU: v.VCPU, MemoryMB: v.MemoryMB, ReserveVCPU: p.settings.ReserveVCPU,
-			ReserveMemoryMB: p.settings.ReserveMemoryMB, Overcommit: p.settings.CPUOvercommit,
+		if waitReason(p.settings, v) != "" {
+			out.WaitingServers++
+			continue
 		}
-		if c.Fits(vcpu, memoryMB) {
+		empty := sandbox.Capacity{VCPU: v.VCPU, MemoryMB: v.MemoryMB, Limits: p.limits[v.ID]}
+		if empty.Room(pool.VCPU, pool.MemoryMB, p.settings.Reserve()) > 0 {
 			out.PlaceableServerIDs = append(out.PlaceableServerIDs, v.ID)
 		}
 	}
@@ -366,26 +252,4 @@ func poolErr(err error) error {
 		return conflict("body.label", "A pool with this label exists.")
 	}
 	return notFound(err, "No pool has this ID.")
-}
-
-func (h *Handler) poolsChanged(ctx context.Context) {
-	if h.d.Scheduler != nil {
-		h.d.Scheduler.PoolsChanged(context.WithoutCancel(ctx))
-	}
-}
-
-// defaultArch is the arch of the primary server, or of this binary before
-// the primary has reported its facts.
-func (h *Handler) defaultArch(ctx context.Context) (string, error) {
-	local, err := h.d.Store.GetLocalServer(ctx)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return "", err
-	}
-	if local.Arch != "" {
-		return local.Arch, nil
-	}
-	if runtime.GOARCH == "arm64" {
-		return "arm64", nil
-	}
-	return "x64", nil
 }

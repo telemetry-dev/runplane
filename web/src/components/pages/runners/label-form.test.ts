@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { ApiError } from '~/api/client'
-import { draftFrom, labelProblems, poolChanges, poolRequest, poolUpdate, type Draft } from './label-form'
+import { draftFrom, poolRequest, poolUpdate, type Draft } from './label-form'
 import type { Pool } from './runner-format'
 
 // A pool as GET /api/pools returns it (the seeded runplane-16cpu).
@@ -19,6 +18,7 @@ const pool: Pool = {
   time_limit_minutes: 0,
   server_ids: ['primary'],
   online_servers: 1,
+  waiting_servers: 0,
   placeable_servers: 1,
   placeable_server_ids: ['primary'],
   enabled: true,
@@ -28,6 +28,7 @@ const pool: Pool = {
   busy: 0,
   starting: 0,
   queued: 1,
+  assigned: 0,
 }
 
 const serverArch = new Map([
@@ -42,8 +43,7 @@ describe('draftFrom', () => {
   })
 
   test('a new pool uses the given arch and all servers', () => {
-    const draft = draftFrom(undefined, 'arm64', 'img-default')
-    expect(draft).toMatchObject({ arch: 'arm64', vcpu: 4, memoryGb: 16, diskGb: 80, allServers: true, maxRunners: 10 })
+    expect(draftFrom(undefined, 'arm64', 'img-default')).toMatchObject({ arch: 'arm64', allServers: true })
   })
 })
 
@@ -54,8 +54,8 @@ describe('poolRequest', () => {
     expect(poolRequest(draft, serverArch)).toMatchObject({ label: 'runplane-16cpu', memory_mb: 512 })
   })
 
-  test('is null while a number is empty', () => {
-    expect(poolRequest({ ...draft, maxRunners: null }, serverArch)).toBeNull()
+  test.each(['vcpu', 'memoryGb', 'diskGb', 'minIdle', 'maxRunners'] as const)('is null while %s is empty', (field) => {
+    expect(poolRequest({ ...draft, [field]: null }, serverArch)).toBeNull()
   })
 
   test('sends no servers for all servers, though some stay checked', () => {
@@ -68,59 +68,26 @@ describe('poolRequest', () => {
   })
 })
 
-describe('poolChanges', () => {
-  const before = poolRequest(draftFrom(pool, 'x64', undefined), serverArch)!
+describe('poolUpdate', () => {
+  /** The PATCH body after the user changes `edit` in the dialog of `saved`. */
+  function update(saved: Pool, edit: Partial<Draft>) {
+    const initial = draftFrom(saved, 'x64', undefined)
+    return poolUpdate(saved, initial, poolRequest({ ...initial, ...edit }, serverArch)!, serverArch)
+  }
 
-  test('holds only the fields that changed', () => {
-    expect(poolChanges(before, { ...before, label: 'runplane-32cpu', max_runners: 8 })).toEqual({ label: 'runplane-32cpu', max_runners: 8 })
+  test('sends only the changed fields', () => {
+    expect(update(pool, { vcpu: 8, label: 'runplane-32cpu', maxRunners: 8 })).toEqual({ vcpu: 8, label: 'runplane-32cpu', max_runners: 8 })
   })
 
   test('the same servers in another order are no change', () => {
-    const two = { ...before, server_ids: ['primary', 'agent'] }
-    expect(poolChanges(two, { ...two, server_ids: ['agent', 'primary'] })).toEqual({})
+    expect(update({ ...pool, server_ids: ['primary', 'agent'] }, { serverIds: ['agent', 'primary'] })).toEqual({})
   })
 
-  test('removing all chosen servers sends the empty list', () => {
-    expect(poolChanges(before, { ...before, server_ids: [] })).toEqual({ server_ids: [] })
-  })
-})
-
-describe('poolUpdate', () => {
-  test('sends only the changed fields', () => {
-    const initial = draftFrom(pool, 'x64', undefined)
-    const after = poolRequest({ ...initial, vcpu: 8 }, serverArch)!
-    expect(poolUpdate(pool, initial, after, serverArch)).toEqual({ vcpu: 8 })
+  test('a switch to all servers sends the empty list', () => {
+    expect(update(pool, { allServers: true })).toEqual({ server_ids: [] })
   })
 
   test('drops the ID of a removed server, which the API would refuse', () => {
-    const stale = { ...pool, server_ids: ['primary', 'removed'] }
-    const initial = draftFrom(stale, 'x64', undefined)
-    const after = poolRequest({ ...initial, vcpu: 8 }, serverArch)!
-    expect(poolUpdate(stale, initial, after, serverArch)).toEqual({ vcpu: 8, server_ids: ['primary'] })
-  })
-})
-
-describe('labelProblems', () => {
-  function invalid(...errors: { location: string; message: string }[]) {
-    return new ApiError(422, { type: 'about:blank', title: 'Unprocessable Entity', status: 422, detail: 'validation failed', errors }, 'Unprocessable Entity')
-  }
-
-  test('a problem with a server or the image shows at that control, not only in an alert', () => {
-    const error = invalid(
-      { location: 'body.server_ids[1]', message: 'No server has this ID.' },
-      { location: 'body.image_id', message: 'No image has this ID.' },
-    )
-    expect(labelProblems(error)).toEqual({ errors: {}, servers: 'No server has this ID.', image: 'No image has this ID.', alert: null })
-  })
-
-  test('a field problem goes under its field', () => {
-    const error = invalid({ location: 'body.min_idle', message: 'Warm runners cannot be more than max runners.' })
-    expect(labelProblems(error)).toEqual({ errors: { min_idle: 'Warm runners cannot be more than max runners.' }, alert: null })
-  })
-
-  test('a problem that no control shows goes to the alert', () => {
-    expect(labelProblems(invalid({ location: 'body.arch', message: 'Use x64 or arm64.' }))).toEqual({ errors: {}, alert: 'Use x64 or arm64.' })
-    const conflict = new ApiError(409, { type: 'about:blank', title: 'Conflict', status: 409, detail: 'A label has this name.' }, 'Conflict')
-    expect(labelProblems(conflict)).toEqual({ errors: {}, alert: 'A label has this name.' })
+    expect(update({ ...pool, server_ids: ['primary', 'removed'] }, { vcpu: 8 })).toEqual({ vcpu: 8, server_ids: ['primary'] })
   })
 })

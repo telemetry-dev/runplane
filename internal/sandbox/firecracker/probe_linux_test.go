@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -25,10 +26,11 @@ func TestProbe(t *testing.T) {
 		t.Skip("set RUNPLANE_TEST_PROBE=1 to fetch https://api.github.com through the VM firewall (needs root)")
 	}
 	ctx := context.Background()
-	m := netrules.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m := netrules.New(slog.New(slog.NewTextHandler(io.Discard, nil)), netrules.DefaultTapSubnet)
 	t.Cleanup(func() { m.Teardown() })
 	d := testDriver(t, t.TempDir(), systemHost{net: m})
-	if err := m.Setup(ctx, d.netConfig(d.settings)); err != nil {
+	dns := []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
+	if err := d.Configure(ctx, sandbox.Settings{DNS: dns}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Probe(ctx); err != nil {
@@ -46,7 +48,7 @@ func TestProbe(t *testing.T) {
 
 	// The VM rules apply to the probe: with an allowlist that does not
 	// have GitHub, it fails.
-	if err := d.Configure(sandbox.Settings{EgressAllowlist: []string{"192.0.2.1"}}); err != nil {
+	if err := d.Configure(ctx, sandbox.Settings{DNS: dns, EgressAllowlist: []string{"192.0.2.1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.Probe(ctx); err == nil {

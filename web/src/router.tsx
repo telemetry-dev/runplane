@@ -1,7 +1,10 @@
 import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createRouter } from '@tanstack/react-router'
-import { isApiError } from './api/client'
+import { auditQuery } from './api/audit'
+import { isApiError, retryQuery } from './api/client'
+import { sessionQuery } from './api/session'
 import { RouteError } from './components/route-error'
+import { withGallery } from './dev/gallery-route'
 import { routeTree } from './routeTree.gen'
 
 export function getRouter() {
@@ -10,18 +13,13 @@ export function getRouter() {
     mutationCache: new MutationCache({
       onError: signInAgain,
       // Most changes add an entry to the audit log, which Settings · Members shows.
-      onSuccess: () => queryClient.invalidateQueries({ queryKey: ['get', '/api/audit'] }),
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: auditQuery().queryKey }),
     }),
-    defaultOptions: {
-      queries: {
-        // Retry network and server failures, not answers like 404 or 403.
-        retry: (failures, error) => failures < 2 && !(isApiError(error) && error.status < 500),
-      },
-    },
+    defaultOptions: { queries: { retry: retryQuery } },
   })
 
   const router = createRouter({
-    routeTree,
+    routeTree: import.meta.env.DEV ? withGallery(routeTree) : routeTree,
     context: { queryClient },
     defaultPreload: 'intent',
     // Loaders read through TanStack Query, which owns caching.
@@ -48,7 +46,7 @@ export function getRouter() {
   function signInAgain(error: Error) {
     if (!isApiError(error, 401)) return
     if (!router.state.matches.some((match) => match.routeId === '/_app')) return
-    queryClient.setQueryData(['get', '/api/session'], null)
+    queryClient.setQueryData(sessionQuery.queryKey, null)
     void router.navigate({ to: '/login', search: { redirect: router.state.location.href } })
   }
 

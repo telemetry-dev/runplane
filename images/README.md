@@ -7,7 +7,7 @@ runplane publishes two base images for the sandboxes. Each image is for `linux/a
 | `ghcr.io/runplane/runplane/runner-ubuntu-24.04:latest` | Ubuntu 24.04 (the default image of a pool) |
 | `ghcr.io/runplane/runplane/runner-ubuntu-26.04:latest` | Ubuntu 26.04 |
 
-If runplane cannot pull a base image, it builds the image on the server from the Dockerfile in this folder.
+One `Dockerfile` in this folder builds the two images. Its build args `UBUNTU` and `IMAGE_OS` select the Ubuntu release. `images.go` names the images and gives their build args. If runplane cannot pull a base image, it builds the image on the server from this `Dockerfile`.
 
 ## Contents
 
@@ -71,7 +71,7 @@ runplane pulls the image on each server. When you push a new image with the same
 To build a base image on your computer, run this command from the repository root:
 
 ```sh
-docker build -t runner-ubuntu-24.04 images/ubuntu-24.04
+docker build -t runner-ubuntu-24.04 --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images
 ```
 
 The Dockerfile installs the latest release of each tool version in `NODE_VERSIONS`, `PYTHON_VERSIONS`, and `GO_VERSIONS`. To change the versions, use `--build-arg`, for example `--build-arg NODE_VERSIONS="24 26"`.

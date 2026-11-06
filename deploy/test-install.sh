@@ -24,6 +24,11 @@ main() {
 		"CPUWeight=20" \
 		"+ systemctl enable runplane.service"
 	refuse "the dry run changes nothing" "$out" "changed:"
+	# serve keeps a valid setup code, so the code of the install is the only one.
+	expect "the setup code comes before the start" "$out" \
+		"+ /usr/local/bin/runplane setup-code
+
+==> Start runplane"
 
 	# The repository has no public base image, so Docker builds it.
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --mode vm --repo runplane/no-such-repo)
@@ -53,7 +58,7 @@ main() {
 		"\"primary\": \"203.0.113.5:8485\"" \
 		"\"fingerprint\": \"$fingerprint\"" \
 		"\"token\": \"rp_srv_test\""
-	refuse "an agent has no dashboard" "$out" "RUNPLANE_LISTEN" "ExecStart=/usr/local/bin/runplane serve"
+	refuse "an agent has no dashboard" "$out" "RUNPLANE_LISTEN" "ExecStart=/usr/local/bin/runplane serve" "setup-code"
 
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --listen 127.0.0.1:9000)
 	expect "--listen" "$out" "RUNPLANE_LISTEN=127.0.0.1:9000" "Dashboard:  http://127.0.0.1:9000"
@@ -61,7 +66,10 @@ main() {
 	# set-domain runs before the start, so that the first start serves HTTPS.
 	out=$(install ubuntu:24.04 --dry-run --yes --version v1.2.3 --mode container --domain CI.Example.com)
 	expect "--domain" "$out" "exit=0" \
-		"+ with_env /usr/local/bin/runplane set-domain ci.example.com
+		"+ /usr/local/bin/runplane set-domain ci.example.com
+
+==> Make the setup code
++ /usr/local/bin/runplane setup-code
 
 ==> Start runplane" \
 		"Dashboard:  https://ci.example.com"

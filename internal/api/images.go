@@ -3,14 +3,11 @@ package api
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/google/go-containerregistry/pkg/name"
 
-	"github.com/runplane/runplane/internal/events"
-	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -29,7 +26,7 @@ type Image struct {
 type ImageBuild struct {
 	ServerID   string    `json:"server_id"`
 	ServerName string    `json:"server_name"`
-	Arch       string    `json:"arch" doc:"Arch of the server: x64 or arm64. Empty until the server reports its facts."`
+	Arch       string    `json:"arch" enum:"x64,arm64," doc:"Arch of the server. Empty until the server reports its facts."`
 	Digest     string    `json:"digest"`
 	Status     string    `json:"status" enum:"pending,pulling,building,converting,ready,failed"`
 	Error      string    `json:"error"`
@@ -95,128 +92,52 @@ type CreateImageRequest struct {
 }
 
 func (h *Handler) createImage(ctx context.Context, in *body[CreateImageRequest]) (*body[Image], error) {
-	imgName, ref, err := checkImage(in.Body.Name, in.Body.Ref)
+	img, err := h.d.Images.CreateImage(ctx, actor(ctx), in.Body.Name, in.Body.Ref)
 	if err != nil {
-		return nil, err
-	}
-	now := time.Now()
-	img := store.Image{ID: ids.New(), Name: imgName, Ref: ref, Source: "registry", CreatedAt: now, UpdatedAt: now}
-	if err := h.d.Store.CreateImage(ctx, img); err != nil {
 		return nil, imageErr(err)
 	}
-	h.audit(ctx, "image.create", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
-	h.d.Bus.Publish(events.Event{Type: events.ImageState, Data: img})
-	h.refresh(ctx, img.ID)
 	return h.imageOutput(ctx, img.ID)
 }
 
+// UpdateImageRequest has the limits of CreateImageRequest.
 type UpdateImageRequest struct {
-	Name      *string `json:"name,omitempty" minLength:"1" maxLength:"64"`
-	Ref       *string `json:"ref,omitempty" minLength:"1" maxLength:"512" doc:"A new ref pulls the image again."`
+	Name      *string `json:"name,omitempty"`
+	Ref       *string `json:"ref,omitempty" doc:"A new ref pulls the image again."`
 	IsDefault *bool   `json:"is_default,omitempty" doc:"true makes this image the default. To change the default, make another image the default."`
+}
+
+func (UpdateImageRequest) TransformSchema(r huma.Registry, s *huma.Schema) *huma.Schema {
+	return patchOf[CreateImageRequest](r, s)
 }
 
 func (h *Handler) updateImage(ctx context.Context, in *struct {
 	PathID
 	Body UpdateImageRequest
 }) (*body[Image], error) {
-	img, err := h.d.Store.GetImage(ctx, in.ID)
-	if err != nil {
-		return nil, notFound(err, "No image has this ID.")
-	}
 	b := in.Body
-	if b.IsDefault != nil && !*b.IsDefault && img.IsDefault {
-		return nil, invalid("body.is_default", "Make another image the default instead.", false)
-	}
-	if b.Ref != nil && *b.Ref != img.Ref && img.Source == "builtin" {
-		return nil, invalid("body.ref", "The ref of a built-in image cannot change. Add a new image instead.", *b.Ref)
-	}
-	newName, ref := img.Name, img.Ref
-	set(&newName, b.Name)
-	set(&ref, b.Ref)
-	if newName, ref, err = checkImage(newName, ref); err != nil {
-		return nil, err
-	}
-	refChanged := ref != img.Ref
-	if newName != img.Name || refChanged {
-		img.Name, img.Ref = newName, ref
-		if err := h.d.Store.UpdateImage(ctx, img); err != nil {
-			return nil, imageErr(err)
-		}
-	}
-	if b.IsDefault != nil && *b.IsDefault && !img.IsDefault {
-		if err := h.d.Store.SetDefaultImage(ctx, img.ID); err != nil {
-			return nil, imageErr(err)
-		}
-		h.poolsChanged(ctx)
-	}
-	h.audit(ctx, "image.update", img.ID, map[string]any{"name": img.Name, "ref": img.Ref, "is_default": b.IsDefault})
-	h.d.Bus.Publish(events.Event{Type: events.ImageState, Data: img})
-	if refChanged {
-		h.refresh(ctx, img.ID)
+	img, err := h.d.Images.UpdateImage(ctx, actor(ctx), in.ID, fleet.ImageChange{Name: b.Name, Ref: b.Ref, Default: b.IsDefault})
+	if err != nil {
+		return nil, imageErr(err)
 	}
 	return h.imageOutput(ctx, img.ID)
 }
 
 func (h *Handler) deleteImage(ctx context.Context, in *PathID) (*empty, error) {
-	img, err := h.d.Store.GetImage(ctx, in.ID)
-	if err != nil {
-		return nil, notFound(err, "No image has this ID.")
-	}
-	if img.IsDefault {
+	err := h.d.Images.RemoveImage(ctx, actor(ctx), in.ID)
+	if errors.Is(err, fleet.ErrDefaultImage) {
 		return nil, huma.Error409Conflict("The default image cannot be removed. Make another image the default first.")
 	}
-	if h.d.Images == nil {
-		return nil, unavailable("Removing images")
+	if err != nil {
+		return nil, imageErr(err)
 	}
-	if err := h.d.Images.Remove(ctx, img.ID); err != nil {
-		return nil, h.serviceErr(err)
-	}
-	// Pools with this image change to the default image.
-	if err := h.d.Store.DeleteImage(ctx, img.ID); err != nil {
-		return nil, notFound(err, "No image has this ID.")
-	}
-	h.poolsChanged(ctx)
-	h.audit(ctx, "image.delete", img.ID, map[string]any{"name": img.Name, "ref": img.Ref})
 	return nil, nil
 }
 
 func (h *Handler) refreshImage(ctx context.Context, in *PathID) (*empty, error) {
-	if h.d.Images == nil {
-		return nil, unavailable("Pulling images")
+	if err := h.d.Images.RefreshImage(ctx, actor(ctx), in.ID); err != nil {
+		return nil, imageErr(err)
 	}
-	img, err := h.d.Store.GetImage(ctx, in.ID)
-	if err != nil {
-		return nil, notFound(err, "No image has this ID.")
-	}
-	if err := h.d.Images.Refresh(ctx, img.ID); err != nil {
-		return nil, h.serviceErr(err)
-	}
-	h.audit(ctx, "image.refresh", img.ID, map[string]any{"ref": img.Ref})
 	return nil, nil
-}
-
-// refresh starts the pulls of a new or changed image. The builds show a
-// failure, so a failure here does not fail the request.
-func (h *Handler) refresh(ctx context.Context, id string) {
-	if h.d.Images == nil {
-		return
-	}
-	if err := h.d.Images.Refresh(context.WithoutCancel(ctx), id); err != nil {
-		h.d.Log.Warn("pull image", "image", id, "err", err)
-	}
-}
-
-func checkImage(imgName, ref string) (string, string, error) {
-	imgName, ref = strings.TrimSpace(imgName), strings.TrimSpace(ref)
-	var errs problems
-	if imgName == "" {
-		errs.add("body.name", "Enter a name.", imgName)
-	}
-	if _, err := name.ParseReference(ref); err != nil {
-		errs.add("body.ref", "The ref is not a valid image reference, for example ghcr.io/owner/image:tag.", ref)
-	}
-	return imgName, ref, errs.err()
 }
 
 func imageErr(err error) error {

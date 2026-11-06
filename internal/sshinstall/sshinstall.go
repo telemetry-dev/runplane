@@ -4,119 +4,127 @@ package sshinstall
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"net"
 	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
-
-// LoadOrCreateKey loads the runplane SSH key from path, or makes a new
-// ed25519 key there (mode 0600). It returns the signer and the line for
-// the authorized_keys file of the target servers.
-func LoadOrCreateKey(path string) (ssh.Signer, string, error) {
-	data, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-	case errors.Is(err, fs.ErrNotExist):
-		if data, err = newKey(path); err != nil {
-			return nil, "", err
-		}
-	default:
-		return nil, "", fmt.Errorf("read ssh key: %w", err)
-	}
-	signer, err := ssh.ParsePrivateKey(data)
-	if err != nil {
-		return nil, "", fmt.Errorf("parse ssh key %s: %w", path, err)
-	}
-	return signer, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))) + " runplane", nil
-}
-
-func newKey(path string) ([]byte, error) {
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate ssh key: %w", err)
-	}
-	block, err := ssh.MarshalPrivateKey(priv, "runplane")
-	if err != nil {
-		return nil, fmt.Errorf("encode ssh key: %w", err)
-	}
-	data := pem.EncodeToMemory(block)
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("make ssh key dir: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".ssh-key-*")
-	if err != nil {
-		return nil, fmt.Errorf("write ssh key: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(data)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return nil, fmt.Errorf("write ssh key: %w", err)
-	}
-	// A hard link puts the complete file in place and fails if a key is
-	// already there. If another caller made the key first, use that key.
-	if err := os.Link(tmp.Name(), path); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return os.ReadFile(path)
-		}
-		return nil, fmt.Errorf("write ssh key: %w", err)
-	}
-	return data, nil
-}
 
 type Target struct {
 	Addr string // host:port
 	User string
 }
 
+// KnownHosts is a known_hosts file with the host keys of the servers that
+// Install connected to.
+type KnownHosts struct {
+	Path string
+	mu   sync.Mutex
+}
+
+// HostKeyError means that a server showed a host key that is not the key
+// that it showed at its first connection.
+type HostKeyError struct {
+	Addr       string
+	Key, Known ssh.PublicKey
+	File       string // the known_hosts file
+}
+
+func (e *HostKeyError) Error() string {
+	return fmt.Sprintf("host key %s of %s does not match the known key %s. If the server was reinstalled, remove its line from %s",
+		ssh.FingerprintSHA256(e.Key), e.Addr, ssh.FingerprintSHA256(e.Known), e.File)
+}
+
+// key returns the host key of addr, or nil if Install has not connected to
+// addr before.
+func (k *KnownHosts) key(addr string) (ssh.PublicKey, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	data, err := os.ReadFile(k.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read known hosts: %w", err)
+	}
+	want := knownhosts.Normalize(addr)
+	for {
+		_, hosts, key, _, rest, err := ssh.ParseKnownHosts(data)
+		if errors.Is(err, io.EOF) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read known hosts %s: %w", k.Path, err)
+		}
+		if slices.Contains(hosts, want) {
+			return key, nil
+		}
+		data = rest
+	}
+}
+
+func (k *KnownHosts) add(addr string, key ssh.PublicKey) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	file, err := os.OpenFile(k.Path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("save the host key: %w", err)
+	}
+	_, err = file.WriteString(knownhosts.Line([]string{addr}, key) + "\n")
+	if err = errors.Join(err, file.Close()); err != nil {
+		return fmt.Errorf("save the host key: %w", err)
+	}
+	return nil
+}
+
 // Install connects to the target, runs command with stdin as its input, and
 // calls onLine for each line of stdout and stderr. The onLine calls never
-// overlap, and they end before Install returns. Install returns the host key
-// of the server, or nil if it did not accept the key.
+// overlap, and they end before Install returns.
 //
-// If known is nil, Install accepts the key that the server shows (trust on
-// first use). Otherwise the server must show the same key.
+// The server must show the host key that known has for it. At the first
+// connection, known has no key: Install accepts the key that the server
+// shows (trust on first use), and adds it to known before the command runs.
+// A key that does not match gives a *HostKeyError.
 //
 // A command that exits with a status other than 0 gives an error that wraps
 // *ssh.ExitError.
-func Install(ctx context.Context, t Target, signer ssh.Signer, known ssh.PublicKey, command string, stdin io.Reader, onLine func(string)) (hostKey ssh.PublicKey, err error) {
+func Install(ctx context.Context, t Target, signer ssh.Signer, known *KnownHosts, command string, stdin io.Reader, onLine func(string)) error {
+	knownKey, err := known.key(t.Addr)
+	if err != nil {
+		return err
+	}
 	config := &ssh.ClientConfig{
 		User: t.User,
 		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
-			if known != nil && !bytes.Equal(key.Marshal(), known.Marshal()) {
-				return fmt.Errorf("host key %s does not match the known key %s", ssh.FingerprintSHA256(key), ssh.FingerprintSHA256(known))
+			if knownKey == nil {
+				return known.add(t.Addr, key)
 			}
-			hostKey = key
+			if !bytes.Equal(key.Marshal(), knownKey.Marshal()) {
+				return &HostKeyError{Addr: t.Addr, Key: key, Known: knownKey, File: known.Path}
+			}
 			return nil
 		},
 	}
-	if known != nil {
+	if knownKey != nil {
 		// Ask for the known key type; else a server with several host keys
 		// can show a different one and fail the check.
-		config.HostKeyAlgorithms = hostKeyAlgorithms(known.Type())
+		config.HostKeyAlgorithms = hostKeyAlgorithms(knownKey.Type())
 	}
 
 	dialer := net.Dialer{Timeout: 15 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", t.Addr)
 	if err != nil {
-		return nil, fmt.Errorf("connect to %s: %w", t.Addr, err)
+		return fmt.Errorf("connect to %s: %w", t.Addr, err)
 	}
 	// Closing the connection stops the handshake or the command when ctx ends.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -126,7 +134,7 @@ func Install(ctx context.Context, t Target, signer ssh.Signer, known ssh.PublicK
 	c, chans, reqs, err := ssh.NewClientConn(conn, t.Addr, config)
 	if err != nil {
 		conn.Close()
-		return hostKey, fmt.Errorf("ssh handshake with %s: %w", t.Addr, ctxErr(ctx, err))
+		return fmt.Errorf("ssh handshake with %s: %w", t.Addr, ctxErr(ctx, err))
 	}
 	conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(c, chans, reqs)
@@ -137,7 +145,7 @@ func Install(ctx context.Context, t Target, signer ssh.Signer, known ssh.PublicK
 
 	session, err := client.NewSession()
 	if err != nil {
-		return hostKey, fmt.Errorf("open ssh session: %w", ctxErr(ctx, err))
+		return fmt.Errorf("open ssh session: %w", ctxErr(ctx, err))
 	}
 	defer session.Close()
 
@@ -148,9 +156,9 @@ func Install(ctx context.Context, t Target, signer ssh.Signer, known ssh.PublicK
 	stdout.flush()
 	stderr.flush()
 	if err != nil {
-		return hostKey, fmt.Errorf("run install command: %w", ctxErr(ctx, err))
+		return fmt.Errorf("run install command: %w", ctxErr(ctx, err))
 	}
-	return hostKey, nil
+	return nil
 }
 
 // keepAlive sends a request every 30 seconds, so a NAT or firewall does not

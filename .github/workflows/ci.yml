@@ -30,10 +30,13 @@ jobs:
       - run: go vet ./...
       # The non-Linux files must also compile, for development on macOS.
       - run: GOOS=darwin go vet ./...
+      # The tests of internal/initbin examine the runplane-init of make init.
+      - run: make init
       - run: go test ./...
-      # Tests of netlink, nftables, loop devices, and mounts skip without root.
+      # Tests of netlink, nftables, loop devices, mounts, and the debug shell
+      # of runplane-init skip without root.
       - name: go test as root
-        run: sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME "$(go env GOROOT)/bin/go" test ./internal/...
+        run: sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME "$(go env GOROOT)/bin/go" test ./init/... ./internal/...
         env:
           GOCACHE: /tmp/go-root-cache
 
@@ -53,6 +56,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # The committed spec, types, and limits must match the Go API.
+      - run: pnpm gen:api && git diff --exit-code -- src/api
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
@@ -97,3 +105,18 @@ jobs:
           test ! -e /usr/local/bin/runplane
           test ! -e /etc/systemd/system/runplane.service
           sudo test ! -e /var/lib/runplane
+      # The tests that start real sandboxes, on the Docker and Sysbox that
+      # the uninstall keeps. The service and its firewall rules are gone, so
+      # the tests can own the runplane network. -p 1 runs one package at a
+      # time, because the two packages use the same network. The sandboxes
+      # run the runplane-init that make binary embedded.
+      - name: Sandbox tests on Docker and Sysbox
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends nftables
+          sudo docker build -q -t runplane-test internal/sandbox/sysbox/sysboxtest
+          sudo --preserve-env=GOCACHE,GOMODCACHE,GOPATH,HOME \
+            RUNPLANE_TEST_DOCKER=1 RUNPLANE_TEST_IMAGE=runplane-test \
+            "$(go env GOROOT)/bin/go" test -count=1 -p 1 -v ./internal/sandbox/sysbox/ ./internal/sandbox/devdocker/
+        env:
+          GOCACHE: /tmp/go-root-cache

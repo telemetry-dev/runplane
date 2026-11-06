@@ -1,13 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
 import type { Schemas } from '~/api/client'
-import { useHostStats } from '~/api/events'
-import { sessionQuery } from '~/api/queries'
+import { useCapabilities } from '~/api/session'
 import { CellTitle, DataTable, DataTableCell, DataTableRow, RowLink, useFittingColumns } from '~/components/app/data-table'
 import { SectionButton, SectionHeader, SectionLink } from '~/components/app/section-header'
-import { StatusDot } from '~/components/app/status-dot'
+import { mutedStatus, serverStatusNames, StatusDot } from '~/components/app/status-dot'
 import { UsageBar } from '~/components/app/usage-bar'
 import { AddServerDialog } from '~/components/pages/servers/add-server-dialog'
-import { jobCount, statusNames } from '~/components/pages/servers/server-info'
+import { jobCount, statusFacts } from '~/components/pages/servers/server-info'
 import { formatMegabytes } from '~/lib/format'
 
 type Server = Schemas['ServerSummary']
@@ -40,7 +38,7 @@ export function ServersCard({ servers }: { servers: readonly Server[] }) {
 
 /** The servers under "No jobs yet", where the next step may be to add one. */
 export function ServerList({ servers }: { servers: readonly Server[] }) {
-  const admin = useQuery(sessionQuery).data?.role === 'admin'
+  const { admin } = useCapabilities()
   const fit = useFittingColumns({ status: 16, server: 'grow', cpu: { width: 132, drop: 1 }, jobs: 56 })
   return (
     <section className="flex flex-col gap-s">
@@ -74,25 +72,20 @@ export function ServerList({ servers }: { servers: readonly Server[] }) {
 function ServerName({ server, detail }: { server: Server; detail: string }) {
   return (
     <RowLink to="/servers/$serverId" params={{ serverId: server.id }} className="flex-1">
-      <CellTitle title={server.name} detail={detail} muted={server.status === 'unreachable' || server.status === 'disabled'} />
+      <CellTitle title={server.name} detail={detail} muted={mutedStatus[server.status]} />
     </RowLink>
   )
 }
 
-/** CPU of a server that reports it, from the live host.stats events once they arrive; its state otherwise. */
+/** CPU of a connected server; its state otherwise. */
 function ServerUsage({ server }: { server: Server }) {
-  const live = useHostStats(server.id)
-  const cpu = live?.cpu_percent ?? server.cpu_percent
+  const cpu = server.cpu_percent
+  const { connected } = statusFacts[server.status]
   // A 92px bar, as in the designs. The root also holds the gap and the 4ch percent.
-  if (reporting(server) && cpu !== null) {
+  if (connected && cpu !== null) {
     return <UsageBar value={cpu} label={`${server.name} CPU`} showValue className="w-[calc(92px+var(--space-s)+4ch)] text-xs" />
   }
-  return <span className="block min-w-0 truncate text-xs text-neutral-7">{reporting(server) ? 'No data yet' : statusNames[server.status]}</span>
-}
-
-/** Online and draining servers run jobs and send stats. */
-function reporting(server: Server): boolean {
-  return server.status === 'online' || server.status === 'draining'
+  return <span className="block min-w-0 truncate text-xs text-neutral-7">{connected ? 'No data yet' : serverStatusNames[server.status]}</span>
 }
 
 function specs(server: Server): string {
@@ -101,5 +94,5 @@ function specs(server: Server): string {
 }
 
 function jobs(server: Server): string {
-  return reporting(server) ? jobCount(server.running_jobs) : ''
+  return statusFacts[server.status].connected ? jobCount(server.running_jobs) : ''
 }

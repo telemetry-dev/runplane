@@ -11,24 +11,27 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // Files in the chroot. Firecracker sees them at its root.
 const (
-	kernelFile    = "vmlinux"
-	rootFile      = "rootfs.ext4"
-	runnerFile    = "runner.ext4"
-	scratchFile   = "scratch.ext4"
-	apiSocket     = "api.sock"
-	vsockFile     = "v.sock"
-	controlSocket = "v.sock_1024" // Firecracker forwards guest vsock port 1024 here
+	kernelFile  = "vmlinux"
+	rootFile    = "rootfs.ext4"
+	runnerFile  = "runner.ext4"
+	scratchFile = "scratch.ext4"
+	apiSocket   = "api.sock"
+	vsockFile   = "v.sock"
 )
 
-func (d *Driver) chrootBase() string { return filepath.Join(d.opts.DataDir, "jail") }
+// Firecracker forwards the connections of the guest to vsock port
+// guest.VsockPort to controlSocket.
+var controlSocket = vsockFile + "_" + strconv.Itoa(guest.VsockPort)
 
 // jails holds the folder that the jailer makes for each VM.
 func (d *Driver) jails() string {
-	return filepath.Join(d.chrootBase(), filepath.Base(d.firecracker))
+	return filepath.Join(d.opts.JailDir, filepath.Base(d.firecracker))
 }
 
 // jailDir is the folder of one VM. Its root folder is the chroot.
@@ -42,7 +45,7 @@ func (d *Driver) jailerCommand(id string, uid, gid int) *exec.Cmd {
 	unit := unitName(id)
 	args := []string{
 		"--scope", "--quiet", "--collect",
-		"--slice=" + slice,
+		"--slice=" + Slice,
 		"--unit=" + unit,
 		"--description=runplane sandbox " + id,
 		// The metrics read memory.current of the scope.
@@ -60,20 +63,20 @@ func (d *Driver) jailerCommand(id string, uid, gid int) *exec.Cmd {
 		"--exec-file", d.firecracker,
 		"--uid", strconv.Itoa(uid),
 		"--gid", strconv.Itoa(gid),
-		"--chroot-base-dir", d.chrootBase(),
+		"--chroot-base-dir", d.opts.JailDir,
 		// With cgroup v2 and no --cgroup values, the jailer only moves
 		// itself to this cgroup: the scope that it is in already.
 		"--cgroup-version", "2",
-		"--parent-cgroup", slice+"/"+unit+".scope",
+		"--parent-cgroup", Slice+"/"+unit+".scope",
 		"--",
 		"--api-sock", "/"+apiSocket,
 	)
 	return exec.Command("systemd-run", args...)
 }
 
-// prepareChroot puts the files of the VM in the chroot. The read-only
-// drives are hard links, so all VMs share one page cache for them. Only the
-// VM with the IDs uid and gid can write the scratch disk.
+// prepareChroot makes the read-only drives hard links, so all VMs share one
+// page cache for them. Only the VM with the IDs uid and gid can write the
+// scratch disk.
 func (d *Driver) prepareChroot(chroot string, uid, gid, diskGB int, root, runner string) error {
 	if err := os.MkdirAll(chroot, 0o700); err != nil {
 		return fmt.Errorf("create chroot: %w", err)

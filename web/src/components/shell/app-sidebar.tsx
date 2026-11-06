@@ -1,20 +1,26 @@
 import { Dialog } from '@base-ui/react/dialog'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, type QueryClient } from '@tanstack/react-query'
 import { Link, useLocation, type LinkProps } from '@tanstack/react-router'
 import { Activity, Database, LayoutDashboard, Menu as MenuIcon, Server, Settings2, type LucideIcon } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
-import { githubQuery, runningJobsQuery, statusQuery } from '~/api/queries'
+import { githubQuery } from '~/api/github'
+import { runningJobsQuery } from '~/api/jobs'
+import { statusQuery } from '~/api/session'
 import { LogoMark } from '~/components/ui/brand'
+import { IconButton } from '~/components/ui/button'
+import { modalBackdrop } from '~/components/ui/dialog'
 import { CpuIcon, GithubIcon } from '~/components/ui/icons'
 import { formatCount } from '~/lib/format'
 import { InstanceMenu } from './instance-menu'
 import { useFrameSubscribed } from './pending'
 import { UserMenu } from './user-menu'
 
-/**
- * The 232px sidebar of the app designs: instance menu, navigation, GitHub account,
- * user menu. Below the md breakpoint it moves into a drawer behind a top bar.
- */
+/** Starts the requests of the sidebar next to the page's, so a pending frame can show their data. */
+export function prefetchSidebar(client: QueryClient) {
+  void client.prefetchQuery({ ...githubQuery, staleTime: Infinity })
+  void client.prefetchQuery({ ...runningJobsQuery, staleTime: Infinity })
+}
+
 export function AppSidebar() {
   return (
     <>
@@ -63,20 +69,16 @@ function MobileBar() {
   const pathname = useLocation({ select: (location) => location.pathname })
   const name = useQuery({ ...statusQuery, subscribed: useFrameSubscribed() }).data?.instance_name || 'runplane'
 
-  // Close the drawer after a navigation link opens a page.
   useEffect(() => setOpen(false), [pathname])
 
   return (
     <header className="sticky top-zero z-10 flex items-center gap-s bg-neutral-2 px-l py-s md:hidden">
       <Dialog.Root open={open} onOpenChange={setOpen}>
-        <Dialog.Trigger
-          aria-label="Open navigation"
-          className="-m-xxs grid place-items-center rounded-s p-xxs text-neutral-8 transition-colors hover:bg-neutral-3 hover:text-neutral-10"
-        >
-          <MenuIcon size={16} aria-hidden />
+        <Dialog.Trigger render={<IconButton label="Open navigation" className="-m-xxs p-xxs text-neutral-8" />}>
+          <MenuIcon aria-hidden />
         </Dialog.Trigger>
         <Dialog.Portal>
-          <Dialog.Backdrop className="fixed inset-zero z-20 bg-neutral-10-transparent transition-opacity duration-(--motion-large-duration) ease-large data-starting-style:opacity-0 data-ending-style:opacity-0" />
+          <Dialog.Backdrop className={modalBackdrop} />
           <Dialog.Popup
             aria-label="Navigation"
             className="fixed inset-y-zero left-zero z-20 flex w-[232px] max-w-[85vw] flex-col overflow-y-auto bg-neutral-2 transition-transform duration-(--motion-large-duration) ease-large data-starting-style:-translate-x-full data-ending-style:-translate-x-full"
@@ -114,7 +116,7 @@ function NavItem({ to, icon: Icon, exact = false, badge, children }: NavItemProp
 }
 
 function RunningJobsBadge() {
-  const running = useQuery({ ...runningJobsQuery, subscribed: useFrameSubscribed() }).data?.items.length ?? 0
+  const running = useQuery({ ...runningJobsQuery, subscribed: useFrameSubscribed() }).data?.total ?? 0
   if (running === 0) return null
   return (
     <span className="flex items-center gap-xxs text-xs font-medium text-color-1">

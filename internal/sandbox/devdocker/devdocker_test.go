@@ -6,10 +6,10 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,23 +17,35 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/initbin"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/devdocker"
+	"github.com/runplane/runplane/internal/sandbox/sysbox"
 	"github.com/runplane/runplane/internal/sandbox/sysbox/sysboxtest"
 )
 
 func TestRefusesWithoutDevInsecure(t *testing.T) {
-	_, err := devdocker.New(devdocker.Options{Config: config.Config{DataDir: t.TempDir(), ServicePort: 8486}})
+	data := t.TempDir()
+	_, err := devdocker.New(false, sysbox.Options{DataDir: data, Sandboxes: filepath.Join(data, "sandboxes"), ServicePort: 8486})
 	if err == nil {
 		t.Fatal("New made a privileged driver without RUNPLANE_DEV_INSECURE")
 	}
 }
 
+// The control channels of dev sandboxes listen on the port after the
+// service port, so the doctor checks that port too.
+func TestDoctorChecksTheControlPort(t *testing.T) {
+	if got := devdocker.Requirements(8486, "Run sudo runplane set-mode container or vm.").Listen; !slices.Equal(got, []string{":8487"}) {
+		t.Errorf("the doctor checks the ports %v, want [:8487]", got)
+	}
+}
+
 // TestSandbox starts real sandboxes on Docker with RUNPLANE_TEST_DOCKER=1.
-// It uses the image in RUNPLANE_TEST_IMAGE, by default the local build of
-// the base image: docker build -t runplane/runner-ubuntu-24.04:local images/ubuntu-24.04
+// It uses the image in RUNPLANE_TEST_IMAGE, such as the image of
+// sysboxtest/Dockerfile, by default the local build of the base image:
+// docker build -t runplane/runner-ubuntu-24.04:local --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images
+// The sandboxes run the runplane-init of make init.
 func TestSandbox(t *testing.T) {
 	if os.Getenv("RUNPLANE_TEST_DOCKER") != "1" {
 		t.Skip("set RUNPLANE_TEST_DOCKER=1 to start sandboxes on Docker")
@@ -43,33 +55,30 @@ func TestSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	info, err := docker.Info(ctx, client.InfoOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	ref := os.Getenv("RUNPLANE_TEST_IMAGE")
 	if ref == "" {
 		ref = "runplane/runner-ubuntu-24.04:local"
 	}
 	img, err := docker.ImageInspect(ctx, ref)
 	if err != nil {
-		t.Fatalf("inspect %s: %v; build it with: docker build -t %[1]s images/ubuntu-24.04", ref, err)
+		t.Fatalf("inspect %s: %v; build it with: docker build -t %[1]s --build-arg UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images", ref, err)
 	}
 
 	work := t.TempDir()
-	goarch := map[string]string{"aarch64": "arm64", "x86_64": "amd64"}[info.Info.Architecture]
-	initPath := sysboxtest.Init(t, work, goarch)
 	bundle := sysboxtest.NewBundle(t, filepath.Join(work, "runner"))
-	cfg := config.Config{DataDir: filepath.Join(work, "data"), ServicePort: freePort(t) - 1, DevInsecure: true}
-	opts := devdocker.Options{
-		Docker:   docker,
-		Config:   cfg,
-		Bundle:   bundle.Ensure,
-		InitPath: func() (string, error) { return initPath, nil },
-		Settings: sandbox.Settings{DNS: []string{"1.1.1.1"}, ActionsCache: true, ReserveVCPU: 1, ReserveMemoryMB: 1024, Overcommit: 1},
-		Logger:   sysboxtest.Logger(t),
+	data := filepath.Join(work, "data")
+	opts := sysbox.Options{
+		Docker:           docker,
+		DataDir:          data,
+		Sandboxes:        filepath.Join(data, "sandboxes"),
+		ScratchTemplates: filepath.Join(data, "scratch-templates"),
+		ServicePort:      freePort(t) - 1,
+		Runner:           bundle.Runner,
+		InitPath:         initbin.Path,
+		Settings:         sandbox.Settings{DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, ActionsCache: true},
+		Logger:           sysboxtest.Logger(t),
 	}
-	drv, err := devdocker.New(opts)
+	drv, err := devdocker.New(true, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +95,6 @@ func TestSandbox(t *testing.T) {
 			DiskGB:        8,
 			TimeLimit:     10 * time.Minute,
 			JITConfig:     "jit-" + id,
-			Env:           map[string]string{"RUNPLANE_TEST": "1"},
 		}
 	}
 
@@ -128,10 +136,12 @@ func TestSandbox(t *testing.T) {
 			t.Errorf("states = %v, want %v", got, want)
 		}
 		text := logText()
+		// The cache server cannot tell dev sandboxes apart.
+		if strings.Contains(text, "ACTIONS_RESULTS_URL") {
+			t.Errorf("a dev sandbox got the Actions cache:\n%s", text)
+		}
 		sysboxtest.CheckLines(t, text,
 			"runner jit=jit-"+id,
-			"runner ACTIONS_RESULTS_URL=http://host.docker.internal:"+strconv.Itoa(cfg.ServicePort)+"/",
-			"runner RUNPLANE_TEST=1",
 			"runner mount /mnt/scratch ",
 			"runner Listening for Jobs",
 			"runner Running job: test",
@@ -141,7 +151,7 @@ func TestSandbox(t *testing.T) {
 		if t.Failed() {
 			t.Logf("sandbox log:\n%s", text)
 		}
-		checkRemoved(t, docker, cfg, id)
+		checkRemoved(t, docker, opts.Sandboxes, id)
 	})
 
 	t.Run("stop", func(t *testing.T) {
@@ -172,10 +182,12 @@ func TestSandbox(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("stop of an idle sandbox: %s", time.Since(stopped).Round(time.Millisecond))
+		// The events come after Stop returns.
+		ev.Wait(t, id, sandbox.StateGone, time.Minute)
 		if got, want := ev.States(id), []sandbox.State{"starting", "idle", "stopping", "gone"}; !slices.Equal(got, want) {
 			t.Errorf("states = %v, want %v", got, want)
 		}
-		checkRemoved(t, docker, cfg, id)
+		checkRemoved(t, docker, opts.Sandboxes, id)
 		if err := drv.Stop(ctx, id); err != nil {
 			t.Errorf("a second Stop = %v, want nil", err)
 		}
@@ -192,7 +204,7 @@ func TestSandbox(t *testing.T) {
 		// runplane restarts. The sandbox keeps its runner, and the new
 		// driver takes it over with a new control token.
 		drv.Close()
-		drv, err = devdocker.New(opts)
+		drv, err = devdocker.New(true, opts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -201,14 +213,15 @@ func TestSandbox(t *testing.T) {
 		if len(list) != 1 || list[0].ID != id || list[0].State != sandbox.StateIdle {
 			t.Fatalf("List after the restart = %+v, want the idle sandbox", list)
 		}
-		ev.WaitRunner(t, id, sandbox.RunnerResume, 30*time.Second)
+		// The events come to the new driver only when the guest connects
+		// to it.
 		bundle.Signal(t, "start", id)
 		bundle.Signal(t, "end", id)
 		ev.Wait(t, id, sandbox.StateGone, 2*time.Minute)
 		if got, want := ev.States(id), []sandbox.State{"busy", "stopping", "gone"}; !slices.Equal(got, want) {
 			t.Errorf("states after the restart = %v, want %v", got, want)
 		}
-		checkRemoved(t, docker, cfg, id)
+		checkRemoved(t, docker, opts.Sandboxes, id)
 	})
 
 	t.Run("second driver", func(t *testing.T) {
@@ -222,9 +235,10 @@ func TestSandbox(t *testing.T) {
 		// A second runplane on the same Docker, with its own data folder,
 		// must not take over or remove the sandbox of the first.
 		other := opts
-		other.Config.DataDir = filepath.Join(work, "other")
-		other.Config.ServicePort = freePort(t) - 1
-		drv2, err := devdocker.New(other)
+		other.DataDir = filepath.Join(work, "other")
+		other.Sandboxes = filepath.Join(other.DataDir, "sandboxes")
+		other.ServicePort = freePort(t) - 1
+		drv2, err := devdocker.New(true, other)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,7 +258,7 @@ func TestSandbox(t *testing.T) {
 		if got, want := ev.States(id), []sandbox.State{"starting", "idle", "stopping", "gone"}; !slices.Equal(got, want) {
 			t.Errorf("states = %v, want %v", got, want)
 		}
-		checkRemoved(t, docker, cfg, id)
+		checkRemoved(t, docker, opts.Sandboxes, id)
 	})
 
 	t.Run("probe", func(t *testing.T) {
@@ -255,7 +269,7 @@ func TestSandbox(t *testing.T) {
 }
 
 // checkRemoved checks that a removed sandbox left no container, volume, or folder.
-func checkRemoved(t *testing.T, docker *client.Client, cfg config.Config, id string) {
+func checkRemoved(t *testing.T, docker *client.Client, sandboxes, id string) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := docker.ContainerInspect(ctx, "runplane-"+id, client.ContainerInspectOptions{}); !cerrdefs.IsNotFound(err) {
@@ -264,7 +278,7 @@ func checkRemoved(t *testing.T, docker *client.Client, cfg config.Config, id str
 	if _, err := docker.VolumeInspect(ctx, "runplane-scratch-"+id, client.VolumeInspectOptions{}); !cerrdefs.IsNotFound(err) {
 		t.Errorf("the scratch volume is still there (inspect: %v)", err)
 	}
-	if _, err := os.Stat(cfg.SandboxDir(id)); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(sandboxes, id)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the sandbox folder is still there (stat: %v)", err)
 	}
 }

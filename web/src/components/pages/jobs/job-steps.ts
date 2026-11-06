@@ -1,5 +1,4 @@
 import type { Schemas } from '~/api/client'
-import { stepStatus } from '~/components/app/status-icon'
 import { stepTime } from './job-format'
 
 type Step = Schemas['JobStep']
@@ -8,8 +7,8 @@ type Step = Schemas['JobStep']
  * The step whose log opens with the page: the first failed step, or 0 (the
  * whole log) when no step failed.
  */
-export function defaultStep(steps: readonly Step[]): number {
-  return steps.find((step) => stepStatus(step) === 'failed')?.number ?? 0
+function defaultStep(steps: readonly Step[]): number {
+  return steps.find((step) => step.status === 'failed')?.number ?? 0
 }
 
 /**
@@ -17,9 +16,9 @@ export function defaultStep(steps: readonly Step[]): number {
  * stored log splits into steps. A live log is the sandbox's stream of the
  * whole job, so it shows whole (0).
  */
-export function shownStep(job: Pick<Schemas['Job'], 'log_state' | 'steps'>, search: { step?: number }): number {
+export function shownStep(job: Pick<Schemas['Job'], 'log_state' | 'steps'>, step: number | undefined): number {
   if (job.log_state !== 'stored') return 0
-  return search.step ?? defaultStep(job.steps)
+  return step ?? defaultStep(job.steps)
 }
 
 /** The step that ran longest, for the marker on the CPU and Memory charts. */

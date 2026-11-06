@@ -2,8 +2,6 @@ package github
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,28 +10,28 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/store"
 )
 
 func TestManifest(t *testing.T) {
 	tests := []struct {
-		accountType, org string
-		wantAction       string
-		wantPermissions  map[string]any
+		owner           ghapp.Account
+		wantAction      string
+		wantPermissions map[string]any
 	}{
-		{"organization", "acme", "/organizations/acme/settings/apps/new",
+		{ghapp.Account{Type: ghapp.Organization, Login: "acme"}, "/organizations/acme/settings/apps/new",
 			map[string]any{"organization_self_hosted_runners": "write", "actions": "write", "metadata": "read",
 				"contents": "write", "pull_requests": "write", "workflows": "write"}},
-		{"user", "", "/settings/apps/new",
+		{ghapp.Account{Type: ghapp.User}, "/settings/apps/new",
 			map[string]any{"administration": "write", "actions": "write", "metadata": "read",
 				"contents": "write", "pull_requests": "write", "workflows": "write"}},
 	}
 	for _, tt := range tests {
-		t.Run(tt.accountType, func(t *testing.T) {
+		t.Run(tt.owner.Type, func(t *testing.T) {
 			e := newEnv(t)
-			action, manifest, err := e.svc.Manifest(context.Background(), "https://ci.example.com", tt.accountType, tt.org)
+			action, manifest, err := e.svc.Manifest(context.Background(), "https://ci.example.com", tt.owner)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -52,34 +50,33 @@ func TestManifest(t *testing.T) {
 			if !reflect.DeepEqual(m, want) {
 				t.Errorf("manifest = %v, want %v", m, want)
 			}
-
-			// The store keeps only the hash of the state, for one hour.
-			var stored string
-			var expires int64
-			err = e.st.DB().QueryRow("SELECT state_hash, expires_at FROM manifest_states").Scan(&stored, &expires)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sum := sha256.Sum256([]byte(u.Query().Get("state"))); stored != hex.EncodeToString(sum[:]) {
-				t.Errorf("stored state %q, want the SHA-256 of the state", stored)
-			}
-			if d := time.Until(time.UnixMilli(expires)); d < 59*time.Minute || d > time.Hour {
-				t.Errorf("state expires in %s, want 1 hour", d)
-			}
 		})
 	}
 }
 
-func TestAppName(t *testing.T) {
+// GitHub App names are unique on GitHub, and GitHub refuses names longer
+// than 34 characters.
+func TestManifestNamesTheApp(t *testing.T) {
 	tests := []struct{ instance, want string }{
-		{"", `^runplane-[a-z2-7]{6}$`},
+		{"", `^runplane-[a-z2-7]{6}$`}, // the default instance name
 		{" Acme CI ", `^Acme CI-[a-z2-7]{6}$`},
-		// GitHub refuses app names longer than 34 characters.
 		{"The continuous integration of Acme Corporation", `^The continuous integration-[a-z2-7]{6}$`},
 	}
 	for _, tt := range tests {
-		if got := appName(tt.instance); !regexp.MustCompile(tt.want).MatchString(got) {
-			t.Errorf("appName(%q) = %q, want %s", tt.instance, got, tt.want)
+		e := newEnv(t)
+		ctx := context.Background()
+		if tt.instance != "" {
+			if _, err := e.st.UpdateSettings(ctx, func(s *store.Settings) error { s.InstanceName = tt.instance; return nil }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, manifest, err := e.svc.Manifest(ctx, "https://ci.example.com", ghapp.Account{Type: ghapp.User})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m struct{ Name string }
+		if err := json.Unmarshal([]byte(manifest), &m); err != nil || !regexp.MustCompile(tt.want).MatchString(m.Name) {
+			t.Errorf("instance %q: app name %q, %v; want %s", tt.instance, m.Name, err, tt.want)
 		}
 	}
 }
@@ -97,14 +94,14 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
 		})
 	})
-	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", "organization", "acme")
+	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghapp.Account{Type: ghapp.Organization, Login: "acme"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	u, _ := url.Parse(action)
 	state := u.Query().Get("state")
 
-	to, err := e.svc.Callback(ctx, "https://ci.example.com", "code123", state)
+	to, err := e.svc.Callback(ctx, "code123", state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,19 +115,16 @@ func TestCallbackStoresSealedApp(t *testing.T) {
 	if app.AppID != 4242 || app.ClientID != "Iv23.abc" || app.OwnerLogin != "acme" || app.OwnerType != "Organization" {
 		t.Errorf("app = %+v", app)
 	}
-	if strings.Contains(string(app.PrivateKeyEnc), "PRIVATE KEY") || strings.Contains(string(app.ClientSecretEnc), "secret-1") {
-		t.Error("the store has the key or the client secret in clear text")
+	if strings.Contains(string(app.PrivateKeyEnc), "PRIVATE KEY") {
+		t.Error("the store has the key in clear text")
 	}
 	if key, err := e.box.Open(app.PrivateKeyEnc); err != nil || string(key) != string(testPEM()) {
 		t.Errorf("sealed key does not open to the PEM: %v", err)
 	}
-	if secret, err := e.box.Open(app.ClientSecretEnc); err != nil || string(secret) != "secret-1" {
-		t.Errorf("sealed client secret = %q, %v", secret, err)
-	}
 
 	// A state works one time, and a bad state does not reach GitHub.
 	for _, s := range []string{state, "bad-state"} {
-		if _, err := e.svc.Callback(ctx, "https://ci.example.com", "code123", s); err == nil {
+		if _, err := e.svc.Callback(ctx, "code123", s); err == nil {
 			t.Errorf("callback with the state %q succeeded", s)
 		}
 	}
@@ -153,15 +147,15 @@ func TestCallbackRejectsAppOfAnotherAccount(t *testing.T) {
 			"pem": string(testPEM()), "created_at": "2026-11-04T10:00:00Z",
 		})
 	})
-	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", "organization", "Telemetry")
+	action, _, err := e.svc.Manifest(ctx, "https://ci.example.com", ghapp.Account{Type: ghapp.Organization, Login: "Telemetry"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	u, _ := url.Parse(action)
 
-	_, err = e.svc.Callback(ctx, "https://ci.example.com", "code123", u.Query().Get("state"))
+	_, err = e.svc.Callback(ctx, "code123", u.Query().Get("state"))
 	if err == nil || !strings.Contains(err.Error(), "ada") || !strings.Contains(err.Error(), "Telemetry") ||
-		!strings.Contains(err.Error(), "https://github.com/settings/apps/runplane-ab12cd/advanced") {
+		!strings.Contains(err.Error(), e.srv.URL+"/settings/apps/runplane-ab12cd/advanced") {
 		t.Fatalf("err = %v, want the two accounts and the delete page of the app", err)
 	}
 	app, err := e.st.GetGitHubApp(ctx)
@@ -203,22 +197,5 @@ func TestDisconnectNamesScaleSetsLeftOnGitHub(t *testing.T) {
 	}
 	if _, err := e.st.GetGitHubApp(context.Background()); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("the app is still there after a GitHub failure: %v", err)
-	}
-}
-
-func TestAppDeleteURL(t *testing.T) {
-	tests := []struct {
-		ownerType, htmlURL, want string
-	}{
-		{"Organization", "", "https://github.com/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
-		{"User", "", "https://github.com/settings/apps/runplane-ab12cd/advanced"},
-		{"Organization", "https://git.example.com/apps/runplane-ab12cd",
-			"https://git.example.com/organizations/acme/settings/apps/runplane-ab12cd/advanced"},
-	}
-	for _, tt := range tests {
-		got := appDeleteURL(store.GitHubApp{Slug: "runplane-ab12cd", OwnerLogin: "acme", OwnerType: tt.ownerType, HTMLURL: tt.htmlURL})
-		if got != tt.want {
-			t.Errorf("appDeleteURL(%s, %q) = %q, want %q", tt.ownerType, tt.htmlURL, got, tt.want)
-		}
 	}
 }

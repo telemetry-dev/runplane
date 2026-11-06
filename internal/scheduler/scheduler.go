@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -28,35 +29,29 @@ const (
 	// The waiting sandboxes of a server with no connection for this long stop
 	// counting as runners. A short loss, such as an agent update, keeps them.
 	lostServerAfter = 15 * time.Minute
-	// A queued job that runplane did not take for this long is closed.
+	// A job that waits for a runner this long, queued or assigned, is closed.
 	unclaimedJobAfter = time.Hour
-	// The cleanup runs the finish step again for jobs that completed in this
-	// time, at most resumeFinishBatch at a time.
-	resumeFinishWithin = 7 * 24 * time.Hour
-	resumeFinishBatch  = 20
+	// The cleanup runs the finish step again for at most this many jobs at
+	// a time.
+	resumeFinishBatch = 20
 	// CheckJob results stay valid this long for the other jobs of a run.
 	checkTTL = 10 * time.Minute
 	// A result that a runner reported stays this long for cancelLostJobs.
 	resultTTL = time.Hour
 	// A debug re-run waits this long for its next attempt.
 	rerunTTL = 6 * time.Hour
-	// Server and cache samples stay a little longer than the 30-day overview.
-	statsRetention = 31 * 24 * time.Hour
 )
 
 // runnerStates are the states of a sandbox that counts as a runner of its scale set.
 var runnerStates = []sandbox.State{sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy}
-
-// liveStates are the states of a sandbox that still operates.
-var liveStates = []sandbox.State{sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy, sandbox.StateStopping}
 
 type Config struct {
 	Store   *store.Store
 	Bus     *events.Bus
 	Fleet   Fleet
 	GitHub  GitHub
-	Log     *slog.Logger     // nil: no log
-	LogsDir string           // job logs go to <LogsDir>/<job-id>.log
+	Log     *slog.Logger // nil: no log
+	JobLogs *joblog.Logs
 	Now     func() time.Time // nil: time.Now
 }
 
@@ -66,7 +61,7 @@ type Scheduler struct {
 	fleet   Fleet
 	gh      GitHub
 	log     *slog.Logger
-	logsDir string
+	jobLogs *joblog.Logs
 	now     func() time.Time
 
 	// bg is the context of work that outlives the call that starts it.
@@ -77,12 +72,17 @@ type Scheduler struct {
 	pending atomic.Uint32 // work bits for Run
 	wakeCh  chan struct{}
 
+	// The changes of the pools and the settings, from New on. Run resizes
+	// the scale sets for them.
+	pools    <-chan events.PoolsChanged
+	settings <-chan events.SettingsChanged
+
 	placeMu sync.Mutex // one placement at a time, see place
 
 	mu        sync.Mutex
 	sets      map[string]*scaleSet      // attached scale sets by ID
 	reserved  map[string]reservation    // by server ID
-	starting  map[string]string         // runner name by sandbox ID, from before the JIT config until Driver.Start returns
+	starting  map[string]bool           // sandbox IDs, from before the row write until Driver.Start returns
 	reruns    map[rerunKey]time.Time    // debug re-runs that wait for their next attempt
 	debugJobs map[string][]string       // debug job IDs by scale set ID that wait for a debug sandbox
 	checks    map[checkKey]checkEntry   // CheckJob results by run
@@ -99,6 +99,8 @@ type runnerResult struct {
 	at     time.Time
 }
 
+// The work bits of Run. Each work updates the max runners, so doMaxRunners
+// only wakes Run.
 const (
 	doMaxRunners uint32 = 1 << iota
 	doResize
@@ -113,14 +115,16 @@ func New(c Config) *Scheduler {
 		fleet:     c.Fleet,
 		gh:        c.GitHub,
 		log:       cmp.Or(c.Log, slog.New(slog.DiscardHandler)),
-		logsDir:   c.LogsDir,
+		jobLogs:   c.JobLogs,
 		now:       c.Now,
 		bg:        bg,
 		stopBg:    stop,
 		wakeCh:    make(chan struct{}, 1),
+		pools:     events.Subscribe[events.PoolsChanged](bg, c.Bus),
+		settings:  events.Subscribe[events.SettingsChanged](bg, c.Bus),
 		sets:      map[string]*scaleSet{},
 		reserved:  map[string]reservation{},
-		starting:  map[string]string{},
+		starting:  map[string]bool{},
 		reruns:    map[rerunKey]time.Time{},
 		debugJobs: map[string][]string{},
 		checks:    map[checkKey]checkEntry{},
@@ -136,9 +140,9 @@ func New(c Config) *Scheduler {
 }
 
 // Run does the cleanup at once and then each minute, the retention each
-// day, the metrics flush each 10 seconds, and the work that PoolsChanged,
-// CapacityChanged, and sandbox events ask for. It returns when ctx ends,
-// after the job finish steps stop.
+// day, the metrics flush each 10 seconds, and the work that the changes of
+// the pools and the settings, CapacityChanged, and sandbox events ask for.
+// It returns when ctx ends, after the job finish steps stop.
 func (s *Scheduler) Run(ctx context.Context) {
 	defer func() {
 		s.mu.Lock()
@@ -171,6 +175,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.work(ctx)
 		case <-s.wakeCh:
 			s.work(ctx)
+		case <-s.pools:
+			s.wake(doResize)
+		case <-s.settings:
+			s.wake(doResize)
 		}
 	}
 }
@@ -194,9 +202,6 @@ func (s *Scheduler) wake(work uint32) {
 	default:
 	}
 }
-
-// PoolsChanged resizes all scale sets for the new pool settings.
-func (s *Scheduler) PoolsChanged(context.Context) { s.wake(doResize) }
 
 // CapacityChanged compares the sandboxes with the rows again and resizes all
 // scale sets. The fleet calls it when a server comes or goes.
@@ -279,6 +284,8 @@ func (s *Scheduler) setState(ctx context.Context, id string, state sandbox.State
 	return s.setStateAt(ctx, id, state, reason, s.now())
 }
 
+// setStateAt is setState at t. A sandbox that is done gets no more samples,
+// so its buffered samples go to its job at once.
 func (s *Scheduler) setStateAt(ctx context.Context, id string, state sandbox.State, reason string, t time.Time) (store.Sandbox, bool) {
 	b, changed, err := s.st.AdvanceSandboxState(ctx, id, state, reason, t)
 	if err != nil {
@@ -288,9 +295,10 @@ func (s *Scheduler) setStateAt(ctx context.Context, id string, state sandbox.Sta
 	if !changed {
 		return b, false
 	}
-	s.publish(events.SandboxState, b)
+	s.bus.Publish(events.SandboxState(b))
 	s.publishPoolStats(ctx, b.PoolID)
 	if state.Done() {
+		s.flushSandbox(ctx, b.ID)
 		s.wake(doMaxRunners)
 	}
 	return b, true
@@ -307,46 +315,13 @@ func (s *Scheduler) goBg(fn func(ctx context.Context)) {
 	s.wg.Go(func() { fn(s.bg) })
 }
 
-func (s *Scheduler) publish(typ string, data any) {
-	s.bus.Publish(events.Event{Type: typ, Data: data})
-}
-
-// poolStats has the JSON fields of the pool.stats event.
-type poolStats struct {
-	PoolID   string `json:"pool_id"`
-	Idle     int    `json:"idle"`
-	Busy     int    `json:"busy"`
-	Starting int    `json:"starting"`
-	Queued   int    `json:"queued"`
-	Assigned int    `json:"assigned"`
-}
-
 func (s *Scheduler) publishPoolStats(ctx context.Context, poolID string) {
-	counts, err := s.st.CountLiveSandboxes(ctx)
+	counts, err := s.st.PoolCounts(ctx)
 	if err != nil {
-		s.log.Warn("count sandboxes", "err", err)
+		s.log.Warn("count pool runners and jobs", "err", err)
 		return
 	}
-	p := poolStats{PoolID: poolID}
-	p.Queued, p.Assigned, err = s.st.CountPoolJobs(ctx, poolID, s.now().Add(-24*time.Hour))
-	if err != nil {
-		s.log.Warn("count jobs", "err", err)
-		return
-	}
-	for _, c := range counts {
-		if c.PoolID != poolID {
-			continue
-		}
-		switch c.State {
-		case sandbox.StateIdle:
-			p.Idle += c.Count
-		case sandbox.StateBusy:
-			p.Busy += c.Count
-		case sandbox.StateStarting:
-			p.Starting += c.Count
-		}
-	}
-	s.publish(events.PoolStats, p)
+	s.bus.Publish(events.PoolStats{PoolID: poolID, PoolCounts: counts[poolID]})
 }
 
 // timeLimit is the time limit of a job of the pool. A warm sandbox of the

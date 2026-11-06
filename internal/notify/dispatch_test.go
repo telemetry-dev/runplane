@@ -1,183 +1,150 @@
 package notify
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
+	"fmt"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
-	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
 )
 
-// hook is a webhook receiver that records the events it gets. It answers
-// 404 on the path /bad.
-type hook struct {
-	*httptest.Server
-	mu   sync.Mutex
-	got  []webhookBody
-	done chan struct{} // gets a value for each request
-}
+// The dispatcher sends each alert in the background. A test that wants no
+// alert for some events publishes them, then flushes: it publishes an event
+// of the same type with an alert, and waits for that alert. The bus keeps
+// the order of one type, so the dispatcher handled the events before it.
+// Before a test counts the alerts, it flushes settleFlushes times, so that
+// a wrong alert of an earlier event has the time of several sends to come.
+const settleFlushes = 3
 
-type webhookBody struct {
-	Path  string
-	Event string         `json:"event"`
-	Text  string         `json:"text"`
-	Data  map[string]any `json:"data"`
-}
-
-func (h *hook) events() []webhookBody {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return slices.Clone(h.got)
-}
-
-func newDispatcher(t *testing.T) (*Dispatcher, *hook) {
-	t.Helper()
-	h := &hook{done: make(chan struct{}, 10)}
-	h.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b := webhookBody{Path: r.URL.Path}
-		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-			t.Errorf("webhook body: %v", err)
+// with returns the messages whose data has key with value.
+func with(list []message, key string, value any) []message {
+	var out []message
+	for _, m := range list {
+		if m.Data[key] == value {
+			out = append(out, m)
 		}
-		h.mu.Lock()
-		h.got = append(h.got, b)
-		h.mu.Unlock()
-		select {
-		case h.done <- struct{}{}:
-		default:
-		}
-		if r.URL.Path == "/bad" {
-			http.Error(w, "no such hook", http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(h.Close)
-	st, err := store.Open(filepath.Join(t.TempDir(), "runplane.db"))
-	if err != nil {
-		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
-	box, err := secret.NewBox(bytes.Repeat([]byte{7}, secret.KeySize))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &Dispatcher{Store: st, Box: box}, h
-}
-
-// subscribe adds the webhook channel id, with the URL path /id on h, for types.
-func subscribe(t *testing.T, d *Dispatcher, h *hook, id string, enabled bool, types ...Type) {
-	t.Helper()
-	var names []string
-	for _, typ := range types {
-		names = append(names, string(typ))
-	}
-	err := d.Store.CreateNotificationChannel(context.Background(), store.NotificationChannel{
-		ID: id, Name: id, Kind: Webhook, URLEnc: d.Box.Seal([]byte(h.URL + "/" + id)),
-		Events: names, Enabled: enabled, CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	return out
 }
 
 func TestDispatcherSendsToSubscribersAndRecordsDeliveries(t *testing.T) {
-	d, h := newDispatcher(t)
-	subscribe(t, d, h, "ok", true, JobFailed)
-	subscribe(t, d, h, "bad", true, DiskLow, JobFailed)
-	subscribe(t, d, h, "off", false, JobFailed)
-	subscribe(t, d, h, "other", true, DiskLow)
-	ctx := context.Background()
+	e := newEnv(t, false)
+	e.subscribe(t, "ok", Webhook, true, JobFailed)
+	e.subscribe(t, "bad", Webhook, true, DiskLow, JobFailed)
+	e.subscribe(t, "off", Webhook, false, JobFailed)
+	e.subscribe(t, "other", Webhook, true, DiskLow)
+	e.run(t)
+	e.d.Notify(failedJob())
 
-	err := d.Notify(ctx, failedJob())
-	if err == nil || !strings.Contains(err.Error(), "channel bad") || strings.Contains(err.Error(), "channel ok") {
-		t.Fatalf("Notify error = %v, want only the error of channel bad", err)
+	// The delivery of a channel is recorded after its send.
+	var last map[string]store.NotificationDelivery
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		list, err := e.channels.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = map[string]store.NotificationDelivery{}
+		for _, c := range list {
+			last[c.Name] = c.Last
+		}
+		if last["ok"].SentAt != nil && last["bad"].SentAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("deliveries %+v, want one of ok and one of bad", last)
+		}
+	}
+	if d := last["ok"]; d.Error != "" {
+		t.Errorf("delivery of ok = %+v, want no error", d)
+	}
+	if d := last["bad"]; !strings.Contains(d.Error, "404") {
+		t.Errorf("delivery of bad = %+v, want the 404 error", d)
+	}
+	for _, name := range []string{"off", "other"} {
+		if d := last[name]; d.SentAt != nil {
+			t.Errorf("delivery of %s = %+v, want none", name, d)
+		}
 	}
 	var paths []string
-	for _, b := range h.events() {
-		paths = append(paths, b.Path)
+	for _, m := range e.h.messages() {
+		paths = append(paths, m.Path)
 	}
 	slices.Sort(paths)
 	if !slices.Equal(paths, []string{"/bad", "/ok"}) {
-		t.Fatalf("requests to %q, want one to /bad and one to /ok", paths)
-	}
-
-	got, err := d.Store.NotificationDeliveries(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d := got["ok"]; d.SentAt == nil || d.Error != "" {
-		t.Errorf("delivery of ok = %+v, want a time and no error", d)
-	}
-	if d := got["bad"]; d.SentAt == nil || !strings.Contains(d.Error, "404") {
-		t.Errorf("delivery of bad = %+v, want a time and the 404 error", d)
-	}
-	for _, id := range []string{"off", "other"} {
-		if d := got[id]; d.SentAt != nil {
-			t.Errorf("delivery of %s = %+v, want none", id, d)
-		}
+		t.Errorf("requests to %q, want one to /bad and one to /ok", paths)
 	}
 }
 
 func TestDispatcherSendsOneAlertForAFailedJob(t *testing.T) {
-	d, h := newDispatcher(t)
-	subscribe(t, d, h, "hook", true, JobFailed)
-	bus := runDispatcher(t, d)
+	e := newEnv(t, false)
+	e.subscribe(t, "hook", Webhook, true, JobFailed)
+	e.run(t)
 	ctx := context.Background()
-
-	jobs := map[string]store.Job{}
-	for i, result := range []string{store.ResultFailed, store.ResultCancelled, store.ResultSucceeded} {
-		j, err := d.Store.UpsertJob(ctx, store.JobMessage{RunnerRequestID: int64(i + 1), State: store.JobCompleted,
-			Result: result, Repository: "acme/api", JobName: "test"})
+	n := int64(0)
+	job := func(result string, run *store.JobEnrichment) store.Job {
+		t.Helper()
+		n++
+		j, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: n, State: store.JobCompleted,
+			Result: result, Repository: "acme/api", JobName: "test"}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result != store.ResultFailed {
-			if err := d.Store.SetJobEnrichment(ctx, j.ID, store.JobEnrichment{HeadBranch: "main"}); err != nil {
+		if run != nil {
+			if err := e.st.SetJobEnrichment(ctx, j.ID, *run, time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			if j, err = d.Store.GetJob(ctx, j.ID); err != nil {
+			if j, err = e.st.GetJob(ctx, j.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
-		jobs[result] = j
+		return j
 	}
-	failed := jobs[store.ResultFailed]
+	var flushed []string // the jobs of the flushes
+	settle := func() {
+		t.Helper()
+		for range settleFlushes {
+			j := job(store.ResultFailed, &store.JobEnrichment{HeadBranch: "main"})
+			flushed = append(flushed, j.ID)
+			e.bus.Publish(events.JobState(j))
+			e.h.waitFor(t, "the alert of "+j.ID, func(m []message) bool { return len(with(m, "job_id", j.ID)) > 0 })
+		}
+	}
+
 	// The completion comes before the run data: no alert yet.
-	for range 15 {
-		for _, j := range jobs {
-			bus.Publish(events.Event{Type: events.JobState, Data: j})
-		}
-		time.Sleep(10 * time.Millisecond)
+	failed := job(store.ResultFailed, nil)
+	for _, j := range []store.Job{
+		failed,
+		job(store.ResultCancelled, &store.JobEnrichment{HeadBranch: "main"}),
+		job(store.ResultSucceeded, &store.JobEnrichment{HeadBranch: "main"}),
+	} {
+		e.bus.Publish(events.JobState(j))
 	}
-	if got := h.events(); len(got) != 0 {
-		t.Fatalf("alerts before the run data: %+v", got)
+	settle()
+	if got := e.h.messages(); len(got) != len(flushed) {
+		t.Fatalf("alerts %+v, want only the alerts of the flushes", got)
 	}
-	if err := d.Store.SetJobEnrichment(ctx, failed.ID, store.JobEnrichment{HeadBranch: "main", Actor: "octo"}); err != nil {
+
+	// The run data comes, and later changes of the job send more events.
+	if err := e.st.SetJobEnrichment(ctx, failed.ID, store.JobEnrichment{HeadBranch: "main", Actor: "octo"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	enriched, err := d.Store.GetJob(ctx, failed.ID)
+	enriched, err := e.st.GetJob(ctx, failed.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishUntilAlert(t, bus, h, events.Event{Type: events.JobState, Data: &enriched})
-	for range 3 {
-		bus.Publish(events.Event{Type: events.JobState, Data: enriched})
+	for range 4 {
+		e.bus.Publish(events.JobState(enriched))
 	}
-	time.Sleep(100 * time.Millisecond)
-	got := h.events()
-	if len(got) != 1 {
-		t.Fatalf("got %d alerts, want 1: %+v", len(got), got)
-	}
-	if got[0].Event != "job.failed" || got[0].Data["job_id"] != failed.ID || got[0].Data["branch"] != "main" || got[0].Data["actor"] != "octo" {
-		t.Errorf("alert %+v, want job.failed of %s with its run data", got[0], failed.ID)
+	e.h.waitFor(t, "the alert of the failed job", func(m []message) bool { return len(with(m, "job_id", failed.ID)) > 0 })
+	settle()
+	got := with(e.h.messages(), "job_id", failed.ID)
+	if len(got) != 1 || got[0].Event != "job.failed" || got[0].Data["branch"] != "main" || got[0].Data["actor"] != "octo" {
+		t.Errorf("alerts %+v, want one job.failed of %s with its run data", got, failed.ID)
 	}
 }
 
@@ -185,113 +152,148 @@ func TestDispatcherSendsAFailedJobWithoutRunData(t *testing.T) {
 	prev := enrichWait
 	enrichWait = 50 * time.Millisecond
 	t.Cleanup(func() { enrichWait = prev })
-	d, h := newDispatcher(t)
-	subscribe(t, d, h, "hook", true, JobFailed)
-	bus := runDispatcher(t, d)
+	e := newEnv(t, false)
+	e.subscribe(t, "hook", Webhook, true, JobFailed)
+	e.run(t)
 
-	j, err := d.Store.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
-		Result: store.ResultFailed, Repository: "acme/api", JobName: "test"})
+	j, err := e.st.UpsertJob(context.Background(), store.JobMessage{RunnerRequestID: 1, State: store.JobCompleted,
+		Result: store.ResultFailed, Repository: "acme/api", JobName: "test"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishUntilAlert(t, bus, h, events.Event{Type: events.JobState, Data: j})
-	if got := h.events(); len(got) != 1 || got[0].Data["job_id"] != j.ID {
-		t.Errorf("alerts %+v, want one for %s", got, j.ID)
+	e.bus.Publish(events.JobState(j))
+	if got := e.h.waitFor(t, "an alert", func(m []message) bool { return len(m) > 0 }); got[0].Data["job_id"] != j.ID {
+		t.Errorf("alert %+v, want the alert of %s", got[0], j.ID)
+	}
+}
+
+// Each backup row goes out on the bus. Only a failed backup sends an
+// alert, with the error of the row. The dispatcher also gets the events
+// that come before Run starts.
+func TestDispatcherSendsAFailedBackup(t *testing.T) {
+	e := newEnv(t, false)
+	e.subscribe(t, "hook", Webhook, true, BackupFailed)
+	now := time.Now()
+	e.bus.Publish(events.BackupState{ID: "b1", CreatedAt: now, Status: store.BackupDone})
+	e.bus.Publish(events.BackupState{ID: "b1", CreatedAt: now, Status: store.BackupUploaded})
+	const reason = "upload to S3: access denied"
+	e.bus.Publish(events.BackupState{ID: "b2", CreatedAt: now, Status: store.BackupFailed, Error: reason})
+	e.run(t)
+	e.h.waitFor(t, "the alert of b2", func(m []message) bool { return len(with(m, "error", reason)) > 0 })
+	for i := range settleFlushes {
+		flush := fmt.Sprint("flush ", i)
+		e.bus.Publish(events.BackupState{ID: flush, CreatedAt: now, Status: store.BackupFailed, Error: flush})
+		e.h.waitFor(t, "the alert of "+flush, func(m []message) bool { return len(with(m, "error", flush)) > 0 })
+	}
+	got := e.h.messages()
+	if b2 := with(got, "error", reason); len(got) != 1+settleFlushes || len(b2) != 1 || b2[0].Event != "backup.failed" {
+		t.Errorf("alerts %+v, want one backup.failed with the error of b2, and the alerts of the flushes", got)
 	}
 }
 
 func TestDispatcherDiskLow(t *testing.T) {
-	d, h := newDispatcher(t)
-	subscribe(t, d, h, "hook", true, DiskLow)
+	e := newEnv(t, false)
+	e.subscribe(t, "hook", Webhook, true, DiskLow)
 	ctx := context.Background()
-	at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
-	if err := d.Store.CreateServer(ctx, store.Server{ID: "s1", Name: "builder-1", Kind: store.ServerAgent,
-		Status: store.ServerOnline, CreatedAt: at, UpdatedAt: at}); err != nil {
+	start := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	if err := e.st.CreateServer(ctx, store.Server{ID: "s1", Name: "builder-1", Kind: store.ServerAgent,
+		Status: store.ServerOnline, CreatedAt: start, UpdatedAt: start}); err != nil {
 		t.Fatal(err)
 	}
-	now := at
-	d.now = func() time.Time { return now }
-	d.handle(ctx, events.Event{Type: events.SettingsChanged, Data: store.Settings{MinFreeDiskPercent: 15}})
+	// With a domain and no public URL, the links go to the domain. Run
+	// reads the limit from the settings.
+	if _, err := e.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.Domain, s.MinFreeDiskPercent = "ci.example.com", 20
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The dispatcher has no clock option, so the test sets its clock.
+	var now atomic.Int64
+	now.Store(start.UnixNano())
+	e.d.now = func() time.Time { return time.Unix(0, now.Load()) }
+	e.run(t)
+
+	flushes := 0
+	flush := func() {
+		t.Helper()
+		flushes++
+		id := fmt.Sprint("flush-", flushes)
+		e.bus.Publish(events.HostStats{ServerID: id, DiskPercent: 100})
+		e.h.waitFor(t, "the alert of "+id, func(m []message) bool { return len(with(m, "server_id", id)) > 0 })
+	}
+	// sample gives the dispatcher a sample at a time, and waits until it
+	// handled it, before the clock moves.
 	sample := func(after time.Duration, usedPercent float64) {
-		now = at.Add(after)
-		d.handle(ctx, events.Event{Type: events.HostStats, Data: store.ServerStat{ServerID: "s1", At: now, DiskPercent: usedPercent}})
-		d.wg.Wait()
+		t.Helper()
+		now.Store(start.Add(after).UnixNano())
+		e.bus.Publish(events.HostStats{ServerID: "s1", DiskPercent: usedPercent})
+		flush()
+	}
+	alerts := func(n int) []message {
+		t.Helper()
+		e.h.waitFor(t, fmt.Sprint(n, " alerts of s1"), func(m []message) bool { return len(with(m, "server_id", "s1")) >= n })
+		for range settleFlushes {
+			flush()
+		}
+		return with(e.h.messages(), "server_id", "s1")
 	}
 
-	sample(0, 90) // 10% free: alert
-	sample(time.Minute, 92)
-	// The fleet reports the same drop.
-	if err := d.Notify(ctx, DiskLowEvent("", "s1", "builder-1", 8, 15)); err != nil {
-		t.Fatal(err)
+	// The samples keep 16% free or more, so the default limit of 15% sends
+	// no alert.
+	sample(0, 83) // 17% free: alert
+	sample(time.Minute, 84)
+	sample(2*time.Minute, 77) // 23% free is not far enough above 20%
+	sample(3*time.Minute, 83)
+	sample(time.Hour, 65) // 35% free
+	sample(2*time.Hour, 83)
+	if got := alerts(1); len(got) != 1 || got[0].Event != "disk.low" || got[0].Data["server_name"] != "builder-1" ||
+		got[0].URL != "https://ci.example.com/servers/s1" {
+		t.Fatalf("alerts in the first 6 hours: %+v, want one disk.low of builder-1 with a link to the domain", got)
 	}
-	sample(2*time.Minute, 82) // 18% free is not far enough above 15%
-	sample(3*time.Minute, 90)
-	sample(time.Hour, 70) // 30% free
-	sample(2*time.Hour, 90)
-	if got := h.events(); len(got) != 1 || got[0].Event != "disk.low" || got[0].Data["server_name"] != "builder-1" {
-		t.Fatalf("alerts in the first 6 hours: %+v, want one disk.low of builder-1", got)
+	sample(7*time.Hour, 77)
+	sample(7*time.Hour+time.Minute, 84)
+	if n := len(alerts(1)); n != 1 {
+		t.Fatalf("got %d alerts, want none after a rise to 23%% free", n)
 	}
-	sample(7*time.Hour, 82)
-	sample(7*time.Hour+time.Minute, 95)
-	if n := len(h.events()); n != 1 {
-		t.Fatalf("got %d alerts, want none after a rise to 18%% free", n)
-	}
-	sample(8*time.Hour, 70)
-	sample(8*time.Hour+time.Minute, 95)
-	if n := len(h.events()); n != 2 {
+	sample(8*time.Hour, 65)
+	sample(8*time.Hour+time.Minute, 84)
+	if n := len(alerts(2)); n != 2 {
 		t.Fatalf("got %d alerts, want a second one after 6 hours", n)
 	}
 }
 
 func TestDispatcherServerUnreachableOncePerOutage(t *testing.T) {
-	d, h := newDispatcher(t)
-	subscribe(t, d, h, "hook", true, ServerUnreachable)
-	ctx := context.Background()
-	down := store.Server{ID: "s1", Name: "builder-1", Status: store.ServerUnreachable}
-	// The fleet and the server.state event report the same outage.
-	if err := d.Notify(ctx, ServerUnreachableEvent("", "s1", "builder-1", time.Now())); err != nil {
-		t.Fatal(err)
+	e := newEnv(t, false)
+	e.subscribe(t, "hook", Webhook, true, ServerUnreachable)
+	e.run(t)
+	flushes := 0
+	flush := func() {
+		t.Helper()
+		flushes++
+		id := fmt.Sprint("flush-", flushes)
+		e.bus.Publish(events.ServerState{ID: id, Name: id, Status: store.ServerUnreachable})
+		e.h.waitFor(t, "the alert of "+id, func(m []message) bool { return len(with(m, "server_id", id)) > 0 })
 	}
-	d.handle(ctx, events.Event{Type: events.ServerState, Data: down})
-	d.wg.Wait()
-	if n := len(h.events()); n != 1 {
+	alerts := func(n int) []message {
+		t.Helper()
+		e.h.waitFor(t, fmt.Sprint(n, " alerts of s1"), func(m []message) bool { return len(with(m, "server_id", "s1")) >= n })
+		for range settleFlushes {
+			flush()
+		}
+		return with(e.h.messages(), "server_id", "s1")
+	}
+
+	// Each change of the row during the outage sends a server.state event.
+	down := events.ServerState{ID: "s1", Name: "builder-1", Status: store.ServerUnreachable}
+	e.bus.Publish(down)
+	e.bus.Publish(down)
+	if n := len(alerts(1)); n != 1 {
 		t.Fatalf("got %d alerts for one outage, want 1", n)
 	}
-	d.handle(ctx, events.Event{Type: events.ServerState, Data: store.Server{ID: "s1", Name: "builder-1", Status: store.ServerOnline}})
-	d.handle(ctx, events.Event{Type: events.ServerState, Data: &down})
-	d.wg.Wait()
-	if got := h.events(); len(got) != 2 || got[1].Data["server_id"] != "s1" {
-		t.Fatalf("alerts %+v, want a second one for the second outage", got)
-	}
-}
-
-func runDispatcher(t *testing.T, d *Dispatcher) *events.Bus {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	bus := &events.Bus{}
-	done := make(chan struct{})
-	go func() { d.Run(ctx, bus); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
-	return bus
-}
-
-// publishUntilAlert publishes the events again and again until the hook
-// gets an alert, because Run subscribes to the bus in the background. Then
-// it waits a little for a wrong second alert.
-func publishUntilAlert(t *testing.T, bus *events.Bus, h *hook, list ...events.Event) {
-	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
-		for _, e := range list {
-			bus.Publish(e)
-		}
-		select {
-		case <-h.done:
-			time.Sleep(200 * time.Millisecond)
-			return
-		case <-deadline:
-			t.Fatal("no alert came")
-		case <-time.After(10 * time.Millisecond):
-		}
+	e.bus.Publish(events.ServerState{ID: "s1", Name: "builder-1", Status: store.ServerOnline})
+	e.bus.Publish(down)
+	if n := len(alerts(2)); n != 2 {
+		t.Fatalf("got %d alerts, want a second one for the second outage", n)
 	}
 }

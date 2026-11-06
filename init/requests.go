@@ -6,11 +6,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
-)
 
-// holdGrace is how long a debug sandbox waits for a hold after the runner
-// exits. The host sets the hold only after it sees the job complete.
-const holdGrace = 2 * time.Minute
+	"github.com/runplane/runplane/internal/sandbox/guest"
+)
 
 // hostRequests keeps what the host asks for: a hold time and a shutdown.
 type hostRequests struct {
@@ -68,13 +66,10 @@ func (h *hostRequests) waitHold(debug bool, grace time.Duration) {
 	}
 }
 
-// guestMux serves the requests that the host sends to the guest.
 func guestMux(req *hostRequests, shells *shellServer) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/hold", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Until time.Time `json:"until"`
-		}
+	mux.HandleFunc("POST "+guest.PathHold, func(w http.ResponseWriter, r *http.Request) {
+		var body guest.Hold
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 			http.Error(w, "bad hold: "+err.Error(), http.StatusBadRequest)
 			return
@@ -82,11 +77,11 @@ func guestMux(req *hostRequests, shells *shellServer) *http.ServeMux {
 		req.setHold(body.Until)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST "+guest.PathShutdown, func(w http.ResponseWriter, _ *http.Request) {
 		req.shutdown()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("POST /v1/shell", shells.handleOpen)
-	mux.HandleFunc("POST /v1/shell/resize", shells.handleResize)
+	mux.HandleFunc("POST "+guest.PathShell, shells.handleOpen)
+	mux.HandleFunc("POST "+guest.PathShellResize, shells.handleResize)
 	return mux
 }

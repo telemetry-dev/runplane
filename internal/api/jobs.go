@@ -10,6 +10,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -28,7 +30,7 @@ type JobSummary struct {
 	ServerID     string     `json:"server_id" doc:"Empty until the job has a sandbox."`
 	ServerName   string     `json:"server_name"`
 	State        string     `json:"state" enum:"queued,assigned,running,completed"`
-	Result       *string    `json:"result" enum:"succeeded,failed,cancelled,skipped" doc:"Null until the job completes."`
+	Status       jobStatus  `json:"status" doc:"queued until a runner starts the job, also when GitHub assigned it, then running, and then the result."`
 	Debug        bool       `json:"debug" doc:"The sandbox stays after the job for a debug shell."`
 	RejectReason string     `json:"reject_reason" doc:"Why runplane does not take this queued job. Empty if it takes it."`
 	QueueMS      int64      `json:"queue_ms" doc:"Time from queued to assigned. For a job that still waits, the time until now."`
@@ -56,7 +58,8 @@ type Job struct {
 	SandboxState  string     `json:"sandbox_state" enum:"starting,idle,busy,stopping,gone,failed," doc:"Empty until the job has a sandbox."`
 	HoldUntil     *time.Time `json:"hold_until" doc:"A debug sandbox stays until this time after the job."`
 	SSHCommand    string     `json:"ssh_command" doc:"Command that opens the debug shell over SSH, for example \"ssh -p 2222 <sandbox-id>@ci.example.com\". Empty unless the sandbox is a debug sandbox that has not stopped."`
-	LogState      string     `json:"log_state" enum:"none,live,stored,expired"`
+	LogState      string     `json:"log_state" enum:"none,live,stored,expired" doc:"live while the job runs and its sandbox streams the log."`
+	FinishPending bool       `json:"finish_pending" doc:"The job completed, and runplane still gets its run data and its log from GitHub."`
 	CPUPeak       *float64   `json:"cpu_peak" doc:"Percent of the vCPU allocation."`
 	CPUAvg        *float64   `json:"cpu_avg" doc:"Percent of the vCPU allocation."`
 	MemPeakMB     *int       `json:"mem_peak_mb"`
@@ -66,12 +69,22 @@ type Job struct {
 	SizeAdvice    SizeAdvice `json:"size_advice" doc:"Whether the pool fits the CPU and memory use of the last 10 completed runs of this job (same repository, workflow file, and job name)."`
 }
 
-// JobStep is one step from the GitHub jobs API.
+// jobStatus is a store.Job status, with the enum store.JobStatuses.
+type jobStatus string
+
+func (jobStatus) Schema(huma.Registry) *huma.Schema {
+	s := &huma.Schema{Type: huma.TypeString}
+	for _, v := range store.JobStatuses {
+		s.Enum = append(s.Enum, v)
+	}
+	return s
+}
+
+// JobStep is one step of the job on GitHub.
 type JobStep struct {
 	Number      int        `json:"number"`
 	Name        string     `json:"name"`
-	Status      string     `json:"status" doc:"queued, in_progress, or completed."`
-	Conclusion  string     `json:"conclusion" doc:"For example success, failure, cancelled, or skipped. Empty until the step completes."`
+	Status      jobStatus  `json:"status" doc:"queued until the step starts, then running, and then the result."`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
@@ -83,15 +96,11 @@ type JobPage struct {
 }
 
 func jobSummary(j store.Job, r refs, now time.Time) JobSummary {
-	var result *string
-	if j.Result != "" {
-		result = &j.Result
-	}
 	return JobSummary{
 		ID: j.ID, JobName: j.JobName, WorkflowName: j.WorkflowName, WorkflowFile: j.WorkflowFile,
 		Repository: j.Repository, RunNumber: j.RunNumber, HeadBranch: j.HeadBranch, HeadSHA: j.HeadSHA,
 		PoolID: j.PoolID, PoolLabel: r.pools[j.PoolID].Label, ServerID: j.ServerID, ServerName: r.servers[j.ServerID].Name,
-		State: j.State, Result: result, Debug: j.Debug, RejectReason: j.RejectReason,
+		State: j.State, Status: jobStatus(j.Status()), Debug: j.Debug, RejectReason: j.RejectReason,
 		QueueMS: queueMS(j, now), DurationMS: durationMS(j, now),
 		QueuedAt: j.QueuedAt, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
 	}
@@ -151,14 +160,14 @@ func (h *Handler) jobSummaries(ctx context.Context, jobs []store.Job) ([]JobSumm
 }
 
 type listJobsInput struct {
-	Status     string `query:"status" enum:"running,queued,succeeded,failed,cancelled" doc:"queued also has the assigned jobs."`
-	Repository string `query:"repository" maxLength:"200"`
-	PoolID     string `query:"pool_id" maxLength:"100"`
-	ServerID   string `query:"server_id" maxLength:"100"`
-	Q          string `query:"q" maxLength:"200" doc:"Text in the job, workflow, repository, or branch name, or the start of a commit SHA."`
-	Range      string `query:"range" enum:"24h,7d,30d" doc:"Only the jobs queued in this time. All jobs if absent."`
-	Cursor     string `query:"cursor" maxLength:"200" doc:"next_cursor of the previous page."`
-	Limit      int    `query:"limit" minimum:"1" maximum:"200" default:"50"`
+	Status     jobStatus `query:"status" doc:"The status of the jobs."`
+	Repository string    `query:"repository" maxLength:"200"`
+	PoolID     string    `query:"pool_id" maxLength:"100"`
+	ServerID   string    `query:"server_id" maxLength:"100"`
+	Q          string    `query:"q" maxLength:"200" doc:"Text in the job, workflow, repository, or branch name, or the start of a commit SHA."`
+	Range      string    `query:"range" enum:"24h,7d,30d" doc:"Only the jobs queued in this time. All jobs if absent."`
+	Cursor     string    `query:"cursor" maxLength:"200" doc:"next_cursor of the previous page."`
+	Limit      int       `query:"limit" minimum:"1" maximum:"200" default:"50"`
 }
 
 // ranges are the time ranges of the job list and the overview, in buckets
@@ -174,7 +183,7 @@ var ranges = map[string]struct {
 
 func (h *Handler) listJobs(ctx context.Context, in *listJobsInput) (*body[JobPage], error) {
 	f := store.JobFilter{
-		Status: in.Status, Repository: in.Repository, PoolID: in.PoolID, ServerID: in.ServerID,
+		Status: string(in.Status), Repository: in.Repository, PoolID: in.PoolID, ServerID: in.ServerID,
 		Q: in.Q, Cursor: in.Cursor, Limit: in.Limit,
 	}
 	if rg, ok := ranges[in.Range]; ok {
@@ -240,10 +249,10 @@ func (h *Handler) getJob(ctx context.Context, in *PathID) (*body[Job], error) {
 		WorkflowRef: j.WorkflowRef, RunID: j.RunID, RunAttempt: j.RunAttempt, CommitMessage: j.CommitMessage,
 		Event: j.Event, Actor: j.Actor, PRNumber: j.PRNumber, HTMLURL: jobURL(j),
 		Steps: make([]JobStep, len(j.Steps)), Labels: orEmpty(j.Labels), SandboxID: j.SandboxID,
-		LogState: j.LogState, CPUPeak: j.CPUPeak, CPUAvg: j.CPUAvg, MemPeakMB: j.MemPeakMB, AssignedAt: j.AssignedAt,
+		LogState: j.LogState, FinishPending: j.FinishPending, CPUPeak: j.CPUPeak, CPUAvg: j.CPUAvg, MemPeakMB: j.MemPeakMB, AssignedAt: j.AssignedAt,
 	}
 	for i, st := range j.Steps {
-		out.Steps[i] = JobStep(st)
+		out.Steps[i] = JobStep{Number: st.Number, Name: st.Name, Status: jobStatus(st.Status()), StartedAt: st.StartedAt, CompletedAt: st.CompletedAt}
 	}
 	if out.ExpectedDurationMS, err = h.d.Store.ExpectedDurationMS(ctx, j.Repository, j.WorkflowFile, j.JobName); err != nil {
 		return nil, err
@@ -279,7 +288,7 @@ func jobURL(j store.Job) string {
 	if j.HTMLURL != "" || j.RunID == 0 || j.Repository == "" {
 		return j.HTMLURL
 	}
-	u := fmt.Sprintf("https://github.com/%s/actions/runs/%d", j.Repository, j.RunID)
+	u := fmt.Sprintf("%s/%s/actions/runs/%d", ghrest.Web, j.Repository, j.RunID)
 	if j.RunAttempt > 1 {
 		u += fmt.Sprintf("/attempts/%d", j.RunAttempt)
 	}
@@ -354,9 +363,6 @@ func (h *Handler) rerunJob(ctx context.Context, in *struct {
 	PathID
 	Body RerunRequest
 }) (*empty, error) {
-	if h.d.Scheduler == nil {
-		return nil, unavailable("The scheduler")
-	}
 	j, err := h.d.Store.GetJob(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No job has this ID.")
@@ -365,60 +371,46 @@ func (h *Handler) rerunJob(ctx context.Context, in *struct {
 		return nil, huma.Error409Conflict("Only a completed job can run again.")
 	}
 	if err := h.d.Scheduler.RerunJob(ctx, j.ID, in.Body.Debug); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.audit(ctx, "job.rerun", j.ID, jobDetail(map[string]any{"debug": in.Body.Debug}, j))
+	h.record(ctx, audit.JobRerun, j.ID, jobDetail(map[string]any{"debug": in.Body.Debug}, j))
 	return nil, nil
 }
 
 type logInput struct {
 	PathID
-	Step   int  `query:"step" minimum:"0" doc:"Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored."`
+	Step   int  `query:"step" minimum:"0" doc:"Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps."`
 	Follow bool `query:"follow" doc:"Stream new lines until the log ends."`
 }
 
 func (h *Handler) jobLog(ctx context.Context, in *logInput) (*huma.StreamResponse, error) {
-	if h.d.Logs == nil {
-		return nil, unavailable("The job log")
-	}
 	if _, err := h.d.Store.GetJob(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No job has this ID.")
 	}
-	rc, live, err := h.d.Logs.JobLog(ctx, in.ID, in.Step, in.Follow)
+	rc, err := h.d.Logs.Job(ctx, in.ID, in.Step, in.Follow)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, h.logErr(err)
 	}
-	resp := h.stream(rc, "text/plain; charset=utf-8", in.Follow)
-	if live && in.Step > 0 {
-		send := resp.Body
-		resp.Body = func(hctx huma.Context) {
-			hctx.SetHeader(stepFilterHeader, "ignored")
-			send(hctx)
-		}
-	}
-	return resp, nil
+	return h.stream(rc, "text/plain; charset=utf-8", in.Follow), nil
 }
 
-// stepFilterHeader tells that the job log has all steps although the
-// request asked for one: the live log of a running job has no step marks.
-const stepFilterHeader = "X-Runplane-Step-Filter"
-
 type Overview struct {
-	Range   string           `json:"range" enum:"24h,7d,30d"`
-	Stats   OverviewStats    `json:"stats"`
-	Running []JobSummary     `json:"running" doc:"All running jobs, newest first."`
-	Servers []ServerSummary  `json:"servers" doc:"The primary first."`
-	Buckets []OverviewBucket `json:"buckets" doc:"Completed jobs by queue time, oldest first, in UTC: 24 buckets of 1 hour for 24h, 28 of 6 hours for 7d, 30 of 1 day for 30d. The last bucket ends after now."`
-	Recent  []JobSummary     `json:"recent" doc:"The last 10 completed jobs, newest first."`
+	Range    string           `json:"range" enum:"24h,7d,30d"`
+	BucketMS int64            `json:"bucket_ms" doc:"Length of each bucket: 1 hour for 24h, 6 hours for 7d, 1 day for 30d."`
+	Stats    OverviewStats    `json:"stats"`
+	Running  []JobSummary     `json:"running" doc:"All running jobs, newest first."`
+	Servers  []ServerSummary  `json:"servers" doc:"The primary first."`
+	Buckets  []OverviewBucket `json:"buckets" doc:"Completed jobs by queue time, oldest first, in UTC: 24 buckets of 1 hour for 24h, 28 of 6 hours for 7d, 30 of 1 day for 30d. The last bucket ends after now."`
+	Recent   []JobSummary     `json:"recent" doc:"The last 10 completed jobs, newest first."`
 }
 
 // OverviewStats cover the jobs queued in the time of the buckets.
 type OverviewStats struct {
 	Jobs          int      `json:"jobs"`
-	VCPUInUse     int      `json:"vcpu_in_use" doc:"vCPUs of the live sandboxes on the online and draining servers."`
-	VCPUTotal     int      `json:"vcpu_total" doc:"vCPUs of the online and draining servers."`
+	VCPUInUse     int      `json:"vcpu_in_use" doc:"vCPUs of the live sandboxes on the online, draining, and disabled servers."`
+	VCPUTotal     int      `json:"vcpu_total" doc:"vCPUs of the online, draining, and disabled servers."`
 	MedianQueueMS *int64   `json:"median_queue_ms" doc:"Median time from queued to assigned. Null when no job of the range has a runner yet."`
-	FailureRate   float64  `json:"failure_rate" doc:"failed / (succeeded + failed), 0 to 1."`
+	FailureRate   *float64 `json:"failure_rate" doc:"failed / (succeeded + failed), 0 to 1. Null when no job of the range succeeded or failed."`
 	CacheHitRate  *float64 `json:"cache_hit_rate" doc:"Actions cache hits / (hits + misses), 0 to 1. Null when the range has no cache lookups."`
 	DurationMS    int64    `json:"duration_ms" doc:"Sum of the run times of the completed jobs."`
 }
@@ -444,20 +436,13 @@ func (h *Handler) getOverview(ctx context.Context, in *overviewInput) (*body[Ove
 	if err != nil {
 		return nil, err
 	}
-	queueTimes, cacheLookups, err := h.d.Store.OverviewSamples(ctx, since, until)
-	if err != nil {
-		return nil, err
-	}
 	out := Overview{
-		Range:   in.Range,
-		Stats:   OverviewStats{Jobs: o.Jobs, FailureRate: o.FailureRate, DurationMS: o.DurationMS},
+		Range: in.Range, BucketMS: rg.bucket.Milliseconds(),
+		Stats: OverviewStats{
+			Jobs: o.Jobs, MedianQueueMS: o.MedianQueueMS, FailureRate: o.FailureRate, CacheHitRate: o.CacheHitRate,
+			DurationMS: o.DurationMS,
+		},
 		Buckets: make([]OverviewBucket, len(o.Buckets)),
-	}
-	if queueTimes > 0 {
-		out.Stats.MedianQueueMS = &o.MedianQueueMS
-	}
-	if cacheLookups > 0 {
-		out.Stats.CacheHitRate = &o.CacheHitRate
 	}
 	for i, x := range o.Buckets {
 		out.Buckets[i] = OverviewBucket(x)
@@ -480,8 +465,10 @@ func (h *Handler) getOverview(ctx context.Context, in *overviewInput) (*body[Ove
 	for i, v := range servers {
 		out.Servers[i] = v.ServerSummary
 		// An unreachable server keeps its sandbox rows until it connects
-		// again, so its sandboxes count only with its vCPUs.
-		if v.Status == store.ServerOnline || v.Status == store.ServerDraining {
+		// again, so its sandboxes count only with its vCPUs. A draining or
+		// disabled server stays connected and finishes its jobs.
+		switch v.Status {
+		case store.ServerOnline, store.ServerDraining, store.ServerDisabled:
 			out.Stats.VCPUInUse += v.VCPUInUse
 			out.Stats.VCPUTotal += v.VCPU
 		}

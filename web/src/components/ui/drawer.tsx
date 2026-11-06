@@ -2,6 +2,7 @@ import { Drawer as BaseDrawer } from '@base-ui/react/drawer'
 import { X } from 'lucide-react'
 import type { CSSProperties, ReactNode } from 'react'
 import { cx } from '~/lib/cx'
+import { IconButton } from './button'
 
 // Drawer of gui/components/runplane/drawer.md: a bottom sheet that the user can
 // swipe down to close. `<Drawer swipeDirection="right">` makes a side panel at the
@@ -44,7 +45,6 @@ export function DrawerPopup({ title, description, width = 420, className, childr
             'transition-transform duration-(--motion-large-duration) ease-large data-swiping:duration-0 data-swiping:select-none',
             '[transform:translateY(var(--drawer-swipe-movement-y))]',
             'data-starting-style:[transform:translateY(100%)] data-ending-style:[transform:translateY(100%)]',
-            // Side panel at the right edge.
             'data-[swipe-direction=right]:max-h-none data-[swipe-direction=right]:rounded-t-zero data-[swipe-direction=right]:rounded-l-m',
             'data-[swipe-direction=right]:[transform:translateX(var(--drawer-swipe-movement-x))]',
             'data-[swipe-direction=right]:data-starting-style:[transform:translateX(100%)]',
@@ -64,11 +64,8 @@ export function DrawerPopup({ title, description, width = 420, className, childr
                 <BaseDrawer.Title className="text-m font-medium text-neutral-10">{title}</BaseDrawer.Title>
                 {description && <BaseDrawer.Description className="text-s text-neutral-7">{description}</BaseDrawer.Description>}
               </div>
-              <BaseDrawer.Close
-                aria-label="Close"
-                className="-m-xxs grid shrink-0 place-items-center rounded-s p-xxs text-neutral-7 transition-colors hover:bg-neutral-3 hover:text-neutral-10"
-              >
-                <X size={16} aria-hidden />
+              <BaseDrawer.Close render={<IconButton label="Close" className="-m-xxs p-xxs" />}>
+                <X aria-hidden />
               </BaseDrawer.Close>
             </div>
             {children}

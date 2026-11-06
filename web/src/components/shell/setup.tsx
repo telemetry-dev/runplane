@@ -3,7 +3,6 @@ import { Fragment, type ReactNode } from 'react'
 import { LogoMark } from '~/components/ui/brand'
 import { cx } from '~/lib/cx'
 
-/** Page frame of the Setup designs, also used by login and invites: top bar, then centered content. */
 export function SetupFrame({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-dvh flex-col bg-neutral-1">
@@ -19,19 +18,27 @@ export function SetupFrame({ children }: { children: ReactNode }) {
   )
 }
 
-/** The 560px content column of the Setup designs. */
 export function SetupColumn({ children }: { children: ReactNode }) {
   return <main className="mt-xxl flex w-full max-w-[560px] flex-col gap-xl">{children}</main>
 }
 
-const setupSteps = ['Server', 'GitHub', 'First job'] as const
+const setupSteps = [
+  { label: 'Server', path: '/setup' },
+  { label: 'GitHub', path: '/setup/github' },
+  { label: 'First job', path: '/setup/first-job' },
+] as const
+
+/** The setup step of a path, counted from 1. */
+export function setupStep(pathname: string): number {
+  return setupSteps.findLastIndex((step) => pathname.startsWith(step.path)) + 1
+}
 
 /** The three setup steps; steps before `current` show as done. `current` counts from 1. */
 export function SetupStepper({ current }: { current: number }) {
   return (
     // The connectors shrink first, so the steps fit on one line on a phone.
     <ol aria-label="Setup steps" className="mt-xxl flex max-w-full items-center gap-s">
-      {setupSteps.map((label, index) => {
+      {setupSteps.map(({ label }, index) => {
         const step = index + 1
         const state = step < current ? 'done' : step === current ? 'active' : 'next'
         return (

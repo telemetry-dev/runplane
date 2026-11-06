@@ -1,8 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { CirclePause, CirclePlay, Ellipsis, Pencil, Trash2 } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
-import { $api, errorMessage, type Schemas } from '~/api/client'
-import { usePoolStats } from '~/api/events'
+import { useState } from 'react'
+import { $api, api, errorMessage, type Schemas } from '~/api/client'
+import { dropPool, putPool } from '~/api/pools'
+import { serversQuery } from '~/api/servers'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import {
   CellTitle,
   DataTable,
@@ -13,15 +15,12 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
-import { serversQuery } from '~/components/pages/servers/queries'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
-import { Button, IconButton } from '~/components/ui/button'
+import { SkeletonRows } from '~/components/app/skeleton-rows'
+import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
-import { dropPool, putPool, refreshRunners } from './queries'
 import { Code } from './code'
-import { liveCounts, poolHardware, poolScope, poolSize, type Pool } from './runner-format'
-import { SkeletonRows } from './skeleton-rows'
+import { placementProblem, poolHardware, poolScope, poolSize, type Pool } from './runner-format'
 
 type LabelsTableProps = {
   /** Undefined while the list loads. */
@@ -48,7 +47,7 @@ const columns = {
 
 type Shown = Record<keyof typeof columns, boolean>
 
-/** The Labels table of the Runners design. pool.stats events move the counts. */
+/** The Labels table of the Runners design. */
 export function LabelsTable({ pools, admin, marked, onEdit }: LabelsTableProps) {
   const servers = useQuery(serversQuery).data
   const { ref, shown, columns: widths } = useFittingColumns(columns)
@@ -101,7 +100,6 @@ type LabelRowProps = {
 }
 
 function LabelRow({ pool, servers, shown, admin, marked, onEdit }: LabelRowProps) {
-  const counts = liveCounts(pool, usePoolStats(pool.id))
   return (
     <DataTableRow selected={marked}>
       <DataTableCell>
@@ -127,10 +125,10 @@ function LabelRow({ pool, servers, shown, admin, marked, onEdit }: LabelRowProps
       )}
       {pool.enabled ? (
         <>
-          {shown.idle && <Count value={counts.idle} />}
-          <Count value={counts.busy} />
-          {shown.starting && <Count value={counts.starting} />}
-          <Count value={counts.queued} strong />
+          {shown.idle && <Count value={pool.idle} />}
+          <Count value={pool.busy} />
+          {shown.starting && <Count value={pool.starting} />}
+          <Count value={pool.queued} strong />
         </>
       ) : (
         // A disabled pool runs nothing, so its state takes the count lanes.
@@ -148,12 +146,9 @@ const countSpans = ['col-span-2', 'col-span-3', 'col-span-4']
 
 /** The servers of a pool, or why none can start its runners. */
 function PoolScope({ pool, servers }: { pool: Pool; servers: Schemas['Server'][] | undefined }) {
-  if (!pool.enabled || pool.placeable_servers > 0) return poolScope(pool, servers)
-  return (
-    <span className="text-neutral-10">
-      {pool.online_servers === 0 ? `No ${pool.arch} server is online` : `No ${pool.arch} server is large enough`}
-    </span>
-  )
+  const problem = placementProblem(pool.arch, pool)
+  if (!pool.enabled || !problem) return poolScope(pool, servers)
+  return <span className="text-neutral-10">{problem}</span>
 }
 
 /** A live count; zero recedes. `strong` marks waiting jobs, which need attention. */
@@ -170,10 +165,7 @@ function LabelMenu({ pool, onEdit }: { pool: Pool; onEdit: (pool: Pool) => void 
   const client = useQueryClient()
   const [deleting, setDeleting] = useState(false)
   const update = $api.useMutation('patch', '/api/pools/{id}', {
-    onSuccess: (updated) => {
-      putPool(client, updated)
-      void refreshRunners(client)
-    },
+    onSuccess: (updated) => putPool(client, updated),
     onError: (error, { body }) =>
       toastManager.add({ title: `Could not ${body.enabled ? 'enable' : 'disable'} ${pool.label}`, description: errorMessage(error) }),
   })
@@ -209,37 +201,19 @@ type DeleteDialogProps = { pool: Pool; open: boolean; onOpenChange: (open: boole
 
 function DeleteDialog({ pool, open, onOpenChange }: DeleteDialogProps) {
   const client = useQueryClient()
-  const remove = $api.useMutation('delete', '/api/pools/{id}', {
-    onSuccess: () => {
-      onOpenChange(false)
-      toastManager.add({ title: `Deleted ${pool.label}` })
-    },
-  })
-
   return (
-    <AlertDialog
+    <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      onOpenChangeComplete={(isOpen) => {
-        if (isOpen) return
-        // Drop the row only after the close animation; the dialog lives in it.
-        if (remove.isSuccess) {
-          dropPool(client, pool.id)
-          void refreshRunners(client)
-        }
-        remove.reset()
+      title={`Delete ${pool.label}?`}
+      description={deleteDescription(pool)}
+      action="Delete label"
+      onConfirm={async () => {
+        await api.DELETE('/api/pools/{id}', { params: { path: { id: pool.id } } })
+        toastManager.add({ title: `Deleted ${pool.label}` })
       }}
-    >
-      <AlertDialogPopup title={`Delete ${pool.label}?`} description={deleteDescription(pool)}>
-        {remove.error && <ErrorText>{errorMessage(remove.error)}</ErrorText>}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate({ params: { path: { id: pool.id } } })}>
-            Delete label
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+      onDone={() => dropPool(client, pool.id)}
+    />
   )
 }
 
@@ -247,12 +221,4 @@ function deleteDescription(pool: Pool): string {
   const runners = pool.idle + pool.busy + pool.starting
   const stop = runners === 0 ? '' : runners === 1 ? ', and its runner stops' : `, and its ${runners} runners stop`
   return `Workflows that use ${pool.label} stop getting runners${stop}.`
-}
-
-function ErrorText({ children }: { children: ReactNode }) {
-  return (
-    <p role="alert" className="text-s text-error">
-      {children}
-    </p>
-  )
 }

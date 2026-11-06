@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -15,9 +14,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sshinstall"
-	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/sshkey"
 )
 
 const (
@@ -25,6 +24,7 @@ const (
 	plainID   = "01jbd6aaaaaaaaaaaaaaaaaaaa"
 	expiredID = "01jbd7bbbbbbbbbbbbbbbbbbbb"
 	noActorID = "01jbd8cccccccccccccccccccc"
+	noJobID   = "01jbd9dddddddddddddddddddd"
 )
 
 // fakeTerm is the gateway end of a pipe. The test holds the other end.
@@ -68,20 +68,28 @@ func newSigner(t *testing.T) ssh.Signer {
 	return signer
 }
 
+// auditEntry is one Record call of the gateway.
+type auditEntry struct {
+	by     audit.Actor
+	action audit.Action
+	target string
+	detail map[string]any
+}
+
 // gateway serves debugID (also by its first 8 characters) to the actor
-// octocat, plainID (not a debug sandbox), expiredID (its hold ended), and
-// noActorID (its job has no actor yet).
+// octocat, plainID (not a debug sandbox), expiredID (its hold ended),
+// noActorID (its job has no actor yet), and noJobID (it has no job yet).
 type gateway struct {
 	addr                   string
 	hostKey                ssh.PublicKey
 	opens                  fakeOpener
-	audits                 chan store.AuditEntry
+	audits                 chan auditEntry
 	actor, admin, stranger ssh.Signer
 }
 
 func startGateway(t *testing.T) *gateway {
 	t.Helper()
-	g := &gateway{opens: make(fakeOpener, 4), audits: make(chan store.AuditEntry, 4),
+	g := &gateway{opens: make(fakeOpener, 4), audits: make(chan auditEntry, 4),
 		actor: newSigner(t), admin: newSigner(t), stranger: newSigner(t)}
 	debug := Target{SandboxID: debugID, State: sandbox.StateBusy, Debug: true, Actor: "octocat", Repository: "octo/api", Job: "build"}
 	plain, expired, noActor := debug, debug, debug
@@ -89,7 +97,8 @@ func startGateway(t *testing.T) *gateway {
 	ended := time.Now().Add(-time.Minute)
 	expired.SandboxID, expired.State, expired.HoldUntil = expiredID, sandbox.StateStopping, &ended
 	noActor.SandboxID, noActor.Actor = noActorID, ""
-	targets := map[string]Target{debugID: debug, debugID[:8]: debug, plainID: plain, expiredID: expired, noActorID: noActor}
+	noJob := Target{SandboxID: noJobID, State: sandbox.StateIdle, Debug: true}
+	targets := map[string]Target{debugID: debug, debugID[:8]: debug, plainID: plain, expiredID: expired, noActorID: noActor, noJobID: noJob}
 
 	hostKeyPath := filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
 	srv, err := New(Config{
@@ -109,9 +118,8 @@ func startGateway(t *testing.T) *gateway {
 			return nil, nil
 		},
 		AdminKeys: func(context.Context) []ssh.PublicKey { return []ssh.PublicKey{g.admin.PublicKey()} },
-		Audit: func(_ context.Context, e store.AuditEntry) error {
-			g.audits <- e
-			return nil
+		Audit: func(_ context.Context, by audit.Actor, action audit.Action, target string, detail map[string]any) {
+			g.audits <- auditEntry{by, action, target, detail}
 		},
 	})
 	if err != nil {
@@ -125,7 +133,7 @@ func startGateway(t *testing.T) *gateway {
 			t.Errorf("Serve: %v", err)
 		}
 	})
-	hostKey, _, err := sshinstall.LoadOrCreateKey(hostKeyPath)
+	hostKey, _, err := sshkey.LoadOrCreate(hostKeyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,13 +252,9 @@ func TestShellWithActorKey(t *testing.T) {
 	}
 
 	e := recv(t, g.audits)
-	var detail map[string]any
-	if err := json.Unmarshal(e.Detail, &detail); err != nil {
-		t.Fatal(err)
-	}
-	if e.Action != "sandbox.ssh" || e.Target != debugID || e.IP != "127.0.0.1" || detail["github_login"] != "octocat" ||
-		detail["key"] != ssh.FingerprintSHA256(g.actor.PublicKey()) || detail["job_name"] != "build" || detail["repository"] != "octo/api" {
-		t.Errorf("audit entry %+v with detail %v, want sandbox.ssh on %s for the job build of octo/api by octocat from 127.0.0.1", e, detail, debugID)
+	if e.action != "sandbox.ssh" || e.target != debugID || e.by != (audit.Actor{IP: "127.0.0.1"}) || e.detail["github_login"] != "octocat" ||
+		e.detail["key"] != ssh.FingerprintSHA256(g.actor.PublicKey()) || e.detail["job_name"] != "build" || e.detail["repository"] != "octo/api" {
+		t.Errorf("audit entry %+v, want sandbox.ssh on %s for the job build of octo/api by octocat from 127.0.0.1", e, debugID)
 	}
 }
 
@@ -293,12 +297,7 @@ func TestAdminKeyOpensShellWithoutActor(t *testing.T) {
 	if sh.term.sandboxID != noActorID {
 		t.Errorf("Open got sandbox %q, want %q", sh.term.sandboxID, noActorID)
 	}
-	e := recv(t, g.audits)
-	var detail map[string]any
-	if err := json.Unmarshal(e.Detail, &detail); err != nil {
-		t.Fatal(err)
-	}
-	if detail["admin_key"] != true || detail["github_login"] != nil {
+	if detail := recv(t, g.audits).detail; detail["admin_key"] != true || detail["github_login"] != nil {
 		t.Errorf("audit detail %v, want an admin key and no GitHub login", detail)
 	}
 }
@@ -344,6 +343,7 @@ func TestRefusedConnections(t *testing.T) {
 		{"unknown key on a refused sandbox", plainID, g.stranger, false},
 		{"not a debug sandbox", plainID, g.actor, true},
 		{"hold ended", expiredID, g.actor, true},
+		{"no job yet", noJobID, g.admin, true},
 		{"unknown sandbox with admin key", "01zzzzzz", g.admin, true},
 		{"unknown sandbox with actor key", "01zzzzzz", g.actor, false},
 		{"user name that is not an ID", "root", g.admin, false},
@@ -365,26 +365,27 @@ func TestRefusedConnections(t *testing.T) {
 	}
 }
 
-func TestRefusal(t *testing.T) {
+// The gateway and the browser use one rule for the debug shells.
+func TestAccess(t *testing.T) {
 	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	later, earlier := now.Add(10*time.Minute), now.Add(-time.Second)
 	tests := []struct {
 		name   string
 		target Target
-		accept bool
+		want   Access
 	}{
-		{"busy debug sandbox", Target{Debug: true, State: sandbox.StateBusy}, true},
-		{"held after the job", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &later}, true},
-		{"hold ended", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &earlier}, false},
-		{"debug sandbox before its job", Target{Debug: true, State: sandbox.StateIdle}, false},
-		{"busy sandbox without debug", Target{State: sandbox.StateBusy}, false},
-		{"held sandbox without debug", Target{State: sandbox.StateBusy, HoldUntil: &later}, false},
-		{"gone during its hold", Target{Debug: true, State: sandbox.StateGone, HoldUntil: &later}, false},
+		{"busy debug sandbox", Target{Debug: true, State: sandbox.StateBusy}, Allowed},
+		{"held after the job", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &later}, Allowed},
+		{"hold ended", Target{Debug: true, State: sandbox.StateStopping, HoldUntil: &earlier}, HoldEnded},
+		{"debug sandbox before its job", Target{Debug: true, State: sandbox.StateIdle}, NoJobYet},
+		{"busy sandbox without debug", Target{State: sandbox.StateBusy}, NotDebug},
+		{"held sandbox without debug", Target{State: sandbox.StateBusy, HoldUntil: &later}, NotDebug},
+		{"gone during its hold", Target{Debug: true, State: sandbox.StateGone, HoldUntil: &later}, Stopped},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if msg := refusal(tt.target, now); (msg == "") != tt.accept {
-				t.Errorf("refusal = %q, want accept: %v", msg, tt.accept)
+			if got := tt.target.Access(now); got != tt.want {
+				t.Errorf("Access = %d, want %d", got, tt.want)
 			}
 		})
 	}

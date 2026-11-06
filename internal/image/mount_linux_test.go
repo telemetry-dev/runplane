@@ -14,10 +14,10 @@ import (
 )
 
 // TestRootDiskMounts mounts a root disk with the kernel, as the guest does.
-// It needs root and loop devices, so it runs only with RUNPLANE_TEST_MOUNT=1.
+// It needs root and loop devices: the CI step "go test as root" runs it.
 func TestRootDiskMounts(t *testing.T) {
-	if os.Getenv("RUNPLANE_TEST_MOUNT") != "1" {
-		t.Skip("set RUNPLANE_TEST_MOUNT=1 to mount a root disk (needs root and loop devices)")
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to mount the root disk on a loop device")
 	}
 	ref := pushImage(t, testImage(t, runtime.GOARCH))
 	init := []byte("#!runplane-init")

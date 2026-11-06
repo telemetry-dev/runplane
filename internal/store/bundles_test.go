@@ -1,29 +1,30 @@
 package store
 
 import (
-	"errors"
+	"strings"
 	"testing"
-	"time"
 )
 
-func TestLatestReadyBundle(t *testing.T) {
+// The version order is numeric: 2.330.0 is newer than 2.99.0.
+func TestListRunnerBundlesNewestFirst(t *testing.T) {
 	s := openTest(t)
 	ctx := t.Context()
 	for _, b := range []RunnerBundle{
 		{Version: "2.99.0", Arch: "x64", Status: BundleReady},
 		{Version: "2.330.0", Arch: "x64", Status: BundleReady},
 		{Version: "2.331.0", Arch: "x64", Status: BundleFailed},
-		{Version: "2.340.0", Arch: "arm64", Status: BundleReady},
+		{Version: "2.330.0", Arch: "arm64", Status: BundleReady},
 	} {
-		b.CreatedAt = time.Now()
-		must(t, s.UpsertRunnerBundle(ctx, b))
+		must(t, s.SetRunnerBundleBuild(ctx, b, sec(0)))
 	}
-	b, err := s.LatestReadyBundle(ctx, "x64")
+	list, err := s.ListRunnerBundles(ctx)
 	must(t, err)
-	if b.Version != "2.330.0" {
-		t.Errorf("latest ready x64 = %s, want 2.330.0", b.Version)
+	var got []string
+	for _, b := range list {
+		got = append(got, b.Version+"-"+b.Arch)
 	}
-	if _, err := s.LatestReadyBundle(ctx, "riscv"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("no bundle: err = %v", err)
+	want := "2.331.0-x64 2.330.0-arm64 2.330.0-x64 2.99.0-x64"
+	if s := strings.Join(got, " "); s != want {
+		t.Errorf("bundles = %s, want %s", s, want)
 	}
 }

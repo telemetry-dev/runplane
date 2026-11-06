@@ -2,29 +2,21 @@ package firecracker
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
-	"sync/atomic"
+	"runtime"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 
-	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
+	"github.com/runplane/runplane/internal/sandbox/lifecycle"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
-
-// timeLimitGrace lets runplane-init stop the runner at the time limit and
-// report it before the driver stops the VM.
-const timeLimitGrace = time.Minute
-
-// keepLines is the count of console lines that a failure reason shows.
-const keepLines = 10
 
 // consoleFIFO in the sandbox folder takes the stdout and stderr of
 // Firecracker: the serial console of the guest and the Firecracker log. A
@@ -33,241 +25,151 @@ const keepLines = 10
 // restarts.
 const consoleFIFO = "console.fifo"
 
-// vm is one microVM. It is the control.Handler of its control channel.
-type vm struct {
-	d     *Driver
-	id    string
-	lease netrules.Lease
+// scopePoll is how often the driver checks that a VM from before a restart
+// still operates. It is not the parent of such a VM, so it cannot wait.
+var scopePoll = time.Second
 
-	log      *control.LogFile
-	ctl      *control.Server
+// vm is the VM part of a sandbox. Lease is in the record of the sandbox.
+type vm struct {
+	Lease netrules.Lease `json:"lease"`
+
 	api      *apiClient
 	console  *os.File      // read end of the console FIFO
 	tailDone chan struct{} // closed when the console tail ends
-
-	ready    chan struct{} // closed when Start ends, also on failure
-	exited   chan struct{} // closed when the Firecracker process is gone
-	exitOnce sync.Once
-	done     chan struct{} // closed after the driver removed the VM
-
-	heard atomic.Bool // the guest has connected
-
-	mu         sync.Mutex
-	record            // Spec and CreatedAt do not change, so they need no lock
-	stopReason string // set when the driver stops the VM
-	killed     bool   // the driver killed the VM; it did not power off
-	timer      *time.Timer
-	lastLines  []string // the end of the console, for failure reasons
-	cpu        cpuSample
 }
 
-func newVM(d *Driver, spec sandbox.Spec, lease netrules.Lease, created time.Time) *vm {
-	spec.JITConfig = ""
-	return &vm{
-		d:        d,
-		id:       spec.ID,
-		lease:    lease,
-		record:   record{Spec: spec, Tap: lease.Index, CreatedAt: created, State: sandbox.StateStarting},
-		tailDone: make(chan struct{}),
-		ready:    make(chan struct{}),
-		exited:   make(chan struct{}),
-		done:     make(chan struct{}),
+type box = lifecycle.Box[vm]
+
+type backend struct{ *Driver }
+
+func (d backend) Shutdown(ctx context.Context, b *box) error {
+	// Init turns Ctrl+Alt+Del into a shutdown. On arm64, Firecracker sends
+	// a power key instead, which init does not handle.
+	if runtime.GOARCH != "amd64" {
+		return errors.New("firecracker sends no Ctrl+Alt+Del on " + runtime.GOARCH)
 	}
+	return b.Host.api.ctrlAltDel(ctx)
 }
 
-func (v *vm) OnEvent(ev sandbox.RunnerEvent) {
-	v.heard.Store(true)
-	v.d.emit(sandbox.Event{SandboxID: v.id, Type: sandbox.EventRunner, Runner: &ev})
-	switch ev.Kind {
-	case sandbox.RunnerListening:
-		v.setState(sandbox.StateIdle, "")
-	case sandbox.RunnerJobStarted:
-		v.mu.Lock()
-		if v.JobStarted.IsZero() {
-			v.JobStarted = time.Now().UTC()
+func (d backend) Kill(_ context.Context, b *box) error { return d.sys.killScope(unitName(b.ID)) }
+
+// Fault waits for the last console lines, which can explain a failure.
+func (d backend) Fault(_ context.Context, b *box) string {
+	if done := b.Host.tailDone; done != nil {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
 		}
-		v.mu.Unlock()
-		v.setState(sandbox.StateBusy, ev.JobName)
-		// The time limit now counts from the job start.
-		v.armTimer()
-	case sandbox.RunnerExited:
-		code := ev.ExitCode
-		v.mu.Lock()
-		v.RunnerExit, v.RunnerErr = &code, ev.Error
-		v.mu.Unlock()
-		// A restart during a debug hold must still know that the runner
-		// ended by itself.
-		v.save()
 	}
+	return ""
 }
 
-func (v *vm) OnLostConfig() {
-	if err := v.d.stop(context.Background(), v, "runplane restarted before the VM got its config"); err != nil {
-		v.d.log.Warn("stop sandbox", "sandbox", v.id, "err", err)
+func (d backend) Remove(_ context.Context, b *box) error {
+	v := b.Host
+	v.closeConsole()
+	var errs []error
+	if d.scopeAlive(b.ID) {
+		errs = append(errs, d.sys.killScope(unitName(b.ID)))
 	}
+	if v.Lease.Tap != "" {
+		errs = append(errs, d.sys.closeTap(v.Lease))
+	}
+	return errors.Join(append(errs, os.RemoveAll(d.jailDir(b.ID)))...)
 }
 
-func (v *vm) OnLog(line control.LogLine) {
-	v.heard.Store(true)
-	if err := v.log.Write(line); err != nil {
-		v.d.log.Debug("write sandbox log", "sandbox", v.id, "err", err)
-	}
+func (d backend) Usage(_ context.Context, b *box) (lifecycle.Usage, error) {
+	u, err := readUsage(d.scopeDir(b.ID))
+	u.At = time.Now()
+	return u, err
 }
 
-// setState moves the VM to a running state. A stopping VM stays stopping.
-func (v *vm) setState(s sandbox.State, reason string) {
-	v.mu.Lock()
-	if v.State == s || v.State == sandbox.StateStopping {
-		v.mu.Unlock()
-		return
+// Adopt connects to a VM from before the restart whose scope still has a
+// process.
+func (d backend) Adopt(_ context.Context, b *box) (bool, error) {
+	if !d.scopeAlive(b.ID) {
+		return false, nil
 	}
-	v.State = s
-	v.mu.Unlock()
-	v.save()
-	v.d.emit(sandbox.Event{SandboxID: v.id, Type: sandbox.EventState, State: s, Reason: reason})
+	v := b.Host
+	if err := d.sys.keepTap(v.Lease); err != nil {
+		return true, err
+	}
+	if console, err := openConsole(filepath.Join(b.Dir, consoleFIFO)); err != nil {
+		b.Log().Warn("no console for a VM from before the restart", "err", err)
+	} else {
+		v.console, v.tailDone = console, make(chan struct{})
+		go v.tailConsole(b)
+	}
+	chroot := d.chroot(b.ID)
+	srv, err := control.Listen(filepath.Join(chroot, controlSocket), nil, b, b.Log())
+	if err != nil {
+		return true, err
+	}
+	b.SetControl(srv)
+	v.api = newAPIClient(filepath.Join(chroot, apiSocket))
+	d.Go(func(ctx context.Context) { d.watchScope(ctx, b) })
+	return true, nil
 }
 
-func (v *vm) getState() sandbox.State {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.State
-}
-
-func (v *vm) sandbox() sandbox.Sandbox {
-	return sandbox.Sandbox{
-		ID:        v.id,
-		PoolID:    v.Spec.PoolID,
-		State:     v.getState(),
-		IP:        v.lease.Guest.String(),
-		CreatedAt: v.CreatedAt,
-		Spec:      v.Spec,
-	}
-}
-
-func (v *vm) isReady() bool {
-	select {
-	case <-v.ready:
-		return !isClosed(v.done)
-	default:
-		return false
-	}
-}
-
-func (v *vm) markExited() { v.exitOnce.Do(func() { close(v.exited) }) }
-
-// hold keeps the VM until the end of a debug hold.
-func (v *vm) hold(until time.Time) {
-	v.mu.Lock()
-	v.HoldUntil = until
-	v.mu.Unlock()
-	v.save()
-	v.armTimer()
-}
-
-// deadline is when the driver stops the VM: after the time limit of the
-// job or the end of a debug hold, and a grace for runplane-init.
-func (v *vm) deadline() time.Time {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.Spec.TimeLimit <= 0 {
-		return time.Time{}
-	}
-	end := sandbox.Deadline(v.CreatedAt, v.JobStarted, v.Spec.TimeLimit)
-	if v.HoldUntil.After(end) {
-		end = v.HoldUntil
-	}
-	return end.Add(timeLimitGrace)
-}
-
-// armTimer stops the VM at its deadline.
-func (v *vm) armTimer() {
-	end := v.deadline()
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.timer != nil {
-		v.timer.Stop()
-	}
-	if end.IsZero() {
-		return
-	}
-	v.timer = time.AfterFunc(time.Until(end), func() {
-		v.d.log.Info("sandbox reached its time limit", "sandbox", v.id)
-		if err := v.d.stop(context.Background(), v, "time limit reached"); err != nil {
-			v.d.log.Warn("stop sandbox", "sandbox", v.id, "err", err)
+// watchScope marks a VM from before a restart as ended when its scope is
+// empty.
+func (d *Driver) watchScope(ctx context.Context, b *box) {
+	t := time.NewTicker(scopePoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			if !d.scopeAlive(b.ID) {
+				b.MarkExited()
+				return
+			}
+		case <-ctx.Done():
+			return
 		}
-	})
-}
-
-// outcome is the last state of the VM and the reason for it.
-func (v *vm) outcome() (sandbox.State, string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	switch {
-	case v.RunnerErr != "":
-		return sandbox.StateFailed, v.RunnerErr
-	case v.stopReason != "":
-		return sandbox.StateGone, v.stopReason
-	case !v.heard.Load():
-		return sandbox.StateFailed, "the VM stopped before runplane-init connected" + v.consoleEnd()
-	case v.RunnerExit == nil:
-		return sandbox.StateFailed, "the VM stopped unexpectedly" + v.consoleEnd()
-	default:
-		return sandbox.StateGone, fmt.Sprintf("the runner exited with code %d", *v.RunnerExit)
 	}
 }
 
-// consoleEnd returns the last console lines for an error message. The
-// caller holds v.mu.
-func (v *vm) consoleEnd() string {
-	if len(v.lastLines) == 0 {
-		return ""
+// recover takes over the VMs from before a restart, and removes the scopes
+// and chroots of the VMs that have no sandbox.
+func (d *Driver) recover(ctx context.Context) error {
+	taken, err := d.Recover(ctx)
+	if err != nil {
+		return err
 	}
-	return ": " + strings.Join(v.lastLines, " | ")
+	// They come from a start that runplane did not complete.
+	for _, id := range d.scopeIDs() {
+		if !taken[id] && d.scopeAlive(id) {
+			if err := d.sys.killScope(unitName(id)); err != nil {
+				d.log.Warn("kill the scope of a lost VM", "sandbox", id, "err", err)
+			}
+		}
+	}
+	jails, err := os.ReadDir(d.jails())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.log.Warn("read the chroots", "err", err)
+	}
+	for _, e := range jails {
+		if !taken[e.Name()] {
+			if err := os.RemoveAll(d.jailDir(e.Name())); err != nil {
+				d.log.Warn("remove the chroot of a lost VM", "sandbox", e.Name(), "err", err)
+			}
+		}
+	}
+	return nil
 }
 
-// withConsole adds the end of the console to a start error, because the
-// sandbox folder is gone afterwards.
-func (v *vm) withConsole(err error) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return fmt.Errorf("%w%s", err, v.consoleEnd())
-}
-
-// tailConsole copies the console lines to the sandbox log with the source
-// "console" until Firecracker closes its end.
-func (v *vm) tailConsole(r *os.File) {
+// tailConsole copies the console lines to the sandbox until Firecracker
+// closes its end.
+func (v *vm) tailConsole(b *box) {
 	defer close(v.tailDone)
-	control.ReadLines(r, func(line string) {
-		v.mu.Lock()
-		if len(v.lastLines) == keepLines {
-			v.lastLines = v.lastLines[1:]
-		}
-		v.lastLines = append(v.lastLines, line)
-		v.mu.Unlock()
-		v.log.Write(control.LogLine{Time: time.Now().UTC(), Source: "console", Text: line})
-	})
+	guest.ReadLines(v.console, b.Console)
 }
 
-// detach drops the connections of the VM and leaves it running.
-func (v *vm) detach() {
-	v.mu.Lock()
-	if v.timer != nil {
-		v.timer.Stop()
-	}
-	v.mu.Unlock()
-	if v.ctl != nil {
-		v.ctl.Close()
-	}
+func (v *vm) closeConsole() {
 	if v.console != nil {
 		v.console.Close()
 	}
-	if v.log != nil {
-		v.log.Close()
-	}
 }
 
-// makeConsole makes the console FIFO. It returns the read end and the write
-// end for Firecracker.
 func makeConsole(path string) (r, w *os.File, err error) {
 	os.Remove(path)
 	if err := unix.Mkfifo(path, 0o600); err != nil {
@@ -294,62 +196,4 @@ func openConsole(path string) (*os.File, error) {
 	return r, nil
 }
 
-const recordFile = "vm.json"
-
-// record is the part of a VM that the driver needs after a restart. It is
-// in the sandbox folder.
-type record struct {
-	Spec       sandbox.Spec  `json:"spec"` // without the JIT config
-	Tap        int           `json:"tap"`  // index of the TAP lease, also of the jailer IDs
-	CreatedAt  time.Time     `json:"created_at"`
-	State      sandbox.State `json:"state"`
-	JobStarted time.Time     `json:"job_started,omitzero"` // zero before the job
-	HoldUntil  time.Time     `json:"hold_until,omitzero"`
-	RunnerExit *int          `json:"runner_exit,omitempty"`  // from the exited event
-	RunnerErr  string        `json:"runner_error,omitempty"` // from the exited event: why the runner failed
-}
-
-// save writes the record of the VM, unless the VM is gone.
-func (v *vm) save() {
-	if isClosed(v.done) {
-		return
-	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if err := writeRecord(v.d.sandboxDir(v.id), v.record); err != nil {
-		v.d.log.Warn("save sandbox record", "sandbox", v.id, "err", err)
-	}
-}
-
-func writeRecord(dir string, rec record) error {
-	b, err := json.Marshal(rec)
-	if err != nil {
-		return err
-	}
-	tmp := filepath.Join(dir, recordFile+".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(dir, recordFile))
-}
-
-func readRecord(dir string) (record, error) {
-	var rec record
-	b, err := os.ReadFile(filepath.Join(dir, recordFile))
-	if err != nil {
-		return rec, err
-	}
-	if err := json.Unmarshal(b, &rec); err != nil {
-		return rec, fmt.Errorf("read %s: %w", filepath.Join(dir, recordFile), err)
-	}
-	return rec, nil
-}
-
-func isClosed(ch <-chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	default:
-		return false
-	}
-}
+var _ lifecycle.Backend[vm] = backend{}

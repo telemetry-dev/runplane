@@ -5,14 +5,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
 	"log"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -26,6 +24,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
+	"github.com/runplane/runplane/internal/ext4/ext4test"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -74,17 +73,19 @@ func TestEnsureRootDisk(t *testing.T) {
 	}
 	assertNoTemp(t, dir)
 
-	assertExt4(t, got.Path)
-	debugfs(t, got.Path, "ls -l /sbin/", "runplane-init")
-	debugfs(t, got.Path, "cat /sbin/runplane-init", string(init))
-	debugfs(t, got.Path, "stat /usr/sbin/runplane-init", "Mode:  0755")
-	debugfs(t, got.Path, "stat /sbin", `Fast link dest: "usr/sbin"`)
-	debugfs(t, got.Path, "cat /etc/kept", "new")
-	debugfs(t, got.Path, "stat /etc/gone", "File not found")
-	debugfs(t, got.Path, "stat /tmp", "Mode:  01777")
-	debugfs(t, got.Path, "stat /mnt/scratch", "Type: directory")
-	debugfs(t, got.Path, "stat /proc", "Mode:  0711")
-	debugfs(t, got.Path, "cat /etc/runplane/environ", "PATH=/usr/sbin:/usr/bin\x00GOFLAGS=-tags=vm\x00")
+	t.Run("ext4", func(t *testing.T) {
+		ext4test.Check(t, got.Path)
+		ext4test.Debugfs(t, got.Path, "ls -l /sbin/", "runplane-init")
+		ext4test.Debugfs(t, got.Path, "cat /sbin/runplane-init", string(init))
+		ext4test.Debugfs(t, got.Path, "stat /usr/sbin/runplane-init", "Mode:  0755")
+		ext4test.Debugfs(t, got.Path, "stat /sbin", `Fast link dest: "usr/sbin"`)
+		ext4test.Debugfs(t, got.Path, "cat /etc/kept", "new")
+		ext4test.Debugfs(t, got.Path, "stat /etc/gone", "File not found")
+		ext4test.Debugfs(t, got.Path, "stat /tmp", "Mode:  01777")
+		ext4test.Debugfs(t, got.Path, "stat /mnt/scratch", "Type: directory")
+		ext4test.Debugfs(t, got.Path, "stat /proc", "Mode:  0711")
+		ext4test.Debugfs(t, got.Path, "cat /etc/runplane/environ", "PATH=/usr/sbin:/usr/bin\x00GOFLAGS=-tags=vm\x00")
+	})
 
 	steps = nil
 	again, err := m.Ensure(ctx, ref, func(p Progress) { steps = append(steps, p) })
@@ -114,18 +115,22 @@ func TestEnsureRootDisk(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, ".pull-1"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// keep is empty, but Ensure just returned the image.
-	if err := m.GC(ctx, nil); err != nil {
+	if err := m.GC(ctx, []string{got.Digest}); err != nil {
 		t.Fatal(err)
 	}
 	if left := names(t, dir); left != filepath.Base(wantPath) {
-		t.Errorf("after the first GC: %s, want only %s", left, filepath.Base(wantPath))
+		t.Errorf("after a GC that keeps the image: %s, want only %s", left, filepath.Base(wantPath))
+	}
+	// Only keep decides, also for an image that Ensure just returned: else
+	// the old build of a tag stays until the GC after the next change.
+	if _, err := m.Ensure(ctx, ref, nil); err != nil {
+		t.Fatal(err)
 	}
 	if err := m.GC(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if left := names(t, dir); left != "" {
-		t.Errorf("after the second GC: %s, want nothing", left)
+		t.Errorf("after a GC with no keep: %s, want nothing", left)
 	}
 }
 
@@ -167,23 +172,6 @@ func TestResolve(t *testing.T) {
 				t.Errorf("resolve(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestWriteExt4LeavesNothingOnError(t *testing.T) {
-	dir := t.TempDir()
-	dst := filepath.Join(dir, "disk.ext4")
-	_, err := writeExt4(dst, func(w io.Writer) error {
-		tw := tar.NewWriter(w)
-		tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "a", Size: 1, Mode: 0o644})
-		tw.Write([]byte("a"))
-		return errors.New("network down")
-	})
-	if err == nil || !strings.Contains(err.Error(), "network down") {
-		t.Fatalf("writeExt4 error = %v, want the fill error", err)
-	}
-	if left := names(t, dir); left != "" {
-		t.Errorf("folder has %s after a failure, want nothing", left)
 	}
 }
 
@@ -317,55 +305,12 @@ func names(t *testing.T, dir string) string {
 	return strings.Join(out, " ")
 }
 
-// assertExt4 checks the ext4 superblock magic, and the file system with
-// e2fsck where e2fsprogs is installed. The hcsshim writer does not set the
-// padding bits of the inode bitmap. The kernel does not read them on a
-// read-only mount, so the check permits that one problem.
-func assertExt4(t *testing.T, file string) {
+func assertNoTemp(t *testing.T, dir string) {
 	t.Helper()
-	f, err := os.Open(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	magic := make([]byte, 2)
-	if _, err := f.ReadAt(magic, 1080); err != nil {
-		t.Fatal(err)
-	}
-	if got := binary.LittleEndian.Uint16(magic); got != 0xef53 {
-		t.Fatalf("magic at 1080 = %#x, want 0xef53", got)
-	}
-	bin, err := exec.LookPath("e2fsck")
-	if err != nil {
-		t.Log("no e2fsck, skip the file system check")
-		return
-	}
-	out, err := exec.Command(bin, "-fn", file).CombinedOutput()
-	if exit, ok := err.(*exec.ExitError); err != nil && (!ok || exit.ExitCode() != 4) {
-		t.Fatalf("e2fsck -fn %s: %v\n%s", file, err, out)
-	}
-	for line := range strings.Lines(string(out)) {
-		if strings.HasSuffix(strings.TrimSpace(line), "? no") && !strings.Contains(line, "Padding at end of inode bitmap is not set") {
-			t.Errorf("e2fsck -fn %s:\n%s", file, out)
-			return
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			t.Errorf("temp entry %s is left in %s", e.Name(), dir)
 		}
-	}
-}
-
-// debugfs runs a debugfs request on an ext4 file and checks that the output
-// has want. It skips the check where e2fsprogs is not installed.
-func debugfs(t *testing.T, file, request, want string) {
-	t.Helper()
-	bin, err := exec.LookPath("debugfs")
-	if err != nil {
-		t.Logf("no debugfs, skip %q", request)
-		return
-	}
-	out, err := exec.Command(bin, "-R", request, file).CombinedOutput()
-	if err != nil {
-		t.Fatalf("debugfs -R %q: %v\n%s", request, err, out)
-	}
-	if !strings.Contains(string(out), want) {
-		t.Errorf("debugfs -R %q:\n%s\nwant %q", request, out, want)
 	}
 }

@@ -1022,9 +1022,22 @@ export interface components {
             name: string;
             password: string;
         };
+        AppPermission: {
+            /** @enum {string} */
+            access: "read" | "write";
+            /** @enum {string} */
+            name: "organization_self_hosted_runners" | "administration" | "actions" | "contents" | "pull_requests" | "workflows" | "metadata";
+        };
+        AppPermissions: {
+            organization: components["schemas"]["AppPermission"][];
+            user: components["schemas"]["AppPermission"][];
+        };
         AuditEntry: {
-            /** @description <object>.<verb>, for example "pool.create". */
-            action: string;
+            /**
+             * @description <object>.<verb>, for example "pool.create".
+             * @enum {string}
+             */
+            action: "setup.done" | "user.update" | "user.delete" | "user.password" | "user.password_reset" | "invite.create" | "invite.link" | "invite.delete" | "pool.create" | "pool.update" | "pool.delete" | "server.token" | "server.install" | "server.update" | "server.delete" | "server.update_agent" | "sandbox.stop" | "sandbox.shell" | "sandbox.ssh" | "cache.delete" | "image.create" | "image.update" | "image.delete" | "image.refresh" | "settings.update" | "job.rerun" | "backup.create" | "backup.download" | "update.apply" | "github.manifest" | "github.app.create" | "github.installation.install" | "github.installation.update" | "github.installation.request" | "github.sync" | "github.pull_request.create" | "github.disconnect" | "notification.create" | "notification.update" | "notification.delete";
             /** Format: date-time */
             at: string;
             /** @description Names and values of the change. pool.update, server.update, and settings.update have changes, with [old, new] for each changed field. settings.update also has keys, with all changed settings keys. Its changes never hold the S3 secret key. The entries of a job or a sandbox have runner_name, job_id, job_name, workflow_file, run_number, and repository where they apply. */
@@ -1057,7 +1070,10 @@ export interface components {
             s3_key: string;
             /** Format: int64 */
             size_bytes: number;
-            /** @enum {string} */
+            /**
+             * @description failed: the backup or its upload to S3 failed, and error tells why. After a failed upload, the file stays on this server.
+             * @enum {string}
+             */
             status: "running" | "done" | "uploading" | "uploaded" | "failed";
         };
         BackupS3: {
@@ -1101,49 +1117,62 @@ export interface components {
             enabled: boolean;
             /**
              * Format: double
-             * @description Hits / (hits + misses) of the last 7 days, 0 to 1.
+             * @description Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.
              */
-            hit_rate: number;
+            hit_rate: number | null;
             /**
              * Format: int64
-             * @description The limit of the cache: the cache_max_gb setting in bytes, at most a quarter of the disk of the cache. runplane removes the least recently used entries above it.
+             * @description The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it.
              */
             max_bytes: number;
-            /** @description Absent when the mirror stats are not available. */
-            mirror?: components["schemas"]["MirrorStats"];
+            mirror: components["schemas"]["MirrorStats"];
             /** @description The registry_mirror setting. */
             mirror_enabled: boolean;
             /** @description Largest first. */
             repositories: components["schemas"]["CacheRepository"][];
             /**
              * Format: int64
-             * @description Size of all entries, also the unfinished uploads.
+             * @description Size of all entries and of the files of the unfinished uploads.
              */
             size_bytes: number;
+            /**
+             * Format: int64
+             * @description The hit rates, hits, and misses count the cache lookups of this many last days.
+             */
+            stats_days: number;
         };
         CacheRepository: {
             /** Format: int64 */
             entries: number;
             /**
              * Format: double
-             * @description Hits / (hits + misses) of the last 7 days, 0 to 1.
+             * @description Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.
              */
-            hit_rate: number;
+            hit_rate: number | null;
             /**
              * Format: int64
-             * @description Of the last 7 days.
+             * @description Of the last stats_days days.
              */
             hits: number;
             /** Format: date-time */
             last_used_at: string | null;
             /**
              * Format: int64
-             * @description Of the last 7 days.
+             * @description Of the last stats_days days.
              */
             misses: number;
             repository: string;
             /** Format: int64 */
             size_bytes: number;
+        };
+        Capabilities: {
+            /** @description All other changes, and the members, the notification channels, the audit log, and the backups. */
+            admin: boolean;
+            /** @description Open the debug shell of a sandbox. */
+            open_shells: boolean;
+            /** @description Run a job again, also with a debug sandbox. */
+            rerun_jobs: boolean;
+            stop_sandboxes: boolean;
         };
         Check: {
             /** @description Shell command that does the fix, if one does. Empty otherwise. */
@@ -1213,7 +1242,7 @@ export interface components {
         CreatePullRequestRequest: {
             /** @description The label of an enabled pool. */
             label: string;
-            /** @description owner/name of a repository that the GitHub App can access. */
+            /** @description owner/name of a repository whose takes_jobs is true. */
             repository: string;
         };
         CreatedInvite: {
@@ -1308,6 +1337,8 @@ export interface components {
             owner_login: string;
             /** @description Organization or User. */
             owner_type: string;
+            /** @description Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there. */
+            permissions_url: string;
             /** @description Settings page of the app on GitHub: name, permissions, and keys. */
             settings_url: string;
             slug: string;
@@ -1315,8 +1346,10 @@ export interface components {
         GitHubStatus: {
             /** @description Absent before the manifest flow. */
             app?: components["schemas"]["GitHubApp"];
-            /** @description An app with at least one installation exists. */
-            connected: boolean;
+            /** @description The permissions that the manifest of a new app asks for. */
+            app_permissions: components["schemas"]["AppPermissions"];
+            /** @description The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool. */
+            hosted_labels: string[];
             installations: components["schemas"]["Installation"][];
             /** @description One for each pool and installation, or for each pool and repository of a personal account. */
             scale_sets: components["schemas"]["ScaleSetStatus"][];
@@ -1338,6 +1371,7 @@ export interface components {
         HostCheck: {
             /** @enum {string} */
             arch: "x64" | "arm64";
+            /** @description The doctor checks without the mode check: mode has its result. */
             checks: components["schemas"]["Check"][];
             /**
              * Format: int64
@@ -1398,8 +1432,11 @@ export interface components {
             updated_at: string;
         };
         ImageBuild: {
-            /** @description Arch of the server: x64 or arm64. Empty until the server reports its facts. */
-            arch: string;
+            /**
+             * @description Arch of the server. Empty until the server reports its facts.
+             * @enum {string}
+             */
+            arch: "x64" | "arm64" | "";
             digest: string;
             error: string;
             server_id: string;
@@ -1410,6 +1447,9 @@ export interface components {
             status: "pending" | "pulling" | "building" | "converting" | "ready" | "failed";
             /** Format: date-time */
             updated_at: string;
+        };
+        ImageRemoved: {
+            id: string;
         };
         Installation: {
             account_login: string;
@@ -1482,6 +1522,8 @@ export interface components {
              * @description Median run time of the last 20 succeeded runs of this job, 0 if none. Lists and events set it only for jobs that did not complete.
              */
             expected_duration_ms: number;
+            /** @description The job completed, and runplane still gets its run data and its log from GitHub. */
+            finish_pending: boolean;
             /** Format: date-time */
             finished_at: string | null;
             head_branch: string;
@@ -1497,7 +1539,10 @@ export interface components {
             job_name: string;
             /** @description The runs-on labels. */
             labels: string[];
-            /** @enum {string} */
+            /**
+             * @description live while the job runs and its sandbox streams the log.
+             * @enum {string}
+             */
             log_state: "none" | "live" | "stored" | "expired";
             /** Format: int64 */
             mem_peak_mb: number | null;
@@ -1522,11 +1567,6 @@ export interface components {
             reject_reason: string;
             /** @description owner/name */
             repository: string;
-            /**
-             * @description Null until the job completes.
-             * @enum {string|null}
-             */
-            result: "succeeded" | "failed" | "cancelled" | "skipped" | null;
             /** Format: int64 */
             run_attempt: number;
             /** Format: int64 */
@@ -1553,6 +1593,11 @@ export interface components {
             started_at: string | null;
             /** @enum {string} */
             state: "queued" | "assigned" | "running" | "completed";
+            /**
+             * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
+             * @enum {string}
+             */
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
             steps: components["schemas"]["JobStep"][];
             /**
              * Format: int64
@@ -1593,15 +1638,16 @@ export interface components {
         JobStep: {
             /** Format: date-time */
             completed_at: string | null;
-            /** @description For example success, failure, cancelled, or skipped. Empty until the step completes. */
-            conclusion: string;
             name: string;
             /** Format: int64 */
             number: number;
             /** Format: date-time */
             started_at: string | null;
-            /** @description queued, in_progress, or completed. */
-            status: string;
+            /**
+             * @description queued until the step starts, then running, and then the result.
+             * @enum {string}
+             */
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
         };
         JobSummary: {
             /** @description The sandbox stays after the job for a debug shell. */
@@ -1637,11 +1683,6 @@ export interface components {
             /** @description owner/name */
             repository: string;
             /**
-             * @description Null until the job completes.
-             * @enum {string|null}
-             */
-            result: "succeeded" | "failed" | "cancelled" | "skipped" | null;
-            /**
              * Format: int64
              * @description 0 until runplane reads the run from GitHub.
              */
@@ -1653,6 +1694,11 @@ export interface components {
             started_at: string | null;
             /** @enum {string} */
             state: "queued" | "assigned" | "running" | "completed";
+            /**
+             * @description queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.
+             * @enum {string}
+             */
+            status: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
             /** @description For example ".github/workflows/ci.yml". */
             workflow_file: string;
             /** @description Empty until runplane reads the run from GitHub. */
@@ -1677,6 +1723,10 @@ export interface components {
         Members: {
             /** @description Invites that are not accepted and not expired. */
             invites: components["schemas"]["Invite"][];
+            /** @description ID of the only admin, which cannot lose the role or be deleted, because runplane needs an admin. Empty when two or more users are admins. */
+            last_admin: string;
+            /** @description What each role can do. */
+            roles: components["schemas"]["Roles"];
             users: components["schemas"]["User"][];
         };
         MetricSample: {
@@ -1699,6 +1749,11 @@ export interface components {
              * @description Bytes sent from the mirror.
              */
             hit_bytes: number;
+            /**
+             * Format: double
+             * @description Hits / (hits + misses), 0 to 1. Null without hits and misses.
+             */
+            hit_rate: number | null;
             /** Format: int64 */
             hits: number;
             /**
@@ -1713,11 +1768,6 @@ export interface components {
              * @description Bytes in the mirror now.
              */
             size_bytes: number;
-            /**
-             * Format: date-time
-             * @description Start of runplane, where the counts start.
-             */
-            started_at: string;
         };
         NotificationChannel: {
             /** Format: date-time */
@@ -1742,6 +1792,11 @@ export interface components {
             url: string;
         };
         Overview: {
+            /**
+             * Format: int64
+             * @description Length of each bucket: 1 hour for 24h, 6 hours for 7d, 1 day for 30d.
+             */
+            bucket_ms: number;
             /** @description Completed jobs by queue time, oldest first, in UTC: 24 buckets of 1 hour for 24h, 28 of 6 hours for 7d, 30 of 1 day for 30d. The last bucket ends after now. */
             buckets: components["schemas"]["OverviewBucket"][];
             /** @enum {string} */
@@ -1777,9 +1832,9 @@ export interface components {
             duration_ms: number;
             /**
              * Format: double
-             * @description failed / (succeeded + failed), 0 to 1.
+             * @description failed / (succeeded + failed), 0 to 1. Null when no job of the range succeeded or failed.
              */
-            failure_rate: number;
+            failure_rate: number | null;
             /** Format: int64 */
             jobs: number;
             /**
@@ -1789,18 +1844,23 @@ export interface components {
             median_queue_ms: number | null;
             /**
              * Format: int64
-             * @description vCPUs of the live sandboxes on the online and draining servers.
+             * @description vCPUs of the live sandboxes on the online, draining, and disabled servers.
              */
             vcpu_in_use: number;
             /**
              * Format: int64
-             * @description vCPUs of the online and draining servers.
+             * @description vCPUs of the online, draining, and disabled servers.
              */
             vcpu_total: number;
         };
         Pool: {
             /** @enum {string} */
             arch: "x64" | "arm64";
+            /**
+             * Format: int64
+             * @description Of queued, the jobs that GitHub assigned to the scale set of the pool.
+             */
+            assigned: number;
             /**
              * Format: int64
              * @description Live count of sandboxes that run a job.
@@ -1844,12 +1904,12 @@ export interface components {
             placeable_server_ids: string[];
             /**
              * Format: int64
-             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start.
+             * @description Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
              */
             placeable_servers: number;
             /**
              * Format: int64
-             * @description Jobs of the last 24 hours that wait for a runner.
+             * @description Jobs that wait for a runner.
              */
             queued: number;
             /** @description Servers that may run the sandboxes. Empty: all servers with the arch of the pool. */
@@ -1868,6 +1928,11 @@ export interface components {
             updated_at: string;
             /** Format: int64 */
             vcpu: number;
+            /**
+             * Format: int64
+             * @description Of online_servers, the servers that get no runners now. wait_reason of each server tells why.
+             */
+            waiting_servers: number;
         };
         PoolPlacement: {
             /**
@@ -1878,23 +1943,44 @@ export interface components {
             placeable_server_ids: string[];
             /**
              * Format: int64
-             * @description Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start.
+             * @description Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.
              */
             placeable_servers: number;
+            /**
+             * Format: int64
+             * @description Of online_servers, the servers that get no runners now. wait_reason of each server tells why.
+             */
+            waiting_servers: number;
         };
         PoolStats: {
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Of queued, the jobs that GitHub assigned to the scale set of the pool.
+             */
             assigned: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of sandboxes that run a job.
+             */
             busy: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of idle sandboxes.
+             */
             idle: number;
             pool_id: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Jobs that wait for a runner.
+             */
             queued: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Live count of sandboxes that start.
+             */
             starting: number;
         };
+        PoolsChanged: Record<string, never>;
         PullRequest: {
             /** @description Page of the pull request on GitHub. */
             html_url: string;
@@ -1907,12 +1993,17 @@ export interface components {
             full_name: string;
             /** Format: int64 */
             id: number;
-            /** @description runplane rejects jobs of public repositories unless allow_public_repos is on in VM mode. */
             private: boolean;
+            /** @description runplane takes the jobs of the repository. The scheduler still checks each job. */
+            takes_jobs: boolean;
         };
         RerunRequest: {
             /** @description Keep the sandbox of the new attempt after the job for a debug shell. */
             debug?: boolean;
+        };
+        Roles: {
+            admin: components["schemas"]["Capabilities"];
+            member: components["schemas"]["Capabilities"];
         };
         RunnerCurrent: {
             arm64: string;
@@ -1985,7 +2076,6 @@ export interface components {
             id: string;
             /** Format: date-time */
             idle_at: string | null;
-            ip: string;
             /** @description Empty until the runner gets a job. */
             job_id: string;
             job_name: string;
@@ -2048,9 +2138,14 @@ export interface components {
             status: "creating" | "listening" | "error" | "deleting";
         };
         Server: {
+            /** @description The changes that an admin can make to the server now. */
+            actions: components["schemas"]["ServerActions"];
             address: string;
-            /** @description x64 or arm64. Empty until the server reports its facts. */
-            arch: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            arch: "x64" | "arm64" | "";
             /**
              * Format: double
              * @description Latest host sample. Null without samples.
@@ -2085,8 +2180,11 @@ export interface components {
             memory_mb: number;
             /** Format: double */
             memory_percent: number | null;
-            /** @description container, vm, or dev. Empty until the server reports its facts. */
-            mode: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            mode: "container" | "vm" | "dev" | "";
             name: string;
             os: string;
             /** @description Cloud provider, if runplane knows it. */
@@ -2113,8 +2211,10 @@ export interface components {
             /** @description For example the install progress or the last error. */
             status_detail: string;
             sysbox_version: string;
+            /** @description Why the last update of the agent failed. Empty when it did not fail. */
+            update_error: string;
             /**
-             * @description current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and status_detail tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version.
+             * @description current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and update_error tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version.
              * @enum {string}
              */
             update_state: "current" | "available" | "updating" | "failed" | "none";
@@ -2129,10 +2229,30 @@ export interface components {
             vcpu_in_use: number;
             /** @description runplane version on the server. */
             version: string;
+            /** @description Why the server gets no runners in its mode, for example while allow_public_repos is on and the server is not in VM mode. Empty when it gets runners. status tells if the server is draining or disabled. */
+            wait_reason: string;
+        };
+        ServerActions: {
+            /** @description PATCH status draining. */
+            can_drain: boolean;
+            /** @description DELETE. The primary cannot be removed. */
+            can_remove: boolean;
+            /** @description PATCH status online, after a drain or a disable. */
+            can_resume: boolean;
+            /** @description POST /api/servers/{id}/doctor: the server is connected. */
+            can_run_doctor: boolean;
+            /** @description POST /api/servers/{id}/update: the agent is connected, and update_state is available or failed. */
+            can_update: boolean;
+        };
+        ServerRemoved: {
+            id: string;
         };
         ServerSummary: {
-            /** @description x64 or arm64. Empty until the server reports its facts. */
-            arch: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            arch: "x64" | "arm64" | "";
             /**
              * Format: double
              * @description Latest host sample. Null without samples.
@@ -2159,8 +2279,11 @@ export interface components {
             memory_mb: number;
             /** Format: double */
             memory_percent: number | null;
-            /** @description container, vm, or dev. Empty until the server reports its facts. */
-            mode: string;
+            /**
+             * @description Empty until the server reports its facts.
+             * @enum {string}
+             */
+            mode: "container" | "vm" | "dev" | "";
             name: string;
             /**
              * Format: int64
@@ -2172,6 +2295,11 @@ export interface components {
              * @description Sandboxes that are not gone or failed.
              */
             sandboxes: number;
+            /**
+             * Format: date-time
+             * @description Time of the latest host sample.
+             */
+            stats_at: string | null;
             /** @enum {string} */
             status: "online" | "installing" | "unreachable" | "draining" | "disabled";
             /** @description For example the install progress or the last error. */
@@ -2209,6 +2337,18 @@ export interface components {
             /** @description An agent installed with the token. */
             used: boolean;
         };
+        Session: {
+            capabilities: components["schemas"]["Capabilities"];
+            /** Format: date-time */
+            created_at: string;
+            email: string;
+            id: string;
+            /** Format: date-time */
+            last_login_at: string | null;
+            name: string;
+            /** @enum {string} */
+            role: "admin" | "member";
+        };
         Settings: {
             /** @description Contact for the certificate authority. Optional. */
             acme_email: string;
@@ -2216,7 +2356,7 @@ export interface components {
             actions_cache: boolean;
             /** @description Take jobs of pull requests from forks. */
             allow_fork_prs: boolean;
-            /** @description Take jobs of public repositories. Only when the mode setting and each server are in VM mode. */
+            /** @description Take jobs of public repositories. An admin can turn it on only while the mode setting and each server are in VM mode. While it is on, only servers in VM mode get runners. */
             allow_public_repos: boolean;
             auto_update: boolean;
             /** @description Daily database backup. */
@@ -2228,6 +2368,10 @@ export interface components {
             backup_keep: number;
             /** @description Optional upload of each backup to S3. */
             backup_s3: components["schemas"]["BackupS3"];
+            /** @description Time of day in UTC of the daily backup, for example 03:00. Read-only. */
+            backup_time: string;
+            /** @description bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only. */
+            bandwidth_applies: boolean;
             /**
              * Format: int64
              * @description Bandwidth limit of each VM. 0: no limit.
@@ -2254,10 +2398,10 @@ export interface components {
             dns_servers: string[];
             /** @description With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall. */
             domain: string;
-            /** @description Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet. */
+            /** @description Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist: string[];
-            /** @description Certificate of the domain. Read-only. Absent when this runplane process cannot report it. */
-            https?: components["schemas"]["HTTPSStatus"];
+            /** @description Certificate of the domain. Read-only. */
+            https: components["schemas"]["HTTPSStatus"];
             /** @description Title in the sidebar. */
             instance_name: string;
             /** Format: int64 */
@@ -2270,10 +2414,12 @@ export interface components {
              */
             min_free_disk_percent: number;
             /**
-             * @description Sandbox mode. Empty until the install sets it.
+             * @description Sandbox mode of the primary. vm needs KVM, and dev needs RUNPLANE_DEV_INSECURE=1. A change takes effect after a restart.
              * @enum {string}
              */
-            mode: "container" | "vm" | "dev" | "";
+            mode: "container" | "vm" | "dev";
+            /** @description Why an admin cannot turn allow_public_repos on: the mode setting or a server is not in VM mode. It names each server that is not in VM mode, and while the setting is on, these servers get no runners. Empty when each server is in VM mode. Read-only. */
+            public_repos_refusal: string;
             /** @description Browser URL of the dashboard, for example https://ci.example.com. Empty: the URL of each request. */
             public_url: string;
             /** @description Docker Hub pull-through cache for the sandboxes. */
@@ -2288,52 +2434,84 @@ export interface components {
              * @description vCPUs that sandboxes do not get on each server.
              */
             reserve_vcpu: number;
-            /**
-             * Format: int64
-             * @description Port of the SSH gateway for debug shells. Read-only.
-             */
-            ssh_port: number;
+            /** @description File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only. */
+            secret_key_path: string;
         };
         SettingsPatch: {
+            /** @description Contact for the certificate authority. Optional. */
             acme_email?: string;
+            /** @description Local Actions cache server. */
             actions_cache?: boolean;
+            /** @description Take jobs of pull requests from forks. */
             allow_fork_prs?: boolean;
+            /** @description Take jobs of public repositories. An admin can turn it on only while the mode setting and each server are in VM mode. While it is on, only servers in VM mode get runners. */
             allow_public_repos?: boolean;
             auto_update?: boolean;
+            /** @description Daily database backup. */
             backup_enabled?: boolean;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Backups to keep.
+             */
             backup_keep?: number;
             backup_s3?: components["schemas"]["BackupS3Patch"];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Bandwidth limit of each VM. 0: no limit.
+             */
             bandwidth_mbps?: number;
             /** Format: int64 */
             cache_max_gb?: number;
-            /** Format: double */
+            /**
+             * Format: double
+             * @description Factor for the vCPUs that sandboxes can get. 1 means no overcommit.
+             */
             cpu_overcommit?: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Time that a debug sandbox stays after its job.
+             */
             debug_hold_minutes?: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Time limit of a job in a pool without its own limit.
+             */
             default_time_limit_minutes?: number;
+            /** @description IPv4 addresses of the DNS servers of the sandboxes. */
             dns_servers?: string[];
+            /** @description With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall. */
             domain?: string;
+            /** @description Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet. */
             egress_allowlist?: string[];
+            /** @description Title in the sidebar. */
             instance_name?: string;
             /** Format: int64 */
             job_retention_days?: number;
             /** Format: int64 */
             log_retention_days?: number;
-            /** Format: double */
+            /**
+             * Format: double
+             * @description No new sandboxes start on a server with less free disk.
+             */
             min_free_disk_percent?: number;
             /**
-             * @description vm needs KVM; dev needs RUNPLANE_DEV_INSECURE=1. A change takes effect after a restart.
+             * @description Sandbox mode of the primary. vm needs KVM, and dev needs RUNPLANE_DEV_INSECURE=1. A change takes effect after a restart.
              * @enum {string}
              */
             mode?: "container" | "vm" | "dev";
+            /** @description Browser URL of the dashboard, for example https://ci.example.com. Empty: the URL of each request. */
             public_url?: string;
+            /** @description Docker Hub pull-through cache for the sandboxes. */
             registry_mirror?: boolean;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Memory that sandboxes do not get on each server.
+             */
             reserve_memory_mb?: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description vCPUs that sandboxes do not get on each server.
+             */
             reserve_vcpu?: number;
         };
         SetupRequest: {
@@ -2354,24 +2532,27 @@ export interface components {
             reason: string;
         };
         Status: {
-            /** @description True when a GitHub App with at least one installation exists. */
-            github_connected: boolean;
             /** @description True when runplane has recorded at least one job. */
             has_jobs: boolean;
             instance_name: string;
             /**
-             * @description Sandbox mode. Empty until the install sets it.
+             * @description Sandbox mode.
              * @enum {string}
              */
-            mode: "container" | "vm" | "dev" | "";
+            mode: "container" | "vm" | "dev";
             /** @description True until the first admin exists. */
             needs_setup: boolean;
-            /**
-             * Format: int64
-             * @description Port of the SSH gateway for debug shells.
-             */
-            ssh_port: number;
+            /** @description The operating systems of a server that install.sh names. */
+            systems: components["schemas"]["System"][];
             /** @description Version of runplane, for example "v1.2.0 (3f2a9c1)". */
+            version: string;
+        };
+        System: {
+            /** @description install.sh installs runplane with a warning, because runplane has no tests on the system. */
+            best_effort: boolean;
+            /** @description For example Ubuntu. */
+            name: string;
+            /** @description For example 24.04. */
             version: string;
         };
         TestChannelRequest: {
@@ -2433,8 +2614,6 @@ export interface components {
             status?: "online" | "draining" | "disabled";
         };
         UpdateStatus: {
-            /** @description The auto_update setting. */
-            auto_update: boolean;
             /** @description latest is newer than current. */
             available: boolean;
             /** @description Version of this runplane. */
@@ -2742,6 +2921,17 @@ export interface operations {
                         /** @description The retry time in milliseconds. */
                         retry?: number;
                     } | {
+                        data: components["schemas"]["ImageRemoved"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "image.removed";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
                         data: components["schemas"]["Image"];
                         /**
                          * @description The event name.
@@ -2775,6 +2965,17 @@ export interface operations {
                         /** @description The retry time in milliseconds. */
                         retry?: number;
                     } | {
+                        data: components["schemas"]["PoolsChanged"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "pools.changed";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
                         data: components["schemas"]["RunnerVersion"];
                         /**
                          * @description The event name.
@@ -2797,12 +2998,34 @@ export interface operations {
                         /** @description The retry time in milliseconds. */
                         retry?: number;
                     } | {
+                        data: components["schemas"]["ServerRemoved"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "server.removed";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
                         data: components["schemas"]["Server"];
                         /**
                          * @description The event name.
                          * @constant
                          */
                         event: "server.state";
+                        /** @description The event ID. */
+                        id?: number | string;
+                        /** @description The retry time in milliseconds. */
+                        retry?: number;
+                    } | {
+                        data: components["schemas"]["Settings"];
+                        /**
+                         * @description The event name.
+                         * @constant
+                         */
+                        event: "settings.changed";
                         /** @description The event ID. */
                         id?: number | string;
                         /** @description The retry time in milliseconds. */
@@ -2976,10 +3199,9 @@ export interface operations {
     };
     "github-setup": {
         parameters: {
-            query?: {
+            query: {
                 installation_id?: number;
-                /** @description install, update, or request. */
-                setup_action?: string;
+                setup_action: "install" | "update" | "request";
             };
             header?: never;
             path?: never;
@@ -3278,7 +3500,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["User"];
+                    "application/json": components["schemas"]["Session"];
                 };
             };
             /** @description Error */
@@ -3355,8 +3577,8 @@ export interface operations {
     "list-jobs": {
         parameters: {
             query?: {
-                /** @description queued also has the assigned jobs. */
-                status?: "running" | "queued" | "succeeded" | "failed" | "cancelled";
+                /** @description The status of the jobs. */
+                status?: "running" | "queued" | "succeeded" | "failed" | "cancelled" | "skipped";
                 repository?: string;
                 pool_id?: string;
                 server_id?: string;
@@ -3457,7 +3679,7 @@ export interface operations {
     "get-job-log": {
         parameters: {
             query?: {
-                /** @description Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored. */
+                /** @description Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps. */
                 step?: number;
                 /** @description Stream new lines until the log ends. */
                 follow?: boolean;
@@ -3473,8 +3695,6 @@ export interface operations {
             /** @description The log as plain text. With follow=1, the response streams until the log ends. */
             200: {
                 headers: {
-                    /** @description ignored: the log has all steps, because the job runs and its live log has no step marks. */
-                    "X-Runplane-Step-Filter"?: "ignored";
                     [name: string]: unknown;
                 };
                 content: {
@@ -3576,7 +3796,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["User"];
+                    "application/json": components["schemas"]["Session"];
                 };
             };
             /** @description Error */
@@ -4547,7 +4767,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["User"];
+                    "application/json": components["schemas"]["Session"];
                 };
             };
             /** @description Error */
@@ -4581,7 +4801,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["User"];
+                    "application/json": components["schemas"]["Session"];
                 };
             };
             /** @description Error */
@@ -4734,7 +4954,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["User"];
+                    "application/json": components["schemas"]["Session"];
                 };
             };
             /** @description Error */

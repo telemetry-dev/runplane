@@ -21,7 +21,7 @@ import (
 // server. It needs Node, npm, and network access for npm install.
 func TestActionsCacheClient(t *testing.T) {
 	if os.Getenv("RUNPLANE_CACHE_NODE_TEST") == "" {
-		t.Skip("set RUNPLANE_CACHE_NODE_TEST=1 to run @actions/cache against the server")
+		t.Skip("set RUNPLANE_CACHE_NODE_TEST=1 to run @actions/cache against the server; the test needs node, npm, and network access")
 	}
 	modules := t.TempDir()
 	run(t, modules, "npm", "init", "-y")
@@ -32,12 +32,10 @@ func TestActionsCacheClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := newFixture(t, 0)
 	// The clock of the fixture stays still; the client needs real expiry times.
-	f.srv.now = time.Now
+	f := newFixture(t, 0, func(c *Config) { c.Now = time.Now })
 	var blocks, blockLists atomic.Int64
 	var sandboxID atomic.Value // of the next client run
-	proxied := f.srv.Proxied()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("comp") {
 		case "block":
@@ -45,8 +43,7 @@ func TestActionsCacheClient(t *testing.T) {
 		case "blocklist":
 			blockLists.Add(1)
 		}
-		r.Header.Set(SandboxHeader, sandboxID.Load().(string))
-		proxied.ServeHTTP(w, r)
+		f.srv.ServeAgent(w, r, "agent-1", sandboxID.Load().(string))
 	}))
 	defer server.Close()
 
@@ -143,7 +140,6 @@ func TestActionsCacheClient(t *testing.T) {
 		t.Errorf("restore by restore key: %v", res)
 	}
 
-	// The feature branch entry is not visible from a pull request.
 	if res := node("sb-pr1", "restore", "npm-linux-abc"); res["matched"] != nil {
 		t.Errorf("pull request restored a feature branch entry: %v", res)
 	}
@@ -165,7 +161,7 @@ func TestActionsCacheClient(t *testing.T) {
 // network access for the module download.
 func TestBuildKitClient(t *testing.T) {
 	if os.Getenv("RUNPLANE_CACHE_BUILDKIT_TEST") == "" {
-		t.Skip("set RUNPLANE_CACHE_BUILDKIT_TEST=1 to run BuildKit's cache client against the server")
+		t.Skip("set RUNPLANE_CACHE_BUILDKIT_TEST=1 to run BuildKit's cache client against the server; the test needs network access for the Go module download")
 	}
 	mod := t.TempDir()
 	src, err := os.ReadFile(filepath.Join("testdata", "buildkit", "main.go"))
@@ -177,8 +173,7 @@ func TestBuildKitClient(t *testing.T) {
 	run(t, mod, "go", "get", "github.com/tonistiigi/go-actions-cache@latest")
 	run(t, mod, "go", "build", "-o", "client", ".")
 
-	f := newFixture(t, 0)
-	f.srv.now = time.Now
+	f := newFixture(t, 0, func(c *Config) { c.Now = time.Now })
 	server := httptest.NewServer(f.srv)
 	defer server.Close()
 

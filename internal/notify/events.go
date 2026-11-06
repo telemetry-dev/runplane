@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/pages"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -22,19 +23,19 @@ const (
 	Test Type = "test"
 )
 
+// Types are the event types that a channel can subscribe to.
+var Types = []Type{JobFailed, ServerUnreachable, DiskLow, RunnerDeprecation, UpdateAvailable, BackupFailed}
+
 type Event struct {
 	Type  Type
 	Title string
 	Text  string
-	URL   string         // dashboard page of the event; empty if the dashboard URL is not known
+	Path  string         // dashboard page of the event, from package pages
 	Data  map[string]any // details for webhook receivers
-	At    time.Time      // Send sets the current time if zero
+	At    time.Time      // the send sets the current time if zero
 }
 
-// The constructors below take the dashboard base URL ("https://runplane.example.com").
-// An empty base gives events without links.
-
-func JobFailedEvent(dashboard string, j store.Job) Event {
+func JobFailedEvent(j store.Job) Event {
 	var took time.Duration
 	if j.StartedAt != nil && j.FinishedAt != nil {
 		took = j.FinishedAt.Sub(*j.StartedAt)
@@ -60,7 +61,7 @@ func JobFailedEvent(dashboard string, j store.Job) Event {
 		Type:  JobFailed,
 		Title: "Job failed: " + j.JobName,
 		Text:  strings.Join(parts, " · "),
-		URL:   link(dashboard, "/jobs/"+j.ID),
+		Path:  pages.Job(j.ID),
 		Data: map[string]any{
 			"job_id":      j.ID,
 			"repository":  j.Repository,
@@ -75,12 +76,12 @@ func JobFailedEvent(dashboard string, j store.Job) Event {
 	}
 }
 
-func ServerUnreachableEvent(dashboard, serverID, name string, lastSeen time.Time) Event {
+func ServerUnreachableEvent(serverID, name string, lastSeen time.Time) Event {
 	return Event{
 		Type:  ServerUnreachable,
 		Title: "Server unreachable: " + name,
 		Text:  fmt.Sprintf("runplane has had no connection to %s since %s. Jobs do not start on this server.", name, lastSeen.UTC().Format("2006-01-02 15:04 UTC")),
-		URL:   link(dashboard, "/servers/"+serverID),
+		Path:  pages.Server(serverID),
 		Data: map[string]any{
 			"server_id":    serverID,
 			"server_name":  name,
@@ -89,12 +90,12 @@ func ServerUnreachableEvent(dashboard, serverID, name string, lastSeen time.Time
 	}
 }
 
-func DiskLowEvent(dashboard, serverID, name string, freePercent float64, minFreePercent int) Event {
+func DiskLowEvent(serverID, name string, freePercent, minFreePercent float64) Event {
 	return Event{
 		Type:  DiskLow,
 		Title: "Disk almost full on " + name,
-		Text:  fmt.Sprintf("%.0f%% of the disk is free. New sandboxes start only when more than %d%% is free.", freePercent, minFreePercent),
-		URL:   link(dashboard, "/servers/"+serverID),
+		Text:  fmt.Sprintf("%.0f%% of the disk is free. New sandboxes start only when more than %g%% is free.", freePercent, minFreePercent),
+		Path:  pages.Server(serverID),
 		Data: map[string]any{
 			"server_id":        serverID,
 			"server_name":      name,
@@ -104,23 +105,23 @@ func DiskLowEvent(dashboard, serverID, name string, freePercent float64, minFree
 	}
 }
 
-func RunnerDeprecationEvent(dashboard, version string, end time.Time) Event {
+func RunnerDeprecationEvent(version string, end time.Time) Event {
 	date := end.UTC().Format("2006-01-02")
 	return Event{
 		Type:  RunnerDeprecation,
 		Title: fmt.Sprintf("Runner %s stops working on %s", version, date),
 		Text:  fmt.Sprintf("GitHub stops sending jobs to runner %s on %s. Make sure that a newer runner version is ready.", version, date),
-		URL:   link(dashboard, "/settings/runners"),
+		Path:  pages.RunnerSettings,
 		Data:  map[string]any{"version": version, "end_date": date},
 	}
 }
 
-func UpdateAvailableEvent(dashboard, current, latest, releaseURL string) Event {
+func UpdateAvailableEvent(current, latest, releaseURL string) Event {
 	return Event{
 		Type:  UpdateAvailable,
 		Title: fmt.Sprintf("runplane %s is available", latest),
 		Text:  fmt.Sprintf("This server runs %s. You can update in Settings, General.", current),
-		URL:   link(dashboard, "/settings/general"),
+		Path:  pages.GeneralSettings,
 		Data: map[string]any{
 			"current_version": current,
 			"latest_version":  latest,
@@ -129,28 +130,31 @@ func UpdateAvailableEvent(dashboard, current, latest, releaseURL string) Event {
 	}
 }
 
-func BackupFailedEvent(dashboard string, err error) Event {
+// BackupFailedEvent tells why a backup failed: the error of its row.
+func BackupFailedEvent(reason string) Event {
 	return Event{
 		Type:  BackupFailed,
 		Title: "Database backup failed",
-		Text:  err.Error(),
-		URL:   link(dashboard, "/settings/general"),
-		Data:  map[string]any{"error": err.Error()},
+		Text:  reason,
+		Path:  pages.GeneralSettings,
+		Data:  map[string]any{"error": reason},
 	}
 }
 
-func TestEvent(dashboard string) Event {
+func TestEvent() Event {
 	return Event{
 		Type:  Test,
 		Title: "Test notification from runplane",
 		Text:  "This channel receives runplane notifications.",
-		URL:   link(dashboard, "/settings/notifications"),
+		Path:  pages.NotificationSettings,
 	}
 }
 
-func link(dashboard, path string) string {
-	if dashboard == "" {
+// link is the URL of the page of e on the dashboard at base, or "" when
+// runplane does not know the base.
+func (e Event) link(base string) string {
+	if base == "" {
 		return ""
 	}
-	return strings.TrimRight(dashboard, "/") + path
+	return strings.TrimRight(base, "/") + e.Path
 }

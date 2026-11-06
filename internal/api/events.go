@@ -2,8 +2,9 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2/sse"
@@ -13,45 +14,94 @@ import (
 	"github.com/runplane/runplane/internal/store"
 )
 
-type PoolStats struct {
-	PoolID   string `json:"pool_id"`
-	Idle     int    `json:"idle"`
-	Busy     int    `json:"busy"`
-	Starting int    `json:"starting"`
-	Queued   int    `json:"queued"`
-	Assigned int    `json:"assigned"`
-}
-
-type HostStats struct {
-	ServerID      string    `json:"server_id"`
-	At            time.Time `json:"at"`
-	CPUPercent    float64   `json:"cpu_percent"`
-	MemoryPercent float64   `json:"memory_percent"`
-	DiskPercent   float64   `json:"disk_percent"`
-}
-
 const pingEvery = 15 * time.Second
 
+// stream is a bus event that the browser gets: the SSE event name, the API
+// object of its data, and the conversion of the bus event into the data.
+type stream struct {
+	event   reflect.Type
+	name    string
+	data    any
+	convert func(context.Context, events.Event) (any, error)
+}
+
+// errSkip is the error of a conversion when the browser does not get the
+// event.
+var errSkip = errors.New("the browser does not get this event")
+
+func streamOf[E events.Event, D any](name string, convert func(context.Context, E) (D, error)) stream {
+	var data D
+	return stream{event: reflect.TypeFor[E](), name: name, data: data, convert: func(ctx context.Context, e events.Event) (any, error) {
+		return convert(ctx, e.(E))
+	}}
+}
+
+func same[E any](_ context.Context, e E) (E, error) { return e, nil }
+
+func (h *Handler) streamList() []stream {
+	return []stream{
+		streamOf("sandbox.state", func(ctx context.Context, e events.SandboxState) (Sandbox, error) {
+			return first(h.sandboxes(ctx, []store.Sandbox{store.Sandbox(e)}))
+		}),
+		streamOf("job.state", func(ctx context.Context, e events.JobState) (JobSummary, error) {
+			return first(h.jobSummaries(ctx, []store.Job{store.Job(e)}))
+		}),
+		streamOf("pool.stats", same[events.PoolStats]),
+		streamOf("pools.changed", same[events.PoolsChanged]),
+		streamOf("server.state", func(ctx context.Context, e events.ServerState) (Server, error) {
+			return first(h.servers(ctx, []store.Server{store.Server(e)}))
+		}),
+		streamOf("server.removed", same[events.ServerRemoved]),
+		streamOf("host.stats", same[events.HostStats]),
+		streamOf("runner.version", func(_ context.Context, e events.RunnerVersion) (RunnerVersion, error) {
+			return runnerVersion(store.RunnerBundle(e), time.Now()), nil
+		}),
+		streamOf("image.state", func(ctx context.Context, e events.ImageState) (Image, error) {
+			return h.imageEvent(ctx, e.ID)
+		}),
+		streamOf("image.state", func(ctx context.Context, e events.ImageBuildState) (Image, error) {
+			return h.imageEvent(ctx, e.ImageID)
+		}),
+		streamOf("image.removed", same[events.ImageRemoved]),
+		streamOf("github.state", func(ctx context.Context, _ events.GitHubState) (GitHubStatus, error) {
+			return h.gitHubStatus(ctx)
+		}),
+		streamOf("settings.changed", func(ctx context.Context, e events.SettingsChanged) (Settings, error) {
+			return h.settingsOut(ctx, e.New)
+		}),
+		// One stream route serves all roles.
+		streamOf("backup.state", func(ctx context.Context, e events.BackupState) (Backup, error) {
+			if !auth.CanDo(currentUser(ctx).Role, auth.ActionAdmin) {
+				return Backup{}, errSkip
+			}
+			return h.backupOut(store.Backup(e)), nil
+		}),
+	}
+}
+
+// registerEvents registers the SSE route. sse.Sender finds the name of an
+// event from the type of its data, so each name has its own data type.
 func (h *Handler) registerEvents() {
 	op := operation(auth.ActionRead, "GET /api/events", "stream-events", "Stream live events (SSE)", describe(
 		"Server-Sent Events. Each event has the API object of its name as data. A comment line \": ping\" comes each 15 seconds. "+
 			"Only admins get backup.state."))
-	sse.Register(h.api, op, map[string]any{
-		events.SandboxState:  Sandbox{},
-		events.JobState:      JobSummary{},
-		events.PoolStats:     PoolStats{},
-		events.ServerState:   Server{},
-		events.HostStats:     HostStats{},
-		events.RunnerVersion: RunnerVersion{},
-		events.ImageState:    Image{},
-		events.GitHubState:   GitHubStatus{},
-		events.BackupState:   Backup{},
-	}, h.streamEvents)
+	names := map[string]any{}
+	byData := map[reflect.Type]string{}
+	h.streams = map[reflect.Type]stream{}
+	for _, s := range h.streamList() {
+		data := reflect.TypeOf(s.data)
+		if name, ok := byData[data]; ok && name != s.name {
+			panic(fmt.Sprintf("the SSE events %s and %s have the same data type %s", name, s.name, data))
+		}
+		byData[data], names[s.name], h.streams[s.event] = s.name, s.data, s
+	}
+	sse.Register(h.api, op, names, h.streamEvents)
 }
 
+// streamEvents ends when the browser reads the events too slowly. The
+// browser then connects again and reads all its queries again.
 func (h *Handler) streamEvents(ctx context.Context, _ *struct{}, send sse.Sender) {
-	ch, cancel := h.d.Bus.Subscribe(256)
-	defer cancel()
+	ch := h.d.Bus.Watch(ctx, 256)
 	ping := time.NewTicker(pingEvery)
 	defer ping.Stop()
 	for {
@@ -66,94 +116,37 @@ func (h *Handler) streamEvents(ctx context.Context, _ *struct{}, send sse.Sender
 			}
 		case e, ok := <-ch:
 			if !ok {
+				h.d.Log.Info("stop a slow event stream")
 				return
 			}
-			data, err := h.eventData(ctx, e)
-			if err != nil {
-				h.d.Log.Warn("convert event", "type", e.Type, "err", err)
+			s, ok := h.streams[reflect.TypeOf(e)]
+			if !ok {
 				continue
 			}
-			if data != nil && send.Data(data) != nil {
+			data, err := s.convert(ctx, e)
+			if errors.Is(err, errSkip) {
+				continue
+			}
+			if err != nil {
+				h.d.Log.Warn("convert event", "type", fmt.Sprintf("%T", e), "err", err)
+				continue
+			}
+			if send.Data(data) != nil {
 				return
 			}
 		}
 	}
 }
 
-// eventData converts the data of a bus event into the API object of the
-// event. Publishers can send the API object, the store model, or a value
-// with the same JSON fields as the API object. It returns nil for events
-// that the browser does not get.
-func (h *Handler) eventData(ctx context.Context, e events.Event) (any, error) {
-	switch e.Type {
-	case events.SandboxState:
-		if b, ok := events.As[store.Sandbox](e.Data); ok {
-			return first(h.sandboxes(ctx, []store.Sandbox{b}))
-		}
-		return convert[Sandbox](e.Data)
-	case events.JobState:
-		if j, ok := events.As[store.Job](e.Data); ok {
-			return first(h.jobSummaries(ctx, []store.Job{j}))
-		}
-		return convert[JobSummary](e.Data)
-	case events.PoolStats:
-		return convert[PoolStats](e.Data)
-	case events.ServerState:
-		if v, ok := events.As[store.Server](e.Data); ok {
-			return first(h.servers(ctx, []store.Server{v}))
-		}
-		return convert[Server](e.Data)
-	case events.HostStats:
-		if st, ok := events.As[store.ServerStat](e.Data); ok {
-			return HostStats(st), nil
-		}
-		return convert[HostStats](e.Data)
-	case events.RunnerVersion:
-		if b, ok := events.As[store.RunnerBundle](e.Data); ok {
-			return runnerVersion(b, time.Now()), nil
-		}
-		return convert[RunnerVersion](e.Data)
-	case events.ImageState:
-		id := ""
-		if img, ok := events.As[store.Image](e.Data); ok {
-			id = img.ID
-		} else if b, ok := events.As[store.ImageBuild](e.Data); ok {
-			id = b.ImageID
-		} else {
-			return convert[Image](e.Data)
-		}
-		// Read the image again for its current builds.
-		img, err := h.d.Store.GetImage(ctx, id)
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		return first(h.images(ctx, []store.Image{img}))
-	case events.GitHubState:
-		return h.gitHubStatus(ctx)
-	case events.BackupState:
-		if !auth.CanDo(currentUser(ctx).Role, auth.ActionAdmin) {
-			return nil, nil
-		}
-		if b, ok := events.As[store.Backup](e.Data); ok {
-			return h.backupOut(b), nil
-		}
-		return convert[Backup](e.Data)
+// imageEvent reads the image again for its current builds. A removed image
+// has no event.
+func (h *Handler) imageEvent(ctx context.Context, id string) (Image, error) {
+	img, err := h.d.Store.GetImage(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return Image{}, errSkip
 	}
-	return nil, nil
-}
-
-// convert returns v as a T, or through JSON for another type with the same fields.
-func convert[T any](v any) (T, error) {
-	if x, ok := events.As[T](v); ok {
-		return x, nil
+	if err != nil {
+		return Image{}, err
 	}
-	var out T
-	b, err := json.Marshal(v)
-	if err == nil {
-		err = json.Unmarshal(b, &out)
-	}
-	return out, err
+	return first(h.images(ctx, []store.Image{img}))
 }

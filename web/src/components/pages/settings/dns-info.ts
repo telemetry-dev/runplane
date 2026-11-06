@@ -17,7 +17,15 @@ export type DNSStatus = {
   help: string
 }
 
-/** The state of the DNS record of the domain. The page asks again every 10 seconds until the record is correct. */
+/** How often the page asks again for the record while it is wrong. */
+export const dnsPollMs = 10_000
+
+/** The page asks again while the record is missing or wrong, or the lookup failed: the states with the error tone. */
+export function dnsPolls(dns: DomainDNS): boolean {
+  return dnsStatus(dns).tone === 'error'
+}
+
+/** The state of the DNS record of the domain. */
 export function dnsStatus(dns: DomainDNS): DNSStatus {
   switch (dns.state) {
     case 'ok':
@@ -26,7 +34,7 @@ export function dnsStatus(dns: DomainDNS): DNSStatus {
       return {
         tone: 'error',
         text: 'No A or AAAA record',
-        help: 'Add the record at your DNS provider. runplane looks for it every 10 seconds.',
+        help: `Add the record at your DNS provider. runplane looks for it every ${dnsPollMs / 1000} seconds.`,
       }
     case 'other': {
       const wrong = dns.records.filter((record) => !dns.server_addresses.includes(record))

@@ -15,7 +15,10 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/joblog"
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/shell"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -27,7 +30,6 @@ type Sandbox struct {
 	ServerName      string     `json:"server_name"`
 	State           string     `json:"state" enum:"starting,idle,busy,stopping,gone,failed"`
 	RunnerName      string     `json:"runner_name"`
-	IP              string     `json:"ip"`
 	JobID           string     `json:"job_id" doc:"Empty until the runner gets a job."`
 	JobName         string     `json:"job_name"`
 	JobRepository   string     `json:"job_repository" doc:"owner/name of the job."`
@@ -60,7 +62,7 @@ func (h *Handler) sandboxes(ctx context.Context, list []store.Sandbox) ([]Sandbo
 		}
 		out[i] = Sandbox{
 			ID: b.ID, PoolID: b.PoolID, PoolLabel: r.pools[b.PoolID].Label, ServerID: b.ServerID,
-			ServerName: r.servers[b.ServerID].Name, State: string(b.State), RunnerName: b.RunnerName, IP: b.IP,
+			ServerName: r.servers[b.ServerID].Name, State: string(b.State), RunnerName: b.RunnerName,
 			JobID: b.JobID, JobName: j.JobName, JobRepository: j.Repository, JobWorkflowFile: j.WorkflowFile,
 			Debug: b.Debug, HoldUntil: b.HoldUntil, VCPU: b.VCPU, MemoryMB: b.MemoryMB,
 			Error: b.Error, CreatedAt: b.CreatedAt, IdleAt: b.IdleAt, BusyAt: b.BusyAt, StoppedAt: b.StoppedAt,
@@ -84,7 +86,7 @@ func (h *Handler) listSandboxes(ctx context.Context, in *listSandboxesInput) (*b
 	if in.State != "" {
 		f.States = []sandbox.State{sandbox.State(in.State)}
 	} else {
-		f.States = []sandbox.State{sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy, sandbox.StateStopping}
+		f.States = sandbox.LiveStates()
 	}
 	list, err := h.d.Store.ListSandboxes(ctx, f)
 	if err != nil {
@@ -102,9 +104,6 @@ func (h *Handler) getSandbox(ctx context.Context, in *PathID) (*body[Sandbox], e
 }
 
 func (h *Handler) stopSandbox(ctx context.Context, in *PathID) (*empty, error) {
-	if h.d.Scheduler == nil {
-		return nil, unavailable("The scheduler")
-	}
 	b, err := h.d.Store.GetSandbox(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No sandbox has this ID.")
@@ -113,9 +112,9 @@ func (h *Handler) stopSandbox(ctx context.Context, in *PathID) (*empty, error) {
 		return nil, nil
 	}
 	if err := h.d.Scheduler.StopSandbox(ctx, b.ID); err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.audit(ctx, "sandbox.stop", b.ID, h.sandboxDetail(ctx, b))
+	h.record(ctx, audit.SandboxStop, b.ID, h.sandboxDetail(ctx, b))
 	return nil, nil
 }
 
@@ -140,17 +139,33 @@ type sandboxLogInput struct {
 }
 
 func (h *Handler) sandboxLog(ctx context.Context, in *sandboxLogInput) (*huma.StreamResponse, error) {
-	if h.d.Logs == nil {
-		return nil, unavailable("The sandbox log")
-	}
 	if _, err := h.d.Store.GetSandbox(ctx, in.ID); err != nil {
 		return nil, notFound(err, "No sandbox has this ID.")
 	}
-	rc, err := h.d.Logs.SandboxLog(ctx, in.ID, in.Follow)
+	rc, err := h.d.Logs.Sandbox(ctx, in.ID, in.Follow)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, h.logErr(err)
 	}
 	return h.stream(rc, "text/plain; charset=utf-8", in.Follow), nil
+}
+
+// logErr changes the errors of a log read into problems.
+func (h *Handler) logErr(err error) error {
+	switch {
+	case errors.Is(err, joblog.ErrMissing):
+		return huma.Error404NotFound("The log file of this job is missing.")
+	case errors.Is(err, joblog.ErrExpired):
+		return huma.Error404NotFound("The log of this job expired.")
+	case errors.Is(err, joblog.ErrNoGitHubLog):
+		return huma.Error404NotFound("GitHub has no log for this job.")
+	case errors.Is(err, joblog.ErrNotYet):
+		return huma.Error404NotFound("This job has no log yet.")
+	case errors.Is(err, joblog.ErrSandboxStopped):
+		return huma.Error404NotFound("The sandbox stopped, and its log went with it.")
+	case errors.Is(err, joblog.ErrNotConnected):
+		return huma.Error503ServiceUnavailable("The server of this sandbox is not connected.")
+	}
+	return serviceErr(err)
 }
 
 type shellInput struct {
@@ -167,9 +182,6 @@ type shellMessage struct {
 }
 
 func (h *Handler) openShell(ctx context.Context, in *shellInput) (*huma.StreamResponse, error) {
-	if h.d.Shell == nil {
-		return nil, unavailable("The debug shell")
-	}
 	b, err := h.d.Store.GetSandbox(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No sandbox has this ID.")
@@ -209,35 +221,31 @@ func (h *Handler) openShell(ctx context.Context, in *shellInput) (*huma.StreamRe
 			conn.Close(websocket.StatusInternalError, closeReason(err.Error()))
 			return
 		}
-		h.audit(ctx, "sandbox.shell", b.ID, h.sandboxDetail(ctx, b))
+		h.record(ctx, audit.SandboxShell, b.ID, h.sandboxDetail(ctx, b))
 		bridge(ctx, conn, term)
 	}}, nil
 }
 
-// shellAllowed applies the rule of the SSH gateway: only a debug sandbox
-// has a shell, while its job runs or during its hold after the job.
+// shellAllowed applies the rule of the debug shells to a sandbox.
 func shellAllowed(b store.Sandbox, now time.Time) error {
-	switch {
-	case !b.Debug:
+	switch (shell.Target{State: b.State, Debug: b.Debug, HoldUntil: b.HoldUntil}).Access(now) {
+	case shell.NotDebug:
 		return huma.Error403Forbidden("Only a debug sandbox has a shell. Re-run the job with debug to get one.")
-	case b.State.Done():
+	case shell.Stopped:
 		return huma.Error409Conflict("The sandbox has stopped.")
-	case b.State == sandbox.StateBusy || b.HoldUntil != nil && now.Before(*b.HoldUntil):
-		return nil
-	case b.HoldUntil != nil:
+	case shell.HoldEnded:
 		return huma.Error409Conflict("The debug hold of the sandbox has ended.")
+	case shell.NoJobYet:
+		return huma.Error409Conflict("The sandbox has no job yet. Open the shell when its job runs.")
 	}
-	return huma.Error409Conflict("The sandbox has no job yet. Open the shell when its job runs.")
+	return nil
 }
 
-// sshPort is the port of the SSH gateway from RUNPLANE_SSH_LISTEN, or the
-// default 2222 when the config has no address.
+// sshPort is the port of the SSH gateway from RUNPLANE_SSH_LISTEN.
 func (h *Handler) sshPort() int {
 	_, port, _ := net.SplitHostPort(h.d.Config.SSHListen)
-	if n, err := strconv.Atoi(port); err == nil {
-		return n
-	}
-	return 2222
+	n, _ := strconv.Atoi(port)
+	return n
 }
 
 func (h *Handler) sshCommand(ctx context.Context, sandboxID string) (string, error) {

@@ -10,7 +10,7 @@ type TooltipProps = Omit<BaseTooltip.Root.Props, 'children'> & {
   children: ReactElement
 }
 
-/** Tooltip of gui/components/runplane/tooltip.md: neutral-10 label with neutral-1 text. */
+/** Tooltip of gui/components/runplane/tooltip.md. */
 export function Tooltip({ content, children, ...props }: TooltipProps) {
   return (
     <BaseTooltip.Root {...props}>

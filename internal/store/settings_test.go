@@ -1,16 +1,25 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
 )
 
+// A runplane of another version reads the same settings table.
 func TestSettingsDefaultsAndUpdate(t *testing.T) {
-	s := openTest(t)
+	path := filepath.Join(t.TempDir(), "runplane.db")
+	s, err := Open(path)
+	must(t, err)
+	t.Cleanup(func() { s.Close() })
+	db, err := sql.Open("sqlite", path)
+	must(t, err)
+	t.Cleanup(func() { db.Close() })
 	ctx := t.Context()
-	_, err := s.w.Exec(`INSERT INTO settings (key, value) VALUES ('future_key', '{"a":1}')`)
+	_, err = db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('future_key', '{"a":1}')`)
 	must(t, err)
 	if st, err := s.GetSettings(ctx); err != nil || !reflect.DeepEqual(st, DefaultSettings()) {
 		t.Fatalf("settings = %+v, %v; want the defaults", st, err)
@@ -31,8 +40,16 @@ func TestSettingsDefaultsAndUpdate(t *testing.T) {
 		t.Fatalf("after update: %+v", st)
 	}
 
-	keys, err := queryAll(ctx, s.r, "list keys", scanValue[string], "SELECT key FROM settings ORDER BY key")
+	rows, err := db.QueryContext(ctx, "SELECT key FROM settings ORDER BY key")
 	must(t, err)
+	var keys []string
+	for rows.Next() {
+		var k string
+		must(t, rows.Scan(&k))
+		keys = append(keys, k)
+	}
+	must(t, rows.Err())
+	rows.Close()
 	// The unknown key stays. The unchanged keys are not written, so a new
 	// default in a later version applies to them.
 	want := []string{"backup_s3", "dns_servers", "future_key", "instance_name", "registry_mirror"}

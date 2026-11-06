@@ -2,7 +2,11 @@ import { Collapsible } from '@base-ui/react/collapsible'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Ellipsis, RefreshCw, Star, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { $api, errorMessage, type Schemas } from '~/api/client'
+import { $api, api, errorMessage, type Schemas } from '~/api/client'
+import { applyChange } from '~/api/events'
+import { useFormProblems } from '~/api/form-problems'
+import { imagesQuery, putImage } from '~/api/images'
+import { limits } from '~/api/limits'
 import {
   DataTable,
   DataTableCell,
@@ -13,20 +17,20 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
-import { StatusIcon } from '~/components/app/status-icon'
-import { imagesQuery } from '~/components/pages/runners/queries'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
+import { ErrorHint } from '~/components/app/error-hint'
+import { LoadErrorRow } from '~/components/app/load-error'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
+import { buildStateNames, buildStatus, StatusIcon } from '~/components/app/status-icon'
 import { Button, IconButton } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
-import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { formatBytes } from '~/lib/format'
 import { cx } from '~/lib/cx'
-import { Badge, CardTitle, ErrorHint, LoadError, SettingsCard, SettingsSection } from './parts'
-import { buildLabel, buildStatus, buildSummary, usedBy } from './runner-info'
-import { useFormErrors } from './settings-api'
+import { Badge, CardTitle, SettingsCard, SettingsSection } from './parts'
+import { buildSummary, usedBy } from './runner-info'
 
 type Image = Schemas['Image']
 
@@ -58,13 +62,15 @@ export function Images({ admin }: { admin: boolean }) {
           {images.data ? (
             images.data.map((image) => <ImageRows key={image.id} image={image} admin={admin} shown={shown} />)
           ) : images.isError ? (
-            <div role="row" className="px-m">
-              <div role="cell">
-                <LoadError what="images" onRetry={() => void images.refetch()} retrying={images.isFetching} />
-              </div>
-            </div>
+            <LoadErrorRow what="the images" error={images.error} onRetry={() => void images.refetch()} retrying={images.isFetching} />
           ) : (
-            <SkeletonRows shown={shown} />
+            <SkeletonRows label="Loading the images" count={2}>
+              <SkeletonCell />
+              <SkeletonCell lines={[96, 140]} />
+              {shown.usedBy && <SkeletonCell lines={[56]} />}
+              {shown.servers && <SkeletonCell lines={[112]} />}
+              <SkeletonCell />
+            </SkeletonRows>
           )}
           {images.data?.length === 0 && <DataTableEmpty>No images yet.</DataTableEmpty>}
         </DataTable>
@@ -146,7 +152,7 @@ function ImageRows({ image, admin, shown }: ImageRowsProps) {
                 </ErrorHint>
                 <span className="min-w-0 flex-1 truncate text-neutral-10">{build.server_name}</span>
                 <span className="w-[56px] shrink-0 text-neutral-7">{build.arch || '—'}</span>
-                <span className="w-[124px] shrink-0 text-neutral-8">{buildLabel(build.status)}</span>
+                <span className="w-[124px] shrink-0 text-neutral-8">{buildStateNames[build.status]}</span>
                 <span className="w-[72px] shrink-0 text-right text-neutral-8 tabular-nums">
                   {build.size_bytes > 0 ? formatBytes(build.size_bytes) : '—'}
                 </span>
@@ -162,16 +168,16 @@ function ImageRows({ image, admin, shown }: ImageRowsProps) {
 function ImageMenu({ image }: { image: Image }) {
   const client = useQueryClient()
   const [removing, setRemoving] = useState(false)
-  const refresh = () => client.invalidateQueries({ queryKey: imagesQuery.queryKey })
   const failed = (action: string) => (error: unknown) =>
     toastManager.add({ title: `Could not ${action} ${image.name}`, description: errorMessage(error) })
 
-  const makeDefault = $api.useMutation('patch', '/api/images/{id}', { onSuccess: refresh, onError: failed('make the default') })
+  const makeDefault = $api.useMutation('patch', '/api/images/{id}', {
+    onSuccess: (changed) => applyChange(client, 'image.state', changed),
+    onError: failed('make the default'),
+  })
+  // The builds change when the servers pull, and their image.state events show it.
   const pull = $api.useMutation('post', '/api/images/{id}/refresh', {
-    onSuccess: () => {
-      toastManager.add({ title: `Pulling ${image.name} again` })
-      return refresh()
-    },
+    onSuccess: () => void toastManager.add({ title: `Pulling ${image.name} again` }),
     onError: failed('pull'),
   })
   const path = { params: { path: { id: image.id } } }
@@ -205,39 +211,16 @@ function ImageMenu({ image }: { image: Image }) {
 
 function RemoveImage({ image, open, onOpenChange }: { image: Image; open: boolean; onOpenChange: (open: boolean) => void }) {
   const client = useQueryClient()
-  const remove = $api.useMutation('delete', '/api/images/{id}', { onSuccess: () => onOpenChange(false) })
-
   return (
-    <AlertDialog
+    <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      onOpenChangeComplete={(isOpen) => {
-        if (isOpen) return
-        // Drop the row only after the close animation; the dialog lives in it.
-        if (remove.isSuccess) {
-          client.setQueryData<Image[]>(imagesQuery.queryKey, (list) => list?.filter((item) => item.id !== image.id))
-          void client.invalidateQueries({ queryKey: ['get', '/api/pools'] })
-        }
-        remove.reset()
-      }}
-    >
-      <AlertDialogPopup
-        title={`Remove ${image.name}?`}
-        description="Each server deletes the image. Runner labels that use it change to the default image."
-      >
-        {remove.error && (
-          <p role="alert" className="text-s text-error">
-            {errorMessage(remove.error)}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate({ params: { path: { id: image.id } } })}>
-            Remove image
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+      title={`Remove ${image.name}?`}
+      description="Each server deletes the image. Runner labels that use it change to the default image."
+      action="Remove image"
+      onConfirm={() => api.DELETE('/api/images/{id}', { params: { path: { id: image.id } } })}
+      onDone={() => void applyChange(client, 'image.removed', { id: image.id })}
+    />
   )
 }
 
@@ -250,21 +233,21 @@ function AddImage() {
   const [formKey, setFormKey] = useState(0)
   const add = $api.useMutation('post', '/api/images', {
     onSuccess: (image) => {
-      client.setQueryData<Image[]>(imagesQuery.queryKey, (list) => [...(list ?? []).filter((item) => item.id !== image.id), image])
+      putImage(client, image)
       setName('')
       setRef('')
       setFormKey((key) => key + 1)
       toastManager.add({ title: `${image.name} added` })
     },
   })
-  const errors = useFormErrors(add.error)
+  const problems = useFormProblems(add.error)
 
   return (
     <SettingsCard className="gap-m">
       <CardTitle title="Add image">Build it FROM a runplane base image. Each server pulls it once.</CardTitle>
       <Form
         key={formKey}
-        errors={errors.fields}
+        errors={problems.fields}
         onFormSubmit={() => add.mutate({ body: { name: name.trim(), ref: ref.trim() } })}
         className="gap-s"
       >
@@ -277,7 +260,7 @@ function AddImage() {
               autoComplete="off"
               spellCheck={false}
               required
-              maxLength={64}
+              maxLength={limits.CreateImageRequest.name.maxLength}
             />
           </Field>
           <Field name="ref" label="OCI reference" className="min-w-0 flex-1">
@@ -288,7 +271,7 @@ function AddImage() {
               autoComplete="off"
               spellCheck={false}
               required
-              maxLength={512}
+              maxLength={limits.CreateImageRequest.ref.maxLength}
             />
           </Field>
           {/* Level with the inputs: below the label line and the field gap. */}
@@ -296,35 +279,12 @@ function AddImage() {
             Add image
           </Button>
         </div>
-        {errors.other && (
+        {problems.alert && (
           <p role="alert" className="text-s text-error">
-            {errors.other}
+            {problems.alert}
           </p>
         )}
       </Form>
     </SettingsCard>
   )
-}
-
-function SkeletonRows({ shown }: { shown: Shown }) {
-  return Array.from({ length: 2 }, (_, index) => (
-    <DataTableRow key={index}>
-      <DataTableCell />
-      <DataTableCell className="flex-col items-start gap-0">
-        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
-        <Skeleton className="my-[2px] h-[10px] w-[140px] max-w-full" />
-      </DataTableCell>
-      {shown.usedBy && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[56px]" />
-        </DataTableCell>
-      )}
-      {shown.servers && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[112px]" />
-        </DataTableCell>
-      )}
-      <DataTableCell />
-    </DataTableRow>
-  ))
 }

@@ -8,36 +8,59 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/auth"
 	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/fleet"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
 
 // fakeServers records the token names and the agent updates, and returns
-// fixed doctor checks and update states.
+// a fixed doctor result and update states.
 type fakeServers struct {
 	Servers
 	names   []string
-	checks  []Check
-	states  map[string]string // update state by server ID
-	updated []string          // server IDs of the UpdateAgent calls
+	doctor  store.DoctorResult
+	states  map[string]fleet.UpdateState // update state by server ID
+	updated []string                     // server IDs of the UpdateAgent calls
+	limits  map[string]sandbox.Limits    // the connected servers
 }
 
-func (f *fakeServers) UpdateState(v store.Server) string { return f.states[v.ID] }
+func (f *fakeServers) Limits(id string) (sandbox.Limits, bool) {
+	l, ok := f.limits[id]
+	return l, ok
+}
 
-func (f *fakeServers) UpdateAgent(_ context.Context, id string) error {
+func (f *fakeServers) UpdateState(v store.Server) fleet.UpdateState { return f.states[v.ID] }
+
+func (f *fakeServers) Actions(v store.Server) fleet.Actions {
+	return fleet.Actions{Update: f.states[v.ID] == fleet.UpdateAvailable}
+}
+
+// UpdateAgent refuses an update as the fleet does for each state.
+func (f *fakeServers) UpdateAgent(_ context.Context, _ audit.Actor, id string) error {
+	switch f.states[id] {
+	case fleet.UpdateCurrent:
+		return fleet.ErrUpToDate
+	case fleet.UpdateUpdating:
+		return fleet.ErrUpdateInProgress
+	case fleet.UpdateNone:
+		return fleet.ErrCannotUpdate
+	}
 	f.updated = append(f.updated, id)
-	f.states[id] = UpdateUpdating
+	f.states[id] = fleet.UpdateUpdating
 	return nil
 }
 
-func (f *fakeServers) NewToken(_ context.Context, _, name, _ string) (ServerToken, error) {
+func (f *fakeServers) NewToken(_ context.Context, _ audit.Actor, _, name string) (fleet.Token, error) {
 	f.names = append(f.names, name)
-	return ServerToken{ID: "tok1", Token: "rp_srv_x", Command: "curl", ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return fleet.Token{ID: "tok1", Token: "rp_srv_x", Command: "curl", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (f *fakeServers) Doctor(context.Context, string) ([]Check, error) { return f.checks, nil }
+func (f *fakeServers) Doctor(context.Context, string) (store.DoctorResult, error) {
+	return f.doctor, nil
+}
 
 func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	servers := &fakeServers{}
@@ -72,15 +95,20 @@ func TestServerTokenWithoutNameAndItsStatus(t *testing.T) {
 	e.login("bob@example.com", auth.RoleMember).do("GET", "/api/servers/tokens/t1/status", nil, nil).want(t, 403)
 }
 
-func TestDoctorResultIsKept(t *testing.T) {
-	servers := &fakeServers{checks: []Check{
+// The fleet runs the doctor and keeps the result. The API shows the result
+// of a run, and later the kept result.
+func TestDoctorResult(t *testing.T) {
+	checkedAt := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	result := store.DoctorResult{ServerID: "srv1", CheckedAt: checkedAt, Checks: []store.DoctorCheck{
 		{ID: "clock", Name: "Time synchronization", Status: "warn", Detail: "Not synchronized",
 			Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"},
 	}}
-	e := newEnv(t, func(d *Deps) { d.Servers = servers })
+	e := newEnv(t, func(d *Deps) { d.Servers = &fakeServers{doctor: result} })
 	e.addServer("srv1", "x64", store.ServerOnline, 4, 8192)
 	admin := e.login("ada@example.com", auth.RoleAdmin)
 	member := e.login("bob@example.com", auth.RoleMember)
+	want := []Check{{ID: "clock", Name: "Time synchronization", Status: "warn", Detail: "Not synchronized",
+		Fix: "Turn on time sync.", Command: "sudo timedatectl set-ntp true"}}
 
 	var before DoctorResult
 	member.do("GET", "/api/servers/srv1/doctor", nil, &before).want(t, 200)
@@ -89,14 +117,15 @@ func TestDoctorResultIsKept(t *testing.T) {
 	}
 	var ran DoctorResult
 	admin.do("POST", "/api/servers/srv1/doctor", nil, &ran).want(t, 200)
-
-	var after DoctorResult
-	member.do("GET", "/api/servers/srv1/doctor", nil, &after).want(t, 200)
-	if after.CheckedAt == nil || !after.CheckedAt.Equal(*ran.CheckedAt) {
-		t.Fatalf("checked_at %v, want the time of the run %v", after.CheckedAt, ran.CheckedAt)
+	if ran.CheckedAt == nil || !ran.CheckedAt.Equal(checkedAt) || !slices.Equal(ran.Checks, want) {
+		t.Fatalf("doctor run = %+v, want the checks of %v", ran, checkedAt)
 	}
-	if !slices.Equal(after.Checks, servers.checks) {
-		t.Fatalf("kept checks = %+v, want %+v", after.Checks, servers.checks)
+
+	must(t, e.st.SaveDoctorResult(context.Background(), result))
+	var kept DoctorResult
+	member.do("GET", "/api/servers/srv1/doctor", nil, &kept).want(t, 200)
+	if kept.CheckedAt == nil || !kept.CheckedAt.Equal(checkedAt) || !slices.Equal(kept.Checks, want) {
+		t.Fatalf("kept doctor result = %+v, want the checks of %v", kept, checkedAt)
 	}
 	member.do("GET", "/api/servers/nope/doctor", nil, nil).want(t, 404)
 }
@@ -104,12 +133,7 @@ func TestDoctorResultIsKept(t *testing.T) {
 func TestServerRegion(t *testing.T) {
 	e := newEnv(t)
 	e.addServer("srv1", "x64", store.ServerOnline, 4, 8192)
-	if changed, err := e.st.SetServerRegion(context.Background(), "srv1", "fsn1"); err != nil || !changed {
-		t.Fatalf("set region: changed %v, %v", changed, err)
-	}
-	if changed, _ := e.st.SetServerRegion(context.Background(), "srv1", "fsn1"); changed {
-		t.Fatal("the same region again reports a change")
-	}
+	must(t, e.st.UpdateServerFacts(context.Background(), "srv1", store.ServerFacts{Arch: "x64", Region: "fsn1"}, time.Now()))
 	var v Server
 	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/servers/srv1", nil, &v).want(t, 200)
 	if v.Region != "fsn1" {
@@ -152,6 +176,26 @@ func TestPoolPlacement(t *testing.T) {
 	}
 }
 
+// The placement knows the limits of the driver of each connected server:
+// a VM has at most 32 vCPUs, and each VM takes memory for its process.
+func TestPoolPlacementKnowsTheDriverLimits(t *testing.T) {
+	servers := &fakeServers{limits: map[string]sandbox.Limits{"vm": {OverheadMB: 64, MaxVCPU: 32}}}
+	e := newEnv(t, func(d *Deps) { d.Servers = servers })
+	b := e.login("ada@example.com", auth.RoleAdmin)
+	e.addServer("vm", "x64", store.ServerOnline, 64, 34816)
+	e.addServer("other", "x64", store.ServerOnline, 64, 34816)
+	var got PoolPlacement
+	b.do("GET", "/api/pools/placement?arch=x64&vcpu=48&memory_mb=4096", nil, &got).want(t, 200)
+	if !slices.Equal(got.PlaceableServerIDs, []string{"other"}) {
+		t.Errorf("placement of 48 vCPUs = %+v, want only the server without a vCPU limit", got)
+	}
+	// The default reserve leaves 32768 MB.
+	b.do("GET", "/api/pools/placement?arch=x64&vcpu=2&memory_mb=32768", nil, &got).want(t, 200)
+	if !slices.Equal(got.PlaceableServerIDs, []string{"other"}) {
+		t.Errorf("placement of 32768 MB = %+v, want only the server without overhead", got)
+	}
+}
+
 // The scheduler takes a public job only on VM servers, so the setting must
 // not turn on while a server runs another mode.
 func TestPublicReposNeedVMOnEachServer(t *testing.T) {
@@ -175,7 +219,7 @@ func TestPublicReposNeedVMOnEachServer(t *testing.T) {
 		t.Fatalf("problem %s does not name hel1-agent", res.body)
 	}
 
-	must(t, e.st.DeleteServer(ctx, "agent"))
+	must(t, e.st.DeleteServer(ctx, "agent", time.Now()))
 	var out Settings
 	b.do("PATCH", "/api/settings", on, &out).want(t, 200)
 	if !out.AllowPublicRepos {
@@ -185,9 +229,51 @@ func TestPublicReposNeedVMOnEachServer(t *testing.T) {
 	b.do("PATCH", "/api/settings", map[string]any{"mode": "container"}, nil).want(t, 422)
 }
 
+// An agent can connect in container mode while allow_public_repos is on.
+// The setting stays on, the agent waits, and the API tells why. The
+// placement does not count the agent, as the scheduler does not.
+func TestServerWaitsWhilePublicReposAreOn(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.Config.Mode = sandbox.ModeVM })
+	b := e.login("ada@example.com", auth.RoleAdmin)
+	ctx := context.Background()
+	now := time.Now()
+	addServer := func(id string, mode sandbox.Mode) {
+		must(t, e.st.CreateServer(ctx, store.Server{ID: id, Name: id, Kind: store.ServerAgent, Status: store.ServerOnline,
+			ServerFacts: store.ServerFacts{Arch: "x64", Mode: mode, VCPU: 8, MemoryMB: 16384}, CreatedAt: now, UpdatedAt: now}))
+	}
+	addServer("primary", sandbox.ModeVM)
+	b.do("PATCH", "/api/settings", map[string]any{"allow_public_repos": true}, nil).want(t, 200)
+	addServer("cheap-vps", sandbox.ModeContainer)
+	const placement = "/api/pools/placement?arch=x64&vcpu=2&memory_mb=4096"
+
+	var st Settings
+	b.do("GET", "/api/settings", nil, &st).want(t, 200)
+	if !st.AllowPublicRepos || !strings.Contains(st.PublicReposRefusal, "cheap-vps") {
+		t.Errorf("settings: allow_public_repos %v, public_repos_refusal %q; want on, with the name cheap-vps", st.AllowPublicRepos, st.PublicReposRefusal)
+	}
+	var agent, primary Server
+	b.do("GET", "/api/servers/cheap-vps", nil, &agent).want(t, 200)
+	b.do("GET", "/api/servers/primary", nil, &primary).want(t, 200)
+	if agent.WaitReason == "" || primary.WaitReason != "" {
+		t.Errorf("wait_reason: cheap-vps %q, primary %q; want a reason only for cheap-vps", agent.WaitReason, primary.WaitReason)
+	}
+	var got PoolPlacement
+	b.do("GET", placement, nil, &got).want(t, 200)
+	if got.OnlineServers != 2 || got.WaitingServers != 1 || !slices.Equal(got.PlaceableServerIDs, []string{"primary"}) {
+		t.Errorf("placement = %+v, want 2 online servers, 1 that waits, and primary", got)
+	}
+
+	b.do("PATCH", "/api/settings", map[string]any{"allow_public_repos": false}, nil).want(t, 200)
+	b.do("GET", "/api/servers/cheap-vps", nil, &agent).want(t, 200)
+	b.do("GET", placement, nil, &got).want(t, 200)
+	if agent.WaitReason != "" || got.WaitingServers != 0 || len(got.PlaceableServerIDs) != 2 {
+		t.Errorf("after the setting went off: wait_reason %q, placement %+v; want no wait", agent.WaitReason, got)
+	}
+}
+
 func TestUpdateAgentOnlyWhenAnUpdateApplies(t *testing.T) {
-	servers := &fakeServers{states: map[string]string{
-		"same": UpdateCurrent, "old": UpdateAvailable, "broken": UpdateFailed, "busy": UpdateUpdating, "dev": UpdateNone,
+	servers := &fakeServers{states: map[string]fleet.UpdateState{
+		"same": fleet.UpdateCurrent, "old": fleet.UpdateAvailable, "broken": fleet.UpdateFailed, "busy": fleet.UpdateUpdating, "dev": fleet.UpdateNone,
 	}}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })
 	for id := range servers.states {
@@ -203,7 +289,7 @@ func TestUpdateAgentOnlyWhenAnUpdateApplies(t *testing.T) {
 	for _, id := range []string{"old", "broken"} {
 		var out Server
 		admin.do("POST", "/api/servers/"+id+"/update", nil, &out).want(t, 200)
-		if out.UpdateState != UpdateUpdating {
+		if out.UpdateState != string(fleet.UpdateUpdating) {
 			t.Errorf("server %s: update state %q after the call, want updating", id, out.UpdateState)
 		}
 	}
@@ -232,7 +318,7 @@ func TestPoolWithAGoneServerStillChanges(t *testing.T) {
 // Server API object, because the frontend puts the event data in place of
 // GET /api/servers/{id}.
 func TestServerStateEventIsTheServerObject(t *testing.T) {
-	servers := &fakeServers{states: map[string]string{"s1": UpdateAvailable}}
+	servers := &fakeServers{states: map[string]fleet.UpdateState{"s1": fleet.UpdateAvailable}}
 	e := newEnv(t, func(d *Deps) { d.Servers = servers })
 	ch := e.login("bob@example.com", auth.RoleMember).events(t)
 	ctx := context.Background()
@@ -248,12 +334,14 @@ func TestServerStateEventIsTheServerObject(t *testing.T) {
 	v, err := e.st.GetServer(ctx, "s1")
 	must(t, err)
 
-	e.publish(events.Event{Type: events.ServerState, Data: v})
+	e.publish(events.ServerState(v))
 	ev := recv(t, ch)
 	var got Server
 	must(t, json.Unmarshal([]byte(ev.data), &got))
-	if ev.name != "server.state" || got.ID != "s1" || got.UpdateState != UpdateAvailable || got.Sandboxes != 2 ||
-		got.RunningJobs != 1 || got.VCPUInUse != 6 || got.MemoryInUseMB != 12288 || got.CPUPercent == nil || *got.CPUPercent != 42 {
-		t.Errorf("%s data %s: want s1 with update_state available, 2 sandboxes, 1 running job, 6 vCPUs and 12288 MB in use, and 42%% CPU", ev.name, ev.data)
+	if ev.name != "server.state" || got.ID != "s1" || got.UpdateState != string(fleet.UpdateAvailable) || !got.Actions.CanUpdate ||
+		got.Sandboxes != 2 || got.RunningJobs != 1 || got.VCPUInUse != 6 || got.MemoryInUseMB != 12288 ||
+		got.CPUPercent == nil || *got.CPUPercent != 42 || got.StatsAt == nil || !got.StatsAt.Equal(now.Truncate(time.Millisecond)) {
+		t.Errorf("%s data %s: want s1 with update_state available and the update action, 2 sandboxes, 1 running job, "+
+			"6 vCPUs and 12288 MB in use, and 42%% CPU at the sample time", ev.name, ev.data)
 	}
 }

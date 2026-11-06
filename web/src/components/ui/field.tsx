@@ -14,7 +14,7 @@ type FieldProps = Omit<BaseField.Root.Props, 'className' | 'children'> & {
   children: ReactNode
 }
 
-/** Label, control, description, and validation error, stacked as in gui/components/runplane/field.md. */
+/** Field of gui/components/runplane/field.md. */
 export function Field({ label, description, wide = false, className, children, ...props }: FieldProps) {
   return (
     <BaseField.Root className={cx('flex flex-col gap-xs', className)} {...props}>

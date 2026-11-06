@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { Schemas } from '~/api/client'
-import { formatTimeLimit, formatUptime, poolScope, sortSandboxes, type Sandbox } from './runner-format'
+import { formatTimeLimit, formatUptime, placementProblem, poolScope, sortSandboxes, type Sandbox } from './runner-format'
 
 // A sandbox as GET /api/sandboxes returns it (a seeded busy runner).
 const busy: Sandbox = {
@@ -11,7 +11,6 @@ const busy: Sandbox = {
   server_name: 'hel1-cax41',
   state: 'busy',
   runner_name: 'runplane-4cpu-arm-gay6dh',
-  ip: '172.30.2.31',
   job_id: '01m6je8hcjjmjtmpvjwe8qaf3j',
   job_name: 'lint',
   job_repository: 'kestrel-hq/mobile',
@@ -71,6 +70,16 @@ describe('poolScope', () => {
   test('names the chosen servers, and a server that is gone', () => {
     expect(poolScope({ arch: 'x64', server_ids: ['b', 'a', 'gone'] }, servers)).toBe('fsn1-ax52-b, fsn1-ax102-a, Removed server')
   })
+})
+
+test.each([
+  [{ online_servers: 3, waiting_servers: 1, placeable_servers: 1 }, undefined],
+  [{ online_servers: 0, waiting_servers: 0, placeable_servers: 0 }, 'No x64 server is online'],
+  // allow_public_repos is on, and each server is in container mode.
+  [{ online_servers: 2, waiting_servers: 2, placeable_servers: 0 }, 'No x64 server gets runners now'],
+  [{ online_servers: 2, waiting_servers: 1, placeable_servers: 0 }, 'No x64 server is large enough'],
+])('placementProblem(%j) is %j', (placement, want) => {
+  expect(placementProblem('x64', placement)).toBe(want)
 })
 
 describe('formatTimeLimit', () => {

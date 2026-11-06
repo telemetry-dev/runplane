@@ -9,17 +9,15 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
 )
@@ -60,15 +58,13 @@ func TestRegisterThenReconnect(t *testing.T) {
 	if st, _ := os.Stat(a.path); st.Mode().Perm() != 0o600 {
 		t.Errorf("agent.json mode %v, want 0600", st.Mode().Perm())
 	}
-	// install.sh keeps a registered agent.json when it finds these lines.
-	if !regexp.MustCompile(`"server_id": *"[^"]`).Match(raw) || !strings.Contains(string(raw), `"primary": "`+p.addr+`"`) {
-		t.Errorf("install.sh would not find the registration in:\n%s", raw)
-	}
 
+	held, resume := node.holdConnect()
 	s1.Close()
-	p.logs.waitFor(t, "connection to the primary ended")
+	waitClosed(t, held)
 	// An event while the agent has no connection arrives after it connects again.
 	node.events <- sandbox.Event{SandboxID: "sb1", Type: sandbox.EventState, State: sandbox.StateIdle}
+	resume()
 
 	s2 := recv(t, p.sessions)
 	second := recv(t, p.hellos)
@@ -92,11 +88,10 @@ func TestRefusedAgentKeepsItsConfig(t *testing.T) {
 		name        string
 		fingerprint string // empty: the primary's
 		token       string
-		log         string
 		hello       bool // the primary sees a hello
 	}{
-		{name: "wrong fingerprint", fingerprint: otherFP, token: goodToken, log: "does not match pinned"},
-		{name: "used token", token: "rp_srv_used", log: "primary refused the agent: the install token is not valid", hello: true},
+		{name: "wrong fingerprint", fingerprint: otherFP, token: goodToken},
+		{name: "used token", token: "rp_srv_used", hello: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -105,8 +100,14 @@ func TestRefusedAgentKeepsItsConfig(t *testing.T) {
 			if tt.fingerprint != "" {
 				f = strings.Replace(f, p.fp, tt.fingerprint, 1)
 			}
-			a := p.startAgent(f, newFakeNode(), nil)
-			p.logs.waitFor(t, tt.log)
+			node := newFakeNode()
+			first, resume := node.holdConnect()
+			a := p.startAgent(f, node, nil)
+			waitClosed(t, first)
+			second, _ := node.holdConnect()
+			resume()
+			// The agent tries again after the refusal.
+			waitClosed(t, second)
 
 			if got := len(p.hellos) > 0; got != tt.hello {
 				t.Errorf("primary saw a hello: %v, want %v", got, tt.hello)
@@ -139,7 +140,6 @@ func TestNewSessionClosesOldSessionOfServer(t *testing.T) {
 func TestCalls(t *testing.T) {
 	a, node, s := connect(t)
 	ctx := t.Context()
-	// check compares the result of a call and the calls that the node got.
 	check := func(name string, got any, err error, want any, calls ...[]any) {
 		t.Helper()
 		if err != nil || !reflect.DeepEqual(got, want) {
@@ -160,46 +160,50 @@ func TestCalls(t *testing.T) {
 		ID: "sb1", PoolID: "pool1",
 		Image:         sandbox.ImageRef{Ref: "builtin:ubuntu-24.04", Digest: "sha256:5f1c"},
 		RunnerVersion: "2.330.0", Arch: "arm64", VCPU: 2, MemoryMB: 4096, DiskGB: 20,
-		TimeLimit: 6 * time.Hour, JITConfig: "jit-secret",
-		Env:   map[string]string{"ACTIONS_RESULTS_URL": "http://10.0.0.1:8486/"},
-		Debug: true, Labels: map[string]string{sandbox.LabelSandbox: "sb1"},
+		TimeLimit: 6 * time.Hour, JITConfig: "jit-secret", Debug: true,
 	}
-	check("mode", s.Mode(), nil, sandbox.ModeContainer)
-	check("start", nil, s.Start(ctx, spec), nil, []any{"Start", spec})
-	checkErr("start again", s.Start(ctx, spec), "sandbox sb1 exists")
+	d := s.Driver()
+	check("mode", d.Mode(), nil, sandbox.ModeContainer)
+	check("start", nil, d.Start(ctx, spec), nil, []any{"Start", spec})
+	checkErr("start again", d.Start(ctx, spec), "sandbox sb1 exists")
 	stored := spec
 	stored.JITConfig = ""
-	list, err := s.List(ctx)
+	list, err := d.List(ctx)
 	check("list", list, err, []sandbox.Sandbox{{ID: "sb1", PoolID: "pool1", State: sandbox.StateStarting, Spec: stored}})
-	c, err := s.Capacity(ctx)
+	c, err := d.Capacity(ctx)
 	check("capacity", c, err, fakeCapacity)
 	until := time.Date(2026, 11, 4, 12, 30, 0, 0, time.UTC)
-	check("hold", nil, s.Hold(ctx, "sb1", until), nil, []any{"Hold", "sb1", until})
-	check("stop", nil, s.Stop(ctx, "sb1"), nil, []any{"Stop", "sb1"})
-	list, err = s.List(ctx)
+	check("hold", nil, d.Hold(ctx, "sb1", until), nil, []any{"Hold", "sb1", until})
+	check("stop", nil, d.Stop(ctx, "sb1"), nil, []any{"Stop", "sb1"})
+	list, err = d.List(ctx)
 	check("list after stop", list, err, []sandbox.Sandbox{})
+	if err := d.Hold(ctx, "sb1", until); !errors.Is(err, sandbox.ErrNotFound) {
+		t.Errorf("hold of a stopped sandbox: %v, want sandbox.ErrNotFound", err)
+	}
 
 	info, err := s.Facts(ctx)
 	check("facts", info, err, testInfo)
-	checks, err := s.Doctor(ctx)
-	check("doctor", checks, err, testChecks)
-	var steps []image.Progress
-	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p image.Progress) { steps = append(steps, p) })
-	check("image", ref, err, sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"})
+	report, err := s.Doctor(ctx)
+	check("doctor", report, err, testReport, []any{"Doctor"})
+	var steps []Progress
+	ref, err := s.EnsureImage(ctx, "ghcr.io/acme/runner:1", func(p Progress) { steps = append(steps, p) })
+	check("image", ref, err, Image{ImageRef: sandbox.ImageRef{Ref: "ghcr.io/acme/runner:1", Digest: "sha256:5f1c"}, SizeBytes: 2147483648})
 	check("image progress", steps, nil, testProgress)
 	_, err = s.EnsureImage(ctx, "missing:latest", nil)
 	checkErr("missing image", err, "pull missing:latest: not found")
 	b, err := s.EnsureRunner(ctx, "2.330.0", "arm64")
-	check("runner", b, err, image.Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/2.330.0-arm64"})
+	check("runner", b, err, Bundle{Version: "2.330.0", Arch: "arm64", SHA256: "9e2f", Patched: true})
 	m, err := s.MirrorStats(ctx)
 	check("mirror stats", m, err, testMirror)
 	keep := []string{"sha256:5f1c", "sha256:9e2f"}
 	check("image GC", nil, s.GCImages(ctx, keep), nil, []any{"GCImages", keep})
 	check("runner prune", nil, s.PruneRunners(ctx, []string{"2.329.0"}), nil, []any{"PruneRunners", []string{"2.329.0"}})
-	settings := sandbox.Settings{
-		ReserveVCPU: 1, ReserveMemoryMB: 2048, Overcommit: 1.5, MinFreeDiskPercent: 15,
-		DNS: []string{"1.1.1.1"}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 100,
-		RegistryMirror: true, ActionsCache: true,
+	settings := Settings{
+		Settings: sandbox.Settings{
+			DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}, EgressAllowlist: []string{"github.com"}, BandwidthMbps: 100,
+			RegistryMirror: true, ActionsCache: true,
+		},
+		MinFreeDiskPercent: 12.5,
 	}
 	check("settings", nil, s.Configure(ctx, settings), nil, []any{"Configure", settings})
 
@@ -329,18 +333,19 @@ func TestDisconnectEndsSession(t *testing.T) {
 
 func TestCacheProxy(t *testing.T) {
 	type cacheCall struct {
-		uri, body string
-		header    http.Header
+		serverID, sandboxID string
+		uri, body           string
+		header              http.Header
 	}
 	calls := make(chan cacheCall, 4)
-	p := startPrimary(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p := startPrimary(t, func(w http.ResponseWriter, r *http.Request, serverID, sandboxID string) {
 		body, _ := io.ReadAll(r.Body)
-		calls <- cacheCall{r.URL.RequestURI(), string(body), r.Header}
+		calls <- cacheCall{serverID, sandboxID, r.URL.RequestURI(), string(body), r.Header}
 		io.WriteString(w, `{"ok":true}`)
-	}))
+	})
 	node := newFakeNode()
 	node.put(sandbox.Sandbox{ID: "sb-here", State: sandbox.StateBusy, IP: "127.0.0.1"})
-	proxy := NewCacheProxy(node, p.logs.logger("cache"))
+	proxy := NewCacheProxy(node.Driver(), p.logs.logger("cache"))
 	p.startAgent(p.agentJSON(goodToken), node, proxy)
 	// The agent attaches the proxy before it answers the first call.
 	if _, err := recv(t, p.sessions).Driver().List(t.Context()); err != nil {
@@ -351,8 +356,7 @@ func TestCacheProxy(t *testing.T) {
 	post := func() (int, string) {
 		req, _ := http.NewRequest(http.MethodPost, svc.URL+"/twirp/CacheService/CreateCacheEntry?v=2", strings.NewReader(`{"key":"npm-linux"}`))
 		// A sandbox must not choose its identity.
-		req.Header.Set(cache.SandboxHeader, "sb-other")
-		req.Header.Set(cache.ServerHeader, "other-server")
+		req.Header.Set(sandboxHeader, "sb-other")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -369,9 +373,12 @@ func TestCacheProxy(t *testing.T) {
 	if call.uri != "/twirp/CacheService/CreateCacheEntry?v=2" || call.body != `{"key":"npm-linux"}` {
 		t.Errorf("primary got %q with body %q", call.uri, call.body)
 	}
+	if call.serverID != testServer || call.sandboxID != "sb-here" {
+		t.Errorf("primary got the request of server %q and sandbox %q, want %s and sb-here", call.serverID, call.sandboxID, testServer)
+	}
+	// The cache server must not send the header of the protocol on to GitHub.
 	wantHeaders := map[string]string{
-		cache.SandboxHeader: "sb-here",
-		cache.ServerHeader:  testServer,
+		sandboxHeader:       "",
 		"X-Forwarded-Host":  svc.Listener.Addr().String(),
 		"X-Forwarded-Proto": "http",
 	}

@@ -12,32 +12,52 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielgtaylor/huma/v2"
-
+	"github.com/runplane/runplane/internal/field"
+	"github.com/runplane/runplane/internal/ghapp"
 	"github.com/runplane/runplane/internal/store"
 )
 
-func TestMoveJobs(t *testing.T) {
+// The pull request sets runs-on to the label of the pool on each line with
+// one GitHub-hosted label of the default image. The other lines stay as
+// they are, and a workflow with no such line is no pull request.
+func TestPullRequestMovesTheJobs(t *testing.T) {
 	tests := []struct {
-		name, in, want string
-		jobs           int
+		name, in, want string // want == in: no job moves
 	}{
-		{"ubuntu-latest", "    runs-on: ubuntu-latest\n", "    runs-on: big\n", 1},
-		{"quoted ubuntu-24.04 with a comment", "    runs-on: 'ubuntu-24.04'   # pinned\n", "    runs-on: 'big'   # pinned\n", 1},
-		{"CRLF line ends", "jobs:\r\n  a:\r\n    runs-on: ubuntu-latest\r\n", "jobs:\r\n  a:\r\n    runs-on: big\r\n", 1},
-		{"matrix entry", "        - runs-on: ubuntu-latest\n", "        - runs-on: big\n", 1},
-		{"two jobs", "  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ubuntu-24.04", "  a:\n    runs-on: big\n  b:\n    runs-on: big", 2},
-		{"other release", "    runs-on: ubuntu-22.04\n", "    runs-on: ubuntu-22.04\n", 0},
-		{"larger runner", "    runs-on: ubuntu-latest-8-cores\n", "    runs-on: ubuntu-latest-8-cores\n", 0},
-		{"expression", "    runs-on: ${{ matrix.os }}\n", "    runs-on: ${{ matrix.os }}\n", 0},
-		{"label list", "    runs-on: [ubuntu-latest]\n", "    runs-on: [ubuntu-latest]\n", 0},
-		{"other key", "        os: ubuntu-latest\n", "        os: ubuntu-latest\n", 0},
+		{"ubuntu-latest", "    runs-on: ubuntu-latest\n", "    runs-on: big\n"},
+		{"quoted ubuntu-24.04 with a comment", "    runs-on: 'ubuntu-24.04'   # pinned\n", "    runs-on: 'big'   # pinned\n"},
+		{"CRLF line ends", "jobs:\r\n  a:\r\n    runs-on: ubuntu-latest\r\n", "jobs:\r\n  a:\r\n    runs-on: big\r\n"},
+		{"matrix entry", "        - runs-on: ubuntu-latest\n", "        - runs-on: big\n"},
+		{"two jobs", "  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ubuntu-24.04", "  a:\n    runs-on: big\n  b:\n    runs-on: big"},
+		{"other release", "    runs-on: ubuntu-22.04\n", "    runs-on: ubuntu-22.04\n"},
+		{"larger runner", "    runs-on: ubuntu-latest-8-cores\n", "    runs-on: ubuntu-latest-8-cores\n"},
+		{"expression", "    runs-on: ${{ matrix.os }}\n", "    runs-on: ${{ matrix.os }}\n"},
+		{"label list", "    runs-on: [ubuntu-latest]\n", "    runs-on: [ubuntu-latest]\n"},
+		{"other key", "        os: ubuntu-latest\n", "        os: ubuntu-latest\n"},
 	}
 	for _, tt := range tests {
-		got, jobs := moveJobs(tt.in, "big")
-		if got != tt.want || jobs != tt.jobs {
-			t.Errorf("%s: moveJobs = %q, %d; want %q, %d", tt.name, got, jobs, tt.want, tt.jobs)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			e := acmeEnv(t)
+			f := e.repo()
+			f.workflows = map[string]string{"ci.yml": tt.in}
+			_, _, err := e.svc.OpenPullRequest(context.Background(), "https://ci.example.com", "acme/web", "big")
+			w := f.written()
+			if tt.want == tt.in {
+				if errorKind(err) != "repository problem" || len(w) != 0 {
+					t.Errorf("err = %v, writes = %v; want the repository problem and no writes", err, w)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]any{"base_tree": "t1", "tree": []any{map[string]any{
+				"path": ".github/workflows/ci.yml", "mode": "100644", "type": "blob", "content": tt.want,
+			}}}
+			if got := w["POST /git/trees"]; !reflect.DeepEqual(got, want) {
+				t.Errorf("tree = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -84,6 +104,8 @@ func (e *env) repo() *fakeRepo {
 	}); err != nil {
 		e.t.Fatal(err)
 	}
+	e.pool("p1", "big", true)
+	e.pool("p2", "off", false)
 	f := &fakeRepo{
 		permissions: map[string]string{"actions": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "workflows": "write"},
 		workflows:   map[string]string{"ci.yml": ciWorkflow, "release.yaml": "jobs:\n  build:\n    runs-on: macos-latest\n", "README.md": "runs-on: ubuntu-latest\n"},
@@ -224,31 +246,62 @@ func TestOpenPullRequest(t *testing.T) {
 		}
 	})
 
+	// The jobs of the pull request must start.
+	setRepo := func(e *env, r store.Repository) {
+		r.ID, r.FullName, r.DefaultBranch, r.UpdatedAt = 100, "acme/web", "main", time.Now()
+		if err := e.st.ReplaceRepositories(ctx, 10, []store.Repository{r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	suspend := func(e *env) {
+		now := time.Now()
+		if err := e.st.UpsertInstallation(ctx, store.Installation{ID: 10, AppID: testAppID, AccountLogin: "acme",
+			AccountType: "Organization", SuspendedAt: &now, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	errorTests := []struct {
-		name       string
-		repository string
-		change     func(f *fakeRepo)
-		wantStatus int
+		name              string
+		repository, label string
+		change            func(e *env, f *fakeRepo)
+		want              string // errorKind
 	}{
-		{"unknown repository", "acme/other", func(*fakeRepo) {}, http.StatusNotFound},
-		{"no workflows permission", "acme/web", func(f *fakeRepo) { delete(f.permissions, "workflows") }, http.StatusForbidden},
-		{"read-only contents", "acme/web", func(f *fakeRepo) { f.permissions["contents"] = "read" }, http.StatusForbidden},
-		{"no workflows", "acme/web", func(f *fakeRepo) { f.workflows = nil }, http.StatusUnprocessableEntity},
-		{"no job on ubuntu-latest", "acme/web", func(f *fakeRepo) { delete(f.workflows, "ci.yml") }, http.StatusUnprocessableEntity},
+		{"unknown repository", "acme/other", "big", func(*env, *fakeRepo) {}, "repository problem"},
+		{"label of a disabled pool", "acme/web", "off", func(*env, *fakeRepo) {}, "label problem"},
+		{"label of no pool", "acme/web", "gone", func(*env, *fakeRepo) {}, "label problem"},
+		{"suspended installation", "acme/web", "big", func(e *env, _ *fakeRepo) { suspend(e) }, "repository problem"},
+		{"public repository", "acme/web", "big", func(e *env, _ *fakeRepo) { setRepo(e, store.Repository{}) }, "repository problem"},
+		{"archived repository", "acme/web", "big", func(e *env, _ *fakeRepo) { setRepo(e, store.Repository{Private: true, Archived: true}) }, "repository problem"},
+		{"no workflows permission", "acme/web", "big", func(_ *env, f *fakeRepo) { delete(f.permissions, "workflows") }, "no permissions"},
+		{"read-only contents", "acme/web", "big", func(_ *env, f *fakeRepo) { f.permissions["contents"] = "read" }, "no permissions"},
+		{"no workflows", "acme/web", "big", func(_ *env, f *fakeRepo) { f.workflows = nil }, "repository problem"},
+		{"no job on ubuntu-latest", "acme/web", "big", func(_ *env, f *fakeRepo) { delete(f.workflows, "ci.yml") }, "repository problem"},
 	}
 	for _, tt := range errorTests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := acmeEnv(t)
 			f := e.repo()
-			tt.change(f)
-			_, _, err := e.svc.OpenPullRequest(ctx, "https://ci.example.com", tt.repository, "big")
-			var se huma.StatusError
-			if !errors.As(err, &se) || se.GetStatus() != tt.wantStatus {
-				t.Errorf("err = %v, want status %d", err, tt.wantStatus)
+			tt.change(e, f)
+			_, _, err := e.svc.OpenPullRequest(ctx, "https://ci.example.com", tt.repository, tt.label)
+			if got := errorKind(err); got != tt.want {
+				t.Errorf("err = %v (%s), want %s", err, got, tt.want)
 			}
 			if w := f.written(); len(w) != 0 {
 				t.Errorf("writes = %v, want none", w)
 			}
 		})
 	}
+}
+
+// errorKind names the errors of OpenPullRequest that the API shows to the
+// user.
+func errorKind(err error) string {
+	var p field.Problems
+	switch {
+	case errors.Is(err, ghapp.ErrNoPullPermissions):
+		return "no permissions"
+	case errors.As(err, &p) && len(p) == 1:
+		return p[0].Key + " problem"
+	}
+	return "another error"
 }

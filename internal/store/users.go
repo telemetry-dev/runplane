@@ -13,8 +13,12 @@ const (
 	RoleMember = "member"
 )
 
-// ErrSetupDone means that a user exists, so the first-admin setup is closed.
-var ErrSetupDone = errors.New("setup is done")
+var (
+	// ErrSetupDone means that a user exists, so the first-admin setup is closed.
+	ErrSetupDone = errors.New("setup is done")
+	// ErrLastAdmin refuses a change that leaves no admin.
+	ErrLastAdmin = errors.New("runplane needs at least one admin")
+)
 
 type User struct {
 	ID           string     `json:"id"`
@@ -82,11 +86,53 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	return queryOne(ctx, s.r, "count users", scanValue[int], "SELECT count(*) FROM users")
 }
 
-// UpdateUser writes the name, email, and role. It returns ErrConflict if
-// the email is in use.
-func (s *Store) UpdateUser(ctx context.Context, u User) error {
-	return exec1(ctx, s.w, "update user", "UPDATE users SET name = ?, email = ?, role = ? WHERE id = ?",
-		u.Name, u.Email, u.Role, u.ID)
+// SetUserName returns the user with the new name.
+func (s *Store) SetUserName(ctx context.Context, id, name string) (User, error) {
+	return queryOne(ctx, s.w, "set user name", scanRow[User],
+		"UPDATE users SET name = ? WHERE id = ? RETURNING "+userCols, name, id)
+}
+
+// SetUserRole gives the user a role, and returns the user before the
+// change. It returns ErrLastAdmin when the user is the only admin and the
+// role is not admin.
+func (s *Store) SetUserRole(ctx context.Context, id, role string) (User, error) {
+	var old User
+	err := s.tx(ctx, "set user role", func(tx *sql.Tx) error {
+		var err error
+		if old, err = keepAdmin(ctx, tx, id, role); err != nil || old.Role == role {
+			return err
+		}
+		return exec1(ctx, tx, "update role", "UPDATE users SET role = ? WHERE id = ?", role, id)
+	})
+	return old, err
+}
+
+// DeleteUser also deletes the sessions of the user, and returns the deleted
+// user. It returns ErrLastAdmin for the only admin.
+func (s *Store) DeleteUser(ctx context.Context, id string) (User, error) {
+	var u User
+	err := s.tx(ctx, "delete user", func(tx *sql.Tx) error {
+		var err error
+		if u, err = keepAdmin(ctx, tx, id, ""); err != nil {
+			return err
+		}
+		return exec1(ctx, tx, "delete row", "DELETE FROM users WHERE id = ?", id)
+	})
+	return u, err
+}
+
+// keepAdmin returns the user id, or ErrLastAdmin when the user is the only
+// admin and its new role is not admin.
+func keepAdmin(ctx context.Context, tx *sql.Tx, id, role string) (User, error) {
+	u, err := queryOne(ctx, tx, "get user", scanRow[User], "SELECT "+userCols+" FROM users WHERE id = ?", id)
+	if err != nil || u.Role != RoleAdmin || role == RoleAdmin {
+		return u, err
+	}
+	admins, err := queryOne(ctx, tx, "count admins", scanValue[int], "SELECT count(*) FROM users WHERE role = ?", RoleAdmin)
+	if err == nil && admins <= 1 {
+		err = ErrLastAdmin
+	}
+	return u, err
 }
 
 func (s *Store) SetUserPassword(ctx context.Context, id, hash string) error {
@@ -95,11 +141,6 @@ func (s *Store) SetUserPassword(ctx context.Context, id, hash string) error {
 
 func (s *Store) SetUserLastLogin(ctx context.Context, id string, at time.Time) error {
 	return exec1(ctx, s.w, "set user last login", "UPDATE users SET last_login_at = ? WHERE id = ?", ms(at), id)
-}
-
-// DeleteUser also deletes the sessions of the user.
-func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	return exec1(ctx, s.w, "delete user", "DELETE FROM users WHERE id = ?", id)
 }
 
 // CreateFirstUser uses the setup code, makes the first user, and makes its
@@ -115,8 +156,7 @@ func (s *Store) CreateFirstUser(ctx context.Context, codeHash string, now time.T
 			return ErrSetupDone
 		}
 		err = exec1(ctx, tx, "use setup code",
-			"UPDATE setup_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
-			ms(now), codeHash, ms(now))
+			"UPDATE setup_codes SET used_at = ? WHERE code_hash = ? AND "+openSetupCode, ms(now), codeHash, ms(now))
 		if err != nil {
 			return err
 		}
@@ -141,10 +181,39 @@ func (s *Store) CreateSetupCode(ctx context.Context, c SetupCode) error {
 	})
 }
 
+// DeleteExpiredAuth deletes the sessions, setup codes, and invites that
+// expired at now. It keeps the used setup codes and the accepted invites as
+// a record.
+func (s *Store) DeleteExpiredAuth(ctx context.Context, now time.Time) error {
+	return s.tx(ctx, "delete expired sessions, setup codes, and invites", func(tx *sql.Tx) error {
+		for _, q := range []string{
+			"DELETE FROM sessions WHERE expires_at <= ?",
+			"DELETE FROM setup_codes WHERE used_at IS NULL AND expires_at <= ?",
+			"DELETE FROM invites WHERE accepted_at IS NULL AND expires_at <= ?",
+		} {
+			if _, err := tx.ExecContext(ctx, q, ms(now)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// openSetupCode is the condition of a setup code that is not used and not
+// expired at the time of its parameter.
+const openSetupCode = "used_at IS NULL AND expires_at > ?"
+
 // HasOpenSetupCode reports if a setup code exists that is not used and not expired.
 func (s *Store) HasOpenSetupCode(ctx context.Context, now time.Time) (bool, error) {
 	return queryOne(ctx, s.r, "find setup code", scanValue[bool],
-		"SELECT EXISTS (SELECT 1 FROM setup_codes WHERE used_at IS NULL AND expires_at > ?)", ms(now))
+		"SELECT EXISTS (SELECT 1 FROM setup_codes WHERE "+openSetupCode+")", ms(now))
+}
+
+// SetupCodeOpen reports if the setup code with codeHash is not used and not
+// expired.
+func (s *Store) SetupCodeOpen(ctx context.Context, codeHash string, now time.Time) (bool, error) {
+	return queryOne(ctx, s.r, "find setup code", scanValue[bool],
+		"SELECT EXISTS (SELECT 1 FROM setup_codes WHERE code_hash = ? AND "+openSetupCode+")", codeHash, ms(now))
 }
 
 const sessionCols = "id_hash, user_id, created_at, expires_at, last_seen_at, ip, user_agent"
@@ -220,7 +289,6 @@ func (s *Store) ListOpenInvites(ctx context.Context, now time.Time) ([]Invite, e
 		"SELECT "+inviteCols+" FROM invites WHERE accepted_at IS NULL AND expires_at > ? ORDER BY created_at DESC", ms(now))
 }
 
-// DeleteInvite deletes an invite and returns it.
 func (s *Store) DeleteInvite(ctx context.Context, id string) (Invite, error) {
 	return queryOne(ctx, s.w, "delete invite", scanRow[Invite], "DELETE FROM invites WHERE id = ? RETURNING "+inviteCols, id)
 }

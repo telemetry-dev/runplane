@@ -66,7 +66,7 @@ type MenuLinkItemProps = Omit<BaseMenu.LinkItem.Props, 'className' | 'children'>
   children: ReactNode
 }
 
-/** A menu link. For a router link, pass `render={<Link to="..." />}`. */
+/** For a router link, pass `render={<Link to="..." />}`. */
 export function MenuLinkItem({ icon, detail, children, ...props }: MenuLinkItemProps) {
   return (
     <BaseMenu.LinkItem className={menuOption} closeOnClick {...props}>
@@ -108,7 +108,6 @@ type MenuSubmenuTriggerProps = Omit<BaseMenu.SubmenuTrigger.Props, 'className' |
   children: ReactNode
 }
 
-/** Opens a nested menu; it keeps the highlight while its submenu is open. */
 export function MenuSubmenuTrigger({ icon, children, ...props }: MenuSubmenuTriggerProps) {
   return (
     <BaseMenu.SubmenuTrigger className={cx(menuOption, 'data-popup-open:bg-neutral-3')} {...props}>
@@ -134,7 +133,6 @@ export function MenuSeparator() {
 
 type OptionContentProps = { icon?: ReactNode; detail?: ReactNode; danger?: boolean; children: ReactNode }
 
-// Icons are neutral-8 next to the neutral-10 label, as in the designs; a destructive item keeps its color.
 function OptionContent({ icon, detail, danger = false, children }: OptionContentProps) {
   return (
     <>

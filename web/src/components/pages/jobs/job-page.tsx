@@ -1,9 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
-import { Link, useParams, useSearch } from '@tanstack/react-router'
-import { errorMessage, isApiError, type Schemas } from '~/api/client'
+import { useQuery, type QueryClient } from '@tanstack/react-query'
+import { isApiError, type Schemas } from '~/api/client'
+import { jobQuery } from '~/api/jobs'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
+import { LoadError, NotFound } from '~/components/app/load-error'
 import { RunnerLabel } from '~/components/app/runner-label'
-import { Button, buttonClassName } from '~/components/ui/button'
 import { Skeleton } from '~/components/ui/skeleton'
 import { formatDuration } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
@@ -12,39 +12,53 @@ import { JobCharts } from './job-charts'
 import { queueTime, runTime, trigger } from './job-format'
 import { JobHeader } from './job-header'
 import { JobLog } from './job-log'
-import { jobQuery } from './job-queries'
 import { shownStep } from './job-steps'
 import { JobStepsList } from './job-steps-list'
+
+/** Starts the request of the page, and returns the job for the title. */
+export function prefetch(client: QueryClient, jobId: string) {
+  // A failed load stays in the query cache, and the page shows it with a retry.
+  return client.ensureQueryData(jobQuery(jobId)).catch(() => undefined)
+}
+
+type JobPageProps = {
+  jobId: string
+  /** The step in the URL, 0 for the whole log, or undefined for the default step. */
+  step: number | undefined
+}
 
 /**
  * The "Job detail" design: header with re-run actions, facts of the run, the
  * debug sandbox of a debug run, steps, CPU and memory, and the log.
- * job.state events refetch the job.
  */
-export function JobPage() {
-  const { jobId } = useParams({ from: '/_app/jobs/$jobId' })
-  const search = useSearch({ from: '/_app/jobs/$jobId' })
-  const query = useQuery({
-    ...jobQuery(jobId),
-    refetchInterval: ({ state }) => (state.data && awaitsHold(state.data) ? 2000 : false),
-  })
+export function JobPage({ jobId, step }: JobPageProps) {
+  const query = useQuery(jobQuery(jobId))
   const now = useNow(1000)
 
   if (query.isPending) return <JobPageSkeleton />
-  if (query.isError) return <JobError error={query.error} onRetry={() => void query.refetch()} />
+  if (isApiError(query.error, 404)) {
+    return (
+      <NotFound title="Job not found" to="/jobs" link="All jobs">
+        No job has this ID. Jobs older than the job retention are deleted.
+      </NotFound>
+    )
+  }
+  if (query.isError) {
+    return <LoadError heading={1} what="the job" error={query.error} onRetry={() => void query.refetch()} retrying={query.isFetching} />
+  }
 
   const job = query.data
-  const step = shownStep(job, search)
+  const shown = shownStep(job, step)
   return (
     <>
       <JobHeader job={job} />
       <JobFacts job={job} now={now} />
       <DebugSandbox job={job} now={now} />
       <div className="flex flex-col gap-xl xl:flex-row xl:items-start">
-        <JobStepsList steps={job.steps} selected={step} linked={job.log_state === 'stored'} now={now} />
+        <JobStepsList job={job} selected={shown} now={now} />
         <div className="@container flex min-w-0 grow basis-0 flex-col gap-xl">
           {job.started_at && <JobCharts job={job} now={now} />}
-          <JobLog job={job} step={step} now={now} />
+          <JobLog job={job} step={shown} now={now} />
         </div>
       </div>
     </>
@@ -75,33 +89,6 @@ function JobFacts({ job, now }: { job: Schemas['Job']; now: number }) {
       </KeyValue>
       <KeyValue label="Triggered">{trigger(job)}</KeyValue>
     </KeyValueList>
-  )
-}
-
-/**
- * A finished debug job whose sandbox has no hold time yet. The scheduler sets
- * the hold after the job ends, and no event tells the page, so it asks again.
- */
-function awaitsHold(job: Schemas['Job']): boolean {
-  return job.state === 'completed' && job.ssh_command !== '' && job.hold_until === null
-}
-
-function JobError({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  const missing = isApiError(error, 404)
-  return (
-    <div role="alert" className="flex flex-col items-start gap-m">
-      <h1 className="type-page-title text-neutral-10">{missing ? 'Job not found' : 'Could not load the job'}</h1>
-      <p className="text-s text-neutral-8">
-        {missing ? 'No job has this ID. Jobs older than the job retention are deleted.' : errorMessage(error)}
-      </p>
-      {missing ? (
-        <Link to="/jobs" className={buttonClassName('secondary')}>
-          All jobs
-        </Link>
-      ) : (
-        <Button onClick={onRetry}>Try again</Button>
-      )}
-    </div>
   )
 }
 

@@ -1,17 +1,24 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactElement } from 'react'
-import { $api, errorMessage, fieldErrors, useFieldErrors, type Schemas } from '~/api/client'
+import { $api, errorMessage, type Schemas } from '~/api/client'
+import { applyChange, refreshServers } from '~/api/events'
+import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
+import { serversQuery, sshKeyQuery, tokenStatusQuery } from '~/api/servers'
+import { statusQuery } from '~/api/session'
+import { settingsQuery } from '~/api/settings'
 import { CodeBlock } from '~/components/app/code-block'
+import { LoadError } from '~/components/app/load-error'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogClose, DialogDescription, DialogFooter, DialogPopup, DialogTrigger } from '~/components/ui/dialog'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
 import { Spinner } from '~/components/ui/spinner'
 import { Tab, Tabs, TabsList, TabsPanel } from '~/components/ui/tabs'
+import { formatRelativeTime } from '~/lib/format'
 import { InstallProgress } from './install-progress'
-import { refreshServers, serversQuery } from './queries'
-import { commandLines, installState } from './server-info'
+import { commandLines, installState, systemsText } from './server-info'
 
 type AddServerDialogProps = {
   /** The element that opens the dialog. The default is the primary "Add server" button of the Servers page. */
@@ -81,8 +88,8 @@ function AddServer({ onDone }: { onDone: () => void }) {
         </TabsList>
         <TabsPanel value="script" className="mt-l">
           <DialogDescription>
-            Run this on a fresh Ubuntu 22.04+ or Debian 12 server. It installs Docker and the runplane agent, then connects to{' '}
-            <PublicHost />.
+            Run this on a fresh server with <Systems />. It installs the runplane agent, and Docker for container mode, then
+            connects to <PublicHost />.
           </DialogDescription>
           <InstallCommand script={script} />
         </TabsPanel>
@@ -133,12 +140,11 @@ function useScriptInstall() {
     mutate({})
   }, [mutate])
 
-  const status = $api.useQuery(
-    'get',
-    '/api/servers/tokens/{id}/status',
-    { params: { path: { id: token?.token_id ?? '' } } },
-    { enabled: token !== undefined, refetchInterval: (query) => (query.state.data?.used ? false : 3000) },
-  ).data
+  const status = useQuery({
+    ...tokenStatusQuery(token?.token_id ?? ''),
+    enabled: token !== undefined,
+    refetchInterval: (query) => (query.state.data?.used ? false : 3000),
+  }).data
   const serverId = status?.used ? status.server_id : undefined
   const servers = useQuery(serversQuery).data
   const server = serverId ? servers?.find((item) => item.id === serverId) : undefined
@@ -180,7 +186,9 @@ function InstallCommand({ script }: { script: ScriptInstall }) {
   return (
     <>
       <CodeBlock code={commandLines(script.token.command)} copyable wrap />
-      <p className="text-xs text-neutral-7">The token works once and expires in 1 hour.</p>
+      <p className="text-xs text-neutral-7">
+        The token works once and expires {formatRelativeTime(script.token.expires_at, Date.now(), { long: true })}.
+      </p>
     </>
   )
 }
@@ -188,7 +196,7 @@ function InstallCommand({ script }: { script: ScriptInstall }) {
 function useSshInstall() {
   const client = useQueryClient()
   const formId = useId()
-  const installSsh = $api.useMutation('post', '/api/servers/ssh', { onSuccess: () => void refreshServers(client) })
+  const installSsh = $api.useMutation('post', '/api/servers/ssh', { onSuccess: (server) => void applyChange(client, 'server.state', server) })
   const started = installSsh.data
   const servers = useQuery(serversQuery).data
   return {
@@ -201,25 +209,20 @@ function useSshInstall() {
 }
 
 function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
-  const key = $api.useQuery('get', '/api/servers/ssh-key', undefined, { staleTime: Infinity })
-  const errors = useFieldErrors(ssh.error)
+  const key = useQuery(sshKeyQuery)
+  const problems = useFormProblems(ssh.error)
   const disabled = ssh.server !== undefined
 
   return (
     <>
       <DialogDescription>
-        Add this key to <code className="font-code text-xs">~/.ssh/authorized_keys</code> on a fresh Ubuntu 22.04+ or Debian 12 server.
-        runplane then installs Docker and the agent over SSH.
+        Add this key to <code className="font-code text-xs">~/.ssh/authorized_keys</code> on a fresh server with <Systems />.
+        runplane then installs the agent over SSH, and Docker for container mode.
       </DialogDescription>
       {key.data ? (
         <CodeBlock code={key.data.public_key} copyable wrap />
       ) : key.error ? (
-        <div role="alert" className="flex items-center justify-between gap-m text-s text-neutral-8">
-          <p className="min-w-0">Could not load the SSH key. {errorMessage(key.error)}</p>
-          <Button onClick={() => void key.refetch()} loading={key.isFetching}>
-            Try again
-          </Button>
-        </div>
+        <LoadError what="the SSH key" error={key.error} onRetry={() => void key.refetch()} retrying={key.isFetching} />
       ) : (
         <div className="flex items-center gap-s rounded-s bg-(--code-background) p-m text-s text-neutral-7">
           <Spinner size={14} />
@@ -228,7 +231,7 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
       )}
       <Form
         id={ssh.formId}
-        errors={errors}
+        errors={problems.fields}
         onFormSubmit={(values) =>
           ssh.connect({
             host: String(values.host).trim(),
@@ -244,36 +247,36 @@ function SshForm({ ssh }: { ssh: ReturnType<typeof useSshInstall> }) {
             <Input placeholder="203.0.113.10" autoComplete="off" spellCheck={false} />
           </Field>
           <Field name="port" label="Port" disabled={disabled} validate={validatePort}>
-            <Input defaultValue="22" inputMode="numeric" autoComplete="off" />
+            <Input defaultValue={String(sshLimits.port.default)} inputMode="numeric" autoComplete="off" />
           </Field>
         </div>
         <div className="grid grid-cols-2 items-start gap-m">
           <Field name="user" label="User" description="Root, or a user with passwordless sudo." disabled={disabled}>
-            <Input defaultValue="root" autoComplete="off" spellCheck={false} />
+            <Input defaultValue={sshLimits.user.default} autoComplete="off" spellCheck={false} />
           </Field>
           <Field name="name" label="Name" disabled={disabled} validate={(input) => (String(input).trim() ? null : 'Enter a name.')}>
-            <Input maxLength={64} autoComplete="off" spellCheck={false} />
+            <Input maxLength={sshLimits.name.maxLength} autoComplete="off" spellCheck={false} />
           </Field>
         </div>
-        <FormError error={ssh.error} />
+        {problems.alert && (
+          <p role="alert" className="text-s text-error">
+            {problems.alert}
+          </p>
+        )}
       </Form>
     </>
   )
 }
 
-/** A failed request that is not about one field, for example a 503 when this runplane cannot add servers. */
-function FormError({ error }: { error: unknown }) {
-  if (!error || Object.keys(fieldErrors(error)).length > 0) return null
-  return (
-    <p role="alert" className="text-s text-error">
-      {errorMessage(error)}
-    </p>
-  )
+/** The systems that install.sh names. The app shell has loaded the status. */
+function Systems() {
+  const systems = useQuery(statusQuery).data?.systems
+  return <>{systems ? systemsText(systems) : 'a supported system'}</>
 }
 
 /** The host that new servers connect to: the public_url setting, or this page's host. */
 function PublicHost() {
-  const publicUrl = $api.useQuery('get', '/api/settings').data?.public_url
+  const publicUrl = useQuery(settingsQuery).data?.public_url
   return <>{publicUrl ? new URL(publicUrl).host : window.location.host}</>
 }
 
@@ -281,9 +284,12 @@ function validateHost(value: unknown): string | null {
   return String(value).trim() ? null : 'Enter a host name or an IP address.'
 }
 
+const sshLimits = limits.SSHInstall
+
 function validatePort(value: unknown): string | null {
   const port = Number(value)
-  return Number.isInteger(port) && port >= 1 && port <= 65535 ? null : 'Enter a port from 1 to 65535.'
+  const { minimum, maximum } = sshLimits.port
+  return Number.isInteger(port) && port >= minimum && port <= maximum ? null : `Enter a port from ${minimum} to ${maximum}.`
 }
 
 /** True once the time has passed. */

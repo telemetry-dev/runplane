@@ -3,7 +3,7 @@
 // emulates the Azure Blob calls on the signed URLs that the service hands
 // out, and sends all other results traffic, for example artifacts, to GitHub.
 // A patched runner keeps the ACTIONS_RESULTS_URL of its .env file (see
-// RunnerEnv), so jobs send cache calls here.
+// guest.NewConfig), so jobs send cache calls here.
 package cache
 
 import (
@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
@@ -22,10 +21,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/store"
 )
-
-var resultsURL = &url.URL{Scheme: "https", Host: "results-receiver.actions.githubusercontent.com"}
 
 const (
 	// staleUpload is the age at which the cleanup removes an unfinished upload.
@@ -37,32 +35,49 @@ const (
 	jobWait = time.Minute
 )
 
-type Config struct {
-	Dir      string       // blob folder, for example /var/lib/runplane/cache
-	Store    *store.Store // the cache_entries table; the blobs stay in Dir
-	Resolver Resolver
-	Stats    *Stats
-	// MaxBytes returns the byte limit of all entries; a value <= 0 means no
-	// limit. The server reads it at each check, so a settings change applies
-	// at once.
-	MaxBytes func() int64
-	// DiskSpace returns the size and the free bytes of the disk of Dir. The
-	// limit is at most a quarter of the disk.
-	DiskSpace func() (total, free int64, err error)
-	// MinFreePercent returns the part of the disk, 0 to 100, that the cache
-	// leaves free: below it, the server takes no upload and removes the
-	// least recently used entries.
-	MinFreePercent func() float64
-	SigningKey     []byte // signs blob URLs
-	Logger         *slog.Logger
+// Store keeps the cache entries and the hourly counts. *store.Store
+// implements it.
+type Store interface {
+	CreateCacheEntry(ctx context.Context, e store.CacheEntry) error
+	GetCacheEntry(ctx context.Context, id string) (store.CacheEntry, error)
+	GetCacheEntryByKey(ctx context.Context, repository, ref, key, version string) (store.CacheEntry, error)
+	MatchCacheEntry(ctx context.Context, repository, version, ref, key string, prefix bool) (store.CacheEntry, error)
+	TouchCacheEntry(ctx context.Context, id string, used time.Time) error
+	SetCacheUpload(ctx context.Context, id string, size int64, used time.Time) error
+	FinishCacheEntry(ctx context.Context, id string, size int64, at time.Time) error
+	ListCacheEntries(ctx context.Context, repository string) ([]store.CacheEntry, error)
+	LeastRecentCacheEntries(ctx context.Context, limit int) ([]store.CacheEntry, error)
+	ListUnfinishedCacheEntries(ctx context.Context, before time.Time) ([]store.CacheEntry, error)
+	DeleteCacheEntry(ctx context.Context, id string) error
+	CacheSize(ctx context.Context) (store.CacheBytes, error)
+	AddCacheStats(ctx context.Context, hour time.Time, repository string, c store.CacheCounts) error
+	PruneCacheStats(ctx context.Context, before time.Time) error
 }
 
-// Server is the cache server. As an http.Handler it serves requests that
-// come from sandboxes directly; Proxied serves requests that a trusted proxy
-// forwards.
+type Config struct {
+	Dir      string // blob folder, for example /var/lib/runplane/cache
+	Store    Store  // the cache_entries table; the blobs stay in Dir
+	Resolver Resolver
+	// Space returns the room of the cache on the data disk now
+	// (datadisk.Limits). The server reads it at each check, so a settings
+	// change applies at once. Below min_free_disk_percent, the server takes
+	// no upload and removes the least recently used entries.
+	Space      func() datadisk.Space
+	SigningKey []byte // signs blob URLs
+	Logger     *slog.Logger
+	Now        func() time.Time // nil: time.Now
+	// Results is the GitHub results service, which gets all requests that
+	// are not for the cache. nil: results-receiver.actions.githubusercontent.com.
+	Results *url.URL
+}
+
+// As an http.Handler, Server serves the requests of the sandboxes of this
+// server. ServeAgent serves the requests that an agent sends for its
+// sandboxes.
 type Server struct {
 	cfg     Config
 	disk    disk
+	stats   *stats
 	jobWait time.Duration
 	proxy   *httputil.ReverseProxy
 	now     func() time.Time
@@ -74,13 +89,20 @@ type Server struct {
 
 func New(cfg Config) (*Server, error) {
 	cfg.Logger = cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler))
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.Results == nil {
+		cfg.Results = &url.URL{Scheme: "https", Host: "results-receiver.actions.githubusercontent.com"}
+	}
 	s := &Server{
 		cfg:     cfg,
 		disk:    disk{root: cfg.Dir},
+		stats:   newStats(cfg.Store, cfg.Logger, cfg.Now),
 		jobWait: jobWait,
-		proxy:   newProxy(resultsURL, cfg.Logger),
-		now:     time.Now,
-		uploads: uploads{onDisk: map[string]int64{}, owner: map[string]string{}},
+		proxy:   newProxy(cfg.Results, cfg.Logger),
+		now:     cfg.Now,
+		uploads: uploads{owner: map[string]string{}},
 	}
 	if err := s.disk.init(); err != nil {
 		return nil, err
@@ -88,49 +110,46 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// RunnerEnv returns the runner .env values that send the cache calls of a
-// patched runner to the cache server at serviceURL, for example
-// http://10.0.0.1:8486. The cache server must be at the root path:
-// @actions/cache drops the path of ACTIONS_RESULTS_URL.
-func RunnerEnv(serviceURL string) map[string]string {
-	return map[string]string{
-		"ACTIONS_RESULTS_URL":      strings.TrimRight(serviceURL, "/") + "/",
-		"ACTIONS_CACHE_SERVICE_V2": "true",
-	}
-}
-
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.serve(w, r, false)
+	s.serve(w, r, source{})
 }
 
-// Proxied returns the handler for requests from a trusted proxy, such as the
-// agent cache endpoint. It reads the sandbox from SandboxHeader, and the
-// host for signed URLs from X-Forwarded-Host and X-Forwarded-Proto.
-func (s *Server) Proxied() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.serve(w, r, true)
-	})
+// ServeAgent serves a request that the agent serverID sends through its
+// connection for its sandbox sandboxID. The agent finds the sandbox at the
+// source address of the request, and it gives the host for the signed URLs
+// in X-Forwarded-Host and X-Forwarded-Proto.
+func (s *Server) ServeAgent(w http.ResponseWriter, r *http.Request, serverID, sandboxID string) {
+	s.serve(w, r, source{serverID: serverID, sandboxID: sandboxID})
 }
 
-func (s *Server) serve(w http.ResponseWriter, r *http.Request, trusted bool) {
+// source tells where a request comes from: a sandbox of this server, which
+// the server finds by the source address, or a sandbox that an agent names.
+// The zero source is this server.
+type source struct {
+	serverID  string // the agent
+	sandboxID string // the sandbox on the agent
+}
+
+func (src source) agent() bool { return src.serverID != "" }
+
+func (s *Server) serve(w http.ResponseWriter, r *http.Request, src source) {
 	switch {
 	case strings.HasPrefix(r.URL.Path, twirpPrefix):
-		s.serveTwirp(w, r, trusted)
+		s.serveTwirp(w, r, src)
 	case strings.HasPrefix(r.URL.Path, blobPrefix):
-		s.serveBlob(w, r, trusted)
+		s.serveBlob(w, r, src)
 	default:
-		s.serveResults(w, r, trusted)
+		s.serveResults(w, r, src)
 	}
 }
 
 // serveResults sends a request to the GitHub results service. The service
 // port listens on all addresses, so without a check anyone could send
-// requests to GitHub through this server. A sandbox, with or without a job,
-// and this host may; a trusted proxy checks its own sandboxes. In dev mode,
-// Docker sends the requests of sandboxes from the loopback address.
-func (s *Server) serveResults(w http.ResponseWriter, r *http.Request, trusted bool) {
-	if !trusted && !fromLoopback(r) {
-		_, err := s.sandbox(r, false)
+// requests to GitHub through this server. Only a sandbox, with or without a
+// job, may. An agent examines the address of its own sandboxes.
+func (s *Server) serveResults(w http.ResponseWriter, r *http.Request, src source) {
+	if !src.agent() {
+		_, err := s.sandbox(r, src)
 		if errors.Is(err, ErrNoSandbox) {
 			http.Error(w, "the request comes from no known sandbox", http.StatusForbidden)
 			return
@@ -143,22 +162,6 @@ func (s *Server) serveResults(w http.ResponseWriter, r *http.Request, trusted bo
 	}
 	s.proxy.ServeHTTP(w, r)
 }
-
-func fromLoopback(r *http.Request) bool {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	addr, err := netip.ParseAddr(ip)
-	return err == nil && addr.IsLoopback()
-}
-
-const (
-	// SandboxHeader names the sandbox of a request that a trusted proxy (the
-	// agent cache endpoint) forwards. The server ignores it on other requests.
-	SandboxHeader = "X-Runplane-Sandbox"
-	// ServerHeader names the server of a cache request that an agent sends.
-	// The primary sets it, so that the resolver can check that the sandbox of
-	// the request belongs to that server.
-	ServerHeader = "X-Runplane-Server"
-)
 
 // ErrNoSandbox means that no sandbox with a job matches a request.
 var ErrNoSandbox = errors.New("no sandbox for this request")
@@ -177,12 +180,13 @@ type Identity struct {
 	BaseRef string
 }
 
-// Resolver finds the sandbox behind a request. header contains SandboxHeader
-// only when the request came through a trusted proxy; then the sandbox ID
-// identifies the sandbox, and remoteIP is the address of the proxy.
-// Sandbox returns ErrNoSandbox if no sandbox matches.
+// Resolver finds the sandbox behind a request. Its methods return
+// ErrNoSandbox if no sandbox matches.
 type Resolver interface {
-	Sandbox(ctx context.Context, remoteIP string, header http.Header) (Identity, error)
+	// SandboxAt finds the sandbox of this server at the address addr.
+	SandboxAt(ctx context.Context, addr netip.Addr) (Identity, error)
+	// SandboxOn finds the sandbox id on the agent serverID.
+	SandboxOn(ctx context.Context, serverID, id string) (Identity, error)
 }
 
 // readRefs returns the refs that the job may restore from, in search order:
@@ -198,10 +202,10 @@ func (id Identity) readRefs() []string {
 
 // identify returns the Identity of a request, or an error that wraps
 // ErrNoSandbox when the request has none.
-func (s *Server) identify(r *http.Request, trusted bool) (Identity, error) {
+func (s *Server) identify(r *http.Request, src source) (Identity, error) {
 	deadline := time.Now().Add(s.jobWait)
 	for {
-		ident, err := s.sandbox(r, trusted)
+		ident, err := s.sandbox(r, src)
 		if err != nil {
 			return Identity{}, err
 		}
@@ -220,27 +224,25 @@ func (s *Server) identify(r *http.Request, trusted bool) (Identity, error) {
 }
 
 // sandbox returns the sandbox of a request, which can have no job yet.
-func (s *Server) sandbox(r *http.Request, trusted bool) (Identity, error) {
-	header := r.Header
-	if !trusted && header.Get(SandboxHeader) != "" {
-		header = header.Clone()
-		header.Del(SandboxHeader)
+func (s *Server) sandbox(r *http.Request, src source) (Identity, error) {
+	if src.agent() {
+		return s.cfg.Resolver.SandboxOn(r.Context(), src.serverID, src.sandboxID)
 	}
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	addr, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
-		ip = r.RemoteAddr
+		return Identity{}, fmt.Errorf("source address %q: %w", r.RemoteAddr, ErrNoSandbox)
 	}
-	return s.cfg.Resolver.Sandbox(r.Context(), ip, header)
+	return s.cfg.Resolver.SandboxAt(r.Context(), addr.Addr().Unmap())
 }
 
 // baseURL returns the scheme and host that the client used, for signed URLs
-// that point back to this server.
-func baseURL(r *http.Request, trusted bool) string {
+// that point back to this server or to the service port of the agent.
+func baseURL(r *http.Request, src source) string {
 	scheme, host := "http", r.Host
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if trusted {
+	if src.agent() {
 		if h, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Host"), ","); h != "" {
 			host = strings.TrimSpace(h)
 		}
@@ -251,18 +253,22 @@ func baseURL(r *http.Request, trusted bool) string {
 	return scheme + "://" + host
 }
 
-// Run removes stale uploads and files that belong to no entry, and keeps the
-// cache under its byte limit. It returns when ctx ends.
-func (s *Server) Run(ctx context.Context) error {
+// Run removes stale uploads and files that belong to no entry, keeps the
+// cache under its byte limit, and writes the hourly counts. It returns when
+// ctx ends.
+func (s *Server) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() { s.stats.run(ctx) })
 	s.removeOrphans(ctx, "blobs")
-	s.countUploads(ctx)
+	s.syncUploads(ctx)
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for {
 		s.cleanup(ctx)
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-tick.C:
 		}
 	}
@@ -289,7 +295,7 @@ func (s *Server) cleanup(ctx context.Context) {
 // entry is gone, for example after a crash between two steps of a removal.
 func (s *Server) removeOrphans(ctx context.Context, sub string) {
 	for _, id := range s.disk.ids(sub) {
-		if _, err := s.cfg.Store.GetCacheEntry(ctx, id); !errors.Is(err, ErrNotFound) {
+		if _, err := s.cfg.Store.GetCacheEntry(ctx, id); !errors.Is(err, store.ErrNotFound) {
 			continue
 		}
 		if err := s.disk.remove(id); err != nil {
@@ -298,7 +304,7 @@ func (s *Server) removeOrphans(ctx context.Context, sub string) {
 	}
 }
 
-// Delete removes one entry and its blob.
+// Delete returns store.ErrNotFound if no entry has the ID.
 func (s *Server) Delete(ctx context.Context, id string) error {
 	e, err := s.cfg.Store.GetCacheEntry(ctx, id)
 	if err != nil {
@@ -307,12 +313,9 @@ func (s *Server) Delete(ctx context.Context, id string) error {
 	return s.remove(ctx, e)
 }
 
-// DeleteRepository removes all entries of a repository and returns the count.
+// DeleteRepository returns the count of removed entries. An empty
+// repository means all repositories.
 func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, error) {
-	// The store lists all repositories for "".
-	if repository == "" {
-		return 0, nil
-	}
 	list, err := s.cfg.Store.ListCacheEntries(ctx, repository)
 	if err != nil {
 		return 0, fmt.Errorf("list entries: %w", err)
@@ -328,7 +331,7 @@ func (s *Server) DeleteRepository(ctx context.Context, repository string) (int, 
 // remove deletes the index row first: if the file removal fails, the cleanup
 // finds an orphan file, and no entry points to a missing blob.
 func (s *Server) remove(ctx context.Context, e store.CacheEntry) error {
-	if _, err := s.cfg.Store.DeleteCacheEntries(ctx, "", e.ID); err != nil {
+	if err := s.cfg.Store.DeleteCacheEntry(ctx, e.ID); err != nil {
 		return fmt.Errorf("delete entry: %w", err)
 	}
 	if err := s.disk.remove(e.ID); err != nil {
@@ -342,10 +345,7 @@ func (s *Server) remove(ctx context.Context, e store.CacheEntry) error {
 // artifact uploads, to GitHub with the job's own token.
 func newProxy(upstream *url.URL, log *slog.Logger) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(upstream)
-			r.Out.Header.Del(SandboxHeader)
-		},
+		Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(upstream) },
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Warn("cache: results proxy", "path", r.URL.Path, "err", err)
 			w.WriteHeader(http.StatusBadGateway)

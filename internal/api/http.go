@@ -102,7 +102,6 @@ func devCORS(w http.ResponseWriter, r *http.Request) bool {
 	h.Set("Access-Control-Allow-Credentials", "true")
 	h.Add("Vary", "Origin")
 	if r.Method != http.MethodOptions {
-		h.Set("Access-Control-Expose-Headers", stepFilterHeader)
 		return false
 	}
 	h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE")

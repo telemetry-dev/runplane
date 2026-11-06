@@ -1,21 +1,27 @@
+import { useSuspenseQuery } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { $api, errorMessage, isApiError } from '~/api/client'
+import { githubQuery } from '~/api/github'
+import { FormAlert } from '~/components/app/form-alert'
 import { StatusIcon } from '~/components/app/status-icon'
-import { FormAlert } from '~/components/pages/setup/parts'
 import { Button, buttonClassName } from '~/components/ui/button'
 import { Combobox, ComboboxInput, ComboboxItem, ComboboxPopup } from '~/components/ui/combobox'
 import { Select, SelectItem, SelectPopup, SelectTrigger } from '~/components/ui/select'
 import { ExternalTextLink } from './parts'
 
+/** owner/name of the repositories whose jobs runplane takes. A page shows the form only when one exists. */
+export function useJobRepositories(): string[] {
+  return useSuspenseQuery(githubQuery)
+    .data.installations.flatMap((installation) => installation.repositories)
+    .filter((repository) => repository.takes_jobs)
+    .map((repository) => repository.full_name)
+}
+
 type PullRequestFormProps = {
-  /** owner/name of the repositories whose jobs runplane takes. */
-  repositories: string[]
   /** The labels of the enabled pools. With more than one, the form shows a label select. */
   labels: string[]
   defaultLabel: string
-  /** The permissions page of the GitHub App. An app from before runplane opened pull requests must get write access there first. */
-  permissionsUrl: string | undefined
 }
 
 /**
@@ -23,7 +29,11 @@ type PullRequestFormProps = {
  * a pull request. The form stays after a pull request opens, so the next
  * repository can follow.
  */
-export function PullRequestForm({ repositories, labels, defaultLabel, permissionsUrl }: PullRequestFormProps) {
+export function PullRequestForm({ labels, defaultLabel }: PullRequestFormProps) {
+  const { app, hosted_labels: hostedLabels } = useSuspenseQuery(githubQuery).data
+  // An app from before runplane opened pull requests must get write access on its permissions page first.
+  const permissionsUrl = app?.permissions_url
+  const repositories = useJobRepositories()
   const [repository, setRepository] = useState<string | null>(repositories.length === 1 ? (repositories[0] ?? null) : null)
   const [label, setLabel] = useState(defaultLabel)
   const [unselected, setUnselected] = useState(false)
@@ -86,7 +96,7 @@ export function PullRequestForm({ repositories, labels, defaultLabel, permission
         </Button>
       </div>
       <p className="text-s text-neutral-7">
-        runplane sets runs-on to {label} for each job on ubuntu-latest or ubuntu-24.04 in the repository, then opens a pull request for you to
+        runplane sets runs-on to {label} for each job on {or.format(hostedLabels)} in the repository, then opens a pull request for you to
         review.
       </p>
       {unselected && <FormAlert>Select a repository in the list.</FormAlert>}
@@ -123,3 +133,5 @@ export function PullRequestForm({ repositories, labels, defaultLabel, permission
     </form>
   )
 }
+
+const or = new Intl.ListFormat('en-US', { type: 'disjunction' })

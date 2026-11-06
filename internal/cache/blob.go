@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/blob"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -58,7 +59,7 @@ func (s *Server) mac(perm, id, se string) string {
 
 // serveBlob emulates the Azure Blob calls that the cache clients make on
 // signed URLs: Put Blob, Put Block, Put Block List, and Get Blob with a range.
-func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool) {
+func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, src source) {
 	id := strings.TrimPrefix(r.URL.Path, blobPrefix)
 	perm := "r"
 	switch r.Method {
@@ -74,7 +75,7 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool)
 		return
 	}
 	e, err := s.cfg.Store.GetCacheEntry(r.Context(), id)
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) {
 		blobError(w, http.StatusNotFound, "BlobNotFound", "the cache entry does not exist")
 		return
 	}
@@ -83,7 +84,7 @@ func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, trusted bool)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	ident, err := s.identify(r, trusted)
+	ident, err := s.identify(r, src)
 	if err != nil && !errors.Is(err, ErrNoSandbox) {
 		s.cfg.Logger.Error("cache: identify sandbox", "err", err)
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
@@ -122,7 +123,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEnt
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	defer s.release(e.ID, reserved)
+	defer s.release(reserved)
 	switch q.Get("comp") {
 	case "":
 		err = s.disk.putBlob(e.ID, r.Body, reserved)
@@ -137,7 +138,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEnt
 			blobError(w, http.StatusConflict, "BlockCountExceedsLimit", "the upload has too many blocks")
 			return
 		}
-		err = s.disk.putBlock(e.ID, blockID, r.Body, min(reserved, s.Limit()-size))
+		err = s.disk.putBlock(e.ID, blockID, r.Body, min(reserved, s.MaxBytes()-size))
 	case "blocklist":
 		var blocks []string
 		blocks, err = parseBlockList(io.LimitReader(r.Body, maxBlockListBytes))
@@ -162,8 +163,8 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, e store.CacheEnt
 		blobError(w, http.StatusInternalServerError, "InternalError", "internal error")
 		return
 	}
-	if err := s.cfg.Store.TouchCacheEntry(r.Context(), e.ID, s.now()); err != nil {
-		s.cfg.Logger.Warn("cache: touch entry", "id", e.ID, "err", err)
+	if err := s.recordUpload(r.Context(), e.ID, s.now()); err != nil {
+		s.cfg.Logger.Warn("cache: record upload", "id", e.ID, "err", err)
 	}
 	h := w.Header()
 	h.Set("ETag", `"`+ids.New()+`"`)
@@ -194,10 +195,8 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request, e store.CacheE
 	h.Set("ETag", `"`+e.ID+`"`)
 	h.Set("x-ms-blob-type", "BlockBlob")
 	setAzureHeaders(h)
-	cw := &countingWriter{ResponseWriter: w}
-	http.ServeContent(cw, r, "", e.CreatedAt, f)
-	if cw.n > 0 {
-		s.cfg.Stats.Add(e.Repository, store.CacheCounts{BytesRead: cw.n})
+	if n := blob.Serve(w, r, e.CreatedAt, f); n > 0 {
+		s.stats.add(e.Repository, store.CacheCounts{BytesRead: n})
 	}
 }
 
@@ -236,23 +235,4 @@ func blobError(w http.ResponseWriter, status int, code, msg string) {
 	var esc strings.Builder
 	xml.EscapeText(&esc, []byte(msg))
 	fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?><Error><Code>%s</Code><Message>%s</Message></Error>`, code, esc.String())
-}
-
-// countingWriter counts the body bytes of a response. ReadFrom keeps the
-// sendfile path of http.ServeContent.
-type countingWriter struct {
-	http.ResponseWriter
-	n int64
-}
-
-func (c *countingWriter) Write(p []byte) (int, error) {
-	n, err := c.ResponseWriter.Write(p)
-	c.n += int64(n)
-	return n, err
-}
-
-func (c *countingWriter) ReadFrom(r io.Reader) (int64, error) {
-	n, err := io.Copy(c.ResponseWriter, r)
-	c.n += n
-	return n, err
 }

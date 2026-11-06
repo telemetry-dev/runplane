@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/blob"
 )
 
 // manifestAccept asks upstream for each manifest type, whatever the client
@@ -73,7 +75,7 @@ func (m *Mirror) serveManifest(w http.ResponseWriter, r *http.Request, name, ref
 // the Docker Hub pull limit. If upstream is down, it returns the stale digest.
 func (m *Mirror) resolveTag(ctx context.Context, name, tag string) (string, error) {
 	cached, ok := m.tags.get(name, tag)
-	if ok && time.Since(cached.Checked) < tagTTL {
+	if ok && m.now().Sub(cached.Checked) < tagTTL {
 		return cached.Digest, nil
 	}
 	digest, err := m.tagFlights.do(ctx, &m.wg, name+":"+tag, func() (string, error) {
@@ -102,7 +104,7 @@ func (m *Mirror) headManifest(ctx context.Context, name, tag string) (string, er
 		return "", &upstreamError{resp.StatusCode}
 	}
 	digest := resp.Header.Get("Docker-Content-Digest")
-	if !digestRe.MatchString(digest) {
+	if !blob.ValidDigest(digest) {
 		return "", fmt.Errorf("upstream sent no sha256 digest for %s:%s", name, tag)
 	}
 	if err := m.tags.put(name, tag, digest); err != nil {
@@ -159,7 +161,7 @@ func (m *Mirror) fetchManifest(ctx context.Context, name, digest string) (manife
 		return manifest{}, fmt.Errorf("manifest %s is larger than 4 MiB", digest)
 	}
 	sum := sha256.Sum256(body)
-	if got := "sha256:" + hex.EncodeToString(sum[:]); got != digest {
+	if got := blob.Digest(sum[:]); got != digest {
 		return manifest{}, fmt.Errorf("upstream sent manifest %s for %s", got, digest)
 	}
 	mf := manifest{resp.Header.Get("Content-Type"), body}
@@ -178,6 +180,7 @@ func manifestKey(digest string) string {
 // tags and a stale tag still works when upstream is down.
 type tagIndex struct {
 	dir string
+	now func() time.Time
 
 	mu   sync.Mutex
 	tags map[string]tagEntry // by "name:tag"
@@ -190,7 +193,7 @@ type tagEntry struct {
 	Checked time.Time `json:"checked"`
 }
 
-func openTags(dir string) (*tagIndex, error) {
+func openTags(dir string, now func() time.Time) (*tagIndex, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("make tag folder: %w", err)
 	}
@@ -198,7 +201,7 @@ func openTags(dir string) (*tagIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read tag folder: %w", err)
 	}
-	t := &tagIndex{dir: dir, tags: map[string]tagEntry{}}
+	t := &tagIndex{dir: dir, now: now, tags: map[string]tagEntry{}}
 	for _, e := range entries {
 		path := filepath.Join(dir, e.Name())
 		if !strings.HasSuffix(e.Name(), ".json") {
@@ -225,9 +228,8 @@ func (t *tagIndex) get(name, tag string) (tagEntry, bool) {
 	return te, ok
 }
 
-// put records that name:tag has the digest now.
 func (t *tagIndex) put(name, tag, digest string) error {
-	te := tagEntry{Name: name, Tag: tag, Digest: digest, Checked: time.Now().UTC()}
+	te := tagEntry{Name: name, Tag: tag, Digest: digest, Checked: t.now().UTC()}
 	data, err := json.Marshal(te)
 	if err != nil {
 		return err
@@ -240,16 +242,8 @@ func (t *tagIndex) put(name, tag, digest string) error {
 	// A hash for the file name, because a name can contain "/" and a file
 	// for a name could collide with the folder for a longer name.
 	sum := sha256.Sum256([]byte(key))
-	f, err := os.CreateTemp(t.dir, "*.tmp")
-	if err != nil {
+	if err := atomicfile.Write(filepath.Join(t.dir, hex.EncodeToString(sum[:])+".json"), bytes.NewReader(data), 0o600); err != nil {
 		return fmt.Errorf("save tag: %w", err)
-	}
-	_, err = f.Write(data)
-	if err := errors.Join(err, f.Close()); err != nil {
-		return errors.Join(fmt.Errorf("save tag: %w", err), os.Remove(f.Name()))
-	}
-	if err := os.Rename(f.Name(), filepath.Join(t.dir, hex.EncodeToString(sum[:])+".json")); err != nil {
-		return errors.Join(fmt.Errorf("save tag: %w", err), os.Remove(f.Name()))
 	}
 	return nil
 }

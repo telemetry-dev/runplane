@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -17,10 +16,8 @@ import (
 
 	"github.com/hashicorp/yamux"
 
-	"github.com/runplane/runplane/internal/cache"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -38,11 +35,11 @@ type Listener struct {
 	// OnSession gets each new session. If the server already has a
 	// session, the Listener closes the old one first.
 	OnSession func(*Session)
-	// CacheHandler serves the Actions cache requests that agents send, with
-	// /v1/cache cut from the path: the Proxied handler of the cache server.
-	// Nil answers 503.
-	CacheHandler http.Handler
-	Logger       *slog.Logger
+	// Cache serves an Actions cache request that the agent serverID sends
+	// for its sandbox sandboxID, with /v1/cache cut from the path: the
+	// ServeAgent method of the cache server. Nil answers 503.
+	Cache  func(w http.ResponseWriter, r *http.Request, serverID, sandboxID string)
+	Logger *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -99,7 +96,6 @@ func (l *Listener) accept(ctx context.Context, conn net.Conn) {
 	l.OnSession(s)
 }
 
-// open runs the agent handshake and starts yamux.
 func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
@@ -108,10 +104,11 @@ func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 		return nil, fmt.Errorf("tls handshake: %w", err)
 	}
 	br := bufio.NewReaderSize(conn, maxLine)
-	var hello Hello
-	if err := readJSONLine(br, &hello); err != nil {
+	var line helloLine
+	if err := readJSONLine(br, &line); err != nil {
 		return nil, fmt.Errorf("read hello: %w", err)
 	}
+	hello := line.hello()
 	hello.Addr = remoteIP(conn.RemoteAddr())
 	id, secret, err := l.Authenticate(ctx, hello)
 	if err != nil {
@@ -128,7 +125,7 @@ func (l *Listener) open(ctx context.Context, conn net.Conn) (*Session, error) {
 		return nil, fmt.Errorf("start yamux: %w", err)
 	}
 	hello.ServerID, hello.Token, hello.Secret = id, "", ""
-	return newSession(sess, hello, l.CacheHandler, l.Logger.With("server_id", id)), nil
+	return newSession(sess, hello, l.Cache, l.Logger.With("server_id", id)), nil
 }
 
 // add keeps s as the session of its server and returns the old session.
@@ -166,10 +163,9 @@ func (l *Listener) closeAll() {
 	}
 }
 
-// Session is the connection of one agent. It implements Node and the
-// sandbox driver of the agent: each call is an HTTP request on a new yamux
-// stream. A Session ends when the connection drops; the agent then connects
-// again and the Listener makes a new Session.
+// Session is the connection of one agent. It implements Node: each call is
+// an HTTP request on a new yamux stream. A Session ends when the connection
+// drops; the agent then connects again and the Listener makes a new Session.
 type Session struct {
 	hello  Hello
 	sess   *yamux.Session
@@ -185,7 +181,7 @@ type Session struct {
 	closed bool
 }
 
-func newSession(sess *yamux.Session, hello Hello, cache http.Handler, log *slog.Logger) *Session {
+func newSession(sess *yamux.Session, hello Hello, cache func(http.ResponseWriter, *http.Request, string, string), log *slog.Logger) *Session {
 	s := &Session{
 		hello:  hello,
 		sess:   sess,
@@ -196,8 +192,8 @@ func newSession(sess *yamux.Session, hello Hello, cache http.Handler, log *slog.
 		stats:  make(chan host.Stats, 1),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/events", s.handleEvents)
-	mux.Handle("/v1/cache/", cacheHandler(cache, hello.ServerID))
+	mux.HandleFunc("POST "+eventsPath, s.handleEvents)
+	mux.Handle(cachePath+"/", cacheHandler(cache, hello.ServerID))
 	go serveStreams(sess, mux, log)
 	go func() {
 		<-sess.CloseChan()
@@ -214,6 +210,10 @@ func (s *Session) Hello() Hello { return s.hello }
 // Done is closed when the session ends.
 func (s *Session) Done() <-chan struct{} { return s.done }
 
+func (s *Session) Local() bool { return false }
+
+func (s *Session) Driver() Driver { return remoteDriver{s} }
+
 // Close ends the session. The sandboxes on the agent keep operating.
 func (s *Session) Close() error {
 	s.sess.Close()
@@ -221,28 +221,28 @@ func (s *Session) Close() error {
 	return nil
 }
 
-func (s *Session) Driver() sandbox.Driver { return s }
-
-// Stats delivers the host samples of the agent. It closes when the session
-// ends.
+// Stats closes its channel when the session ends.
 func (s *Session) Stats() <-chan host.Stats { return s.stats }
 
+func (s *Session) Configure(ctx context.Context, settings Settings) error {
+	_, err := call(ctx, s, opConfigure, settings)
+	return err
+}
+
 func (s *Session) Facts(ctx context.Context) (host.Info, error) {
-	var rep hostReport
-	err := s.call(ctx, http.MethodGet, "/v1/host", nil, &rep)
-	return rep.Info, err
+	rep, err := call(ctx, s, opHost, hostQuery{})
+	return rep.Info.info(), err
 }
 
-func (s *Session) Doctor(ctx context.Context) ([]host.Check, error) {
-	var rep hostReport
-	err := s.call(ctx, http.MethodGet, "/v1/host?doctor=1", nil, &rep)
-	return rep.Doctor, err
+func (s *Session) Doctor(ctx context.Context) (doctor.Report, error) {
+	rep, err := call(ctx, s, opHost, hostQuery{Doctor: true})
+	return doctor.Report{Info: rep.Info.info(), Checks: checks(rep.Doctor)}, err
 }
 
-func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
-	resp, err := s.send(ctx, http.MethodPost, "/v1/images/ensure", sandbox.ImageRef{Ref: ref})
+func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(Progress)) (Image, error) {
+	resp, err := open(ctx, s, opEnsureImage.route, sandbox.ImageRef{Ref: ref})
 	if err != nil {
-		return sandbox.ImageRef{}, err
+		return Image{}, err
 	}
 	defer resp.Body.Close()
 	dec := json.NewDecoder(resp.Body)
@@ -252,11 +252,11 @@ func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(ima
 			if errors.Is(err, io.EOF) {
 				err = io.ErrUnexpectedEOF
 			}
-			return sandbox.ImageRef{}, fmt.Errorf("ensure image %s on server %s: %w", ref, s.ServerID(), s.closedOr(err))
+			return Image{}, fmt.Errorf("ensure image %s on server %s: %w", ref, s.ServerID(), s.closedOr(err))
 		}
 		switch {
 		case m.Error != "":
-			return sandbox.ImageRef{}, fmt.Errorf("server %s: %s", s.ServerID(), m.Error)
+			return Image{}, fmt.Errorf("server %s: %s", s.ServerID(), m.Error)
 		case m.Image != nil:
 			return *m.Image, nil
 		case m.Progress != nil && progress != nil:
@@ -265,71 +265,31 @@ func (s *Session) EnsureImage(ctx context.Context, ref string, progress func(ima
 	}
 }
 
-func (s *Session) EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error) {
-	var b image.Bundle
-	err := s.call(ctx, http.MethodPost, "/v1/runners/ensure", runnerRequest{Version: version, Arch: arch}, &b)
-	return b, err
+func (s *Session) EnsureRunner(ctx context.Context, version, arch string) (Bundle, error) {
+	return call(ctx, s, opEnsureRunner, runnerRequest{Version: version, Arch: arch})
 }
 
 func (s *Session) GCImages(ctx context.Context, keep []string) error {
-	return s.call(ctx, http.MethodPost, "/v1/images/gc", gcRequest{Keep: keep}, nil)
+	_, err := call(ctx, s, opGCImages, keepRequest{Keep: keep})
+	return err
 }
 
 func (s *Session) PruneRunners(ctx context.Context, keep []string) error {
-	return s.call(ctx, http.MethodPost, "/v1/runners/prune", gcRequest{Keep: keep}, nil)
+	_, err := call(ctx, s, opPruneRunners, keepRequest{Keep: keep})
+	return err
 }
 
-// MirrorStats returns the stats of the registry mirror of the agent.
-func (s *Session) MirrorStats(ctx context.Context) (mirror.Stats, error) {
-	var m mirror.Stats
-	err := s.call(ctx, http.MethodGet, "/v1/mirror/stats", nil, &m)
-	return m, err
+func (s *Session) MirrorStats(ctx context.Context) (MirrorStats, error) {
+	return call(ctx, s, opMirrorStats, none{})
 }
 
-func (s *Session) Configure(ctx context.Context, settings sandbox.Settings) error {
-	return s.call(ctx, http.MethodPost, "/v1/settings", settings, nil)
-}
-
-// Update makes the agent replace its binary and restart. The session then
-// ends, and the agent connects again with the new version.
+// Update makes the agent replace its binary. When the agent answers, the
+// session ends: the agent restarts and connects again with the new version.
 func (s *Session) Update(ctx context.Context, version string) error {
-	return s.call(ctx, http.MethodPost, "/v1/update", updateRequest{Version: version}, nil)
-}
-
-// call sends a request and decodes the JSON result into out, if out is not nil.
-func (s *Session) call(ctx context.Context, method, path string, in, out any) error {
-	resp, err := s.send(ctx, method, path, in)
-	if err != nil {
+	if _, err := call(ctx, s, opUpdate, updateRequest{Version: version}); err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if out == nil {
-		return nil
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("%s %s on server %s: read result: %w", method, path, s.ServerID(), s.closedOr(err))
-	}
-	return nil
-}
-
-// send sends a request with in as the JSON body, if in is not nil.
-func (s *Session) send(ctx context.Context, method, path string, in any) (*http.Response, error) {
-	var body io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return nil, err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://agent"+path, body)
-	if err != nil {
-		return nil, err
-	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	return s.do(req)
+	return s.Close()
 }
 
 // do sends req to the agent. It returns an error for a status of 300 or more.
@@ -337,7 +297,7 @@ func (s *Session) do(req *http.Request) (*http.Response, error) {
 	fail := func(err error) error {
 		return fmt.Errorf("%s %s on server %s: %w", req.Method, req.URL.Path, s.ServerID(), err)
 	}
-	if s.isDone() {
+	if s.sess.IsClosed() {
 		return nil, fail(ErrClosed)
 	}
 	resp, err := s.client.Do(req)
@@ -346,29 +306,25 @@ func (s *Session) do(req *http.Request) (*http.Response, error) {
 	}
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
-		return nil, fail(responseError(resp))
+		err := responseError(resp)
+		if resp.StatusCode == http.StatusNotFound {
+			err = fmt.Errorf("%w: %w", sandbox.ErrNotFound, err)
+		}
+		return nil, fail(err)
 	}
 	return resp, nil
 }
 
-// closedOr returns ErrClosed if the session has ended, else err.
+// closedOr returns ErrClosed if the connection has ended, else err. The
+// yamux session closes before Done, so that an error of yamux such as
+// "session shutdown" also becomes ErrClosed.
 func (s *Session) closedOr(err error) error {
-	if s.isDone() {
+	if s.sess.IsClosed() {
 		return ErrClosed
 	}
 	return err
 }
 
-func (s *Session) isDone() bool {
-	select {
-	case <-s.done:
-		return true
-	default:
-		return false
-	}
-}
-
-// handleEvents reads the event stream of the agent.
 func (s *Session) handleEvents(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	for {
@@ -395,7 +351,7 @@ func (s *Session) deliver(it streamItem) bool {
 		return false
 	}
 	if it.Stats != nil {
-		sendLatest(s.stats, *it.Stats)
+		SendLatest(s.stats, it.Stats.stats())
 	}
 	if it.Event != nil {
 		select {
@@ -417,16 +373,18 @@ func (s *Session) finish() {
 	s.client.CloseIdleConnections()
 }
 
-// cacheHandler serves ANY /v1/cache/* for one agent.
-func cacheHandler(h http.Handler, serverID string) http.Handler {
-	if h == nil {
+// cacheHandler gives the cache requests of the agent serverID to serve. It
+// removes sandboxHeader, so that the cache server does not send it on to
+// GitHub.
+func cacheHandler(serve func(http.ResponseWriter, *http.Request, string, string), serverID string) http.Handler {
+	if serve == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "the Actions cache is not available", http.StatusServiceUnavailable)
 		})
 	}
-	h = http.StripPrefix("/v1/cache", h)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set(cache.ServerHeader, serverID)
-		h.ServeHTTP(w, r)
-	})
+	return http.StripPrefix(cachePath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sandboxID := r.Header.Get(sandboxHeader)
+		r.Header.Del(sandboxHeader)
+		serve(w, r, serverID, sandboxID)
+	}))
 }

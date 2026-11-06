@@ -1,8 +1,7 @@
-import { Meter } from '@base-ui/react/meter'
-import { Progress } from '@base-ui/react/progress'
-import { formatPercent } from '~/lib/format'
+import { Meter } from '~/components/ui/meter'
+import { Progress } from '~/components/ui/progress'
 import { cx } from '~/lib/cx'
-import '~/components/ui/progress.css'
+import { formatPercent } from '~/lib/format'
 
 type UsageBarProps = {
   /** 0 to 100. `null` is unknown progress; the bar then sweeps. */
@@ -15,26 +14,14 @@ type UsageBarProps = {
   className?: string
 }
 
-/** The thin color-1 bar of the tables: server CPU and memory, and job progress. */
+/** The bar of the tables: server CPU and memory, and job progress. */
 export function UsageBar({ value, label, showValue = false, className }: UsageBarProps) {
-  if (value === null) {
-    return (
-      <Progress.Root value={null} aria-label={label} className={cx('flex items-center', className)}>
-        <Progress.Track className={track}>
-          <Progress.Indicator className="progress-indicator h-full rounded-full bg-color-1" />
-        </Progress.Track>
-      </Progress.Root>
-    )
-  }
+  if (value === null) return <Progress value={null} aria-label={label} className={className} />
   const clamped = Math.min(100, Math.max(0, value))
   return (
-    <Meter.Root value={clamped} aria-label={label} className={cx('flex items-center gap-s', className)}>
-      <Meter.Track className={track}>
-        <Meter.Indicator className="h-full rounded-full bg-color-1 transition-[width]" />
-      </Meter.Track>
+    <div className={cx('flex items-center gap-s', className)}>
+      <Meter value={clamped} aria-label={label} className="min-w-0 flex-1" />
       {showValue && <span className="w-[4ch] shrink-0 text-xs text-neutral-8 tabular-nums">{formatPercent(clamped)}</span>}
-    </Meter.Root>
+    </div>
   )
 }
-
-const track = 'h-[4px] min-w-0 flex-1 overflow-hidden rounded-full bg-neutral-3'

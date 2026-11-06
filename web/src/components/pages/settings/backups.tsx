@@ -1,7 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { $api, errorMessage, type Schemas } from '~/api/client'
+import { backupsQuery } from '~/api/backups'
+import { $api, apiUrl, errorMessage, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
 import {
   DataTable,
   DataTableCell,
@@ -12,25 +15,24 @@ import {
   DataTableRow,
   useFittingColumns,
 } from '~/components/app/data-table'
+import { ErrorHint } from '~/components/app/error-hint'
+import { LoadErrorRow } from '~/components/app/load-error'
 import { None } from '~/components/app/none'
+import { SkeletonCell, SkeletonRows } from '~/components/app/skeleton-rows'
 import { StatusIcon } from '~/components/app/status-icon'
 import { Button, IconButton } from '~/components/ui/button'
 import { Field, Input } from '~/components/ui/field'
 import { Form } from '~/components/ui/form'
-import { Skeleton } from '~/components/ui/skeleton'
 import { toastManager } from '~/components/ui/toast'
 import { Tooltip } from '~/components/ui/tooltip'
-import { formatBytes } from '~/lib/format'
+import { formatBytes, formatDateTime } from '~/lib/format'
 import { backupStatus, storedOn } from './backup-info'
-import { fullDateTime, shortDateTime } from './format'
-import { CardTitle, ErrorHint, LoadError, SettingRows, SettingsCard, SettingsSection } from './parts'
+import { CardTitle, SettingRows, SettingsCard, SettingsSection } from './parts'
+import { showSaved, useSaveSettings } from './save'
 import { NumberSetting, SwitchSetting } from './setting-controls'
-import { showSaved, useFormErrors, useSaveSettings, type Settings } from './settings-api'
-
-const backupsQuery = $api.queryOptions('get', '/api/backups')
 
 /** The Backups section: the daily backup, how many to keep, the S3 upload, and the list of backups. */
-export function Backups({ settings }: { settings: Settings }) {
+export function Backups({ settings }: { settings: Schemas['Settings'] }) {
   const client = useQueryClient()
   const create = $api.useMutation('post', '/api/backups', {
     onSuccess: (backup) =>
@@ -54,7 +56,7 @@ export function Backups({ settings }: { settings: Settings }) {
         <SwitchSetting
           name="backup_enabled"
           label="Back up every day"
-          description="At 03:00 UTC runplane saves its database on this server. A restore also needs /etc/runplane/secret.key, which backups do not contain: keep a copy of it in a safe place."
+          description={`At ${settings.backup_time} UTC runplane saves its database on this server. A restore also needs ${settings.secret_key_path}, which backups do not contain: keep a copy of it in a safe place.`}
           checked={settings.backup_enabled}
         />
         <NumberSetting
@@ -62,8 +64,7 @@ export function Backups({ settings }: { settings: Settings }) {
           description="Older backup files on this server are deleted."
           value={settings.backup_keep}
           toPatch={(backup_keep) => ({ backup_keep })}
-          min={1}
-          max={365}
+          limit={limits.SettingsPatch.backup_keep}
         />
       </SettingRows>
       <div className="flex flex-col gap-l">
@@ -108,12 +109,12 @@ function S3Card({ s3 }: { s3: Schemas['BackupS3'] }) {
   }
 
   // The API reports "body.backup_s3.bucket"; the fields are named "bucket".
-  const errors = useFormErrors(save.error, 'backup_s3.')
+  const problems = useFormProblems(save.error, { prefix: 'backup_s3.' })
 
   return (
     <SettingsCard className="gap-l">
       <CardTitle title="Upload to S3">Optional. Without a bucket, backups stay on this server only.</CardTitle>
-      <Form errors={errors.fields} onSubmit={submit} className="gap-l">
+      <Form errors={problems.fields} onSubmit={submit} className="gap-l">
         <div className="grid grid-cols-1 gap-x-l gap-y-m @min-[480px]:grid-cols-2">
           {s3Fields.map(({ name, label, ...field }) => (
             <Field key={name} name={name} label={label}>
@@ -137,9 +138,9 @@ function S3Card({ s3 }: { s3: Schemas['BackupS3'] }) {
           </Field>
         </div>
         <div className="flex items-center justify-end gap-m">
-          {errors.other && (
+          {problems.alert && (
             <p role="alert" className="min-w-0 text-s text-error">
-              {errors.other}
+              {problems.alert}
             </p>
           )}
           <Button type="submit" disabled={!dirty} loading={save.isPending}>
@@ -151,7 +152,7 @@ function S3Card({ s3 }: { s3: Schemas['BackupS3'] }) {
   )
 }
 
-/** The backups, newest first. backup.state events refetch the list. */
+/** The backups, newest first. */
 function BackupTable() {
   const backups = useQuery(backupsQuery)
   // A narrow table drops Stored on, then Size.
@@ -178,13 +179,15 @@ function BackupTable() {
         {backups.data ? (
           backups.data.map((backup) => <BackupRow key={backup.id} backup={backup} shown={shown} />)
         ) : backups.isError ? (
-          <div role="row" className="px-m">
-            <div role="cell">
-              <LoadError what="backups" onRetry={() => void backups.refetch()} retrying={backups.isFetching} />
-            </div>
-          </div>
+          <LoadErrorRow what="the backups" error={backups.error} onRetry={() => void backups.refetch()} retrying={backups.isFetching} />
         ) : (
-          <SkeletonRows shown={shown} />
+          <SkeletonRows label="Loading the backups">
+            <SkeletonCell shape="icon" />
+            <SkeletonCell lines={[96]} />
+            {shown.size && <SkeletonCell lines={[48]} align="end" />}
+            {shown.place && <SkeletonCell lines={[112]} />}
+            <SkeletonCell />
+          </SkeletonRows>
         )}
         {backups.data?.length === 0 && <DataTableEmpty>No backups yet.</DataTableEmpty>}
       </DataTable>
@@ -195,7 +198,7 @@ function BackupTable() {
 type Shown = Record<'size' | 'place', boolean>
 
 function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown }) {
-  const created = shortDateTime(backup.created_at)
+  const created = formatDateTime(backup.created_at)
   const status = backupStatus(backup)
   const place = storedOn(backup)
   const uploadFailed = backup.status === 'failed' && backup.available
@@ -212,7 +215,7 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
         )}
       </DataTableCell>
       <DataTableCell>
-        <Tooltip content={fullDateTime(backup.created_at)}>
+        <Tooltip content={formatDateTime(backup.created_at, { full: true })}>
           <time dateTime={backup.created_at} className="truncate text-neutral-10">
             {created}
           </time>
@@ -239,7 +242,7 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
           <IconButton
             label={`Download backup from ${created}`}
             nativeButton={false}
-            render={<a href={`/api/backups/${encodeURIComponent(backup.id)}/download`} download />}
+            render={<a href={apiUrl('/api/backups/{id}/download', { path: { id: backup.id } })} download />}
             className="-m-xs"
           >
             <Download aria-hidden />
@@ -252,28 +255,4 @@ function BackupRow({ backup, shown }: { backup: Schemas['Backup']; shown: Shown 
       </DataTableCell>
     </DataTableRow>
   )
-}
-
-function SkeletonRows({ shown }: { shown: Shown }) {
-  return Array.from({ length: 3 }, (_, index) => (
-    <DataTableRow key={index}>
-      <DataTableCell>
-        <Skeleton className="size-[16px] rounded-full" />
-      </DataTableCell>
-      <DataTableCell>
-        <Skeleton className="my-[3px] h-[12px] w-[96px]" />
-      </DataTableCell>
-      {shown.size && (
-        <DataTableCell align="end">
-          <Skeleton className="my-[3px] h-[12px] w-[48px]" />
-        </DataTableCell>
-      )}
-      {shown.place && (
-        <DataTableCell>
-          <Skeleton className="my-[3px] h-[12px] w-[112px]" />
-        </DataTableCell>
-      )}
-      <DataTableCell />
-    </DataTableRow>
-  ))
 }

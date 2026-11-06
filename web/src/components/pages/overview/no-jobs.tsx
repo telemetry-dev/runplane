@@ -1,13 +1,16 @@
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { $api, errorMessage, type Schemas } from '~/api/client'
-import { CodeBlock, type CodeLine } from '~/components/app/code-block'
+import { errorMessage } from '~/api/client'
+import { poolsQuery } from '~/api/pools'
+import { CodeBlock } from '~/components/app/code-block'
 import { CopyButton } from '~/components/app/copy-button'
 import { EmptyState } from '~/components/app/empty-state'
+import { suggestedLabel, workflowDiff } from '~/components/pages/first-job/first-job'
 import { Button, buttonClassName } from '~/components/ui/button'
 
 /** The "No jobs yet" panel: the runs-on change that sends a first job to runplane. */
 export function NoJobs() {
-  const { data: pools, isError, error, refetch, isFetching } = $api.useQuery('get', '/api/pools')
+  const { data: pools, isError, error, refetch, isFetching } = useQuery(poolsQuery)
   const label = pools && suggestedLabel(pools)
 
   if (isError && !pools) {
@@ -60,25 +63,9 @@ export function NoJobs() {
           </>
         )
       }
-      aside={label && <CodeBlock title=".github/workflows/ci.yml" code={workflow(label)} />}
+      aside={label && <CodeBlock title=".github/workflows/ci.yml" code={workflowDiff(label)} />}
     >
       Change runs-on in any workflow to send that job to your servers. Jobs show up here as soon as GitHub queues them.
     </EmptyState>
   )
-}
-
-/** The label to suggest for a first job. A 4 vCPU x64 pool is at least as large as GitHub's ubuntu-latest runner, so it is a safe first change. */
-export function suggestedLabel(pools: readonly Schemas['Pool'][]): string | undefined {
-  const enabled = pools.filter((pool) => pool.enabled)
-  return (enabled.find((pool) => pool.arch === 'x64' && pool.vcpu === 4) ?? enabled[0])?.label
-}
-
-function workflow(label: string): CodeLine[] {
-  return [
-    'jobs:',
-    '  test:',
-    { text: '    runs-on: ubuntu-latest', change: 'removed' },
-    { text: `    runs-on: ${label}`, change: 'added' },
-    '    steps:',
-  ]
 }

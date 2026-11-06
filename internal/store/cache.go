@@ -2,21 +2,21 @@ package store
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 )
 
 // CacheEntry is one Actions cache entry. A row exists from the start of the
-// upload; Finalized is set when the upload is complete.
+// upload; Finalized is set when the upload is complete. The cache server
+// keeps the blob of the entry in a file named by its ID.
 type CacheEntry struct {
-	ID         string    `json:"id"`
-	Repository string    `json:"repository"`
-	Ref        string    `json:"ref"`
-	Key        string    `json:"key"`
-	Version    string    `json:"version"`
+	ID         string `json:"id"`
+	Repository string `json:"repository"`
+	Ref        string `json:"ref"`
+	Key        string `json:"key"`
+	Version    string `json:"version"`
+	// SizeBytes is the size of the blob, and of an unfinished upload the
+	// bytes that it has on disk now.
 	SizeBytes  int64     `json:"size_bytes"`
-	Path       string    `json:"-"`
 	Finalized  bool      `json:"finalized"`
 	CreatedAt  time.Time `json:"created_at"`
 	LastUsedAt time.Time `json:"last_used_at"`
@@ -37,10 +37,16 @@ type CacheCounts struct {
 	BytesWritten int64 `json:"bytes_written"`
 }
 
-const cacheCols = "id, repository, ref, key, version, size_bytes, path, finalized, created_at, last_used_at"
+// CacheBytes are the bytes of the Actions cache on disk.
+type CacheBytes struct {
+	Entries int64 // of the finalized entries
+	Uploads int64 // of the unfinished uploads
+}
+
+const cacheCols = "id, repository, ref, key, version, size_bytes, finalized, created_at, last_used_at"
 
 func (e *CacheEntry) cols() []any {
-	return []any{&e.ID, &e.Repository, &e.Ref, &e.Key, &e.Version, &e.SizeBytes, &e.Path, &e.Finalized,
+	return []any{&e.ID, &e.Repository, &e.Ref, &e.Key, &e.Version, &e.SizeBytes, &e.Finalized,
 		at(&e.CreatedAt), at(&e.LastUsedAt)}
 }
 
@@ -59,28 +65,29 @@ func (s *Store) GetCacheEntryByKey(ctx context.Context, repository, ref, key, ve
 		" FROM cache_entries WHERE repository = ? AND ref = ? AND key = ? AND version = ?", repository, ref, key, version)
 }
 
-// MatchCacheEntry finds a finalized entry of the repository with this
-// version. It looks in refs in order and takes the newest entry of the first
-// ref that has one. With prefix, the key of the entry must start with key;
-// without, it must be equal. It returns ErrNotFound if no entry matches.
-func (s *Store) MatchCacheEntry(ctx context.Context, repository, version string, refs []string, key string, prefix bool) (CacheEntry, error) {
+// MatchCacheEntry finds the newest finalized entry of the repository and
+// the ref with this version. With prefix, the key of the entry must start
+// with key; without, it must be equal. It returns ErrNotFound if no entry
+// matches.
+func (s *Store) MatchCacheEntry(ctx context.Context, repository, version, ref, key string, prefix bool) (CacheEntry, error) {
 	keyCond := "key = ?"
 	if prefix {
 		keyCond = "instr(key, ?) = 1" // LIKE would ignore case
 	}
-	for _, ref := range refs {
-		e, err := queryOne(ctx, s.r, "match cache entry", scanRow[CacheEntry], "SELECT "+cacheCols+` FROM cache_entries
-			WHERE repository = ? AND version = ? AND ref = ? AND finalized = 1 AND `+keyCond+`
-			ORDER BY created_at DESC LIMIT 1`, repository, version, ref, key)
-		if !errors.Is(err, ErrNotFound) {
-			return e, err
-		}
-	}
-	return CacheEntry{}, fmt.Errorf("match cache entry: %w", ErrNotFound)
+	return queryOne(ctx, s.r, "match cache entry", scanRow[CacheEntry], "SELECT "+cacheCols+` FROM cache_entries
+		WHERE repository = ? AND version = ? AND ref = ? AND finalized = 1 AND `+keyCond+`
+		ORDER BY created_at DESC LIMIT 1`, repository, version, ref, key)
 }
 
 func (s *Store) TouchCacheEntry(ctx context.Context, id string, used time.Time) error {
 	return exec1(ctx, s.w, "touch cache entry", "UPDATE cache_entries SET last_used_at = ? WHERE id = ?", ms(used), id)
+}
+
+// SetCacheUpload records the bytes that an unfinished upload has on disk
+// now, and its last use.
+func (s *Store) SetCacheUpload(ctx context.Context, id string, size int64, used time.Time) error {
+	return exec1(ctx, s.w, "set cache upload",
+		"UPDATE cache_entries SET size_bytes = ?, last_used_at = ? WHERE id = ? AND finalized = 0", size, ms(used), id)
 }
 
 // FinishCacheEntry marks the upload complete with its size, and counts the
@@ -109,14 +116,10 @@ func (s *Store) ListUnfinishedCacheEntries(ctx context.Context, before time.Time
 		" FROM cache_entries WHERE finalized = 0 AND created_at < ? ORDER BY created_at", ms(before))
 }
 
-// DeleteCacheEntries deletes the entry id, or all entries of repository if
-// id is empty, and returns the deleted entries so the caller can remove their files.
-func (s *Store) DeleteCacheEntries(ctx context.Context, repository, id string) ([]CacheEntry, error) {
-	if repository == "" && id == "" {
-		return nil, errors.New("delete cache entries: give a repository or an ID")
-	}
-	return queryAll(ctx, s.w, "delete cache entries", scanRow[CacheEntry], `DELETE FROM cache_entries
-		WHERE (? = '' OR repository = ?) AND (? = '' OR id = ?) RETURNING `+cacheCols, repository, repository, id, id)
+// DeleteCacheEntry deletes the entry id. An entry that is gone is not an
+// error.
+func (s *Store) DeleteCacheEntry(ctx context.Context, id string) error {
+	return exec(ctx, s.w, "delete cache entry", "DELETE FROM cache_entries WHERE id = ?", id)
 }
 
 // CacheUsage returns the use of each repository, largest first.
@@ -129,9 +132,13 @@ func (s *Store) CacheUsage(ctx context.Context) ([]CacheUsage, error) {
 		FROM cache_entries WHERE finalized = 1 GROUP BY repository ORDER BY 3 DESC, repository`)
 }
 
-// CacheSize is the size of all entries, also the unfinished uploads.
-func (s *Store) CacheSize(ctx context.Context) (int64, error) {
-	return queryOne(ctx, s.r, "get cache size", scanValue[int64], "SELECT coalesce(sum(size_bytes), 0) FROM cache_entries")
+func (s *Store) CacheSize(ctx context.Context) (CacheBytes, error) {
+	return queryOne(ctx, s.r, "get cache size", func(sc scanner) (CacheBytes, error) {
+		var b CacheBytes
+		err := sc.Scan(&b.Entries, &b.Uploads)
+		return b, err
+	}, `SELECT coalesce(sum(size_bytes) FILTER (WHERE finalized = 1), 0), coalesce(sum(size_bytes) FILTER (WHERE finalized = 0), 0)
+		FROM cache_entries`)
 }
 
 // AddCacheStats adds c to the counts of the repository for the hour of t.

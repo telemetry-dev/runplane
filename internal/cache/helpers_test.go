@@ -7,33 +7,43 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/datadisk"
 	"github.com/runplane/runplane/internal/store"
 )
 
-// sandboxes resolves by sandbox ID when the header has one, else by IP.
+// sandboxes resolves a sandbox of this server by its address, and a sandbox
+// of an agent by its ID.
 type sandboxes map[string]Identity
 
-func (s sandboxes) Sandbox(_ context.Context, ip string, h http.Header) (Identity, error) {
-	key := ip
-	if id := h.Get(SandboxHeader); id != "" {
-		key = id
-	}
+func (s sandboxes) SandboxAt(_ context.Context, addr netip.Addr) (Identity, error) {
+	return s.find(addr.String())
+}
+
+func (s sandboxes) SandboxOn(_ context.Context, _, id string) (Identity, error) { return s.find(id) }
+
+func (s sandboxes) find(key string) (Identity, error) {
 	ident, ok := s[key]
 	if !ok {
 		return Identity{}, ErrNoSandbox
 	}
 	return ident, nil
 }
+
+// agentSandbox names the sandbox of a request to the proxied URL of the
+// fixture, which serves the requests as the requests of an agent.
+const agentSandbox = "X-Test-Sandbox"
 
 type clock struct{ ns atomic.Int64 }
 
@@ -42,23 +52,24 @@ func (c *clock) advance(d time.Duration) { c.ns.Add(int64(d)) }
 
 type fixture struct {
 	limit   atomic.Int64
+	disk    func() datadisk.Space // if set, the room of the cache instead of limit
 	srv     *Server
 	st      *store.Store
 	clock   clock
 	dir     string
 	url     string // direct sandbox traffic
-	proxied string // traffic from a trusted proxy
+	proxied string // traffic of an agent
 }
 
 // newFixture starts a server whose requests from 127.0.0.1 belong to
 // sandbox "sb-1" with a push job on main of acme/app. The other sandboxes
-// send through the trusted proxy (see via).
-func newFixture(t *testing.T, maxBytes int64) *fixture {
+// are on an agent (see via). opts change the config.
+func newFixture(t *testing.T, maxBytes int64, opts ...func(*Config)) *fixture {
 	t.Helper()
 	f := &fixture{st: openStore(t), dir: t.TempDir()}
 	f.limit.Store(maxBytes)
 	f.clock.ns.Store(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).UnixNano())
-	srv, err := New(Config{
+	cfg := Config{
 		Dir:   f.dir,
 		Store: f.st,
 		Resolver: sandboxes{
@@ -75,33 +86,92 @@ func newFixture(t *testing.T, maxBytes int64) *fixture {
 			"sb-idle":    {SandboxID: "sb-idle"},
 			"10.213.0.5": {SandboxID: "sb-idle"},
 		},
-		Stats:          NewStats(f.st, slog.New(slog.DiscardHandler)),
-		MaxBytes:       f.limit.Load,
-		DiskSpace:      func() (int64, int64, error) { return 0, 0, nil },
-		MinFreePercent: func() float64 { return 0 },
-	})
+		Space: func() datadisk.Space {
+			if f.disk != nil {
+				return f.disk()
+			}
+			return datadisk.Space{Cache: f.limit.Load()}
+		},
+		Now: f.clock.now,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.now = f.clock.now
 	srv.jobWait = 100 * time.Millisecond
 	f.srv = srv
 	direct := httptest.NewServer(srv)
-	proxied := httptest.NewServer(srv.Proxied())
+	proxied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv.ServeAgent(w, r, "agent-1", r.Header.Get(agentSandbox))
+	}))
 	t.Cleanup(direct.Close)
 	t.Cleanup(proxied.Close)
 	f.url, f.proxied = direct.URL, proxied.URL
 	return f
 }
 
-// counts returns the cache statistics of a repository.
+// counts returns the counts of a repository in the store. Run writes the
+// counts that it has in memory when it stops.
 func (f *fixture) counts(t *testing.T, repository string) store.CacheCounts {
-	f.srv.cfg.Stats.flush(t.Context())
+	f.start(t)()
 	counts, err := f.st.CacheStatsByRepository(t.Context(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return counts[repository]
+}
+
+// start runs Run of the server until stop, which waits until Run returns.
+func (f *fixture) start(t *testing.T) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		f.srv.Run(ctx)
+		close(done)
+	}()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
+// dirBytes returns the bytes of the files under dir.
+func dirBytes(t *testing.T, dir string) int64 {
+	t.Helper()
+	var n int64
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err == nil {
+			n += info.Size()
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func openStore(t *testing.T) *store.Store {
@@ -118,12 +188,12 @@ func acme(id, ref, baseRef string) Identity {
 	return Identity{SandboxID: id, Repository: "acme/app", DefaultBranch: "main", Ref: ref, BaseRef: baseRef}
 }
 
-// via returns a client of a sandbox whose requests come through the trusted
-// proxy. A job can write any cache scopes into its runtime token, because
-// runplane cannot check the signature. So each of these tokens claims main,
-// and the branch rules must hold anyway.
+// via returns a client of a sandbox on an agent, whose requests come
+// through the agent. A job can write any cache scopes into its runtime
+// token, because runplane cannot check the signature. So each of these
+// tokens claims main, and the branch rules must hold anyway.
 func (f *fixture) via(t *testing.T, sandboxID string) client {
-	return client{t: t, url: f.proxied, token: token(scope{"refs/heads/main", 3}), header: http.Header{SandboxHeader: {sandboxID}}}
+	return client{t: t, url: f.proxied, token: token(scope{"refs/heads/main", 3}), header: http.Header{agentSandbox: {sandboxID}}}
 }
 
 type scope struct {

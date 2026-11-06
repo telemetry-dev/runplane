@@ -42,11 +42,11 @@ func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationCha
 		"SELECT "+channelCols+" FROM notification_channels ORDER BY name, id")
 }
 
-// UpdateNotificationChannel writes all columns except id and created_at, and sets updated_at.
+// UpdateNotificationChannel writes all columns except id and created_at.
 func (s *Store) UpdateNotificationChannel(ctx context.Context, c NotificationChannel) error {
 	return exec1(ctx, s.w, "update notification channel", `UPDATE notification_channels SET name = ?, kind = ?,
 		url_enc = ?, events_json = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-		c.Name, c.Kind, c.URLEnc, jsonCol(&c.Events), c.Enabled, ms(time.Now()), c.ID)
+		c.Name, c.Kind, c.URLEnc, jsonCol(&c.Events), c.Enabled, ms(c.UpdatedAt), c.ID)
 }
 
 func (s *Store) DeleteNotificationChannel(ctx context.Context, id string) error {

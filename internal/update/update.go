@@ -1,4 +1,5 @@
-// Package update replaces the runplane binary with a signed GitHub release.
+// Package update replaces the runplane binary with a signed GitHub release,
+// and runs the updates of a runplane process.
 package update
 
 import (
@@ -24,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/version"
 )
 
@@ -44,7 +47,6 @@ const (
 // ErrNoRelease means that the release repository has no published release.
 var ErrNoRelease = errors.New("no published release")
 
-// Updater checks for and applies releases.
 type Updater struct {
 	Repo        string // GitHub repository, "owner/name"
 	Current     string // version of the running binary
@@ -73,8 +75,8 @@ type Status struct {
 	PublishedAt time.Time
 }
 
-// Check reads the latest release. A development build ("dev") never has an
-// update available.
+// Check reads the latest release. Only a release build can have an update
+// available.
 func (u *Updater) Check(ctx context.Context) (Status, error) {
 	var rel struct {
 		TagName     string    `json:"tag_name"`
@@ -82,35 +84,22 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 		Body        string    `json:"body"`
 		PublishedAt time.Time `json:"published_at"`
 	}
-	url := cmp.Or(u.APIURL, "https://api.github.com") + "/repos/" + u.Repo + "/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return Status{}, fmt.Errorf("check update: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "runplane/"+u.Current)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+	resp, err := ghrest.Client{URL: u.APIURL}.Do(ctx, ghrest.Call{Method: http.MethodGet, Path: "/repos/" + u.Repo + "/releases/latest"})
+	var apiErr *ghrest.APIError
+	switch {
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound:
+		return Status{}, fmt.Errorf("check update: %s has %w", u.Repo, ErrNoRelease)
+	case err != nil:
 		return Status{}, fmt.Errorf("check update: %w", err)
 	}
 	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return Status{}, fmt.Errorf("check update: %s has %w", u.Repo, ErrNoRelease)
-	case resp.StatusCode != http.StatusOK:
-		return Status{}, fmt.Errorf("check update: GitHub answered %s", resp.Status)
-	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetaSize)).Decode(&rel); err != nil {
 		return Status{}, fmt.Errorf("check update: decode release: %w", err)
 	}
-	// Compare sorts a version that does not parse first, so it would give
-	// a development build an update.
-	_, release := parse(u.Current)
 	return Status{
 		Current:     u.Current,
 		Latest:      rel.TagName,
-		Available:   release && Compare(rel.TagName, u.Current) > 0,
+		Available:   version.IsRelease(u.Current) && version.Compare(rel.TagName, u.Current) > 0,
 		URL:         rel.HTMLURL,
 		Notes:       rel.Body,
 		PublishedAt: rel.PublishedAt,
@@ -124,36 +113,31 @@ func (u *Updater) Check(ctx context.Context) (Status, error) {
 // binary runs after the process restarts; the caller exits so that systemd
 // starts it again.
 func (u *Updater) Apply(ctx context.Context, v string) error {
-	if _, ok := parse(v); !ok {
-		return fmt.Errorf("update: %q is not a version", v)
+	if !version.IsRelease(v) {
+		return fmt.Errorf("update: %q is not a release version", v)
 	}
 	pub, err := u.publicKey()
 	if err != nil {
 		return err
 	}
-	num := strings.TrimPrefix(v, "v")
-	base := cmp.Or(u.DownloadURL, "https://github.com") + "/" + u.Repo + "/releases/download/v" + num + "/"
+	base := cmp.Or(u.DownloadURL, ghrest.Web) + "/" + u.Repo + "/releases/download/" + v + "/"
 
 	var sums, sig bytes.Buffer
-	if err := u.download(ctx, base+"SHA256SUMS", &sums, maxMetaSize); err != nil {
+	if err := download(ctx, base+"SHA256SUMS", &sums, maxMetaSize); err != nil {
 		return err
 	}
-	if err := u.download(ctx, base+"SHA256SUMS.sig", &sig, maxMetaSize); err != nil {
+	if err := download(ctx, base+"SHA256SUMS.sig", &sig, maxMetaSize); err != nil {
 		return err
 	}
 	if !ed25519.Verify(pub, sums.Bytes(), sig.Bytes()) {
 		return errors.New("update: the signature of SHA256SUMS is not valid")
 	}
 	hashes := parseSums(sums.Bytes())
-	name, err := findArchive(hashes, num, runtime.GOARCH)
-	if err != nil {
-		return err
+	name := ArchiveName(v, runtime.GOARCH)
+	if hashes[name] == "" {
+		return fmt.Errorf("update: SHA256SUMS has no entry for %s", name)
 	}
-	// kernel/build.sh and install.sh name the kernel with the arch of uname -m.
-	kernelName := "vmlinux-" + runtime.GOARCH
-	if runtime.GOARCH == "amd64" {
-		kernelName = "vmlinux-x86_64"
-	}
+	kernelName := KernelName(runtime.GOARCH)
 	var kernel string // empty when this server has no guest kernel
 	if _, err := os.Stat(u.Kernel); err == nil {
 		kernel = u.Kernel
@@ -162,11 +146,15 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 		return fmt.Errorf("update: SHA256SUMS has no entry for %s, the guest kernel of this server", kernelName)
 	}
 
-	archive, err := u.fetch(ctx, base+name, hashes[name], os.TempDir(), "runplane-update-*.tar.gz")
+	archive, err := os.CreateTemp("", "runplane-update-*.tar.gz")
 	if err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	defer os.Remove(archive.Name())
+	defer archive.Close()
+	if err := fetch(ctx, base+name, hashes[name], archive); err != nil {
 		return err
 	}
-	defer os.Remove(archive)
 	exe, err := u.exe()
 	if err != nil {
 		return err
@@ -175,49 +163,36 @@ func (u *Updater) Apply(ctx context.Context, v string) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(newExe)
+	defer newExe.Close()
 	if kernel != "" {
-		newKernel, err := u.fetch(ctx, base+kernelName, hashes[kernelName], filepath.Dir(kernel), ".vmlinux-update-*")
+		newKernel, err := atomicfile.Create(kernel, 0o644)
 		if err != nil {
-			return err
-		}
-		defer os.Remove(newKernel)
-		if err := os.Chmod(newKernel, 0o644); err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
-		if err := os.Rename(newKernel, kernel); err != nil {
+		defer newKernel.Close()
+		if err := fetch(ctx, base+kernelName, hashes[kernelName], newKernel); err != nil {
+			return err
+		}
+		if err := newKernel.Commit(); err != nil {
 			return fmt.Errorf("update: replace guest kernel: %w", err)
 		}
 	}
-	if err := os.Rename(newExe, exe); err != nil {
+	if err := newExe.Commit(); err != nil {
 		return fmt.Errorf("update: replace binary: %w", err)
 	}
 	return nil
 }
 
-// fetch downloads url to a new file in dir and checks its SHA-256 against
-// want. It returns the path of the file.
-func (u *Updater) fetch(ctx context.Context, url, want, dir, pattern string) (string, error) {
-	f, err := os.CreateTemp(dir, pattern)
-	if err != nil {
-		return "", fmt.Errorf("update: %w", err)
-	}
+// fetch downloads url to w and checks its SHA-256 against want.
+func fetch(ctx context.Context, url, want string, w io.Writer) error {
 	h := sha256.New()
-	err = u.download(ctx, url, io.MultiWriter(f, h), maxFileSize)
-	if err == nil {
-		err = f.Sync()
+	if err := download(ctx, url, io.MultiWriter(w, h), maxFileSize); err != nil {
+		return err
 	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		return fmt.Errorf("update: %s has SHA-256 %s, SHA256SUMS has %s", path.Base(url), got, want)
 	}
-	if got := hex.EncodeToString(h.Sum(nil)); err == nil && got != want {
-		err = fmt.Errorf("update: %s has SHA-256 %s, SHA256SUMS has %s", path.Base(url), got, want)
-	}
-	if err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
+	return nil
 }
 
 func (u *Updater) publicKey() (ed25519.PublicKey, error) {
@@ -247,20 +222,12 @@ func (u *Updater) exe() (string, error) {
 	return real, nil
 }
 
-func (u *Updater) download(ctx context.Context, url string, w io.Writer, limit int64) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func download(ctx context.Context, url string, w io.Writer, limit int64) error {
+	resp, err := ghrest.Client{}.Download(ctx, url)
 	if err != nil {
 		return fmt.Errorf("update: %w", err)
 	}
-	req.Header.Set("User-Agent", "runplane/"+u.Current)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("update: download %s: %w", path.Base(url), err)
-	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("update: download %s: %s", path.Base(url), resp.Status)
-	}
 	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return fmt.Errorf("update: download %s: %w", path.Base(url), err)
@@ -285,40 +252,39 @@ func parseSums(sums []byte) map[string]string {
 	return hashes
 }
 
-// findArchive returns the name of the archive for this version and arch.
-func findArchive(hashes map[string]string, num, arch string) (string, error) {
-	names := []string{
-		"runplane_" + num + "_linux_" + arch + ".tar.gz",
-		"runplane_v" + num + "_linux_" + arch + ".tar.gz",
-	}
-	for _, name := range names {
-		if _, ok := hashes[name]; ok {
-			return name, nil
-		}
-	}
-	return "", fmt.Errorf("update: SHA256SUMS has no entry for %s", names[0])
+// ArchiveName is the release archive of version v for arch. The Makefile and
+// the release workflow name it, and install.sh downloads it.
+func ArchiveName(v, arch string) string {
+	return "runplane_" + strings.TrimPrefix(v, "v") + "_linux_" + arch + ".tar.gz"
 }
 
-// extract writes the runplane binary of the archive to a new file next to
-// exe and returns its path. A rename then replaces exe atomically.
-func extract(exe, archive string) (string, error) {
-	f, err := os.Open(archive)
-	if err != nil {
-		return "", fmt.Errorf("update: %w", err)
+// KernelName is the guest kernel of a release for arch. kernel/build.sh
+// names it with the arch name of Linux: x86_64 or arm64.
+func KernelName(arch string) string {
+	if arch == "amd64" {
+		return "vmlinux-x86_64"
 	}
-	defer f.Close()
-	zr, err := gzip.NewReader(f)
+	return "vmlinux-" + arch
+}
+
+// extract writes the runplane binary of the archive to a new file for exe.
+// Its Commit then replaces exe.
+func extract(exe string, archive io.ReadSeeker) (*atomicfile.File, error) {
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("update: read archive: %w", err)
+	}
+	zr, err := gzip.NewReader(archive)
 	if err != nil {
-		return "", fmt.Errorf("update: read archive: %w", err)
+		return nil, fmt.Errorf("update: read archive: %w", err)
 	}
 	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return "", errors.New("update: the archive has no runplane binary")
+			return nil, errors.New("update: the archive has no runplane binary")
 		}
 		if err != nil {
-			return "", fmt.Errorf("update: read archive: %w", err)
+			return nil, fmt.Errorf("update: read archive: %w", err)
 		}
 		if hdr.Typeflag == tar.TypeReg && path.Base(hdr.Name) == "runplane" {
 			return writeExe(exe, tr)
@@ -326,24 +292,14 @@ func extract(exe, archive string) (string, error) {
 	}
 }
 
-func writeExe(exe string, r io.Reader) (string, error) {
-	tmp, err := os.CreateTemp(filepath.Dir(exe), ".runplane-update-*")
+func writeExe(exe string, r io.Reader) (*atomicfile.File, error) {
+	f, err := atomicfile.Create(exe, 0o755)
 	if err != nil {
-		return "", fmt.Errorf("update: %w", err)
+		return nil, fmt.Errorf("update: %w", err)
 	}
-	_, err = io.Copy(tmp, io.LimitReader(r, maxFileSize))
-	if err == nil {
-		err = tmp.Chmod(0o755)
+	if _, err := io.Copy(f, io.LimitReader(r, maxFileSize)); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("update: write binary: %w", err)
 	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		os.Remove(tmp.Name())
-		return "", fmt.Errorf("update: write binary: %w", err)
-	}
-	return tmp.Name(), nil
+	return f, nil
 }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -44,6 +46,29 @@ func TestFirstStartHasDefaultImage(t *testing.T) {
 	})
 }
 
+// The default label of the first start is a pool change as any other: it
+// has an audit entry, and the scheduler and GitHub get events.PoolsChanged.
+func TestFirstStartAddsTheDefaultLabel(t *testing.T) {
+	ctx := t.Context()
+	h := newHarness(t, newFakeNode("arm64"))
+	changed := events.Subscribe[events.PoolsChanged](ctx, h.bus)
+	h.run()
+	recv(t, changed)
+	pools, err := h.st.ListPools(ctx)
+	if err != nil || len(pools) != 1 || pools[0].Label != "runplane" || pools[0].Arch != "arm64" {
+		t.Fatalf("pools %+v, %v; want the label runplane for arm64", pools, err)
+	}
+	// The pools service publishes the event before it records the entry.
+	var entries []store.AuditEntry
+	waitFor(t, "the audit entry", func() bool {
+		entries, _, err = h.st.ListAudit(ctx, "", 10)
+		return err == nil && len(entries) > 0
+	})
+	if len(entries) != 1 || entries[0].Action != "pool.create" || entries[0].Target != pools[0].ID || entries[0].UserID != "" {
+		t.Errorf("audit entries %+v; want one pool.create by runplane", entries)
+	}
+}
+
 func TestProvisionImagesAndRunner(t *testing.T) {
 	ctx := t.Context()
 	local := newFakeNode("arm64")
@@ -69,10 +94,10 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 	// 2.330.0 is the newest release, but it does not download on this
 	// server. 2.329.0 is ready on other servers.
 	now := time.Now()
-	if err := h.st.UpsertRunnerBundle(ctx, store.RunnerBundle{Version: "2.329.0", Arch: "arm64", Status: store.BundleReady, CreatedAt: now}); err != nil {
+	if err := h.st.SetRunnerBundleBuild(ctx, store.RunnerBundle{Version: "2.329.0", Arch: "arm64", Status: store.BundleReady}, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.st.SetRunnerBundleDates(ctx, "2.330.0", "arm64", &now, nil); err != nil {
+	if err := h.st.SetRunnerBundleDates(ctx, "2.330.0", "arm64", &now, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	h.run()
@@ -110,8 +135,10 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 	if b, _ := h.st.GetImageBuild(ctx, broken, id); !strings.Contains(b.Error, "not found") {
 		t.Errorf("failed build error %q, want the pull error", b.Error)
 	}
-	if b, _ := h.st.GetImageBuild(ctx, app, id); b.Status != store.BuildReady || b.Digest != "sha256:a001" {
-		t.Errorf("pool image build %+v, want ready with its digest", b)
+	// The size is the space of the image on the server, not the bytes of
+	// the download.
+	if b, _ := h.st.GetImageBuild(ctx, app, id); b.Status != store.BuildReady || b.Digest != "sha256:a001" || b.SizeBytes != imageSize {
+		t.Errorf("pool image build %+v, want ready with its digest and size", b)
 	}
 
 	if v, _ := h.f.RunnerVersion(id); v != "2.329.0" {
@@ -121,16 +148,14 @@ func TestProvisionImagesAndRunner(t *testing.T) {
 		t.Errorf("bundle 2.330.0: status %q, error %q; want failed with the download error", b.Status, b.Error)
 	}
 
+	// The server tries the newest version again after a wait.
 	local.set(func(n *fakeNode) { n.runners["2.330.0"] = true })
-	if err := h.f.EnsureLatest(ctx, "2.330.0"); err != nil {
-		t.Fatal(err)
-	}
-	if v, _ := h.f.RunnerVersion(id); v != "2.330.0" {
-		t.Errorf("runner version %q after EnsureLatest, want 2.330.0", v)
-	}
+	h.clock.add(retryAfter)
+	h.f.provision(ctx)
+	waitFor(t, "runner version 2.330.0", func() bool { v, _ := h.f.RunnerVersion(id); return v == "2.330.0" })
 	b, _ := h.st.GetRunnerBundle(ctx, "2.330.0", "arm64")
-	if b.Status != store.BundleReady || b.SHA256 != "9e2f2.330.0" || b.Path != "/var/lib/runplane/runners/2.330.0-arm64" || b.ReleasedAt == nil {
-		t.Errorf("bundle 2.330.0 after EnsureLatest: %+v; want ready with its build and its release date", b)
+	if b.Status != store.BundleReady || b.SHA256 != "9e2f2.330.0" || b.ReleasedAt == nil {
+		t.Errorf("bundle 2.330.0 after the second try: %+v; want ready with its build and its release date", b)
 	}
 
 	// An agent where no runner downloads gets no runner version, and its
@@ -167,7 +192,6 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 		return ref.Digest
 	}
 	waitFor(t, "the pool image", func() bool { return digest() == "sha256:a001" })
-	images := h.f.Images()
 
 	// A new pull of the same ref keeps the image in use until it is ready.
 	gate := make(chan struct{})
@@ -175,7 +199,7 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 		n.gates["registry.example.com/app:1"] = gate
 		n.digests["registry.example.com/app:1"] = "sha256:a002"
 	})
-	if err := images.Refresh(ctx, app); err != nil {
+	if err := h.f.RefreshImage(ctx, audit.Actor{}, app); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the second pull", func() bool { return count(local.args("EnsureImage"), "registry.example.com/app:1") == 2 })
@@ -184,9 +208,10 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	}
 	close(gate)
 	waitFor(t, "the new digest", func() bool { return digest() == "sha256:a002" })
-	if got := local.args("GCImages"); !slices.ContainsFunc(got, func(keep any) bool { return !slices.Contains(keep.([]string), "sha256:a001") }) {
-		t.Errorf("image GC calls %v after the new digest, want one that drops sha256:a001", got)
-	}
+	// The pull calls the GC after it makes the new digest ready.
+	waitFor(t, "an image GC that drops sha256:a001", func() bool {
+		return slices.ContainsFunc(local.args("GCImages"), func(keep any) bool { return !slices.Contains(keep.([]string), "sha256:a001") })
+	})
 
 	// After a new ref, the image of the old ref is not used.
 	gate = make(chan struct{})
@@ -197,7 +222,7 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 	if err := h.st.UpdateImage(ctx, store.Image{ID: app, Name: "app", Ref: "registry.example.com/app:2"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := images.Refresh(ctx, app); err != nil {
+	if err := h.f.RefreshImage(ctx, audit.Actor{}, app); err != nil {
 		t.Fatal(err)
 	}
 	if got := digest(); got != "" {
@@ -224,17 +249,56 @@ func TestRefreshAndRemoveImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, agentBefore := len(local.args("GCImages")), len(agentNode.args("GCImages"))
-	if err := images.Remove(ctx, app); err != nil {
+	if err := h.f.RemoveImage(ctx, audit.Actor{}, app); err != nil {
 		t.Fatal(err)
 	}
 	if got := digest(); got != "" {
 		t.Errorf("digest %q after Remove, want none", got)
 	}
+	waitFor(t, "the image GC on the two servers", func() bool {
+		return len(local.args("GCImages")) > before && len(agentNode.args("GCImages")) > agentBefore
+	})
 	if kept := local.args("GCImages")[before:]; !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0", "sha256:in-use"}}) {
 		t.Errorf("image GC on the primary kept %v, want one GC that keeps sha256:b0b0 and sha256:in-use", kept)
 	}
 	if kept := agentNode.args("GCImages")[agentBefore:]; !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0"}}) {
 		t.Errorf("image GC on the agent kept %v, want one GC that keeps sha256:b0b0", kept)
+	}
+}
+
+// A GC on a server must wait until the pulls there record their images.
+// Else the GC does not keep the image of a pull that just ended, and the
+// fleet records a ready image that the server removed.
+func TestImageGCWaitsForPulls(t *testing.T) {
+	ctx := t.Context()
+	local := newFakeNode("arm64")
+	gate := make(chan struct{})
+	local.set(func(n *fakeNode) {
+		n.digests["registry.example.com/app:1"] = "sha256:a001"
+		n.digests["registry.example.com/new:1"] = "sha256:e001"
+		n.gates["registry.example.com/new:1"] = gate
+	})
+	h := newHarness(t, local)
+	addImage(t, h.st, "ubuntu-24.04", "builtin:ubuntu-24.04", true)
+	app := addImage(t, h.st, "app", "registry.example.com/app:1", false)
+	addPool(t, h.st, "app", "arm64", app, true, nil)
+	h.run()
+	id := h.localID()
+	waitFor(t, "the pool image", func() bool { _, ok := h.f.Image(id, app); return ok })
+
+	if _, err := h.f.CreateImage(ctx, audit.Actor{}, "new", "registry.example.com/new:1"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the pull of the new image", func() bool { return count(local.args("EnsureImage"), "registry.example.com/new:1") == 1 })
+	if err := h.f.RemoveImage(ctx, audit.Actor{}, app); err != nil {
+		t.Fatal(err)
+	}
+	// Time for a GC that does not wait.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	waitFor(t, "the image GC", func() bool { return len(local.args("GCImages")) > 0 })
+	if kept := local.args("GCImages"); !reflect.DeepEqual(kept, []any{[]string{"sha256:b0b0", "sha256:e001"}}) {
+		t.Errorf("image GC kept %v, want one GC that keeps sha256:b0b0 and the new sha256:e001", kept)
 	}
 }
 
@@ -266,15 +330,15 @@ func TestNewRunnerPrunesOldBundlesOnAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.f.EnsureLatest(ctx, "2.331.0"); err != nil {
+	now := time.Now()
+	if err := h.st.SetRunnerBundleDates(ctx, "2.331.0", "arm64", &now, nil, now); err != nil {
 		t.Fatal(err)
 	}
+	h.f.provision(ctx)
 	waitFor(t, "a prune on the agent that keeps the live version", func() bool {
 		return slices.ContainsFunc(agentNode.args("PruneRunners"), func(keep any) bool { return slices.Equal(keep.([]string), []string{"2.328.0"}) })
 	})
-	if len(local.args("PruneRunners")) == 0 {
-		t.Error("no prune on the primary")
-	}
+	waitFor(t, "a prune on the primary", func() bool { return len(local.args("PruneRunners")) > 0 })
 }
 
 // The builtin images get a new build each week under the same tag, so a
@@ -299,7 +363,12 @@ func TestTaggedImagesArePulledAgainEachDay(t *testing.T) {
 
 	h.clock.add(23 * time.Hour)
 	h.f.provision(ctx)
-	time.Sleep(50 * time.Millisecond)
+	// provision marks each pull that it starts until the pull ends.
+	waitFor(t, "the end of the pulls", func() bool {
+		h.f.mu.Lock()
+		defer h.f.mu.Unlock()
+		return len(h.f.nodes[id].pulls) == 0
+	})
 	if n := count(local.args("EnsureImage"), "builtin:ubuntu-24.04"); n != 1 {
 		t.Errorf("%d pulls of the default image after 23 hours, want 1", n)
 	}

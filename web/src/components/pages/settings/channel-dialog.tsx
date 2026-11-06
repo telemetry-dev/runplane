@@ -1,21 +1,22 @@
-import { CheckboxGroup } from '@base-ui/react/checkbox-group'
 import { Field as BaseField } from '@base-ui/react/field'
-import { Fieldset } from '@base-ui/react/fieldset'
 import { useQueryClient } from '@tanstack/react-query'
 import { Send } from 'lucide-react'
 import { useId, useRef, useState, type Ref } from 'react'
 import { $api, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
+import { notificationsQuery } from '~/api/notifications'
 import { Button } from '~/components/ui/button'
-import { Checkbox } from '~/components/ui/checkbox'
+import { Checkbox, CheckboxGroup } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogPopup } from '~/components/ui/dialog'
 import { Field, Input } from '~/components/ui/field'
+import { Fieldset } from '~/components/ui/fieldset'
 import { Form } from '~/components/ui/form'
 import { SegmentedControl } from '~/components/ui/segmented'
 import { toastManager } from '~/components/ui/toast'
 import { channelEvents, channelKinds, defaultEvents, type ChannelEvent, type ChannelKind } from './channel-info'
 import { quietAction } from './parts'
-import { notificationsQuery, useSendTest } from './notifications-api'
-import { useFormErrors } from './settings-api'
+import { useSendTest } from './send-test'
 
 type Channel = Schemas['NotificationChannel']
 
@@ -66,13 +67,13 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
     else create.mutate({ body: { ...body, url: url.trim() } })
   }
 
-  const errors = useFormErrors(save.error)
+  const problems = useFormProblems(save.error, { fields: formFields })
   const ready = name.trim() !== '' && (channel !== undefined || url.trim() !== '')
 
   return (
     <>
       <SegmentedControl aria-label="Kind" value={kind} onValueChange={setKind} options={channelKinds} />
-      <Form id={formId} errors={errors.fields} onFormSubmit={submit} className="gap-l">
+      <Form id={formId} errors={problems.fields} onFormSubmit={submit} className="gap-l">
         <Field name="name" label="Name">
           <Input
             ref={nameInput}
@@ -80,7 +81,7 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
             onValueChange={setName}
             placeholder={kindInfo.namePlaceholder}
             required
-            maxLength={64}
+            maxLength={limits.CreateNotificationRequest.name.maxLength}
             autoComplete="off"
           />
         </Field>
@@ -98,18 +99,17 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
           <BaseField.Description className="text-xs text-neutral-7">{kindInfo.urlHelp}</BaseField.Description>
           <BaseField.Error className="text-xs text-error" />
         </BaseField.Root>
-        <Fieldset.Root className="flex min-w-0 flex-col gap-s">
-          <Fieldset.Legend className="text-s font-medium text-neutral-10">Events</Fieldset.Legend>
+        <Fieldset legend="Events">
           {/* Column first, as the design lists the job and server events on the left. */}
           <CheckboxGroup value={events} onValueChange={setEvents} className="grid grid-flow-col grid-cols-2 grid-rows-3 gap-x-l gap-y-s">
             {channelEvents.map((event) => (
               <Checkbox key={event.value} value={event.value} label={event.label} />
             ))}
           </CheckboxGroup>
-        </Fieldset.Root>
-        {errors.other && (
+        </Fieldset>
+        {problems.alert && (
           <p role="alert" className="text-s text-error">
-            {errors.other}
+            {problems.alert}
           </p>
         )}
       </Form>
@@ -138,3 +138,6 @@ function ChannelForm({ channel, nameInput, onDone }: ChannelFormProps) {
     </>
   )
 }
+
+// The kind and the events have no Field, so their problems go to the alert.
+const formFields = ['name', 'url']

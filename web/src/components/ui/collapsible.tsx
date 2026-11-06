@@ -10,10 +10,7 @@ type CollapsibleProps = Omit<BaseCollapsible.Root.Props, 'className' | 'children
   children: ReactNode
 }
 
-/**
- * Collapsible of gui/components/runplane/collapsible.md: a full-width trigger with
- * a chevron that turns when open, and a neutral-2 panel that grows to its height.
- */
+/** Collapsible of gui/components/runplane/collapsible.md. */
 export function Collapsible({ title, className, children, ...props }: CollapsibleProps) {
   return (
     <BaseCollapsible.Root className={cx('group/collapsible flex flex-col', className)} {...props}>

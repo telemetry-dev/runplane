@@ -2,7 +2,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Ellipsis, Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { $api, errorMessage } from '~/api/client'
+import { cachesQuery } from '~/api/caches'
+import { api } from '~/api/client'
+import { ConfirmDialog } from '~/components/app/confirm-dialog'
 import {
   DataTable,
   DataTableCell,
@@ -14,16 +16,14 @@ import {
   type DataTableColumn,
 } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
+import { SkeletonRows } from '~/components/app/skeleton-rows'
 import { UsageBar } from '~/components/app/usage-bar'
-import { SkeletonRows } from '~/components/pages/runners/skeleton-rows'
-import { AlertDialog, AlertDialogClose, AlertDialogFooter, AlertDialogPopup } from '~/components/ui/alert-dialog'
-import { Button, IconButton } from '~/components/ui/button'
+import { IconButton } from '~/components/ui/button'
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '~/components/ui/menu'
 import { toastManager } from '~/components/ui/toast'
 import { formatBytes, formatCount, formatTimeAgo } from '~/lib/format'
 import { useNow } from '~/lib/use-now'
-import { repositoryHitRate, type CacheOverview, type CacheRepository } from './cache-format'
-import { cacheQuery } from './queries'
+import { hitRate, type CacheOverview, type CacheRepository } from './cache-format'
 
 type RepositoriesTableProps = {
   /** Undefined while the overview loads. */
@@ -95,7 +95,6 @@ type RepositoryRowProps = {
 }
 
 function RepositoryRow({ repo, maxBytes, shown, admin, now }: RepositoryRowProps) {
-  const hitRate = repositoryHitRate(repo)
   return (
     <DataTableRow>
       <DataTableCell>
@@ -114,7 +113,7 @@ function RepositoryRow({ repo, maxBytes, shown, admin, now }: RepositoryRowProps
         </div>
       </DataTableCell>
       {shown.entries && <DataTableCell align="end">{formatCount(repo.entries)}</DataTableCell>}
-      {shown.hitRate && <DataTableCell align="end">{hitRate ?? <None />}</DataTableCell>}
+      {shown.hitRate && <DataTableCell align="end">{hitRate(repo.hit_rate) ?? <None />}</DataTableCell>}
       {shown.lastUsed && (
         <DataTableCell align="end">
           {repo.last_used_at ? <span className="text-neutral-7">{formatTimeAgo(repo.last_used_at, now)}</span> : <None />}
@@ -148,45 +147,20 @@ type RemoveEntriesDialogProps = { repo: CacheRepository; open: boolean; onOpenCh
 
 function RemoveEntriesDialog({ repo, open, onOpenChange }: RemoveEntriesDialogProps) {
   const client = useQueryClient()
-  const remove = $api.useMutation('delete', '/api/caches', {
-    onSuccess: ({ deleted }) => {
-      onOpenChange(false)
-      toastManager.add({ title: deleted === 1 ? 'Removed 1 entry' : `Removed ${formatCount(deleted)} entries` })
-    },
-  })
   const entries = repo.entries === 1 ? 'the cache entry' : `all ${formatCount(repo.entries)} cache entries`
-
   return (
-    <AlertDialog
+    <ConfirmDialog
       open={open}
       onOpenChange={onOpenChange}
-      onOpenChangeComplete={(isOpen) => {
-        if (isOpen) return
-        // Refetch after the close animation; the dialog lives in the row it may remove.
-        if (remove.isSuccess) void client.invalidateQueries({ queryKey: cacheQuery.queryKey })
-        remove.reset()
+      title={`Remove ${entries} of ${repo.repository}?`}
+      description="The next jobs of this repository run without these caches and save new entries."
+      action="Remove entries"
+      onConfirm={async () => {
+        const { data } = await api.DELETE('/api/caches', { params: { query: { repository: repo.repository } } })
+        const deleted = data?.deleted ?? 0
+        toastManager.add({ title: deleted === 1 ? 'Removed 1 entry' : `Removed ${formatCount(deleted)} entries` })
       }}
-    >
-      <AlertDialogPopup
-        title={`Remove ${entries} of ${repo.repository}?`}
-        description="The next jobs of this repository run without these caches and save new entries."
-      >
-        {remove.error && (
-          <p role="alert" className="text-s text-error">
-            {errorMessage(remove.error)}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button />}>Cancel</AlertDialogClose>
-          <Button
-            variant="danger"
-            loading={remove.isPending}
-            onClick={() => remove.mutate({ params: { query: { repository: repo.repository } } })}
-          >
-            Remove entries
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+      onDone={() => void client.invalidateQueries({ queryKey: cachesQuery.queryKey })}
+    />
   )
 }

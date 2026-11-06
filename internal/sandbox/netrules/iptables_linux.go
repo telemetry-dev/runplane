@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"os"
 	"os/exec"
 	"slices"
@@ -16,12 +17,6 @@ import (
 	"time"
 
 	"github.com/google/nftables"
-)
-
-const (
-	dockerUser = "DOCKER-USER"
-	// ruleComment marks the iptables rules that runplane owns.
-	ruleComment = "runplane"
 )
 
 // iptablesRules returns the runplane rules of each chain of the iptables
@@ -38,10 +33,10 @@ const (
 // accept the TAP subnet, because Docker sets the FORWARD policy to drop; the
 // nftables table filters that traffic. In container mode they repeat the
 // fixed drops for each bridge. The allowlist stays in nftables only.
-func iptablesRules(cfg Config, links map[string]link) map[string][][]string {
+func iptablesRules(cfg Config, taps netip.Prefix, links map[string]link) map[string][][]string {
 	port := strconv.Itoa(cfg.ServicePort)
 	var input, forward, docker [][]string
-	if s := cfg.TapSubnet.String(); cfg.TapSubnet.IsValid() {
+	if s := taps.String(); taps.IsValid() {
 		input = append(input, []string{"-i", TapPrefix + "+", "-p", "tcp", "--dport", port, "-j", "ACCEPT"})
 		forward = append(forward,
 			[]string{"-i", TapPrefix + "+", "-j", "ACCEPT"},
@@ -70,7 +65,7 @@ func iptablesRules(cfg Config, links map[string]link) map[string][][]string {
 	rules := map[string][][]string{"INPUT": input, "FORWARD": forward, dockerUser: docker}
 	for _, chain := range rules {
 		for i := range chain {
-			chain[i] = append(chain[i], "-m", "comment", "--comment", ruleComment)
+			chain[i] = append(chain[i], "-m", "comment", "--comment", RuleComment)
 		}
 	}
 	return rules
@@ -99,6 +94,7 @@ func syncIptables(ctx context.Context, want map[string][][]string, force bool) e
 type iptables struct {
 	cmd, restore string
 	chains       []string
+	forward      string // the policy of the FORWARD chain, if the table has one
 }
 
 // filterBackends returns the iptables backends that have a filter table.
@@ -116,24 +112,31 @@ func filterBackends(ctx context.Context) ([]iptables, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list nftables chains: %w", err)
 	}
-	var names []string
+	var nft iptables
 	for _, ch := range chains {
-		if ch.Table.Name == "filter" {
-			names = append(names, ch.Name)
+		if ch.Table.Name != "filter" {
+			continue
+		}
+		nft.chains = append(nft.chains, ch.Name)
+		if ch.Name == "FORWARD" && ch.Policy != nil {
+			nft.forward = "ACCEPT"
+			if *ch.Policy == nftables.ChainPolicyDrop {
+				nft.forward = "DROP"
+			}
 		}
 	}
-	if len(names) > 0 {
+	if len(nft.chains) > 0 {
 		b, err := findIptables(ctx, "nf_tables")
 		if err != nil {
 			return nil, err
 		}
-		b.chains = names
-		found = append(found, b)
+		nft.cmd, nft.restore = b.cmd, b.restore
+		found = append(found, nft)
 	}
 	if tables, err := os.ReadFile("/proc/thread-self/net/ip_tables_names"); err == nil && slices.Contains(strings.Fields(string(tables)), "filter") {
 		if b, err := findIptables(ctx, "legacy"); err == nil {
 			if out, err := runIptables(ctx, "", b.cmd, "-S"); err == nil {
-				b.chains = chainNames(out)
+				b.chains, b.forward = parseListing(out)
 				found = append(found, b)
 			}
 		}
@@ -141,16 +144,20 @@ func filterBackends(ctx context.Context) ([]iptables, error) {
 	return found, nil
 }
 
-// chainNames returns the chains of an "iptables -S" listing.
-func chainNames(listing string) []string {
-	var names []string
+// parseListing returns the chains of an "iptables -S" listing, and the
+// policy of its FORWARD chain.
+func parseListing(listing string) (chains []string, forward string) {
 	for line := range strings.Lines(listing) {
 		f := strings.Fields(line)
-		if len(f) >= 2 && (f[0] == "-P" || f[0] == "-N") {
-			names = append(names, f[1])
+		if len(f) < 2 || f[0] != "-P" && f[0] != "-N" {
+			continue
+		}
+		chains = append(chains, f[1])
+		if len(f) == 3 && f[0] == "-P" && f[1] == "FORWARD" {
+			forward = f[2]
 		}
 	}
-	return names
+	return chains, forward
 }
 
 // findIptables finds the command of a backend: "nf_tables" or "legacy", as
@@ -206,7 +213,7 @@ func (b iptables) inSync(ctx context.Context, want map[string][][]string) bool {
 // With a nil want, that is each of them, to remove the rules.
 func (b iptables) managed(want map[string][][]string) []string {
 	var list []string
-	for _, chain := range []string{"INPUT", "FORWARD", dockerUser} {
+	for _, chain := range RuleChains {
 		if _, ok := want[chain]; (ok || want == nil) && slices.Contains(b.chains, chain) {
 			list = append(list, chain)
 		}
@@ -228,7 +235,7 @@ func (b iptables) rules(ctx context.Context, chain string) ([]string, error) {
 			continue
 		}
 		fields := strings.Fields(rule)
-		if i := slices.Index(fields, "--comment"); i >= 0 && i+1 < len(fields) && strings.Trim(fields[i+1], `"`) == ruleComment {
+		if i := slices.Index(fields, "--comment"); i >= 0 && i+1 < len(fields) && strings.Trim(fields[i+1], `"`) == RuleComment {
 			rules = append(rules, rule)
 		}
 	}

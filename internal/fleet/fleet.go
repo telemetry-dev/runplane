@@ -1,12 +1,13 @@
 // Package fleet keeps the servers of the primary: its own server and the
 // agents. It records their state and host stats, makes images and runner
-// bundles ready on them, installs agents, and tells the scheduler which
-// servers can take sandboxes.
+// bundles ready on them, installs agents, and tells which servers can take
+// sandboxes.
 package fleet
 
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"slices"
@@ -15,11 +16,12 @@ import (
 	"time"
 
 	"github.com/runplane/runplane/internal/agent"
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/config"
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/notify"
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sshinstall"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -43,9 +45,23 @@ const (
 	updateTimeout = 10 * time.Minute
 )
 
-// Notifier sends an event to the notification channels that want it.
-type Notifier interface {
-	Notify(ctx context.Context, e notify.Event) error
+// ErrNotConnected means that the server has no connection to the primary.
+var ErrNotConnected = errors.New("the server is not connected")
+
+// Runners gives the runner versions for the servers, and records the
+// bundle builds of the servers: the runner versions service.
+type Runners interface {
+	// Versions returns the runner versions to try on a server of arch,
+	// best first, or nil while runplane knows no version.
+	Versions(ctx context.Context, arch string) ([]string, error)
+	// Built records the build of a bundle on one server: a ready row with
+	// its SHA-256, or a failed row with the error.
+	Built(ctx context.Context, b store.RunnerBundle)
+}
+
+// Pools makes pools: the pools service.
+type Pools interface {
+	Create(ctx context.Context, by audit.Actor, p store.Pool) (store.Pool, error)
 }
 
 type Config struct {
@@ -58,29 +74,46 @@ type Config struct {
 	// AgentFingerprint is the fingerprint of the agent certificate. The
 	// install commands and install.sh carry it.
 	AgentFingerprint string
-	// OnEvent gets each driver event of each server: the HandleEvent method
-	// of the scheduler.
+	// Version is the version of runplane on the primary. The agents run
+	// the same version.
+	Version string
+	// Repo is the GitHub repository of the runplane releases.
+	Repo string
+	// PublicKey is the release signing key of this binary, or "". The
+	// install script of the primary carries it.
+	PublicKey string
+	// OnEvent gets each driver event of each server.
 	OnEvent func(serverID string, ev sandbox.Event)
 	// CapacityChanged runs when a server comes, goes, changes its status,
 	// or gets its first image or runner: the CapacityChanged method of the
 	// scheduler.
 	CapacityChanged func()
-	Notifier        Notifier
-	Now             func() time.Time // nil: time.Now
+	Runners         Runners
+	// Pools adds the default label at the first start.
+	Pools Pools
+	Now   func() time.Time // nil: time.Now
 }
 
-// Fleet is the set of servers of the primary.
 type Fleet struct {
 	st              *store.Store
 	bus             *events.Bus
 	log             *slog.Logger
+	audit           audit.Log
 	cfg             config.Config
 	local           agent.Node
 	fp              string
+	version         string
+	repo            string
+	publicKey       string
 	onEvent         func(string, sandbox.Event)
 	capacityChanged func()
-	notifier        Notifier
+	runners         Runners
+	pools           Pools
 	now             func() time.Time
+	knownHosts      *sshinstall.KnownHosts
+
+	// settings gets each settings change. Run reads it.
+	settings <-chan events.SettingsChanged
 
 	// bg is the context of the work that outlives a call. Run cancels it.
 	bg     context.Context
@@ -89,34 +122,41 @@ type Fleet struct {
 	wg     sync.WaitGroup
 	wake   chan struct{} // asks Run to provision now
 
-	keyMu sync.Mutex // the SSH key and known_hosts
-
 	mu        sync.Mutex
-	localID   string
 	localAddr string               // IPv4 of the primary, for install commands
 	nodes     map[string]*node     // connected servers by ID
 	downSince map[string]time.Time // agents without a connection
-	removed   map[string]bool      // servers that Remove disconnected
+	removed   map[string]bool      // servers that RemoveServer disconnected
 	installs  map[string]context.CancelFunc
 	tokens    map[string]usedToken // recent token uses by hash
 	images    map[string]store.Image
 	defaultID string
-	dropped   map[string]bool        // images that Images.Remove dropped
+	dropped   map[string]bool        // images that RemoveImage dropped
 	updates   map[string]agentUpdate // the last update of each agent, by server ID
-	latest    string                 // newest runner version
-	minFree   float64                // min_free_disk_percent
-	diskLow   map[string]bool
-	samples   []store.ServerStat // host stats for the next flush
+	samples   []store.ServerStat     // host stats for the next flush
+	seen      map[string]time.Time   // last sample of each agent, for the next flush
+
+	// settingsChanges counts the settings changes that settingsChanged
+	// sent to the connected servers.
+	settingsChanges int
 }
 
 // node is a connected server.
 type node struct {
 	agent.Node
 	id      string
-	sess    *agent.Session // nil for the server of the primary
 	arch    string
 	addr    string // agents: the IP address that the primary sees
 	version string // of runplane on the server
+	limits  sandbox.Limits
+
+	// gcMu prevents an image GC on the server during its pulls. A pull
+	// holds a read lock until the build row of the server records its
+	// image, and gcImages holds the write lock. Thus a GC keeps each image
+	// that a pull made.
+	gcMu sync.RWMutex
+	// settingsMu makes the settings sends to the server one at a time.
+	settingsMu sync.Mutex
 
 	// Guarded by Fleet.mu.
 	name         string
@@ -135,19 +175,28 @@ type readyImage struct {
 	at    time.Time // when the pull ended
 }
 
+// New makes the fleet. It takes the settings changes from the bus at once,
+// also the changes before Run starts.
 func New(c Config) *Fleet {
 	bg, stop := context.WithCancel(context.Background())
 	f := &Fleet{
 		st:              c.Store,
 		bus:             c.Bus,
 		log:             c.Log,
+		audit:           audit.Log{Store: c.Store, Logger: c.Log},
 		cfg:             c.Config,
 		local:           c.Local,
 		fp:              c.AgentFingerprint,
+		version:         c.Version,
+		repo:            c.Repo,
+		publicKey:       c.PublicKey,
 		onEvent:         c.OnEvent,
 		capacityChanged: c.CapacityChanged,
-		notifier:        c.Notifier,
+		runners:         c.Runners,
+		pools:           c.Pools,
 		now:             c.Now,
+		knownHosts:      &sshinstall.KnownHosts{Path: c.Config.KnownHostsPath()},
+		settings:        events.Subscribe[events.SettingsChanged](bg, c.Bus),
 		bg:              bg,
 		stopBg:          stop,
 		wake:            make(chan struct{}, 1),
@@ -159,7 +208,7 @@ func New(c Config) *Fleet {
 		images:          map[string]store.Image{},
 		dropped:         map[string]bool{},
 		updates:         map[string]agentUpdate{},
-		diskLow:         map[string]bool{},
+		seen:            map[string]time.Time{},
 	}
 	if f.now == nil {
 		f.now = time.Now
@@ -169,33 +218,20 @@ func New(c Config) *Fleet {
 
 // Run records the server of the primary, then keeps the state of all
 // servers until ctx ends: their status, facts, host stats, images, and
-// runner bundles. Start it before the agent listener.
+// runner bundles. When it ends, it writes the host samples that wait for
+// the next flush.
 func (f *Fleet) Run(ctx context.Context) error {
-	defer f.stop()
-	st, err := f.st.GetSettings(ctx)
-	if err != nil {
-		return err
-	}
-	f.mu.Lock()
-	f.minFree = st.MinFreeDiskPercent
-	f.mu.Unlock()
-	firstStart, err := f.seedImages(ctx)
-	if err != nil {
-		return err
-	}
-	if err := f.startLocal(ctx); err != nil {
-		return err
-	}
-	if firstStart {
-		if err := f.seedPool(ctx, st); err != nil {
-			return err
+	defer func() {
+		// The background work adds samples until stop returns.
+		f.stop()
+		f.flushStats(context.WithoutCancel(ctx))
+	}()
+	if err := f.start(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil
 		}
-	}
-	if err := f.startAgents(ctx); err != nil {
 		return err
 	}
-	bus, cancel := f.bus.Subscribe(64)
-	defer cancel()
 	f.provision(ctx)
 
 	check := time.NewTicker(syncEvery)
@@ -209,10 +245,9 @@ func (f *Fleet) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			f.flushStats(context.WithoutCancel(ctx))
 			return nil
-		case e := <-bus:
-			f.handleBus(e)
+		case c := <-f.settings:
+			f.settingsChanged(c)
 		case <-check.C:
 			f.syncServers(ctx)
 		case <-flush.C:
@@ -225,6 +260,26 @@ func (f *Fleet) Run(ctx context.Context) error {
 			f.goBg(f.refreshFacts)
 		}
 	}
+}
+
+func (f *Fleet) start(ctx context.Context) error {
+	st, err := f.st.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	firstStart, err := f.seedImages(ctx)
+	if err != nil {
+		return err
+	}
+	if err := f.startLocal(ctx); err != nil {
+		return err
+	}
+	if firstStart {
+		if err := f.seedPool(ctx, st); err != nil {
+			return err
+		}
+	}
+	return f.startAgents(ctx)
 }
 
 // stop ends the background work and waits for it.
@@ -253,17 +308,25 @@ func (f *Fleet) kick() {
 	}
 }
 
-// Online returns the connected servers with the status online.
-func (f *Fleet) Online() []sandbox.Host {
+// Host is a connected server.
+type Host struct {
+	ServerID string
+	Name     string
+	Arch     string
+	Driver   agent.Driver
+}
+
+// Online returns the connected servers with the status online, by name.
+func (f *Fleet) Online() []Host {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var hosts []sandbox.Host
+	var hosts []Host
 	for _, n := range f.nodes {
 		if n.status == store.ServerOnline {
-			hosts = append(hosts, sandbox.Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
+			hosts = append(hosts, Host{ServerID: n.id, Name: n.name, Arch: n.arch, Driver: n.Driver()})
 		}
 	}
-	slices.SortFunc(hosts, func(a, b sandbox.Host) int {
+	slices.SortFunc(hosts, func(a, b Host) int {
 		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ServerID, b.ServerID))
 	})
 	return hosts
@@ -271,7 +334,7 @@ func (f *Fleet) Online() []sandbox.Host {
 
 // Driver returns the driver of a connected server, also a draining or
 // disabled one, or nil.
-func (f *Fleet) Driver(serverID string) sandbox.Driver {
+func (f *Fleet) Driver(serverID string) agent.Driver {
 	if n := f.node(serverID); n != nil {
 		return n.Driver()
 	}
@@ -307,6 +370,31 @@ func (f *Fleet) RunnerVersion(serverID string) (string, bool) {
 	return "", false
 }
 
+// RunnerVersions returns the runner versions that the online servers give
+// new sandboxes.
+func (f *Fleet) RunnerVersions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var list []string
+	for _, n := range f.nodes {
+		if n.status == store.ServerOnline && n.runner != "" && !slices.Contains(list, n.runner) {
+			list = append(list, n.runner)
+		}
+	}
+	return list
+}
+
+// Limits returns the limits of the driver of a connected server. The fleet
+// reads them when the server connects.
+func (f *Fleet) Limits(serverID string) (sandbox.Limits, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n := f.nodes[serverID]; n != nil {
+		return n.limits, true
+	}
+	return sandbox.Limits{}, false
+}
+
 func (f *Fleet) node(id string) *node {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -319,15 +407,27 @@ func (f *Fleet) connected() []*node {
 	return slices.Collect(maps.Values(f.nodes))
 }
 
+// errRemoved refuses the connection of a server that RemoveServer removed.
+var errRemoved = errors.New("the server was removed")
+
 // add makes n the connected node of its server and passes its driver
 // events and host stats on. The channels of an agent close when its
-// session ends.
-func (f *Fleet) add(n *node) {
+// session ends. A server that RemoveServer removed gets no node. If the
+// settings changed after settingsChanges, the server gets them again.
+func (f *Fleet) add(n *node, settingsChanges int) error {
 	n.images, n.pulls, n.failed = map[string]readyImage{}, map[string]string{}, map[string]time.Time{}
 	f.mu.Lock()
+	if f.removed[n.id] {
+		f.mu.Unlock()
+		return errRemoved
+	}
 	f.nodes[n.id] = n
 	delete(f.downSince, n.id)
+	missed := f.settingsChanges != settingsChanges
 	f.mu.Unlock()
+	if missed {
+		f.goBg(func(ctx context.Context) { f.sendSettings(ctx, n) })
+	}
 	f.goBg(func(ctx context.Context) {
 		onEvent := func(ev sandbox.Event) { f.onEvent(n.id, ev) }
 		onStats := func(s host.Stats) { f.addStats(n, s) }
@@ -335,6 +435,7 @@ func (f *Fleet) add(n *node) {
 			f.down(ctx, n)
 		}
 	})
+	return nil
 }
 
 // down drops the session of an agent that ended, unless a newer session
@@ -363,22 +464,7 @@ func (f *Fleet) publishServer(ctx context.Context, id string) {
 		f.log.Debug("read server for its event", "server_id", id, "err", err)
 		return
 	}
-	f.bus.Publish(events.Event{Type: events.ServerState, Data: v})
-}
-
-// handleBus follows the changes that the API makes.
-func (f *Fleet) handleBus(e events.Event) {
-	switch e.Type {
-	case events.ServerState:
-		if v, ok := events.As[store.Server](e.Data); ok {
-			f.serverChanged(v)
-		}
-	case events.ImageState:
-		// The API sends the image row after a new image or a new default.
-		if _, ok := events.As[store.Image](e.Data); ok {
-			f.kick()
-		}
-	}
+	f.bus.Publish(events.ServerState(v))
 }
 
 // serverChanged takes the name and the status of a server row for its
@@ -399,18 +485,4 @@ func (f *Fleet) serverChanged(v store.Server) {
 		f.capacityChanged()
 		f.kick()
 	}
-}
-
-// notify sends an event to the notification channels in the background.
-func (f *Fleet) notify(build func(dashboard string) notify.Event) {
-	f.goBg(func(ctx context.Context) {
-		st, err := f.st.GetSettings(ctx)
-		if err != nil {
-			f.log.Warn("read settings for a notification", "err", err)
-		}
-		e := build(st.DashboardURL())
-		if err := f.notifier.Notify(ctx, e); err != nil {
-			f.log.Warn("send notification", "type", e.Type, "err", err)
-		}
-	})
 }

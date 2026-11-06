@@ -1,10 +1,8 @@
 package scheduler
 
 import (
-	"cmp"
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
@@ -36,17 +34,15 @@ func (s *Scheduler) HandleEvent(serverID string, ev sandbox.Event) {
 	}
 }
 
+// onState applies a state change of the driver. The driver sends one for
+// each runner event that changes the state, so onRunner does not change it.
 func (s *Scheduler) onState(ctx context.Context, serverID string, ev sandbox.Event) {
 	b, ok := s.sandboxOn(ctx, serverID, ev.SandboxID)
 	if !ok {
 		return
 	}
 	b, changed := s.setStateAt(ctx, b.ID, ev.State, ev.Reason, ev.Time)
-	if !changed || !ev.State.Done() {
-		return
-	}
-	s.flushSandbox(ctx, b.ID)
-	if ev.State == sandbox.StateFailed {
+	if changed && ev.State == sandbox.StateFailed {
 		if err := s.removeRunner(ctx, b); err != nil {
 			s.log.Warn("remove runner", "sandbox", b.ID, "runner", b.RunnerName, "err", err)
 		}
@@ -58,34 +54,23 @@ func (s *Scheduler) onRunner(ctx context.Context, serverID string, ev sandbox.Ev
 	if !ok {
 		return
 	}
-	switch ev.Runner.Kind {
-	case sandbox.RunnerListening:
-		s.setStateAt(ctx, b.ID, sandbox.StateIdle, "", ev.Time)
-	case sandbox.RunnerJobStarted:
-		s.setStateAt(ctx, b.ID, sandbox.StateBusy, "", ev.Time)
-	case sandbox.RunnerJobCompleted:
-		// The hold must come before init stops the sandbox, so do not wait
-		// for the JobCompleted message.
-		if b.JobID == "" {
-			return
-		}
-		job, err := s.st.GetJob(ctx, b.JobID)
-		if err != nil {
-			s.log.Warn("read job", "job", b.JobID, "err", err)
-			return
-		}
-		if job.State != store.JobCompleted && ev.Runner.Result != "" {
-			s.mu.Lock()
-			s.results[job.ID] = runnerResult{jobResult(ev.Runner.Result), s.now()}
-			s.mu.Unlock()
-		}
-		if job.Debug {
-			s.hold(ctx, b)
-		}
-	case sandbox.RunnerExited:
-		// The driver sends failed with the same error when the sandbox ends.
-		reason := cmp.Or(ev.Runner.Error, fmt.Sprintf("runner exited with code %d", ev.Runner.ExitCode))
-		s.setStateAt(ctx, b.ID, sandbox.StateStopping, reason, ev.Time)
+	// The hold must come before init stops the sandbox, so do not wait for
+	// the JobCompleted message.
+	if ev.Runner.Kind != sandbox.RunnerJobCompleted || b.JobID == "" {
+		return
+	}
+	job, err := s.st.GetJob(ctx, b.JobID)
+	if err != nil {
+		s.log.Warn("read job", "job", b.JobID, "err", err)
+		return
+	}
+	if job.State != store.JobCompleted && ev.Runner.Result != "" {
+		s.mu.Lock()
+		s.results[job.ID] = runnerResult{store.ResultOf(ev.Runner.Result), s.now()}
+		s.mu.Unlock()
+	}
+	if job.Debug {
+		s.hold(ctx, b)
 	}
 }
 
@@ -122,7 +107,6 @@ func (s *Scheduler) addSample(serverID string, ev sandbox.Event) {
 	})
 }
 
-// flushMetrics writes the buffered samples of each sandbox to its job.
 func (s *Scheduler) flushMetrics(ctx context.Context) {
 	s.mu.Lock()
 	all := s.metrics
@@ -143,7 +127,6 @@ func (s *Scheduler) flushMetrics(ctx context.Context) {
 	}
 }
 
-// flushSandbox writes the buffered samples of one sandbox to its job.
 func (s *Scheduler) flushSandbox(ctx context.Context, id string) {
 	s.mu.Lock()
 	buf := s.metrics[id]

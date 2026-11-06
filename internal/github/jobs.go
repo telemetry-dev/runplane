@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/runplane/runplane/internal/atomicfile"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/store"
 )
@@ -55,15 +55,8 @@ type workflowJob struct {
 // CheckJob tells if the repository is private and if the run comes from a
 // fork, and gives the run data for the cache refs. It reads the run,
 // because the scale set message has no head repository; the run also has
-// the current private flag. The result is cached by run ID for one hour, so
-// the jobs of one run cost one request.
+// the current private flag.
 func (s *Service) CheckJob(ctx context.Context, repository string, runID int64) (scheduler.JobCheck, error) {
-	s.checkMu.Lock()
-	cached, ok := s.checks[runID]
-	s.checkMu.Unlock()
-	if ok && time.Since(cached.at) <= time.Hour {
-		return cached.JobCheck, nil
-	}
 	run, err := s.run(ctx, repository, runID)
 	if err != nil {
 		if unreadable(err) {
@@ -71,27 +64,16 @@ func (s *Service) CheckJob(ctx context.Context, repository string, runID int64) 
 		}
 		return scheduler.JobCheck{}, err
 	}
-	c := scheduler.JobCheck{Private: run.Repository.Private, Fork: run.fork(), Ref: run.ref()}
-	now := time.Now()
-	s.checkMu.Lock()
-	maps.DeleteFunc(s.checks, func(_ int64, old runCheck) bool { return now.Sub(old.at) > time.Hour })
-	s.checks[runID] = runCheck{c, now}
-	s.checkMu.Unlock()
-	return c, nil
-}
-
-type runCheck struct {
-	scheduler.JobCheck
-	at time.Time
+	return scheduler.JobCheck{Private: run.Repository.Private, Fork: run.fork(), Ref: run.ref()}, nil
 }
 
 // unreadable tells if an error stays when runplane reads the run again: the
 // app has no installation for the repository, or GitHub hides the run (404)
 // or refuses it for a reason other than a rate limit (403).
 func unreadable(err error) bool {
-	var e *apiError
+	var e *ghrest.APIError
 	if errors.As(err, &e) {
-		return e.status == http.StatusNotFound || e.status == http.StatusForbidden && e.retryAt.IsZero()
+		return e.Status == http.StatusNotFound || e.Status == http.StatusForbidden && e.RetryAt.IsZero()
 	}
 	return errors.Is(err, errNoInstallation)
 }
@@ -117,31 +99,47 @@ func (run workflowRun) fork() bool {
 	return run.HeadRepository.ID != run.Repository.ID
 }
 
-// Enrich reads the run and its jobs and writes the enrichment fields. For a
-// cancelled job, it also writes another result that GitHub has: the
-// scheduler cancels a job whose sandbox it lost.
-func (s *Service) Enrich(ctx context.Context, job store.Job) error {
-	_, err := s.enrich(ctx, job)
-	return err
-}
-
-// enrich is Enrich that returns the GitHub job ID.
-func (s *Service) enrich(ctx context.Context, job store.Job) (int64, error) {
-	if job.RunID == 0 {
-		return 0, fmt.Errorf("enrich job %s: the job has no run ID", job.ID)
+// Enrich reads the run and its jobs, and gives the run data of the job and
+// its result if GitHub completed it.
+func (s *Service) Enrich(ctx context.Context, job store.Job) (scheduler.Enrichment, error) {
+	gj, err := s.githubJob(ctx, job)
+	if err != nil {
+		return scheduler.Enrichment{}, err
 	}
 	run, err := s.run(ctx, job.Repository, job.RunID)
 	if err != nil {
-		return 0, err
+		return scheduler.Enrichment{}, err
+	}
+	ref := run.ref()
+	e := scheduler.Enrichment{JobEnrichment: store.JobEnrichment{
+		GitHubJobID: gj.ID, WorkflowName: run.Name, RunNumber: run.RunNumber,
+		RunAttempt: cmp.Or(gj.RunAttempt, run.RunAttempt), HeadBranch: run.HeadBranch, HeadSHA: run.HeadSHA,
+		CommitMessage: run.HeadCommit.Message, Event: run.Event,
+		// The triggering actor started this attempt; the actor started the first.
+		Actor:    cmp.Or(run.TriggeringActor.Login, run.Actor.Login),
+		PRNumber: ref.PRNumber, BaseRef: ref.BaseRef, HTMLURL: gj.HTMLURL, Steps: gj.Steps, QueuedAt: gj.CreatedAt,
+	}}
+	if gj.Status == "completed" {
+		e.Result = store.ResultOf(gj.Conclusion)
+		if gj.CompletedAt != nil {
+			e.FinishedAt = *gj.CompletedAt
+		}
+	}
+	return e, nil
+}
+
+func (s *Service) githubJob(ctx context.Context, job store.Job) (workflowJob, error) {
+	if job.RunID == 0 {
+		return workflowJob{}, fmt.Errorf("find the GitHub job of %s: the job has no run ID", job.ID)
 	}
 	a, err := s.repoAuth(ctx, job.Repository)
 	if err != nil {
-		return 0, err
+		return workflowJob{}, err
 	}
-	jobs, err := list[workflowJob](ctx, s.api, a,
+	jobs, err := ghrest.List[workflowJob](ctx, s.api, a,
 		fmt.Sprintf("/repos/%s/actions/runs/%d/jobs?filter=all&per_page=100", job.Repository, job.RunID), "jobs")
 	if err != nil {
-		return 0, fmt.Errorf("list jobs of run %d: %w", job.RunID, err)
+		return workflowJob{}, fmt.Errorf("list jobs of run %d: %w", job.RunID, err)
 	}
 	var runnerName string
 	if job.SandboxID != "" {
@@ -151,31 +149,9 @@ func (s *Service) enrich(ctx context.Context, job store.Job) (int64, error) {
 	}
 	gj, ok := matchJob(jobs, job.JobName, runnerName, job.RunAttempt)
 	if !ok {
-		return 0, fmt.Errorf("enrich job %s: run %d has no job %q", job.ID, job.RunID, job.JobName)
+		return workflowJob{}, fmt.Errorf("find the GitHub job of %s: run %d has no job %q", job.ID, job.RunID, job.JobName)
 	}
-
-	ref := run.ref()
-	err = s.st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{
-		GitHubJobID: gj.ID, WorkflowName: run.Name, RunNumber: run.RunNumber,
-		RunAttempt: cmp.Or(gj.RunAttempt, run.RunAttempt), HeadBranch: run.HeadBranch, HeadSHA: run.HeadSHA,
-		CommitMessage: run.HeadCommit.Message, Event: run.Event,
-		// The triggering actor started this attempt; the actor started the first.
-		Actor:    cmp.Or(run.TriggeringActor.Login, run.Actor.Login),
-		PRNumber: ref.PRNumber, BaseRef: ref.BaseRef, HTMLURL: gj.HTMLURL, Steps: gj.Steps, QueuedAt: gj.CreatedAt,
-	})
-	if err != nil {
-		return 0, err
-	}
-	if r := conclusionResult(gj.Conclusion); job.Result == store.ResultCancelled && gj.Status == "completed" && r != "" && r != store.ResultCancelled {
-		m := store.JobMessage{RunnerRequestID: job.RunnerRequestID, State: store.JobCompleted, Result: r}
-		if gj.CompletedAt != nil {
-			m.FinishedAt = *gj.CompletedAt
-		}
-		if _, err := s.st.UpsertJob(ctx, m); err != nil {
-			return 0, err
-		}
-	}
-	return gj.ID, nil
+	return gj, nil
 }
 
 // Steps reads the GitHub job: one request.
@@ -188,7 +164,7 @@ func (s *Service) Steps(ctx context.Context, job store.Job) ([]store.JobStep, er
 		return nil, err
 	}
 	var gj workflowJob
-	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/repos/%s/actions/jobs/%d", job.Repository, job.GitHubJobID), auth: a}, &gj)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/repos/%s/actions/jobs/%d", job.Repository, job.GitHubJobID), Auth: a}, &gj)
 	if err != nil {
 		return nil, fmt.Errorf("read job %d: %w", job.GitHubJobID, err)
 	}
@@ -197,22 +173,6 @@ func (s *Service) Steps(ctx context.Context, job store.Job) ([]store.JobStep, er
 		return []store.JobStep{}, nil
 	}
 	return gj.Steps, nil
-}
-
-// conclusionResult maps the conclusion of a GitHub job to a job result, or
-// returns "" if the job has none yet.
-func conclusionResult(c string) string {
-	switch c {
-	case "":
-		return ""
-	case "success", "neutral":
-		return store.ResultSucceeded
-	case "cancelled":
-		return store.ResultCancelled
-	case "skipped":
-		return store.ResultSkipped
-	}
-	return store.ResultFailed
 }
 
 // matchJob finds the GitHub job of a runplane job. The runner name is
@@ -240,36 +200,27 @@ func matchJob(jobs []workflowJob, name, runnerName string, attempt int) (workflo
 	return best, found
 }
 
-// DownloadLog writes the complete log of the job from GitHub to path. It
-// writes a temporary file next to path and renames it, so path is never a
-// partial log.
-func (s *Service) DownloadLog(ctx context.Context, job store.Job, path string) error {
+// DownloadLog returns the complete log of the job from GitHub. The caller
+// must close it.
+func (s *Service) DownloadLog(ctx context.Context, job store.Job) (io.ReadCloser, error) {
 	id, err := s.githubJobID(ctx, job)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	a, err := s.repoAuth(ctx, job.Repository)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	// GitHub answers with a redirect to a short-lived blob URL. The blob
-	// store must not get the token, so runplane follows the redirect itself.
-	resp, err := s.api.do(ctx, call{
-		method: http.MethodGet, path: fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", job.Repository, id),
-		auth: a, timeout: logTimeout, noRedirect: true,
+	// GitHub answers with a redirect to a short-lived blob URL on a
+	// different host. net/http does not send the token to that host.
+	resp, err := s.api.Do(ctx, ghrest.Call{
+		Method: http.MethodGet, Path: fmt.Sprintf("/repos/%s/actions/jobs/%d/logs", job.Repository, id),
+		Auth: a, Timeout: logTimeout,
 	})
 	if err != nil {
-		return fmt.Errorf("download log of job %d: %w", id, err)
+		return nil, fmt.Errorf("download log of job %d: %w", id, err)
 	}
-	if loc := resp.Header.Get("Location"); resp.StatusCode >= 300 && loc != "" {
-		resp.Body.Close()
-		resp, err = s.api.do(ctx, call{method: http.MethodGet, path: loc, timeout: logTimeout})
-		if err != nil {
-			return fmt.Errorf("download log of job %d: %w", id, err)
-		}
-	}
-	defer resp.Body.Close()
-	return atomicfile.Write(path, resp.Body, 0o600)
+	return resp.Body, nil
 }
 
 const logTimeout = 10 * time.Minute
@@ -283,20 +234,19 @@ func (s *Service) Rerun(ctx context.Context, job store.Job) error {
 	if err != nil {
 		return err
 	}
-	err = s.api.json(ctx, call{method: http.MethodPost, path: fmt.Sprintf("/repos/%s/actions/jobs/%d/rerun", job.Repository, id), auth: a}, nil)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodPost, Path: fmt.Sprintf("/repos/%s/actions/jobs/%d/rerun", job.Repository, id), Auth: a}, nil)
 	if err != nil {
 		return fmt.Errorf("re-run job %d: %w", id, err)
 	}
 	return nil
 }
 
-// githubJobID returns the GitHub job ID, and enriches the job first if the
-// ID is not known yet.
 func (s *Service) githubJobID(ctx context.Context, job store.Job) (int64, error) {
 	if job.GitHubJobID != 0 {
 		return job.GitHubJobID, nil
 	}
-	return s.enrich(ctx, job)
+	gj, err := s.githubJob(ctx, job)
+	return gj.ID, err
 }
 
 func (s *Service) run(ctx context.Context, repository string, runID int64) (workflowRun, error) {
@@ -305,7 +255,7 @@ func (s *Service) run(ctx context.Context, repository string, runID int64) (work
 		return workflowRun{}, err
 	}
 	var run workflowRun
-	err = s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/repos/%s/actions/runs/%d", repository, runID), auth: a}, &run)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodGet, Path: fmt.Sprintf("/repos/%s/actions/runs/%d", repository, runID), Auth: a}, &run)
 	if err != nil {
 		return workflowRun{}, fmt.Errorf("read run %d of %s: %w", runID, repository, err)
 	}
@@ -316,7 +266,7 @@ var errNoInstallation = errors.New("no installation of the GitHub App can read")
 
 // repoAuth returns the installation that can read the repository: the one
 // that lists it, or else the one of the repository owner.
-func (s *Service) repoAuth(ctx context.Context, repository string) (auth, error) {
+func (s *Service) repoAuth(ctx context.Context, repository string) (ghrest.Auth, error) {
 	owner, name, ok := strings.Cut(repository, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 		return nil, fmt.Errorf("bad repository name %q", repository)

@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -9,12 +8,10 @@ import (
 
 	"github.com/runplane/runplane/internal/events"
 	"github.com/runplane/runplane/internal/ids"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
 )
-
-// labelPool is the container or VM label with the pool ID of a sandbox.
-const labelPool = "dev.runplane.pool"
 
 func (s *Scheduler) resizeAll(ctx context.Context) {
 	for _, h := range s.attached() {
@@ -45,8 +42,12 @@ func (h *scaleSet) resize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	publicWaits, err := h.publicWaits(ctx)
+	if err != nil {
+		return err
+	}
 	if pool != nil {
-		live = h.stopStale(ctx, *pool, st, live)
+		live = h.stopStale(ctx, *pool, st, publicWaits, live)
 	}
 	need := 0
 	if pool != nil && pool.Enabled {
@@ -54,7 +55,7 @@ func (h *scaleSet) resize(ctx context.Context) error {
 	}
 	switch {
 	case need > len(live):
-		h.start(ctx, *pool, st, need-len(live))
+		h.start(ctx, *pool, st, publicWaits, need-len(live))
 	case need < len(live):
 		h.stopIdle(ctx, live, len(live)-need)
 	}
@@ -71,10 +72,10 @@ func (h *scaleSet) live(ctx context.Context) ([]store.Sandbox, error) {
 }
 
 // start places n sandboxes, as many as fit, and starts them at the same time.
-func (h *scaleSet) start(ctx context.Context, pool store.Pool, st store.Settings, n int) {
+func (h *scaleSet) start(ctx context.Context, pool store.Pool, st store.Settings, publicWaits bool, n int) {
 	var wg sync.WaitGroup
 	for range n {
-		p, ok := h.s.place(ctx, pool, st)
+		p, ok := h.s.place(ctx, pool, st, publicWaits)
 		if !ok {
 			h.s.log.Debug("no server can take a sandbox", "pool", pool.Label)
 			break
@@ -85,13 +86,16 @@ func (h *scaleSet) start(ctx context.Context, pool store.Pool, st store.Settings
 	wg.Wait()
 }
 
+// startOne starts a sandbox of the pool on the placement. It writes the row
+// before GitHub makes the runner: from then on, the fleet keeps the image
+// and the runner version of the sandbox on the server (Fleet.Image), and
+// the cleanup knows the name of the runner.
 func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Settings, p placement, debug bool) {
 	s := h.s
 	defer s.reserve(p.host.ServerID, pool, -1)
 	id := ids.New()
-	name := pool.Label + "-" + id[len(id)-8:]
 	s.mu.Lock()
-	s.starting[id] = name
+	s.starting[id] = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -99,11 +103,6 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		s.mu.Unlock()
 	}()
 
-	jit, err := h.client.GenerateJITConfig(ctx, name)
-	if err != nil {
-		s.log.Warn("generate JIT config", "pool", pool.Label, "err", err)
-		return
-	}
 	b := store.Sandbox{
 		ID:            id,
 		PoolID:        pool.ID,
@@ -111,8 +110,7 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		ScaleSetID:    h.set.ID,
 		Mode:          p.host.Driver.Mode(),
 		State:         sandbox.StateStarting,
-		RunnerID:      jit.RunnerID,
-		RunnerName:    cmp.Or(jit.RunnerName, name),
+		RunnerName:    RunnerName(pool.Label, id),
 		ImageDigest:   p.image.Digest,
 		RunnerVersion: p.runnerVersion,
 		VCPU:          pool.VCPU,
@@ -121,6 +119,20 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		Debug:         debug,
 		CreatedAt:     s.now().UTC(),
 	}
+	if err := s.st.InsertSandbox(ctx, b); err != nil {
+		s.log.Warn("insert sandbox", "err", err)
+		return
+	}
+	jit, err := h.client.GenerateJITConfig(ctx, b.RunnerName)
+	if err != nil {
+		s.log.Warn("generate JIT config", "pool", pool.Label, "err", err)
+		// A gone row would stay for each try while GitHub makes no runners.
+		if err := s.st.DeleteSandbox(context.WithoutCancel(ctx), id); err != nil {
+			s.log.Warn("delete sandbox", "sandbox", id, "err", err)
+		}
+		return
+	}
+	b.RunnerID = jit.RunnerID
 	spec := sandbox.Spec{
 		ID:            id,
 		PoolID:        pool.ID,
@@ -133,7 +145,6 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 		TimeLimit:     timeLimit(pool, st),
 		JITConfig:     jit.Encoded,
 		Debug:         debug,
-		Labels:        map[string]string{sandbox.LabelSandbox: id, labelPool: pool.ID},
 	}
 	if err := s.launch(ctx, p, b, spec); err == nil {
 		return
@@ -143,14 +154,16 @@ func (h *scaleSet) startOne(ctx context.Context, pool store.Pool, st store.Setti
 	}
 }
 
-// launch inserts the row of a new sandbox and starts it on the placement.
-// After an error, the row is failed, or gone when ctx ended first.
+// launch records the runner of the starting sandbox b and starts the
+// sandbox on the placement. It does not start a sandbox that a stop reached
+// first. After a failed start, the row is failed, or gone when ctx ended
+// first.
 func (s *Scheduler) launch(ctx context.Context, p placement, b store.Sandbox, spec sandbox.Spec) error {
-	if err := s.st.InsertSandbox(ctx, b); err != nil {
-		s.log.Warn("insert sandbox", "err", err)
+	if err := s.st.SetSandboxRunner(ctx, b.ID, b.RunnerID); err != nil {
+		s.log.Warn("record the runner of a sandbox", "sandbox", b.ID, "err", err)
 		return err
 	}
-	s.publish(events.SandboxState, b)
+	s.bus.Publish(events.SandboxState(b))
 	s.publishPoolStats(ctx, b.PoolID)
 
 	err := p.host.Driver.Start(ctx, spec)
@@ -180,7 +193,7 @@ func (h *scaleSet) stopIdle(ctx context.Context, live []store.Sandbox, n int) {
 
 // stopStale stops the idle sandboxes for which staleReason has a reason. It
 // returns the sandboxes that stay.
-func (h *scaleSet) stopStale(ctx context.Context, pool store.Pool, st store.Settings, live []store.Sandbox) []store.Sandbox {
+func (h *scaleSet) stopStale(ctx context.Context, pool store.Pool, st store.Settings, publicWaits bool, live []store.Sandbox) []store.Sandbox {
 	arch := map[string]string{}
 	for _, host := range h.s.fleet.Online() {
 		arch[host.ServerID] = host.Arch
@@ -189,7 +202,7 @@ func (h *scaleSet) stopStale(ctx context.Context, pool store.Pool, st store.Sett
 	for _, b := range live {
 		reason := ""
 		if b.State == sandbox.StateIdle {
-			reason = h.s.staleReason(b, pool, st, arch[b.ServerID])
+			reason = h.s.staleReason(b, pool, st, publicWaits, arch[b.ServerID])
 		}
 		if reason != "" && h.stopIfFree(ctx, b, "replaced: "+reason) {
 			h.s.log.Info("replace a warm sandbox", "sandbox", b.ID, "pool", pool.Label, "reason", reason)
@@ -220,11 +233,11 @@ func (h *scaleSet) stopIfFree(ctx context.Context, b store.Sandbox, reason strin
 // staleReason tells why the idle sandbox b must give way to a new sandbox of
 // the pool, or returns "". arch is the arch of its server, empty if the
 // server is not online.
-func (s *Scheduler) staleReason(b store.Sandbox, pool store.Pool, st store.Settings, arch string) string {
+func (s *Scheduler) staleReason(b store.Sandbox, pool store.Pool, st store.Settings, publicWaits bool, arch string) string {
 	if s.now().Sub(b.CreatedAt) >= timeLimit(pool, st) {
 		return "it waited for a job for the whole time limit"
 	}
-	if st.AllowPublicRepos && b.Mode != sandbox.ModeVM {
+	if policy.RunnerRefusal(st, b.Mode, publicWaits) != "" {
 		return "public repositories need VM mode"
 	}
 	if b.VCPU != pool.VCPU || b.MemoryMB != pool.MemoryMB || b.DiskGB != pool.DiskGB {
@@ -242,9 +255,8 @@ func (s *Scheduler) staleReason(b store.Sandbox, pool store.Pool, st store.Setti
 	return ""
 }
 
-// updateMaxRunners gives each listener its maxCapacity: the runners of its
-// scale set plus the new sandboxes of its pool size that fit now, at most
-// max_runners. A disabled or deleted pool gets 0.
+// updateMaxRunners gives each listener its maxCapacity, the maxRunners of
+// its scale set. A disabled or deleted pool gets 0.
 func (s *Scheduler) updateMaxRunners(ctx context.Context) {
 	sets := s.attached()
 	if len(sets) == 0 {
@@ -265,6 +277,11 @@ func (s *Scheduler) updateMaxRunners(ctx context.Context) {
 		s.log.Warn("update max runners", "err", err)
 		return
 	}
+	publicWaits, err := s.st.PublicWaits(ctx)
+	if err != nil {
+		s.log.Warn("update max runners", "err", err)
+		return
+	}
 	runners := map[string]int{}
 	for _, b := range live {
 		runners[b.ScaleSetID]++
@@ -273,7 +290,7 @@ func (s *Scheduler) updateMaxRunners(ctx context.Context) {
 	for _, h := range sets {
 		n := 0
 		if i := slices.IndexFunc(pools, func(p store.Pool) bool { return p.ID == h.set.PoolID }); i >= 0 && pools[i].Enabled {
-			n = min(runners[h.set.ID]+s.fits(hosts, pools[i], st), pools[i].MaxRunners)
+			n = s.maxRunners(runners[h.set.ID], hosts, pools[i], st, publicWaits[h.set.ID])
 		}
 		h.client.SetMaxRunners(n)
 	}

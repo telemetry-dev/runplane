@@ -1,4 +1,4 @@
-// Package image makes sandbox images and runner bundles ready on a server.
+// Package image makes sandbox images ready on a server.
 //
 // In container and dev mode, Docker pulls or builds each image. In VM mode,
 // each image becomes a read-only ext4 root disk that holds runplane-init, so
@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,12 +23,10 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/runplane/runplane/images"
+	"github.com/runplane/runplane/internal/blob"
+	"github.com/runplane/runplane/internal/keylock"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/version"
 )
-
-// labelManaged marks each Docker object that runplane makes.
-const labelManaged = "dev.runplane.managed"
 
 type Status string
 
@@ -44,26 +41,29 @@ const (
 
 // Progress is one step of Manager.Ensure.
 type Progress struct {
-	Status Status `json:"status"`
-	Done   int64  `json:"done"`  // bytes, 0 when unknown
-	Total  int64  `json:"total"` // bytes, 0 when unknown
-	Error  string `json:"error,omitempty"`
+	Status Status
+	Done   int64 // bytes, 0 when unknown
+	Total  int64 // bytes, 0 when unknown
+	Error  string
 }
 
 // Image is an image that is ready on this server.
 type Image struct {
-	Ref string `json:"ref"` // the reference that runplane pulled or built
+	Ref string // the reference that runplane pulled or built
 	// Digest identifies the image on this server: the Docker image ID in
 	// container and dev mode and after a local build, else the manifest
 	// digest for this platform.
-	Digest string `json:"digest"`
-	Path   string `json:"path,omitempty"` // VM mode: the ext4 root disk
-	Size   int64  `json:"size"`
+	Digest string
+	Path   string // VM mode: the ext4 root disk
+	Size   int64
 }
 
 type Config struct {
 	Mode      sandbox.Mode
 	ImagesDir string // VM mode: the root disks
+	// Repo is the repository that publishes the builtin images, for example
+	// "runplane/runplane" (version.Repo).
+	Repo string
 	// Docker is necessary in container and dev mode. In VM mode it is
 	// optional: with it, runplane can build a builtin image that it cannot pull.
 	Docker *client.Client
@@ -76,10 +76,7 @@ type Manager struct {
 	cfg  Config
 	log  *slog.Logger
 	init func() (initFile, error)
-	work keyLock
-
-	freshMu sync.Mutex
-	fresh   map[string]bool // digests that Ensure returned since the last GC
+	work keylock.Map
 
 	pruneOld sync.Once // removes the root disks of an earlier runplane-init
 }
@@ -102,7 +99,7 @@ func New(cfg Config) (*Manager, error) {
 	default:
 		return nil, fmt.Errorf("new image manager: unknown mode %q", cfg.Mode)
 	}
-	m := &Manager{cfg: cfg, log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)), fresh: map[string]bool{}}
+	m := &Manager{cfg: cfg, log: cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler))}
 	// Only VM mode reads runplane-init.
 	m.init = sync.OnceValues(func() (initFile, error) {
 		bin, err := cfg.Init()
@@ -116,11 +113,10 @@ func New(cfg Config) (*Manager, error) {
 }
 
 // Ensure makes the image ready on this server and returns it. ref is an OCI
-// reference, or "builtin:<name>" for a folder of the images package, for
-// example "builtin:ubuntu-24.04". A builtin image comes from
-// ghcr.io/<version.Repo>/runner-<name>:latest, or from a local build when
-// that pull fails. progress, if not nil, gets each step. Calls for the same
-// ref wait for each other.
+// reference, or "builtin:<name>" for a builtin image of the images package,
+// for example "builtin:ubuntu-24.04". A builtin image comes from images.Ref
+// of Config.Repo, or from a local build when that pull fails. progress, if
+// not nil, gets each step. Calls for the same ref wait for each other.
 func (m *Manager) Ensure(ctx context.Context, ref string, progress func(Progress)) (Image, error) {
 	r := &reporter{fn: progress}
 	r.status(StatusPending)
@@ -131,9 +127,6 @@ func (m *Manager) Ensure(ctx context.Context, ref string, progress func(Progress
 		r.send(Progress{Status: StatusFailed, Error: err.Error()})
 		return Image{}, err
 	}
-	m.freshMu.Lock()
-	m.fresh[img.Digest] = true
-	m.freshMu.Unlock()
 	m.log.Info("image ready", "ref", ref, "from", img.Ref, "digest", img.Digest, "took", time.Since(start).Round(time.Millisecond))
 	r.status(StatusReady)
 	return img, nil
@@ -144,7 +137,7 @@ func (m *Manager) ensure(ctx context.Context, ref string, r *reporter) (Image, e
 	if err != nil {
 		return Image{}, err
 	}
-	unlock, err := m.work.lock(ctx, ref)
+	unlock, err := m.work.Lock(ctx, ref)
 	if err != nil {
 		return Image{}, err
 	}
@@ -169,56 +162,40 @@ func (m *Manager) RootDisk(digest string) (string, error) {
 
 // GC removes the root disks (VM mode) and the runplane Docker images whose
 // digest is not in keep. keep must hold the digests of all images and of all
-// sandboxes that still operate. GC also keeps the images that Ensure returned
-// since the last GC, because the caller can still be about to store them. GC
-// does nothing while Ensure operates.
+// sandboxes that still operate, also of an image that Ensure returned and
+// that the caller did not record yet. GC waits until no Ensure operates.
 func (m *Manager) GC(ctx context.Context, keep []string) error {
-	var err error
-	ran := m.work.idle(func() {
-		m.freshMu.Lock()
-		set := m.fresh
-		m.fresh = map[string]bool{}
-		m.freshMu.Unlock()
-		for _, d := range keep {
-			set[d] = true
-		}
-		if m.cfg.Mode == sandbox.ModeVM {
-			err = m.diskGC(set)
-		}
-		if err == nil && m.cfg.Docker != nil {
-			err = m.dockerGC(ctx, set)
-		}
-	})
-	if !ran {
-		m.log.Debug("image GC skipped, an image is in progress")
+	set := map[string]bool{}
+	for _, d := range keep {
+		set[d] = true
 	}
-	return err
+	return m.work.Idle(ctx, func() error {
+		if m.cfg.Mode == sandbox.ModeVM {
+			if err := m.diskGC(set); err != nil {
+				return err
+			}
+		}
+		if m.cfg.Docker != nil {
+			return m.dockerGC(ctx, set)
+		}
+		return nil
+	})
 }
 
-// source is where an image comes from.
 type source struct {
 	ref     string // the registry reference to pull
 	builtin string // the builtin image name, empty for other images
 }
 
 func (m *Manager) source(ref string) (source, error) {
-	name, ok := strings.CutPrefix(ref, "builtin:")
-	if !ok {
+	if !strings.HasPrefix(ref, images.Prefix) {
 		return source{ref: ref}, nil
 	}
-	if !fs.ValidPath(name) || strings.Contains(name, "/") {
-		return source{}, fmt.Errorf("unknown builtin image %q", name)
+	name, ok := images.Name(ref)
+	if !ok {
+		return source{}, fmt.Errorf("unknown builtin image %q", strings.TrimPrefix(ref, images.Prefix))
 	}
-	if _, err := fs.Stat(images.FS, name+"/Dockerfile"); err != nil {
-		return source{}, fmt.Errorf("unknown builtin image %q", name)
-	}
-	return source{ref: BuiltinRef(name), builtin: name}, nil
-}
-
-// BuiltinRef is the registry reference of the builtin image name, which the
-// images workflow of the release repository publishes.
-func BuiltinRef(name string) string {
-	return "ghcr.io/" + strings.ToLower(version.Repo) + "/runner-" + name + ":latest"
+	return source{ref: images.Ref(m.cfg.Repo, name), builtin: name}, nil
 }
 
 // CanPull reads the manifest and the config of ref for this platform, as
@@ -238,10 +215,10 @@ func (s source) localTag() string {
 }
 
 func (m *Manager) rootDiskPath(digest string) (string, error) {
-	hexDigest, ok := strings.CutPrefix(digest, "sha256:")
-	if !ok || !isHex(hexDigest, 64) {
+	if !blob.ValidDigest(digest) {
 		return "", fmt.Errorf("bad image digest %q", digest)
 	}
+	hexDigest := strings.TrimPrefix(digest, "sha256:")
 	init, err := m.init()
 	if err != nil {
 		return "", err

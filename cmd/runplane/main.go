@@ -15,7 +15,6 @@ import (
 	"syscall"
 
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/sandbox"
 )
 
 type command struct {
@@ -26,7 +25,7 @@ type command struct {
 var commands = map[string]command{
 	"serve":          {"run the primary: dashboard, API, and sandboxes", serve},
 	"agent":          {"run an agent: operate sandboxes for a primary (agent.json)", runAgent},
-	"doctor":         {"check this server for runplane", doctor},
+	"doctor":         {"check this server for runplane", runDoctor},
 	"update":         {"install the latest release (-check: only report it)", updateCmd},
 	"setup-code":     {"print a new one-time setup code for the first admin", setupCode},
 	"reset-password": {"set a new random password for a user: reset-password <email>", resetPassword},
@@ -72,20 +71,6 @@ func usage(w io.Writer) {
 		fmt.Fprintf(w, "  %-15s %s\n", name, commands[name].summary)
 	}
 	fmt.Fprintln(w, "\nRun runplane <command> -h for the flags of a command.")
-}
-
-var errDevInsecure = errors.New("mode dev runs jobs in privileged containers; set RUNPLANE_DEV_INSECURE=1 to allow it on a development machine")
-
-// checkMode refuses to operate sandboxes without a mode, or in dev mode
-// without RUNPLANE_DEV_INSECURE.
-func checkMode(mode sandbox.Mode, devInsecure bool) error {
-	switch {
-	case mode == "":
-		return errors.New("no sandbox mode: set RUNPLANE_MODE to container, vm, or dev")
-	case mode == sandbox.ModeDev && !devInsecure:
-		return errDevInsecure
-	}
-	return nil
 }
 
 // newLogger returns the logger of a process that stops when ctx ends.

@@ -21,6 +21,8 @@ RUNPLANE_PUBLIC_KEY=${RUNPLANE_PUBLIC_KEY:-}
 # from api.github.com, which has a low rate limit without a token.
 RUNPLANE_FIRECRACKER_VERSION=${RUNPLANE_FIRECRACKER_VERSION:-v1.17.0}
 
+# The Go code has copies of many values of this script.
+# cmd/runplane/install_test.go compares them.
 BIN=/usr/local/bin/runplane
 CONFIG_DIR=/etc/runplane
 DATA_DIR=/var/lib/runplane
@@ -29,9 +31,9 @@ AGENT_FILE=$CONFIG_DIR/agent.json
 KERNEL_FILE=$DATA_DIR/kernel/vmlinux
 UNIT_DIR=/etc/systemd/system
 VM_USER=runplane-vm
-# The uids and gids of the VMs (reserve_vm_ids): one for each TAP address
-# block of 10.214.0.0/16. The range starts after the container ranges of
-# systemd (https://systemd.io/UIDS-GIDS/), in IDs that no tool allocates.
+# The uids and gids of the VMs (reserve_vm_ids): one for each TAP lease of
+# the VM subnet. The range starts after the container ranges of systemd
+# (https://systemd.io/UIDS-GIDS/), in IDs that no tool allocates.
 VM_ID_START=1879048192
 VM_ID_COUNT=16384
 SYSBOX_MIN=0.7.1
@@ -87,9 +89,11 @@ main() {
 	esac
 	install_runplane
 	write_config
+	stop_service
 	write_units
 	store_mode
 	store_domain
+	make_setup_code
 	start_service
 	finish
 }
@@ -168,10 +172,7 @@ parse_flags() {
 	if [ -n "$KERNEL" ] && [ ! -f "$KERNEL" ]; then
 		die "--kernel: $KERNEL does not exist"
 	fi
-	case $DOMAIN in
-	'' | *.*) only_chars "$DOMAIN" 'a-z0-9.-' || die "--domain must be a domain name such as ci.example.com" ;;
-	*) die "--domain must be a domain name such as ci.example.com" ;;
-	esac
+	[ -z "$DOMAIN" ] || valid_domain "$DOMAIN" || die "--domain must be a domain name such as ci.example.com"
 
 	ROLE=primary
 	SERVICE=runplane
@@ -550,7 +551,7 @@ setup_vm() {
 	v[0-9]*.[0-9]*.[0-9]*) ;;
 	*) die "RUNPLANE_FIRECRACKER_VERSION=$fc_tag is not a Firecracker release tag such as v1.17.0" ;;
 	esac
-	have=$(firecracker --version 2>/dev/null | sed -n '1s/^Firecracker \(v[0-9.]*\).*/\1/p' || true)
+	have=$(/usr/local/bin/firecracker --version 2>/dev/null | sed -n '1s/^Firecracker \(v[0-9.]*\).*/\1/p' || true)
 	if [ "$have" = "$fc_tag" ] && [ -x /usr/local/bin/jailer ]; then
 		say "Firecracker: $fc_tag"
 	else
@@ -736,6 +737,19 @@ IOWeight=20
 EOF
 }
 
+# stop_service stops a running primary before the next steps open its
+# database with the new binary. The binary applies the migrations of its
+# release, and the old serve must not operate on the new schema. The stop
+# comes before write_units, because systemctl warns about a changed unit
+# file until start_service reloads the units. The sandboxes continue
+# (KillMode=process), and start_service starts the primary again.
+stop_service() {
+	[ "$ROLE" = primary ] || return 0
+	systemctl is-active --quiet "$SERVICE.service" 2>/dev/null || return 0
+	step "Stop $SERVICE"
+	run systemctl stop "$SERVICE.service"
+}
+
 # store_mode writes --mode into the settings of an installed primary,
 # because the settings win over RUNPLANE_MODE after the first start.
 store_mode() {
@@ -743,7 +757,8 @@ store_mode() {
 		return 0
 	fi
 	step "Write the mode to the settings"
-	run with_env "$BIN" set-mode "$MODE" || die "runplane cannot write $MODE mode to its settings"
+	run "$BIN" set-mode "$MODE" ||
+		die "runplane cannot write $MODE mode to its settings. Correct the problem and run this script again. Until then, runplane does not run."
 }
 
 # store_domain writes --domain into the settings of the primary. On a new
@@ -753,7 +768,22 @@ store_domain() {
 		return 0
 	fi
 	step "Write the domain to the settings"
-	run with_env "$BIN" set-domain "$DOMAIN" || die "runplane cannot write the domain $DOMAIN to its settings"
+	run "$BIN" set-domain "$DOMAIN" ||
+		die "runplane cannot write the domain $DOMAIN to its settings. Correct the problem and run this script again. Until then, runplane does not run."
+}
+
+# make_setup_code makes the setup code of the first admin before the start.
+# serve then keeps this code and logs no different code. On a primary with
+# an admin, setup-code makes no code and fails.
+make_setup_code() {
+	SETUP_CODE=
+	[ "$ROLE" = primary ] || return 0
+	step "Make the setup code"
+	if [ "$DRY_RUN" = 1 ]; then
+		say "+ $BIN setup-code"
+		return 0
+	fi
+	SETUP_CODE=$("$BIN" setup-code 2>/dev/null) || SETUP_CODE=
 }
 
 start_service() {
@@ -788,7 +818,7 @@ finish() {
 	step "Run runplane doctor"
 	if [ "$DRY_RUN" = 1 ]; then
 		say "+ $BIN doctor"
-	elif ! with_env "$BIN" doctor; then
+	elif ! "$BIN" doctor; then
 		warn "runplane doctor found problems. Jobs can fail until you correct them."
 	fi
 
@@ -822,15 +852,12 @@ finish() {
 	fi
 	if [ "$DRY_RUN" = 1 ]; then
 		say "  Setup code: (from runplane setup-code)"
-	elif curl -fsS "$(local_url)/api/status" 2>/dev/null | grep -q '"needs_setup": *true'; then
-		code=$(with_env "$BIN" setup-code 2>/dev/null) || code=
-		if [ -n "$code" ]; then
-			say "  Setup code: $code"
-			say ""
-			say "Open the dashboard and type the setup code to make the admin account."
-		else
-			warn "cannot get a setup code. Run: sudo runplane setup-code"
-		fi
+	elif [ -n "$SETUP_CODE" ]; then
+		say "  Setup code: $SETUP_CODE"
+		say ""
+		say "Open the dashboard and type the setup code to make the admin account."
+	elif needs_setup "$(api_status)"; then
+		warn "cannot get a setup code. Run: sudo runplane setup-code"
 	fi
 	case $host in
 	10.* | 192.168.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*)
@@ -1044,6 +1071,30 @@ only_chars() {
 	[ -z "$(printf '%s' "$1" | tr -d "$2")" ]
 }
 
+# valid_domain reports if $1 is a domain that "runplane set-domain" accepts:
+# a lowercase host name with at least two labels, not an IP address. The
+# rule is validDomain in internal/settings/clean.go.
+valid_domain() {
+	only_chars "$1" 'a-z0-9.-' || return 1
+	[ ${#1} -le 253 ] || return 1
+	labels=0
+	numbers=0
+	rest=$1.
+	while [ -n "$rest" ]; do
+		label=${rest%%.*}
+		rest=${rest#*.}
+		[ ${#label} -le 63 ] || return 1
+		case $label in
+		'' | -* | *-) return 1 ;;
+		0 | [1-9] | [1-9][0-9] | 1[0-9][0-9] | 2[0-4][0-9] | 25[0-5]) numbers=$((numbers + 1)) ;;
+		esac
+		labels=$((labels + 1))
+	done
+	[ "$labels" -ge 2 ] || return 1
+	# net.ParseIP reads four numbers of 0 to 255 as an IPv4 address.
+	[ "$labels" -ne 4 ] || [ "$numbers" -ne 4 ]
+}
+
 os_field() {
 	[ -r /etc/os-release ] || return 0
 	sed -n "s/^$1=//p" /etc/os-release | tr -d "\"'"
@@ -1065,16 +1116,6 @@ confirm() {
 	return 1
 }
 
-with_env() {
-	(
-		set -a
-		# shellcheck disable=SC1090 # this script writes the file
-		. "$ENV_FILE"
-		set +a
-		"$@"
-	)
-}
-
 listen_addr() {
 	addr=${LISTEN:-$(sed -n 's/^RUNPLANE_LISTEN=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)}
 	printf '%s' "${addr:-:8484}"
@@ -1090,10 +1131,22 @@ local_url() {
 	printf 'http://%s:%s' "$host" "${addr##*:}"
 }
 
+# api_status prints the /api/status answer of the primary that runs on this
+# host. It fails when no primary answers.
+api_status() {
+	curl -fsS --max-time 5 "$(local_url)/api/status" 2>/dev/null
+}
+
 # running_mode prints the sandbox mode of the primary that runs on this host,
 # or nothing.
 running_mode() {
-	curl -fsS --max-time 5 "$(local_url)/api/status" 2>/dev/null | sed -n 's/.*"mode": *"\([a-z]*\)".*/\1/p'
+	api_status | sed -n 's/.*"mode": *"\([a-z]*\)".*/\1/p'
+}
+
+# needs_setup reports if the /api/status answer $1 tells that no admin
+# exists.
+needs_setup() {
+	printf '%s' "$1" | grep -q '"needs_setup": *true'
 }
 
 # host_ip prints the address of the interface with the default route.

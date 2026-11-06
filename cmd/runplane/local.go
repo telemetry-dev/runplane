@@ -13,35 +13,37 @@ import (
 
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/images"
 	"github.com/runplane/runplane/internal/agent"
-	"github.com/runplane/runplane/internal/cache"
 	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/host"
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/initbin"
+	"github.com/runplane/runplane/internal/localnode"
 	"github.com/runplane/runplane/internal/mirror"
+	"github.com/runplane/runplane/internal/runner"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/sandbox/devdocker"
 	"github.com/runplane/runplane/internal/sandbox/firecracker"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 	"github.com/runplane/runplane/internal/sandbox/sysbox"
 	"github.com/runplane/runplane/internal/update"
+	"github.com/runplane/runplane/internal/version"
 )
 
 // local is the server that this process operates: its sandbox driver, and
 // the node that the fleet or the agent protocol uses.
 type local struct {
-	node   *node
+	node   *localnode.Node
 	driver sandbox.Driver
 	close  func()
 }
 
 type localConfig struct {
 	mode     sandbox.Mode
-	settings sandbox.Settings // the first driver settings
-	unit     string           // systemd unit of this process, for the doctor
-	listen   []string         // TCP addresses of this process, for the doctor
+	settings agent.Settings // the first settings of the driver and the node
+	// settingsFile keeps the settings of each change on an agent, or is "".
+	settingsFile string
+	doctor       doctor.Options
 	// token gives a GitHub token for the runner release reads. Optional.
 	token func(context.Context) (string, error)
 }
@@ -51,7 +53,10 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 	if err != nil {
 		return nil, err
 	}
-	l := &local{node: &node{}, close: func() {}}
+	l := &local{close: func() {}}
+	// allow takes the rule that tells if an address is a sandbox, and gives
+	// the rule of the service port in the mode.
+	allow := func(isSandbox func(netip.Addr) bool) func(netip.Addr) bool { return isSandbox }
 	defer func() {
 		if err != nil {
 			l.close()
@@ -61,74 +66,82 @@ func newLocal(ctx context.Context, cfg config.Config, lc localConfig, log *slog.
 		l.onClose(func() { docker.Close() })
 	}
 	images, err := image.New(image.Config{
-		Mode: lc.mode, ImagesDir: cfg.ImagesDir(), Docker: docker, Init: initbin.Bytes, Logger: log.With("component", "image"),
+		Mode: lc.mode, ImagesDir: cfg.ImagesDir(), Repo: version.Repo, Docker: docker, Init: initbin.Bytes,
+		Logger: log.With("component", "image"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start the image manager: %w", err)
 	}
-	bundles := image.NewBundles(image.BundleConfig{
-		Mode: lc.mode, Dir: cfg.RunnersDir(), Token: lc.token, Logger: log.With("component", "runners"),
+	bundles := runner.NewBundles(runner.BundleConfig{
+		Mode: lc.mode, Dir: cfg.RunnersDir(), Releases: runner.Releases{Auth: runner.TokenAuth(lc.token)},
+		Logger: log.With("component", "runners"),
 	})
 
-	var probe func(context.Context) error
+	containers := sysbox.Options{
+		Docker: docker, DataDir: cfg.DataDir, Sandboxes: cfg.SandboxesDir(), ScratchTemplates: cfg.ScratchTemplatesDir(),
+		ServicePort: cfg.ServicePort, InitPath: initbin.Path, Settings: lc.settings.Settings,
+		Runner: func(ctx context.Context, version, arch string) (string, bool, error) {
+			b, err := bundles.Ensure(ctx, version, arch)
+			return b.Dir, b.Patched, err
+		},
+	}
 	switch lc.mode {
 	case sandbox.ModeContainer:
-		rules := netrules.New(log.With("component", "netrules"))
+		rules := netrules.New(log.With("component", "netrules"), netip.Prefix{})
 		l.onClose(func() { rules.Close() })
-		drv, err := sysbox.New(sysbox.Options{
-			Docker: docker, Config: cfg, Mode: sandbox.ModeContainer, Runtime: "sysbox-runc", Scratch: sysbox.ScratchLoop,
-			Bundle: bundles.Ensure, InitPath: initbin.Path, NetRules: rules, Settings: lc.settings,
-			Logger: log.With("driver", "sysbox"),
-		})
+		containers.Profile, containers.NetRules, containers.Logger = sysbox.Container, rules, log.With("driver", "sysbox")
+		drv, err := sysbox.New(containers)
 		if err != nil {
 			return nil, fmt.Errorf("start the container driver: %w", err)
 		}
-		l.driver, probe = drv, drv.Probe
+		l.driver = drv
 	case sandbox.ModeDev:
-		// Docker sends the requests of all sandboxes from one address on
-		// macOS, so the cache server cannot tell the sandboxes apart.
-		log.Warn("dev mode: sandboxes get no Actions cache, because the cache server cannot tell them apart by address")
-		l.node.noCache = true
-		lc.settings.ActionsCache = false
-		drv, err := devdocker.New(devdocker.Options{
-			Docker: docker, Config: cfg, Bundle: bundles.Ensure, InitPath: initbin.Path, Settings: lc.settings,
-			Logger: log.With("driver", "devdocker"),
-		})
+		containers.Logger = log.With("driver", "devdocker")
+		drv, err := devdocker.New(cfg.DevInsecure, containers)
 		if err != nil {
 			return nil, fmt.Errorf("start the dev driver: %w", err)
 		}
-		l.driver, probe = drv, drv.Probe
+		l.driver, allow = drv, devdocker.Allow
 	case sandbox.ModeVM:
+		rules := netrules.New(log.With("component", "netrules"), netrules.DefaultTapSubnet)
+		l.onClose(func() { rules.Close() })
 		drv, err := firecracker.New(firecracker.Options{
-			DataDir: cfg.DataDir, Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: images.RootDisk,
-			RunnerDrive: func(ctx context.Context, version, arch string) (string, error) {
+			DataDir: cfg.DataDir, Sandboxes: cfg.SandboxesDir(), ScratchTemplates: cfg.ScratchTemplatesDir(), JailDir: cfg.JailDir(),
+			Kernel: cfg.KernelPath(), ServicePort: cfg.ServicePort, RootDisk: images.RootDisk,
+			RunnerDrive: func(ctx context.Context, version, arch string) (string, bool, error) {
 				b, err := bundles.Ensure(ctx, version, arch)
-				return b.Ext4Path, err
+				return b.Ext4Path, b.Patched, err
 			},
-			CacheEnv: cache.RunnerEnv, Settings: lc.settings, Logger: log.With("driver", "firecracker"),
+			NetRules: rules, Settings: lc.settings.Settings, Logger: log.With("driver", "firecracker"),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start the VM driver: %w", err)
 		}
-		l.driver, probe = drv, drv.Probe
+		l.driver = drv
 	default:
 		return nil, fmt.Errorf("sandbox mode %q: set RUNPLANE_MODE to container, vm, or dev", lc.mode)
 	}
 	// The driver closes before the netrules manager and Docker.
 	l.onClose(func() { l.driver.Close() })
 
-	l.node.LocalNode, err = agent.NewLocal(agent.LocalConfig{
+	isSandbox := func(ip netip.Addr) bool {
+		list, err := l.driver.List(context.Background())
+		_, ok := sandbox.FindByIP(list, ip)
+		return err == nil && ok
+	}
+	l.node, err = localnode.New(localnode.Config{
 		Driver: l.driver, Images: images, Bundles: bundles, Updater: update.New(cfg.KernelPath()),
-		Doctor: host.Options{
-			DataDir: cfg.DataDir, GuestKernel: cfg.KernelPath(), Listen: lc.listen, Serving: true,
-			MinFreeDiskPercent: float64(lc.settings.MinFreeDiskPercent), Unit: lc.unit, Internet: probe,
-			BaseImage: baseImage,
-		},
-		Logger: log.With("component", "node"),
+		MinFreeDiskPercent: lc.settings.MinFreeDiskPercent,
+		SettingsFile:       lc.settingsFile,
+		Mirror:             mirror.Config{Dir: cfg.MirrorDir(), Allow: allow(isSandbox), Logger: log.With("component", "mirror")},
+		Doctor:             lc.doctor,
+		Logger:             log.With("component", "node"),
 	})
 	if err != nil {
 		return nil, err
 	}
+	// The registry mirror stops after the service port and before the driver.
+	l.onClose(func() { l.node.Close() })
 	return l, nil
 }
 
@@ -158,46 +171,13 @@ func dockerClient(ctx context.Context, mode sandbox.Mode) (*client.Client, error
 	return docker, nil
 }
 
-// baseImage tries to pull the default builtin image, for the doctor.
-func baseImage(ctx context.Context) (string, error) {
-	ref := image.BuiltinRef(images.Default)
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return ref, image.CanPull(ctx, ref)
-}
-
-// node is the LocalNode of this process. In dev mode it keeps the Actions
-// cache off for the sandboxes.
-type node struct {
-	*agent.LocalNode
-	noCache bool
-}
-
-func (n *node) Configure(ctx context.Context, s sandbox.Settings) error {
-	if n.noCache {
-		s.ActionsCache = false
-	}
-	return n.LocalNode.Configure(ctx, s)
-}
-
-// serveServicePort starts the registry mirror and serves the service port
-// of the sandboxes on all addresses: /v2/ goes to the mirror, all other
-// paths to the Actions cache. allow tells if an address is a sandbox. The
-// returned function stops the listener and the mirror.
-func serveServicePort(cfg config.Config, mode sandbox.Mode, allow func(netip.Addr) bool, cache http.Handler, log *slog.Logger) (*mirror.Mirror, func(), error) {
-	if mode == sandbox.ModeDev {
-		isSandbox := allow
-		// Docker sends the requests of dev sandboxes from the loopback address.
-		allow = func(ip netip.Addr) bool { return ip.IsLoopback() || isSandbox(ip) }
-	}
-	mir, err := mirror.New(mirror.Config{Dir: cfg.MirrorDir(), MaxBytes: mirrorLimit(cfg.DataDir), Allow: allow, Logger: log.With("component", "mirror")})
-	if err != nil {
-		return nil, nil, fmt.Errorf("start the registry mirror: %w", err)
-	}
+// serveServicePort serves the service port of the sandboxes on all
+// addresses: /v2/ goes to the registry mirror, all other paths to the
+// Actions cache. The returned function stops the listener.
+func serveServicePort(cfg config.Config, mir, cache http.Handler, log *slog.Logger) (func(), error) {
 	ln, err := net.Listen("tcp", servicePortAddr(cfg))
 	if err != nil {
-		mir.Close()
-		return nil, nil, fmt.Errorf("listen on the service port: %w", err)
+		return nil, fmt.Errorf("listen on the service port: %w", err)
 	}
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -219,25 +199,14 @@ func serveServicePort(cfg config.Config, mode sandbox.Mode, allow func(netip.Add
 			log.Error("service port", "err", err)
 		}
 	}()
-	return mir, func() {
+	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			srv.Close()
 		}
 		<-done
-		mir.Close()
 	}, nil
 }
 
 func servicePortAddr(cfg config.Config) string { return fmt.Sprintf(":%d", cfg.ServicePort) }
-
-// mirrorLimit is the size limit of the registry mirror: a tenth of the data
-// disk, from 2 to 50 GiB.
-func mirrorLimit(dataDir string) int64 {
-	res, err := host.ReadResources(dataDir)
-	if err != nil {
-		return 10 << 30
-	}
-	return min(max(res.DiskBytes/10, 2<<30), 50<<30)
-}

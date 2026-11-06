@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -38,8 +37,8 @@ func TestJobPages(t *testing.T) {
 		sizes = append(sizes, len(page.Items))
 		for _, j := range page.Items {
 			got = append(got, j.ID)
-			if j.WorkflowFile != ".github/workflows/ci.yml" || j.State != "queued" || j.Result != nil {
-				t.Fatalf("job %+v: wrong workflow file, state, or result", j)
+			if j.WorkflowFile != ".github/workflows/ci.yml" || j.State != "queued" || j.Status != store.StatusQueued {
+				t.Fatalf("job %+v: wrong workflow file, state, or status", j)
 			}
 		}
 		if page.NextCursor == "" {
@@ -70,8 +69,8 @@ func TestJobShowsItsDebugSandbox(t *testing.T) {
 	j := e.addJob(1, "acme/api", time.Now())
 	const id = "01jbz00000000000000000debg"
 	e.addSandbox(id, sandbox.StateBusy)
-	must(t, e.st.SetJobSandbox(ctx, j.ID, id, "s"))
-	must(t, e.st.SetSandboxJob(ctx, id, j.ID))
+	_, _, err = e.st.LinkJobSandbox(ctx, j.ID, id)
+	must(t, err)
 
 	var got Job
 	b.do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)
@@ -107,12 +106,23 @@ func TestJobShowsItsDebugSandbox(t *testing.T) {
 
 func TestSSHPortComesFromTheListenAddress(t *testing.T) {
 	e := newEnv(t, func(d *Deps) { d.Config.SSHListen = "0.0.0.0:2022" })
-	var st Status
-	e.browser().do("GET", "/api/status", nil, &st).want(t, 200)
-	var settings Settings
-	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/settings", nil, &settings).want(t, 200)
-	if st.SSHPort != 2022 || settings.SSHPort != 2022 {
-		t.Fatalf("ssh_port in status %d, in settings %d; want 2022", st.SSHPort, settings.SSHPort)
+	ctx := context.Background()
+	_, err := e.st.UpdateSettings(ctx, func(s *store.Settings) error {
+		s.PublicURL = "https://ci.example.com"
+		return nil
+	})
+	must(t, err)
+	j := e.addJob(1, "acme/api", time.Now())
+	const id = "01jbz00000000000000000debg"
+	e.addSandbox(id, sandbox.StateBusy)
+	_, _, err = e.st.LinkJobSandbox(ctx, j.ID, id)
+	must(t, err)
+	must(t, e.st.SetSandboxDebug(ctx, id))
+
+	var got Job
+	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/jobs/"+j.ID, nil, &got).want(t, 200)
+	if want := "ssh -p 2022 " + id + "@ci.example.com"; got.SSHCommand != want {
+		t.Fatalf("ssh command %q, want %q", got.SSHCommand, want)
 	}
 }
 
@@ -122,10 +132,10 @@ func TestJobLinksToItsRunBeforeGitHubGivesTheJob(t *testing.T) {
 	ctx := context.Background()
 	job := func(id, runID int64, enrich *store.JobEnrichment) string {
 		j, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: id, State: store.JobQueued, Repository: "acme/api", JobName: "test",
-			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", RunID: runID, QueuedAt: time.Now()})
+			WorkflowRef: "acme/api/.github/workflows/ci.yml@refs/heads/main", RunID: runID, QueuedAt: time.Now()}, time.Now())
 		must(t, err)
 		if enrich != nil {
-			must(t, e.st.SetJobEnrichment(ctx, j.ID, *enrich))
+			must(t, e.st.SetJobEnrichment(ctx, j.ID, *enrich, time.Now()))
 		}
 		return j.ID
 	}
@@ -146,33 +156,19 @@ func TestJobLinksToItsRunBeforeGitHubGivesTheJob(t *testing.T) {
 	}
 }
 
-// The live log of a running job has no step marks. A request for one step
-// gets the whole log and a header that says so.
-func TestLiveJobLogSaysThatTheStepFilterIsOff(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		live   bool
-		query  string
-		header string
-	}{
-		{"live log, one step", true, "?step=2", "ignored"},
-		{"live log, all steps", true, "", ""},
-		{"stored log, one step", false, "?step=2", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(t, func(d *Deps) {
-				d.Logs = fakeLogs{log: io.NopCloser(strings.NewReader("line 1\n")), live: tc.live}
-			})
-			j := e.addJob(1, "acme/api", time.Now())
-			res := e.login("bob@example.com", auth.RoleMember).do("GET", "/api/jobs/"+j.ID+"/log"+tc.query, nil, nil)
-			res.want(t, 200)
-			if got := res.Header.Get("X-Runplane-Step-Filter"); got != tc.header {
-				t.Errorf("X-Runplane-Step-Filter = %q, want %q", got, tc.header)
-			}
-			if string(res.body) != "line 1\n" {
-				t.Errorf("body %q, want the log", res.body)
-			}
-		})
+// The web shows the status of the API, so a job that GitHub assigned must
+// have the status of the filter that lists it.
+func TestAssignedJobHasTheQueuedStatus(t *testing.T) {
+	e := newEnv(t)
+	now := time.Now()
+	_, err := e.st.UpsertJob(context.Background(), store.JobMessage{
+		RunnerRequestID: 1, State: store.JobAssigned, Repository: "acme/api", QueuedAt: now, AssignedAt: now,
+	}, now)
+	must(t, err)
+	var page JobPage
+	e.login("ada@example.com", auth.RoleMember).do("GET", "/api/jobs?status=queued", nil, &page).want(t, 200)
+	if len(page.Items) != 1 || page.Items[0].Status != store.StatusQueued {
+		t.Errorf("queued jobs %+v, want the assigned job with the status queued", page.Items)
 	}
 }
 
@@ -185,13 +181,13 @@ func TestOverviewHasNoRatesWithoutData(t *testing.T) {
 
 	res := b.do("GET", "/api/overview", nil, nil)
 	res.want(t, 200)
-	for _, want := range []string{`"median_queue_ms":null`, `"cache_hit_rate":null`} {
+	for _, want := range []string{`"median_queue_ms":null`, `"failure_rate":null`, `"cache_hit_rate":null`} {
 		if !strings.Contains(string(res.body), want) {
-			t.Errorf("overview without assigned jobs and cache lookups has no %s: %s", want, res.body)
+			t.Errorf("overview without assigned, finished, and cached jobs has no %s: %s", want, res.body)
 		}
 	}
 
-	_, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now})
+	_, err := e.st.UpsertJob(ctx, store.JobMessage{RunnerRequestID: 1, State: store.JobAssigned, AssignedAt: now}, now)
 	must(t, err)
 	must(t, e.st.AddCacheStats(ctx, now, "acme/api", store.CacheCounts{Misses: 4}))
 	var o Overview
@@ -203,15 +199,17 @@ func TestOverviewHasNoRatesWithoutData(t *testing.T) {
 
 // An unreachable agent keeps its sandbox rows until it connects again. Its
 // sandboxes must not count against the vCPUs of the servers that are left.
+// A disabled server still runs its jobs.
 func TestOverviewVCPUsSkipUnreachableServers(t *testing.T) {
 	e := newEnv(t)
 	b := e.login("ada@example.com", auth.RoleMember)
 	e.addServer("online", "x64", store.ServerOnline, 8, 16384)
 	e.addServer("lost", "x64", store.ServerUnreachable, 16, 32768)
+	e.addServer("off", "x64", store.ServerDisabled, 4, 8192)
 	for i, x := range []struct {
 		server string
 		vcpu   int
-	}{{"online", 2}, {"lost", 4}, {"lost", 4}} {
+	}{{"online", 2}, {"lost", 4}, {"lost", 4}, {"off", 1}} {
 		must(t, e.st.InsertSandbox(context.Background(), store.Sandbox{
 			ID: fmt.Sprint("box", i), PoolID: "p", ServerID: x.server, Mode: sandbox.ModeContainer,
 			State: sandbox.StateBusy, VCPU: x.vcpu, MemoryMB: 4096, CreatedAt: time.Now(),
@@ -219,7 +217,7 @@ func TestOverviewVCPUsSkipUnreachableServers(t *testing.T) {
 	}
 	var o Overview
 	b.do("GET", "/api/overview", nil, &o).want(t, 200)
-	if o.Stats.VCPUInUse != 2 || o.Stats.VCPUTotal != 8 {
-		t.Fatalf("vCPUs %d / %d, want 2 / 8", o.Stats.VCPUInUse, o.Stats.VCPUTotal)
+	if o.Stats.VCPUInUse != 3 || o.Stats.VCPUTotal != 12 {
+		t.Fatalf("vCPUs %d / %d, want 3 / 12", o.Stats.VCPUInUse, o.Stats.VCPUTotal)
 	}
 }

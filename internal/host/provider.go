@@ -14,16 +14,16 @@ import (
 
 // Provider names that Info.Provider can hold.
 const (
-	providerHetzner      = "Hetzner"
-	providerDigitalOcean = "DigitalOcean"
-	providerOVH          = "OVHcloud"
-	providerContabo      = "Contabo"
-	providerLinode       = "Akamai/Linode"
-	providerVultr        = "Vultr"
-	providerEC2          = "Amazon EC2"
-	providerGCE          = "Google Compute Engine"
-	providerAzure        = "Microsoft Azure"
-	providerNetcup       = "netcup"
+	ProviderHetzner      = "Hetzner"
+	ProviderDigitalOcean = "DigitalOcean"
+	ProviderOVH          = "OVHcloud"
+	ProviderContabo      = "Contabo"
+	ProviderLinode       = "Akamai/Linode"
+	ProviderVultr        = "Vultr"
+	ProviderEC2          = "Amazon EC2"
+	ProviderGCE          = "Google Compute Engine"
+	ProviderAzure        = "Microsoft Azure"
+	ProviderNetcup       = "netcup"
 )
 
 const metadataURL = "http://169.254.169.254"
@@ -64,7 +64,6 @@ func readDMI(fsys fs.FS) dmi {
 	}
 }
 
-// names returns the vendor and product names in lower case.
 func (d dmi) names() string {
 	return strings.ToLower(strings.Join([]string{d.sysVendor, d.productName, d.biosVendor, d.boardVendor, d.chassisVendor}, " "))
 }
@@ -76,26 +75,26 @@ func (d dmi) provider(hostname string) string {
 	hostname = strings.ToLower(hostname)
 	switch {
 	case d.chassisAssetTag == azureAssetTag:
-		return providerAzure
+		return ProviderAzure
 	case d.sysVendor == "Amazon EC2" || d.biosVendor == "Amazon EC2" ||
 		strings.Contains(strings.ToLower(d.biosVersion), "amazon") || ec2UUID(d.productUUID):
-		return providerEC2
+		return ProviderEC2
 	case d.productName == "Google Compute Engine" || d.sysVendor == "Google" || strings.HasPrefix(d.productSerial, "GoogleCloud-"):
-		return providerGCE
+		return ProviderGCE
 	case d.sysVendor == "Hetzner":
-		return providerHetzner
+		return ProviderHetzner
 	case d.sysVendor == "DigitalOcean":
-		return providerDigitalOcean
+		return ProviderDigitalOcean
 	case d.sysVendor == "Vultr":
-		return providerVultr
+		return ProviderVultr
 	case d.sysVendor == "Linode" || d.sysVendor == "Akamai":
-		return providerLinode
+		return ProviderLinode
 	case strings.Contains(text, "ovh") || ovhHost.MatchString(hostname):
-		return providerOVH
+		return ProviderOVH
 	case strings.Contains(text, "netcup") || netcupHost.MatchString(hostname):
-		return providerNetcup
+		return ProviderNetcup
 	case strings.Contains(text, "contabo") || contaboHost.MatchString(hostname):
-		return providerContabo
+		return ProviderContabo
 	}
 	return ""
 }
@@ -107,7 +106,6 @@ func ec2UUID(uuid string) bool {
 	return strings.HasPrefix(u, "ec2") || len(u) >= 8 && u[4] == '2' && u[6:8] == "ec"
 }
 
-// virtual reports if the DMI data names a hypervisor.
 func (d dmi) virtual() bool {
 	text := d.names()
 	return slices.ContainsFunc([]string{"qemu", "kvm", "virtual", "vmware", "xen", "bochs", "bhyve", "openstack", "vserver", "droplet"},
@@ -143,24 +141,24 @@ func region(ctx context.Context, base, provider string) string {
 	}
 	get := func(path string, h http.Header) string { return ask(http.MethodGet, path, h) }
 	switch provider {
-	case providerHetzner:
+	case ProviderHetzner:
 		return get("/hetzner/v1/metadata/availability-zone", nil)
-	case providerDigitalOcean:
+	case ProviderDigitalOcean:
 		return get("/metadata/v1/region", nil)
-	case providerVultr:
+	case ProviderVultr:
 		return get("/v1/region/regioncode", nil)
-	case providerGCE:
+	case ProviderGCE:
 		zone := get("/computeMetadata/v1/instance/zone", http.Header{"Metadata-Flavor": {"Google"}})
 		return path.Base(zone) // projects/<n>/zones/<zone>
-	case providerAzure:
+	case ProviderAzure:
 		return get("/metadata/instance/compute/location?api-version=2021-02-01&format=text", http.Header{"Metadata": {"true"}})
-	case providerEC2:
+	case ProviderEC2:
 		token := ask(http.MethodPut, "/latest/api/token", http.Header{"X-Aws-Ec2-Metadata-Token-Ttl-Seconds": {"60"}})
 		if token == "" {
 			return ""
 		}
 		return get("/latest/meta-data/placement/region", http.Header{"X-Aws-Ec2-Metadata-Token": {token}})
-	case providerLinode:
+	case ProviderLinode:
 		token := ask(http.MethodPut, "/v1/token", http.Header{"Metadata-Token-Expiry-Seconds": {"60"}})
 		if token == "" {
 			return ""

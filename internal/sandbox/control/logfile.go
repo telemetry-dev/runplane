@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 const logMax = 64 << 20 // at this size, console.log moves to console.log.1
 
 // LogFile is the console log of one sandbox: <dir>/console.log and the older
-// part console.log.1. Each line is "<RFC 3339 UTC time> <source> <text>".
+// part console.log.1, in lines of guest.AppendLogFileLine.
 type LogFile struct {
 	path string
 
@@ -38,14 +40,8 @@ func OpenLogFile(dir string) (*LogFile, error) {
 	return &LogFile{path: path, f: f, size: st.Size(), written: make(chan struct{})}, nil
 }
 
-func (l *LogFile) Write(line LogLine) error {
-	b := make([]byte, 0, 32+len(line.Source)+len(line.Text))
-	b = line.Time.UTC().AppendFormat(b, "2006-01-02T15:04:05.000Z07:00")
-	b = append(b, ' ')
-	b = append(b, line.Source...)
-	b = append(b, ' ')
-	b = append(b, line.Text...)
-	b = append(b, '\n')
+func (l *LogFile) Write(line guest.LogLine) error {
+	b := guest.AppendLogFileLine(make([]byte, 0, 32+len(line.Source)+len(line.Text)), line)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()

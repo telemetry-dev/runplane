@@ -18,9 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
-	"github.com/runplane/runplane/internal/mirror"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/tlsutil"
 )
@@ -41,7 +40,7 @@ type testPrimary struct {
 	sessions chan *Session
 }
 
-func startPrimary(t *testing.T, cache http.Handler) *testPrimary {
+func startPrimary(t *testing.T, cache func(http.ResponseWriter, *http.Request, string, string)) *testPrimary {
 	cert, fp, err := tlsutil.AgentCert(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -69,9 +68,9 @@ func startPrimary(t *testing.T, cache http.Handler) *testPrimary {
 			}
 			return "", "", errors.New("unknown server")
 		},
-		OnSession:    func(s *Session) { p.sessions <- s },
-		CacheHandler: cache,
-		Logger:       p.logs.logger("primary"),
+		OnSession: func(s *Session) { p.sessions <- s },
+		Cache:     cache,
+		Logger:    p.logs.logger("primary"),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -105,9 +104,7 @@ func (p *testPrimary) startAgent(agentJSON string, node *fakeNode, proxy *CacheP
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &testAgent{path: path, cancel: cancel, done: make(chan struct{})}
 	go func() {
-		a.err = Run(ctx, Config{
-			Path: path, Node: node, CacheProxy: proxy, Mirror: func() mirror.Stats { return testMirror }, Logger: p.logs.logger("agent"),
-		})
+		a.err = Run(ctx, Config{Path: path, Node: node, CacheProxy: proxy, Logger: p.logs.logger("agent")})
 		close(a.done)
 	}()
 	p.t.Cleanup(func() {
@@ -124,7 +121,6 @@ func (a *testAgent) result(t *testing.T) error {
 	return a.err
 }
 
-// connect starts a primary and a registered agent.
 func connect(t *testing.T) (*testAgent, *fakeNode, *Session) {
 	t.Helper()
 	p := startPrimary(t, nil)
@@ -163,7 +159,6 @@ func waitClosed[T any](t *testing.T, ch <-chan T) {
 	}
 }
 
-// readFull reads n bytes from r. A read error comes back as the text.
 func readFull(t *testing.T, r io.Reader, n int) string {
 	t.Helper()
 	ch := make(chan string, 1)
@@ -210,40 +205,31 @@ func (l *logBuffer) logger(side string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})).With("side", side)
 }
 
-func (l *logBuffer) waitFor(t *testing.T, text string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(l.String(), text) {
-		if time.Now().After(deadline) {
-			t.Fatalf("no log line with %q", text)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 var (
 	testInfo = host.Info{
-		Hostname: "agent-1", OS: "Ubuntu 24.04.3 LTS", OSID: "ubuntu", OSVersion: "24.04", Kernel: "6.8.0-45-generic", Arch: "arm64",
+		Hostname: "agent-1", OS: "Ubuntu 24.04.3 LTS", Kernel: "6.8.0-45-generic", Arch: "arm64",
 		Resources: host.Resources{VCPU: 16, MemoryMB: 65536, DiskBytes: 500e9, FreeDiskBytes: 320e9},
-		DiskKind:  "NVMe", CgroupV2: true, NFTables: true, IPForward: true,
-		DockerVersion: "29.1.0", DockerFirewall: "iptables", SysboxVersion: "0.7.1", SysboxRuntime: true,
+		DiskKind:  "NVMe", KVM: true, DockerVersion: "29.1.0", SysboxVersion: "0.7.1", FirecrackerVersion: "1.13.1",
 		IPv4: "203.0.113.7", Provider: "Hetzner", Region: "fsn1",
 	}
-	testChecks = []host.Check{
-		{ID: "kernel", Name: "Kernel", Status: host.StatusOK, Detail: "6.8.0-45-generic"},
-		{ID: "sysbox", Name: "Sysbox", Status: host.StatusFail, Detail: "sysbox-runc is missing", Fix: "Install Sysbox 0.7.1"},
+	testReport = doctor.Report{
+		Info: host.Info{Hostname: "agent-1", OS: "Ubuntu 24.04.3 LTS", Kernel: "6.8.0-45-generic", Arch: "arm64", Region: "fsn1"},
+		Checks: []doctor.Check{
+			{ID: "kernel", Name: "Kernel", Status: doctor.StatusOK, Detail: "6.8.0-45-generic"},
+			{ID: "sysbox", Name: "Sysbox", Status: doctor.StatusFail, Detail: "sysbox-runc is missing", Fix: "Install Sysbox 0.7.1"},
+		},
 	}
-	testProgress = []image.Progress{
-		{Status: image.StatusPending},
-		{Status: image.StatusPulling, Done: 50, Total: 100},
-		{Status: image.StatusPulling, Done: 100, Total: 100},
-		{Status: image.StatusReady},
+	testProgress = []Progress{
+		{Status: ImagePending},
+		{Status: ImagePulling, Done: 50, Total: 100},
+		{Status: ImagePulling, Done: 100, Total: 100},
+		{Status: ImageReady},
 	}
-	testMirror   = mirror.Stats{Hits: 41, Misses: 3, HitBytes: 9 << 30, MissBytes: 700 << 20, SizeBytes: 12 << 30}
+	testMirror   = MirrorStats{Hits: 41, Misses: 3, HitBytes: 9 << 30, MissBytes: 700 << 20, SizeBytes: 12 << 30}
 	fakeCapacity = sandbox.Capacity{
 		Mode: sandbox.ModeContainer, Arch: "arm64", VCPU: 16, MemoryMB: 65536,
-		DiskBytes: 500e9, FreeDiskBytes: 320e9, AllocVCPU: 4, AllocMemoryMB: 8192,
-		ReserveVCPU: 1, ReserveMemoryMB: 2048, Overcommit: 1.5, MaxSandboxes: 10, Sandboxes: 2,
+		DiskBytes: 500e9, FreeDiskBytes: 320e9, AllocVCPU: 4, AllocMemoryMB: 8192, Sandboxes: 2,
+		OverheadMB: 64, MaxVCPU: 32, MaxSandboxes: 10,
 	}
 )
 
@@ -259,6 +245,22 @@ type fakeNode struct {
 	mu        sync.Mutex
 	sandboxes map[string]sandbox.Sandbox
 	calls     [][]any
+	hold      *hold // of the next Facts call
+}
+
+// hold makes a Facts call wait: held closes when the call waits, and the
+// call goes on when resume closes.
+type hold struct{ held, resume chan struct{} }
+
+// holdConnect makes the next connection of the agent wait, because the
+// agent reads the facts before each connection. The agent waits when held
+// closes, until the test calls resume.
+func (n *fakeNode) holdConnect() (held <-chan struct{}, resume func()) {
+	h := &hold{held: make(chan struct{}), resume: make(chan struct{})}
+	n.mu.Lock()
+	n.hold = h
+	n.mu.Unlock()
+	return h.held, func() { close(h.resume) }
 }
 
 // logStream is one Logs call: the test writes the log to w, and done
@@ -278,7 +280,6 @@ func newFakeNode() *fakeNode {
 	}
 }
 
-// record adds a call, and returns nil as the result of the call.
 func (n *fakeNode) record(call ...any) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -301,23 +302,42 @@ func (n *fakeNode) put(sb sandbox.Sandbox) {
 	n.sandboxes[sb.ID] = sb
 }
 
-func (n *fakeNode) Driver() sandbox.Driver                       { return n }
-func (n *fakeNode) Facts(context.Context) (host.Info, error)     { return testInfo, nil }
-func (n *fakeNode) Doctor(context.Context) ([]host.Check, error) { return testChecks, nil }
-func (n *fakeNode) Stats() <-chan host.Stats                     { return n.stats }
+func (n *fakeNode) Local() bool    { return true }
+func (n *fakeNode) Driver() Driver { return n }
 
-func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
+func (n *fakeNode) Facts(ctx context.Context) (host.Info, error) {
+	n.mu.Lock()
+	h := n.hold
+	n.hold = nil
+	n.mu.Unlock()
+	if h != nil {
+		close(h.held)
+		select {
+		case <-h.resume:
+		case <-ctx.Done():
+			return host.Info{}, ctx.Err()
+		}
+	}
+	return testInfo, nil
+}
+
+func (n *fakeNode) Doctor(context.Context) (doctor.Report, error) {
+	return testReport, n.record("Doctor")
+}
+func (n *fakeNode) Stats() <-chan host.Stats { return n.stats }
+
+func (n *fakeNode) EnsureImage(_ context.Context, ref string, progress func(Progress)) (Image, error) {
 	for _, p := range testProgress {
 		progress(p)
 	}
 	if ref == "missing:latest" {
-		return sandbox.ImageRef{}, errors.New("pull missing:latest: not found")
+		return Image{}, errors.New("pull missing:latest: not found")
 	}
-	return sandbox.ImageRef{Ref: ref, Digest: "sha256:5f1c"}, nil
+	return Image{ImageRef: sandbox.ImageRef{Ref: ref, Digest: "sha256:5f1c"}, SizeBytes: 2147483648}, nil
 }
 
-func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (image.Bundle, error) {
-	return image.Bundle{Version: version, Arch: arch, SHA256: "9e2f", Patched: true, Dir: "/var/lib/runplane/runners/" + version + "-" + arch}, nil
+func (n *fakeNode) EnsureRunner(_ context.Context, version, arch string) (Bundle, error) {
+	return Bundle{Version: version, Arch: arch, SHA256: "9e2f", Patched: true}, nil
 }
 
 func (n *fakeNode) GCImages(_ context.Context, keep []string) error {
@@ -326,9 +346,10 @@ func (n *fakeNode) GCImages(_ context.Context, keep []string) error {
 func (n *fakeNode) PruneRunners(_ context.Context, keep []string) error {
 	return n.record("PruneRunners", keep)
 }
-func (n *fakeNode) Configure(_ context.Context, s sandbox.Settings) error {
+func (n *fakeNode) Configure(_ context.Context, s Settings) error {
 	return n.record("Configure", s)
 }
+func (n *fakeNode) MirrorStats(context.Context) (MirrorStats, error) { return testMirror, nil }
 func (n *fakeNode) Update(_ context.Context, version string) error {
 	return n.record("Update", version)
 }
@@ -388,6 +409,12 @@ func (n *fakeNode) Shell(_ context.Context, _ string, size sandbox.TermSize) (sa
 }
 
 func (n *fakeNode) Hold(_ context.Context, id string, until time.Time) error {
+	n.mu.Lock()
+	_, ok := n.sandboxes[id]
+	n.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("hold sandbox %s: %w", id, sandbox.ErrNotFound)
+	}
 	return n.record("Hold", id, until)
 }
 

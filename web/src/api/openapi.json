@@ -10,6 +10,7 @@
           },
           "password": {
             "maxLength": 1024,
+            "minLength": 10,
             "type": "string"
           }
         },
@@ -19,11 +20,104 @@
         ],
         "type": "object"
       },
+      "AppPermission": {
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "enum": [
+              "read",
+              "write"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "enum": [
+              "organization_self_hosted_runners",
+              "administration",
+              "actions",
+              "contents",
+              "pull_requests",
+              "workflows",
+              "metadata"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "access"
+        ],
+        "type": "object"
+      },
+      "AppPermissions": {
+        "additionalProperties": false,
+        "properties": {
+          "organization": {
+            "items": {
+              "$ref": "#/components/schemas/AppPermission"
+            },
+            "type": "array"
+          },
+          "user": {
+            "items": {
+              "$ref": "#/components/schemas/AppPermission"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "organization",
+          "user"
+        ],
+        "type": "object"
+      },
       "AuditEntry": {
         "additionalProperties": false,
         "properties": {
           "action": {
             "description": "\u003cobject\u003e.\u003cverb\u003e, for example \"pool.create\".",
+            "enum": [
+              "setup.done",
+              "user.update",
+              "user.delete",
+              "user.password",
+              "user.password_reset",
+              "invite.create",
+              "invite.link",
+              "invite.delete",
+              "pool.create",
+              "pool.update",
+              "pool.delete",
+              "server.token",
+              "server.install",
+              "server.update",
+              "server.delete",
+              "server.update_agent",
+              "sandbox.stop",
+              "sandbox.shell",
+              "sandbox.ssh",
+              "cache.delete",
+              "image.create",
+              "image.update",
+              "image.delete",
+              "image.refresh",
+              "settings.update",
+              "job.rerun",
+              "backup.create",
+              "backup.download",
+              "update.apply",
+              "github.manifest",
+              "github.app.create",
+              "github.installation.install",
+              "github.installation.update",
+              "github.installation.request",
+              "github.sync",
+              "github.pull_request.create",
+              "github.disconnect",
+              "notification.create",
+              "notification.update",
+              "notification.delete"
+            ],
             "type": "string"
           },
           "at": {
@@ -115,6 +209,7 @@
             "type": "integer"
           },
           "status": {
+            "description": "failed: the backup or its upload to S3 failed, and error tells why. After a failed upload, the file stays on this server.",
             "enum": [
               "running",
               "done",
@@ -259,18 +354,20 @@
             "type": "boolean"
           },
           "hit_rate": {
-            "description": "Hits / (hits + misses) of the last 7 days, 0 to 1.",
+            "description": "Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.",
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "max_bytes": {
-            "description": "The limit of the cache: the cache_max_gb setting in bytes, at most a quarter of the disk of the cache. runplane removes the least recently used entries above it.",
+            "description": "The byte limit that the cache server uses now. It comes from the cache_max_gb setting and the size of the disk. runplane removes the least recently used entries above it.",
             "format": "int64",
             "type": "integer"
           },
           "mirror": {
-            "$ref": "#/components/schemas/MirrorStats",
-            "description": "Absent when the mirror stats are not available."
+            "$ref": "#/components/schemas/MirrorStats"
           },
           "mirror_enabled": {
             "description": "The registry_mirror setting.",
@@ -284,7 +381,12 @@
             "type": "array"
           },
           "size_bytes": {
-            "description": "Size of all entries, also the unfinished uploads.",
+            "description": "Size of all entries and of the files of the unfinished uploads.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "stats_days": {
+            "description": "The hit rates, hits, and misses count the cache lookups of this many last days.",
             "format": "int64",
             "type": "integer"
           }
@@ -293,9 +395,11 @@
           "enabled",
           "size_bytes",
           "max_bytes",
+          "stats_days",
           "hit_rate",
           "repositories",
-          "mirror_enabled"
+          "mirror_enabled",
+          "mirror"
         ],
         "type": "object"
       },
@@ -307,12 +411,15 @@
             "type": "integer"
           },
           "hit_rate": {
-            "description": "Hits / (hits + misses) of the last 7 days, 0 to 1.",
+            "description": "Hits / (hits + misses) of the last stats_days days, 0 to 1. Null without hits and misses.",
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "hits": {
-            "description": "Of the last 7 days.",
+            "description": "Of the last stats_days days.",
             "format": "int64",
             "type": "integer"
           },
@@ -324,7 +431,7 @@
             ]
           },
           "misses": {
-            "description": "Of the last 7 days.",
+            "description": "Of the last stats_days days.",
             "format": "int64",
             "type": "integer"
           },
@@ -344,6 +451,33 @@
           "hits",
           "misses",
           "last_used_at"
+        ],
+        "type": "object"
+      },
+      "Capabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "admin": {
+            "description": "All other changes, and the members, the notification channels, the audit log, and the backups.",
+            "type": "boolean"
+          },
+          "open_shells": {
+            "description": "Open the debug shell of a sandbox.",
+            "type": "boolean"
+          },
+          "rerun_jobs": {
+            "description": "Run a job again, also with a debug sandbox.",
+            "type": "boolean"
+          },
+          "stop_sandboxes": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "rerun_jobs",
+          "stop_sandboxes",
+          "open_shells",
+          "admin"
         ],
         "type": "object"
       },
@@ -507,6 +641,7 @@
           },
           "label": {
             "description": "The runs-on label. Unique.",
+            "maxLength": 63,
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "patternDescription": "lowercase letters, digits, and dashes",
             "type": "string"
@@ -557,10 +692,10 @@
         },
         "required": [
           "label",
-          "vcpu",
-          "memory_mb",
           "disk_gb",
-          "max_runners"
+          "max_runners",
+          "vcpu",
+          "memory_mb"
         ],
         "type": "object"
       },
@@ -569,12 +704,10 @@
         "properties": {
           "label": {
             "description": "The label of an enabled pool.",
-            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-            "patternDescription": "lowercase letters, digits, and dashes",
             "type": "string"
           },
           "repository": {
-            "description": "owner/name of a repository that the GitHub App can access.",
+            "description": "owner/name of a repository whose takes_jobs is true.",
             "maxLength": 140,
             "type": "string"
           }
@@ -807,6 +940,10 @@
             "description": "Organization or User.",
             "type": "string"
           },
+          "permissions_url": {
+            "description": "Permissions page of the app on GitHub. An app from an earlier runplane release gets the pull request permissions there.",
+            "type": "string"
+          },
           "settings_url": {
             "description": "Settings page of the app on GitHub: name, permissions, and keys.",
             "type": "string"
@@ -824,6 +961,7 @@
           "owner_type",
           "html_url",
           "settings_url",
+          "permissions_url",
           "install_url",
           "created_at"
         ],
@@ -836,9 +974,16 @@
             "$ref": "#/components/schemas/GitHubApp",
             "description": "Absent before the manifest flow."
           },
-          "connected": {
-            "description": "An app with at least one installation exists.",
-            "type": "boolean"
+          "app_permissions": {
+            "$ref": "#/components/schemas/AppPermissions",
+            "description": "The permissions that the manifest of a new app asks for."
+          },
+          "hosted_labels": {
+            "description": "The runs-on labels of GitHub-hosted runners that a pull request of runplane moves to a pool.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "installations": {
             "items": {
@@ -855,9 +1000,10 @@
           }
         },
         "required": [
-          "connected",
           "installations",
-          "scale_sets"
+          "scale_sets",
+          "app_permissions",
+          "hosted_labels"
         ],
         "type": "object"
       },
@@ -905,6 +1051,7 @@
             "type": "string"
           },
           "checks": {
+            "description": "The doctor checks without the mode check: mode has its result.",
             "items": {
               "$ref": "#/components/schemas/Check"
             },
@@ -1061,7 +1208,12 @@
         "additionalProperties": false,
         "properties": {
           "arch": {
-            "description": "Arch of the server: x64 or arm64. Empty until the server reports its facts.",
+            "description": "Arch of the server. Empty until the server reports its facts.",
+            "enum": [
+              "x64",
+              "arm64",
+              ""
+            ],
             "type": "string"
           },
           "digest": {
@@ -1105,6 +1257,18 @@
           "error",
           "size_bytes",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "ImageRemoved": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
         ],
         "type": "object"
       },
@@ -1294,6 +1458,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "finish_pending": {
+            "description": "The job completed, and runplane still gets its run data and its log from GitHub.",
+            "type": "boolean"
+          },
           "finished_at": {
             "format": "date-time",
             "type": [
@@ -1333,6 +1501,7 @@
             "type": "array"
           },
           "log_state": {
+            "description": "live while the job runs and its sandbox streams the log.",
             "enum": [
               "none",
               "live",
@@ -1380,19 +1549,6 @@
           "repository": {
             "description": "owner/name",
             "type": "string"
-          },
-          "result": {
-            "description": "Null until the job completes.",
-            "enum": [
-              "succeeded",
-              "failed",
-              "cancelled",
-              "skipped"
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "run_attempt": {
             "format": "int64",
@@ -1454,6 +1610,18 @@
             ],
             "type": "string"
           },
+          "status": {
+            "description": "queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.",
+            "enum": [
+              "running",
+              "queued",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "skipped"
+            ],
+            "type": "string"
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/JobStep"
@@ -1494,6 +1662,7 @@
           "hold_until",
           "ssh_command",
           "log_state",
+          "finish_pending",
           "cpu_peak",
           "cpu_avg",
           "mem_peak_mb",
@@ -1514,7 +1683,7 @@
           "server_id",
           "server_name",
           "state",
-          "result",
+          "status",
           "debug",
           "reject_reason",
           "queue_ms",
@@ -1617,10 +1786,6 @@
               "null"
             ]
           },
-          "conclusion": {
-            "description": "For example success, failure, cancelled, or skipped. Empty until the step completes.",
-            "type": "string"
-          },
           "name": {
             "type": "string"
           },
@@ -1636,7 +1801,15 @@
             ]
           },
           "status": {
-            "description": "queued, in_progress, or completed.",
+            "description": "queued until the step starts, then running, and then the result.",
+            "enum": [
+              "running",
+              "queued",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "skipped"
+            ],
             "type": "string"
           }
         },
@@ -1644,7 +1817,6 @@
           "number",
           "name",
           "status",
-          "conclusion",
           "started_at",
           "completed_at"
         ],
@@ -1710,19 +1882,6 @@
             "description": "owner/name",
             "type": "string"
           },
-          "result": {
-            "description": "Null until the job completes.",
-            "enum": [
-              "succeeded",
-              "failed",
-              "cancelled",
-              "skipped"
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "run_number": {
             "description": "0 until runplane reads the run from GitHub.",
             "format": "int64",
@@ -1751,6 +1910,18 @@
             ],
             "type": "string"
           },
+          "status": {
+            "description": "queued until a runner starts the job, also when GitHub assigned it, then running, and then the result.",
+            "enum": [
+              "running",
+              "queued",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "skipped"
+            ],
+            "type": "string"
+          },
           "workflow_file": {
             "description": "For example \".github/workflows/ci.yml\".",
             "type": "string"
@@ -1774,7 +1945,7 @@
           "server_id",
           "server_name",
           "state",
-          "result",
+          "status",
           "debug",
           "reject_reason",
           "queue_ms",
@@ -1854,6 +2025,14 @@
             },
             "type": "array"
           },
+          "last_admin": {
+            "description": "ID of the only admin, which cannot lose the role or be deleted, because runplane needs an admin. Empty when two or more users are admins.",
+            "type": "string"
+          },
+          "roles": {
+            "$ref": "#/components/schemas/Roles",
+            "description": "What each role can do."
+          },
           "users": {
             "items": {
               "$ref": "#/components/schemas/User"
@@ -1863,7 +2042,9 @@
         },
         "required": [
           "users",
-          "invites"
+          "invites",
+          "last_admin",
+          "roles"
         ],
         "type": "object"
       },
@@ -1900,6 +2081,14 @@
             "format": "int64",
             "type": "integer"
           },
+          "hit_rate": {
+            "description": "Hits / (hits + misses), 0 to 1. Null without hits and misses.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "hits": {
             "format": "int64",
             "type": "integer"
@@ -1917,11 +2106,6 @@
             "description": "Bytes in the mirror now.",
             "format": "int64",
             "type": "integer"
-          },
-          "started_at": {
-            "description": "Start of runplane, where the counts start.",
-            "format": "date-time",
-            "type": "string"
           }
         },
         "required": [
@@ -1929,8 +2113,8 @@
           "misses",
           "hit_bytes",
           "miss_bytes",
-          "size_bytes",
-          "started_at"
+          "hit_rate",
+          "size_bytes"
         ],
         "type": "object"
       },
@@ -2003,6 +2187,11 @@
       "Overview": {
         "additionalProperties": false,
         "properties": {
+          "bucket_ms": {
+            "description": "Length of each bucket: 1 hour for 24h, 6 hours for 7d, 1 day for 30d.",
+            "format": "int64",
+            "type": "integer"
+          },
           "buckets": {
             "description": "Completed jobs by queue time, oldest first, in UTC: 24 buckets of 1 hour for 24h, 28 of 6 hours for 7d, 30 of 1 day for 30d. The last bucket ends after now.",
             "items": {
@@ -2045,6 +2234,7 @@
         },
         "required": [
           "range",
+          "bucket_ms",
           "stats",
           "running",
           "servers",
@@ -2098,9 +2288,12 @@
             "type": "integer"
           },
           "failure_rate": {
-            "description": "failed / (succeeded + failed), 0 to 1.",
+            "description": "failed / (succeeded + failed), 0 to 1. Null when no job of the range succeeded or failed.",
             "format": "double",
-            "type": "number"
+            "type": [
+              "number",
+              "null"
+            ]
           },
           "jobs": {
             "format": "int64",
@@ -2115,12 +2308,12 @@
             ]
           },
           "vcpu_in_use": {
-            "description": "vCPUs of the live sandboxes on the online and draining servers.",
+            "description": "vCPUs of the live sandboxes on the online, draining, and disabled servers.",
             "format": "int64",
             "type": "integer"
           },
           "vcpu_total": {
-            "description": "vCPUs of the online and draining servers.",
+            "description": "vCPUs of the online, draining, and disabled servers.",
             "format": "int64",
             "type": "integer"
           }
@@ -2145,6 +2338,11 @@
               "arm64"
             ],
             "type": "string"
+          },
+          "assigned": {
+            "description": "Of queued, the jobs that GitHub assigned to the scale set of the pool.",
+            "format": "int64",
+            "type": "integer"
           },
           "busy": {
             "description": "Live count of sandboxes that run a job.",
@@ -2211,12 +2409,12 @@
             "type": "array"
           },
           "placeable_servers": {
-            "description": "Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start.",
+            "description": "Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.",
             "format": "int64",
             "type": "integer"
           },
           "queued": {
-            "description": "Jobs of the last 24 hours that wait for a runner.",
+            "description": "Jobs that wait for a runner.",
             "format": "int64",
             "type": "integer"
           },
@@ -2244,6 +2442,11 @@
           "vcpu": {
             "format": "int64",
             "type": "integer"
+          },
+          "waiting_servers": {
+            "description": "Of online_servers, the servers that get no runners now. wait_reason of each server tells why.",
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
@@ -2267,7 +2470,9 @@
           "busy",
           "starting",
           "queued",
+          "assigned",
           "online_servers",
+          "waiting_servers",
           "placeable_servers",
           "placeable_server_ids"
         ],
@@ -2288,13 +2493,19 @@
             "type": "array"
           },
           "placeable_servers": {
-            "description": "Of online_servers, the servers whose vCPUs and memory, after the reserve and the CPU overcommit, fit one sandbox. 0 means that no sandbox can start.",
+            "description": "Of online_servers, the servers that get runners and whose vCPUs and memory, after the reserve, the CPU overcommit, and the limits of the driver, fit one sandbox. 0 means that no sandbox can start.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "waiting_servers": {
+            "description": "Of online_servers, the servers that get no runners now. wait_reason of each server tells why.",
             "format": "int64",
             "type": "integer"
           }
         },
         "required": [
           "online_servers",
+          "waiting_servers",
           "placeable_servers",
           "placeable_server_ids"
         ],
@@ -2304,14 +2515,17 @@
         "additionalProperties": false,
         "properties": {
           "assigned": {
+            "description": "Of queued, the jobs that GitHub assigned to the scale set of the pool.",
             "format": "int64",
             "type": "integer"
           },
           "busy": {
+            "description": "Live count of sandboxes that run a job.",
             "format": "int64",
             "type": "integer"
           },
           "idle": {
+            "description": "Live count of idle sandboxes.",
             "format": "int64",
             "type": "integer"
           },
@@ -2319,10 +2533,12 @@
             "type": "string"
           },
           "queued": {
+            "description": "Jobs that wait for a runner.",
             "format": "int64",
             "type": "integer"
           },
           "starting": {
+            "description": "Live count of sandboxes that start.",
             "format": "int64",
             "type": "integer"
           }
@@ -2335,6 +2551,10 @@
           "queued",
           "assigned"
         ],
+        "type": "object"
+      },
+      "PoolsChanged": {
+        "additionalProperties": false,
         "type": "object"
       },
       "PullRequest": {
@@ -2370,7 +2590,10 @@
             "type": "integer"
           },
           "private": {
-            "description": "runplane rejects jobs of public repositories unless allow_public_repos is on in VM mode.",
+            "type": "boolean"
+          },
+          "takes_jobs": {
+            "description": "runplane takes the jobs of the repository. The scheduler still checks each job.",
             "type": "boolean"
           }
         },
@@ -2378,7 +2601,8 @@
           "id",
           "full_name",
           "private",
-          "archived"
+          "archived",
+          "takes_jobs"
         ],
         "type": "object"
       },
@@ -2390,6 +2614,22 @@
             "type": "boolean"
           }
         },
+        "type": "object"
+      },
+      "Roles": {
+        "additionalProperties": false,
+        "properties": {
+          "admin": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "member": {
+            "$ref": "#/components/schemas/Capabilities"
+          }
+        },
+        "required": [
+          "admin",
+          "member"
+        ],
         "type": "object"
       },
       "RunnerCurrent": {
@@ -2591,9 +2831,6 @@
               "null"
             ]
           },
-          "ip": {
-            "type": "string"
-          },
           "job_id": {
             "description": "Empty until the runner gets a job.",
             "type": "string"
@@ -2660,7 +2897,6 @@
           "server_name",
           "state",
           "runner_name",
-          "ip",
           "job_id",
           "job_name",
           "job_repository",
@@ -2791,11 +3027,20 @@
       "Server": {
         "additionalProperties": false,
         "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/ServerActions",
+            "description": "The changes that an admin can make to the server now."
+          },
           "address": {
             "type": "string"
           },
           "arch": {
-            "description": "x64 or arm64. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "x64",
+              "arm64",
+              ""
+            ],
             "type": "string"
           },
           "cpu_percent": {
@@ -2872,7 +3117,13 @@
             ]
           },
           "mode": {
-            "description": "container, vm, or dev. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "container",
+              "vm",
+              "dev",
+              ""
+            ],
             "type": "string"
           },
           "name": {
@@ -2924,8 +3175,12 @@
           "sysbox_version": {
             "type": "string"
           },
+          "update_error": {
+            "description": "Why the last update of the agent failed. Empty when it did not fail.",
+            "type": "string"
+          },
           "update_state": {
-            "description": "current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and status_detail tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version.",
+            "description": "current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and update_error tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version.",
             "enum": [
               "current",
               "available",
@@ -2951,6 +3206,10 @@
           "version": {
             "description": "runplane version on the server.",
             "type": "string"
+          },
+          "wait_reason": {
+            "description": "Why the server gets no runners in its mode, for example while allow_public_repos is on and the server is not in VM mode. Empty when it gets runners. status tells if the server is draining or disabled.",
+            "type": "string"
           }
         },
         "required": [
@@ -2966,7 +3225,9 @@
           "firecracker_version",
           "version",
           "update_state",
-          "stats_at",
+          "update_error",
+          "wait_reason",
+          "actions",
           "created_at",
           "updated_at",
           "id",
@@ -2982,6 +3243,7 @@
           "cpu_percent",
           "memory_percent",
           "disk_percent",
+          "stats_at",
           "running_jobs",
           "sandboxes",
           "vcpu_in_use",
@@ -2990,11 +3252,61 @@
         ],
         "type": "object"
       },
+      "ServerActions": {
+        "additionalProperties": false,
+        "properties": {
+          "can_drain": {
+            "description": "PATCH status draining.",
+            "type": "boolean"
+          },
+          "can_remove": {
+            "description": "DELETE. The primary cannot be removed.",
+            "type": "boolean"
+          },
+          "can_resume": {
+            "description": "PATCH status online, after a drain or a disable.",
+            "type": "boolean"
+          },
+          "can_run_doctor": {
+            "description": "POST /api/servers/{id}/doctor: the server is connected.",
+            "type": "boolean"
+          },
+          "can_update": {
+            "description": "POST /api/servers/{id}/update: the agent is connected, and update_state is available or failed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "can_drain",
+          "can_resume",
+          "can_remove",
+          "can_update",
+          "can_run_doctor"
+        ],
+        "type": "object"
+      },
+      "ServerRemoved": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "ServerSummary": {
         "additionalProperties": false,
         "properties": {
           "arch": {
-            "description": "x64 or arm64. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "x64",
+              "arm64",
+              ""
+            ],
             "type": "string"
           },
           "cpu_percent": {
@@ -3051,7 +3363,13 @@
             ]
           },
           "mode": {
-            "description": "container, vm, or dev. Empty until the server reports its facts.",
+            "description": "Empty until the server reports its facts.",
+            "enum": [
+              "container",
+              "vm",
+              "dev",
+              ""
+            ],
             "type": "string"
           },
           "name": {
@@ -3066,6 +3384,14 @@
             "description": "Sandboxes that are not gone or failed.",
             "format": "int64",
             "type": "integer"
+          },
+          "stats_at": {
+            "description": "Time of the latest host sample.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "enum": [
@@ -3105,6 +3431,7 @@
           "cpu_percent",
           "memory_percent",
           "disk_percent",
+          "stats_at",
           "running_jobs",
           "sandboxes",
           "vcpu_in_use",
@@ -3176,11 +3503,57 @@
         ],
         "type": "object"
       },
+      "Session": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_login_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "admin",
+              "member"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "capabilities",
+          "id",
+          "email",
+          "name",
+          "role",
+          "created_at",
+          "last_login_at"
+        ],
+        "type": "object"
+      },
       "Settings": {
         "additionalProperties": false,
         "properties": {
           "acme_email": {
             "description": "Contact for the certificate authority. Optional.",
+            "maxLength": 254,
             "type": "string"
           },
           "actions_cache": {
@@ -3192,7 +3565,7 @@
             "type": "boolean"
           },
           "allow_public_repos": {
-            "description": "Take jobs of public repositories. Only when the mode setting and each server are in VM mode.",
+            "description": "Take jobs of public repositories. An admin can turn it on only while the mode setting and each server are in VM mode. While it is on, only servers in VM mode get runners.",
             "type": "boolean"
           },
           "auto_update": {
@@ -3205,34 +3578,54 @@
           "backup_keep": {
             "description": "Backups to keep.",
             "format": "int64",
+            "maximum": 365,
+            "minimum": 1,
             "type": "integer"
           },
           "backup_s3": {
             "$ref": "#/components/schemas/BackupS3",
             "description": "Optional upload of each backup to S3."
           },
+          "backup_time": {
+            "description": "Time of day in UTC of the daily backup, for example 03:00. Read-only.",
+            "type": "string"
+          },
+          "bandwidth_applies": {
+            "description": "bandwidth_mbps limits sandboxes: only VMs have the limit, so the mode setting or a server is in VM mode. Read-only.",
+            "type": "boolean"
+          },
           "bandwidth_mbps": {
             "description": "Bandwidth limit of each VM. 0: no limit.",
             "format": "int64",
+            "maximum": 100000,
+            "minimum": 0,
             "type": "integer"
           },
           "cache_max_gb": {
             "format": "int64",
+            "maximum": 100000,
+            "minimum": 1,
             "type": "integer"
           },
           "cpu_overcommit": {
             "description": "Factor for the vCPUs that sandboxes can get. 1 means no overcommit.",
             "format": "double",
+            "maximum": 8,
+            "minimum": 0.5,
             "type": "number"
           },
           "debug_hold_minutes": {
             "description": "Time that a debug sandbox stays after its job.",
             "format": "int64",
+            "maximum": 1440,
+            "minimum": 1,
             "type": "integer"
           },
           "default_time_limit_minutes": {
             "description": "Time limit of a job in a pool without its own limit.",
             "format": "int64",
+            "maximum": 7200,
+            "minimum": 1,
             "type": "integer"
           },
           "dns_servers": {
@@ -3240,52 +3633,68 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 4,
+            "minItems": 1,
             "type": "array"
           },
           "domain": {
             "description": "With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall.",
+            "maxLength": 253,
             "type": "string"
           },
           "egress_allowlist": {
-            "description": "Host names, *.domains, IP addresses, or CIDRs that sandboxes can reach. Empty: all of the public internet.",
+            "description": "Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet.",
             "items": {
               "type": "string"
             },
+            "maxItems": 256,
             "type": "array"
           },
           "https": {
             "$ref": "#/components/schemas/HTTPSStatus",
-            "description": "Certificate of the domain. Read-only. Absent when this runplane process cannot report it."
+            "description": "Certificate of the domain. Read-only."
           },
           "instance_name": {
             "description": "Title in the sidebar.",
+            "maxLength": 64,
+            "minLength": 1,
             "type": "string"
           },
           "job_retention_days": {
             "format": "int64",
+            "maximum": 3650,
+            "minimum": 1,
             "type": "integer"
           },
           "log_retention_days": {
             "format": "int64",
+            "maximum": 3650,
+            "minimum": 1,
             "type": "integer"
           },
           "min_free_disk_percent": {
             "description": "No new sandboxes start on a server with less free disk.",
             "format": "double",
+            "maximum": 90,
+            "minimum": 0,
             "type": "number"
           },
           "mode": {
-            "description": "Sandbox mode. Empty until the install sets it.",
+            "description": "Sandbox mode of the primary. vm needs KVM, and dev needs RUNPLANE_DEV_INSECURE=1. A change takes effect after a restart.",
             "enum": [
               "container",
               "vm",
-              "dev",
-              ""
+              "dev"
             ],
+            "type": "string"
+          },
+          "public_repos_refusal": {
+            "description": "Why an admin cannot turn allow_public_repos on: the mode setting or a server is not in VM mode. It names each server that is not in VM mode, and while the setting is on, these servers get no runners. Empty when each server is in VM mode. Read-only.",
             "type": "string"
           },
           "public_url": {
             "description": "Browser URL of the dashboard, for example https://ci.example.com. Empty: the URL of each request.",
+            "maxLength": 2048,
             "type": "string"
           },
           "registry_mirror": {
@@ -3295,20 +3704,29 @@
           "reserve_memory_mb": {
             "description": "Memory that sandboxes do not get on each server.",
             "format": "int64",
+            "maximum": 1048576,
+            "minimum": 0,
             "type": "integer"
           },
           "reserve_vcpu": {
             "description": "vCPUs that sandboxes do not get on each server.",
             "format": "int64",
+            "maximum": 256,
+            "minimum": 0,
             "type": "integer"
           },
-          "ssh_port": {
-            "description": "Port of the SSH gateway for debug shells. Read-only.",
-            "format": "int64",
-            "type": "integer"
+          "secret_key_path": {
+            "description": "File of the key that seals the secrets in the database. A restore of a backup needs it, and backups do not hold it. Read-only.",
+            "type": "string"
           }
         },
         "required": [
+          "backup_s3",
+          "backup_time",
+          "secret_key_path",
+          "https",
+          "public_repos_refusal",
+          "bandwidth_applies",
           "instance_name",
           "public_url",
           "domain",
@@ -3332,9 +3750,7 @@
           "debug_hold_minutes",
           "auto_update",
           "backup_enabled",
-          "backup_keep",
-          "backup_s3",
-          "ssh_port"
+          "backup_keep"
         ],
         "type": "object"
       },
@@ -3342,25 +3758,31 @@
         "additionalProperties": false,
         "properties": {
           "acme_email": {
+            "description": "Contact for the certificate authority. Optional.",
             "maxLength": 254,
             "type": "string"
           },
           "actions_cache": {
+            "description": "Local Actions cache server.",
             "type": "boolean"
           },
           "allow_fork_prs": {
+            "description": "Take jobs of pull requests from forks.",
             "type": "boolean"
           },
           "allow_public_repos": {
+            "description": "Take jobs of public repositories. An admin can turn it on only while the mode setting and each server are in VM mode. While it is on, only servers in VM mode get runners.",
             "type": "boolean"
           },
           "auto_update": {
             "type": "boolean"
           },
           "backup_enabled": {
+            "description": "Daily database backup.",
             "type": "boolean"
           },
           "backup_keep": {
+            "description": "Backups to keep.",
             "format": "int64",
             "maximum": 365,
             "minimum": 1,
@@ -3370,6 +3792,7 @@
             "$ref": "#/components/schemas/BackupS3Patch"
           },
           "bandwidth_mbps": {
+            "description": "Bandwidth limit of each VM. 0: no limit.",
             "format": "int64",
             "maximum": 100000,
             "minimum": 0,
@@ -3382,24 +3805,28 @@
             "type": "integer"
           },
           "cpu_overcommit": {
+            "description": "Factor for the vCPUs that sandboxes can get. 1 means no overcommit.",
             "format": "double",
             "maximum": 8,
             "minimum": 0.5,
             "type": "number"
           },
           "debug_hold_minutes": {
+            "description": "Time that a debug sandbox stays after its job.",
             "format": "int64",
             "maximum": 1440,
             "minimum": 1,
             "type": "integer"
           },
           "default_time_limit_minutes": {
+            "description": "Time limit of a job in a pool without its own limit.",
             "format": "int64",
             "maximum": 7200,
             "minimum": 1,
             "type": "integer"
           },
           "dns_servers": {
+            "description": "IPv4 addresses of the DNS servers of the sandboxes.",
             "items": {
               "type": "string"
             },
@@ -3408,10 +3835,12 @@
             "type": "array"
           },
           "domain": {
+            "description": "With a domain, runplane gets a certificate with ACME and serves HTTPS on ports 443 and 80. The DNS record of the domain must point to the server, and the two ports must be free and open in the firewall.",
             "maxLength": 253,
             "type": "string"
           },
           "egress_allowlist": {
+            "description": "Host names, IPv4 addresses, or IPv4 CIDRs that sandboxes can reach. Empty: all of the public internet.",
             "items": {
               "type": "string"
             },
@@ -3419,6 +3848,7 @@
             "type": "array"
           },
           "instance_name": {
+            "description": "Title in the sidebar.",
             "maxLength": 64,
             "minLength": 1,
             "type": "string"
@@ -3436,13 +3866,14 @@
             "type": "integer"
           },
           "min_free_disk_percent": {
+            "description": "No new sandboxes start on a server with less free disk.",
             "format": "double",
             "maximum": 90,
             "minimum": 0,
             "type": "number"
           },
           "mode": {
-            "description": "vm needs KVM; dev needs RUNPLANE_DEV_INSECURE=1. A change takes effect after a restart.",
+            "description": "Sandbox mode of the primary. vm needs KVM, and dev needs RUNPLANE_DEV_INSECURE=1. A change takes effect after a restart.",
             "enum": [
               "container",
               "vm",
@@ -3451,19 +3882,23 @@
             "type": "string"
           },
           "public_url": {
+            "description": "Browser URL of the dashboard, for example https://ci.example.com. Empty: the URL of each request.",
             "maxLength": 2048,
             "type": "string"
           },
           "registry_mirror": {
+            "description": "Docker Hub pull-through cache for the sandboxes.",
             "type": "boolean"
           },
           "reserve_memory_mb": {
+            "description": "Memory that sandboxes do not get on each server.",
             "format": "int64",
             "maximum": 1048576,
             "minimum": 0,
             "type": "integer"
           },
           "reserve_vcpu": {
+            "description": "vCPUs that sandboxes do not get on each server.",
             "format": "int64",
             "maximum": 256,
             "minimum": 0,
@@ -3477,6 +3912,8 @@
         "properties": {
           "code": {
             "description": "Setup code from the install script, for example ABCD-EFGH-JKLM.",
+            "pattern": "^[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}$",
+            "patternDescription": "a setup code such as ABCD-EFGH-JKLM",
             "type": "string"
           },
           "email": {
@@ -3489,6 +3926,7 @@
           },
           "password": {
             "maxLength": 1024,
+            "minLength": 10,
             "type": "string"
           }
         },
@@ -3530,10 +3968,6 @@
       "Status": {
         "additionalProperties": false,
         "properties": {
-          "github_connected": {
-            "description": "True when a GitHub App with at least one installation exists.",
-            "type": "boolean"
-          },
           "has_jobs": {
             "description": "True when runplane has recorded at least one job.",
             "type": "boolean"
@@ -3542,12 +3976,11 @@
             "type": "string"
           },
           "mode": {
-            "description": "Sandbox mode. Empty until the install sets it.",
+            "description": "Sandbox mode.",
             "enum": [
               "container",
               "vm",
-              "dev",
-              ""
+              "dev"
             ],
             "type": "string"
           },
@@ -3555,10 +3988,12 @@
             "description": "True until the first admin exists.",
             "type": "boolean"
           },
-          "ssh_port": {
-            "description": "Port of the SSH gateway for debug shells.",
-            "format": "int64",
-            "type": "integer"
+          "systems": {
+            "description": "The operating systems of a server that install.sh names.",
+            "items": {
+              "$ref": "#/components/schemas/System"
+            },
+            "type": "array"
           },
           "version": {
             "description": "Version of runplane, for example \"v1.2.0 (3f2a9c1)\".",
@@ -3570,9 +4005,31 @@
           "version",
           "mode",
           "instance_name",
-          "github_connected",
           "has_jobs",
-          "ssh_port"
+          "systems"
+        ],
+        "type": "object"
+      },
+      "System": {
+        "additionalProperties": false,
+        "properties": {
+          "best_effort": {
+            "description": "install.sh installs runplane with a warning, because runplane has no tests on the system.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "For example Ubuntu.",
+            "type": "string"
+          },
+          "version": {
+            "description": "For example 24.04.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "best_effort"
         ],
         "type": "object"
       },
@@ -3635,6 +4092,7 @@
           "new_password": {
             "description": "Logs out the other sessions of the user.",
             "maxLength": 1024,
+            "minLength": 10,
             "type": "string"
           }
         },
@@ -3708,6 +4166,7 @@
             "type": "string"
           },
           "label": {
+            "maxLength": 63,
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "patternDescription": "lowercase letters, digits, and dashes",
             "type": "string"
@@ -3732,7 +4191,6 @@
           },
           "name": {
             "maxLength": 64,
-            "minLength": 1,
             "type": "string"
           },
           "server_ids": {
@@ -3780,10 +4238,6 @@
       "UpdateStatus": {
         "additionalProperties": false,
         "properties": {
-          "auto_update": {
-            "description": "The auto_update setting.",
-            "type": "boolean"
-          },
           "available": {
             "description": "latest is newer than current.",
             "type": "boolean"
@@ -3828,7 +4282,6 @@
           "url",
           "notes",
           "published_at",
-          "auto_update",
           "state"
         ],
         "type": "object"
@@ -4347,6 +4800,39 @@
                       {
                         "properties": {
                           "data": {
+                            "$ref": "#/components/schemas/ImageRemoved"
+                          },
+                          "event": {
+                            "const": "image.removed",
+                            "description": "The event name.",
+                            "type": "string"
+                          },
+                          "id": {
+                            "description": "The event ID.",
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "retry": {
+                            "description": "The retry time in milliseconds.",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "data",
+                          "event"
+                        ],
+                        "title": "Event image.removed",
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "data": {
                             "$ref": "#/components/schemas/Image"
                           },
                           "event": {
@@ -4446,6 +4932,39 @@
                       {
                         "properties": {
                           "data": {
+                            "$ref": "#/components/schemas/PoolsChanged"
+                          },
+                          "event": {
+                            "const": "pools.changed",
+                            "description": "The event name.",
+                            "type": "string"
+                          },
+                          "id": {
+                            "description": "The event ID.",
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "retry": {
+                            "description": "The retry time in milliseconds.",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "data",
+                          "event"
+                        ],
+                        "title": "Event pools.changed",
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "data": {
                             "$ref": "#/components/schemas/RunnerVersion"
                           },
                           "event": {
@@ -4512,6 +5031,39 @@
                       {
                         "properties": {
                           "data": {
+                            "$ref": "#/components/schemas/ServerRemoved"
+                          },
+                          "event": {
+                            "const": "server.removed",
+                            "description": "The event name.",
+                            "type": "string"
+                          },
+                          "id": {
+                            "description": "The event ID.",
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "retry": {
+                            "description": "The retry time in milliseconds.",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "data",
+                          "event"
+                        ],
+                        "title": "Event server.removed",
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "data": {
                             "$ref": "#/components/schemas/Server"
                           },
                           "event": {
@@ -4540,6 +5092,39 @@
                           "event"
                         ],
                         "title": "Event server.state",
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "data": {
+                            "$ref": "#/components/schemas/Settings"
+                          },
+                          "event": {
+                            "const": "settings.changed",
+                            "description": "The event name.",
+                            "type": "string"
+                          },
+                          "id": {
+                            "description": "The event ID.",
+                            "oneOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "retry": {
+                            "description": "The retry time in milliseconds.",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "data",
+                          "event"
+                        ],
+                        "title": "Event settings.changed",
                         "type": "object"
                       }
                     ]
@@ -4797,13 +5382,16 @@
             }
           },
           {
-            "description": "install, update, or request.",
             "explode": false,
             "in": "query",
             "name": "setup_action",
+            "required": true,
             "schema": {
-              "description": "install, update, or request.",
-              "maxLength": 20,
+              "enum": [
+                "install",
+                "update",
+                "request"
+              ],
               "type": "string"
             }
           }
@@ -5247,7 +5835,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/User"
+                  "$ref": "#/components/schemas/Session"
                 }
               }
             },
@@ -5330,18 +5918,19 @@
         "operationId": "list-jobs",
         "parameters": [
           {
-            "description": "queued also has the assigned jobs.",
+            "description": "The status of the jobs.",
             "explode": false,
             "in": "query",
             "name": "status",
             "schema": {
-              "description": "queued also has the assigned jobs.",
+              "description": "The status of the jobs.",
               "enum": [
                 "running",
                 "queued",
                 "succeeded",
                 "failed",
-                "cancelled"
+                "cancelled",
+                "skipped"
               ],
               "type": "string"
             }
@@ -5553,12 +6142,12 @@
             }
           },
           {
-            "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored.",
+            "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps.",
             "explode": false,
             "in": "query",
             "name": "step",
             "schema": {
-              "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps; then the response has the header X-Runplane-Step-Filter: ignored.",
+              "description": "Only this step of a stored log. 0 or absent: all steps. The log of a running job always has all steps.",
               "format": "int64",
               "minimum": 0,
               "type": "integer"
@@ -5584,18 +6173,7 @@
                 }
               }
             },
-            "description": "The log as plain text. With follow=1, the response streams until the log ends.",
-            "headers": {
-              "X-Runplane-Step-Filter": {
-                "description": "ignored: the log has all steps, because the job runs and its live log has no step marks.",
-                "schema": {
-                  "enum": [
-                    "ignored"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "The log as plain text. With follow=1, the response streams until the log ends."
           },
           "default": {
             "content": {
@@ -5734,7 +6312,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/User"
+                  "$ref": "#/components/schemas/Session"
                 }
               }
             },
@@ -7242,7 +7820,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/User"
+                  "$ref": "#/components/schemas/Session"
                 }
               }
             },
@@ -7293,7 +7871,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/User"
+                  "$ref": "#/components/schemas/Session"
                 }
               }
             },
@@ -7457,7 +8035,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/User"
+                  "$ref": "#/components/schemas/Session"
                 }
               }
             },
@@ -7499,6 +8077,8 @@
             "required": true,
             "schema": {
               "description": "The setup code.",
+              "pattern": "^[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}[- ]?[A-HJ-NP-Za-hj-np-z2-9]{4}$",
+              "patternDescription": "a setup code such as ABCD-EFGH-JKLM",
               "type": "string"
             }
           }

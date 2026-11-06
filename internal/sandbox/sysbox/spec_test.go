@@ -1,17 +1,14 @@
 package sysbox
 
 import (
-	"maps"
 	"net/netip"
-	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/moby/moby/api/types/mount"
 
-	"github.com/runplane/runplane/internal/config"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
@@ -26,29 +23,22 @@ var testSpec = sandbox.Spec{
 	DiskGB:        64,
 	TimeLimit:     time.Hour,
 	JITConfig:     "jit",
-	Env:           map[string]string{"FOO": "bar"},
-	Labels:        map[string]string{"dev.runplane.pool": "pool1", sandbox.LabelSandbox: "not-this-id"},
 }
 
 func TestCreateOptionsContainerMode(t *testing.T) {
-	o := Options{Mode: sandbox.ModeContainer, Runtime: "sysbox-runc", Scratch: ScratchLoop, ServiceHost: "10.213.0.1",
-		Config: config.Config{DataDir: "/var/lib/runplane"}}
+	d := &Driver{opts: Options{DataDir: "/var/lib/runplane", Profile: Container}, serviceHost: "10.213.0.1"}
 	m := mounts{init: "/tmp/runplane-init", ctl: "/var/lib/runplane/sandboxes/x/ctl", bundle: "/var/lib/runplane/runners/2.330.0-x64", scratch: "/var/lib/runplane/sandboxes/x/scratch"}
 	dns := []netip.Addr{netip.MustParseAddr("1.1.1.1")}
-	got := createOptions(o, testSpec, m, dns)
+	got := d.createOptions(testSpec, m, dns)
 
-	wantMounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: "/tmp/runplane-init", Target: "/.runplane/init", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/ctl", Target: "/run/runplane", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/var/lib/runplane/runners/2.330.0-x64", Target: "/.runplane/runner", ReadOnly: true},
+	h := got.HostConfig
+	checkMounts(t, h.Mounts, m, []mount.Mount{
 		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/scratch", Target: "/mnt/scratch"},
+		// Without a mount at /var/lib/docker, Sysbox mounts a host folder
+		// there. The writes of a job go to the scratch disk.
 		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/scratch/docker", Target: "/var/lib/docker"},
 		{Type: mount.TypeBind, Source: "/var/lib/runplane/sandboxes/x/scratch/tmp", Target: "/tmp"},
-	}
-	h := got.HostConfig
-	if !reflect.DeepEqual(h.Mounts, wantMounts) {
-		t.Errorf("mounts = %+v\nwant %+v", h.Mounts, wantMounts)
-	}
+	})
 	if h.Runtime != "sysbox-runc" || h.Privileged {
 		t.Errorf("runtime %q, privileged %v; want sysbox-runc without privileges", h.Runtime, h.Privileged)
 	}
@@ -67,10 +57,10 @@ func TestCreateOptionsContainerMode(t *testing.T) {
 		t.Errorf("endpoints = %v, want the runplane network", got.NetworkingConfig.EndpointsConfig)
 	}
 
+	// The driver finds its sandboxes after a restart by these labels.
 	c := got.Config
-	wantLabels := map[string]string{"dev.runplane.pool": "pool1", sandbox.LabelSandbox: "01jbz3x0aaaaaaaaaaaaaaaaaa", "dev.runplane.data": "/var/lib/runplane"}
-	if !maps.Equal(c.Labels, wantLabels) {
-		t.Errorf("labels = %v, want %v", c.Labels, wantLabels)
+	if c.Labels["dev.runplane.sandbox"] != "01jbz3x0aaaaaaaaaaaaaaaaaa" || c.Labels["dev.runplane.data"] != "/var/lib/runplane" {
+		t.Errorf("labels = %v, want the sandbox ID and the data folder", c.Labels)
 	}
 	if c.Image != "sha256:1111" || !slices.Equal(c.Entrypoint, []string{"/.runplane/init"}) || c.Hostname != "runplane-aaaaaaaa" {
 		t.Errorf("image %q, entrypoint %v, hostname %q", c.Image, c.Entrypoint, c.Hostname)
@@ -78,25 +68,16 @@ func TestCreateOptionsContainerMode(t *testing.T) {
 	if got.Name != "runplane-01jbz3x0aaaaaaaaaaaaaaaaaa" {
 		t.Errorf("name = %q", got.Name)
 	}
-	if testSpec.Labels[sandbox.LabelSandbox] != "not-this-id" {
-		t.Error("createOptions changed the labels of the spec")
-	}
 }
 
 func TestCreateOptionsDevMode(t *testing.T) {
-	o := Options{Mode: sandbox.ModeDev, Runtime: "runc", Privileged: true, Scratch: ScratchVolume, ServiceHost: "host.docker.internal"}
+	d := &Driver{opts: Options{Profile: Dev}, serviceHost: "host.docker.internal"}
 	m := mounts{init: "/i", ctl: "/c", bundle: "/b", scratch: "runplane-scratch-01jbz3x0aaaaaaaaaaaaaaaaaa"}
-	h := createOptions(o, testSpec, m, nil).HostConfig
+	h := d.createOptions(testSpec, m, nil).HostConfig
 
-	wantMounts := []mount.Mount{
-		{Type: mount.TypeBind, Source: "/i", Target: "/.runplane/init", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/c", Target: "/run/runplane", ReadOnly: true},
-		{Type: mount.TypeBind, Source: "/b", Target: "/.runplane/runner", ReadOnly: true},
+	checkMounts(t, h.Mounts, m, []mount.Mount{
 		{Type: mount.TypeVolume, Source: "runplane-scratch-01jbz3x0aaaaaaaaaaaaaaaaaa", Target: "/mnt/scratch"},
-	}
-	if !reflect.DeepEqual(h.Mounts, wantMounts) {
-		t.Errorf("mounts = %+v\nwant %+v", h.Mounts, wantMounts)
-	}
+	})
 	if h.Runtime != "runc" || !h.Privileged || h.CgroupParent != "" {
 		t.Errorf("runtime %q, privileged %v, cgroup parent %q", h.Runtime, h.Privileged, h.CgroupParent)
 	}
@@ -105,119 +86,26 @@ func TestCreateOptionsDevMode(t *testing.T) {
 	}
 }
 
-func TestGuestConfig(t *testing.T) {
-	const url = "http://10.213.0.1:8486"
-	cases := []struct {
-		name       string
-		settings   sandbox.Settings
-		patched    bool
-		env        map[string]string
-		wantEnv    map[string]string
-		wantMirror string
-	}{
-		{
-			name:       "cache and mirror",
-			settings:   sandbox.Settings{ActionsCache: true, RegistryMirror: true},
-			patched:    true,
-			env:        map[string]string{"FOO": "bar"},
-			wantEnv:    map[string]string{"FOO": "bar", "ACTIONS_RESULTS_URL": "http://10.213.0.1:8486/", "ACTIONS_CACHE_SERVICE_V2": "true"},
-			wantMirror: url,
-		},
-		{
-			name:     "unpatched runner keeps the GitHub cache",
-			settings: sandbox.Settings{ActionsCache: true},
-			env:      map[string]string{"FOO": "bar"},
-			wantEnv:  map[string]string{"FOO": "bar"},
-		},
-		{
-			name:     "cache off",
-			settings: sandbox.Settings{},
-			patched:  true,
-			wantEnv:  map[string]string{},
-		},
-		{
-			name:     "the spec env wins",
-			settings: sandbox.Settings{ActionsCache: true},
-			patched:  true,
-			env:      map[string]string{"ACTIONS_RESULTS_URL": "http://other/"},
-			wantEnv:  map[string]string{"ACTIONS_RESULTS_URL": "http://other/", "ACTIONS_CACHE_SERVICE_V2": "true"},
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			spec := testSpec
-			spec.Env = c.env
-			spec.Debug = true
-			got := guestConfig(spec, c.settings, image.Bundle{Patched: c.patched}, url)
-			if !maps.Equal(got.Env, c.wantEnv) {
-				t.Errorf("env = %v, want %v", got.Env, c.wantEnv)
-			}
-			if got.RegistryMirror != c.wantMirror {
-				t.Errorf("registry mirror = %q, want %q", got.RegistryMirror, c.wantMirror)
-			}
-			// The container mounts the bundle at /.runplane/runner.
-			if got.JITConfig != "jit" || got.TimeLimitSeconds != 3600 || !got.Debug || got.SandboxID != spec.ID ||
-				got.Hostname != "runplane-aaaaaaaa" || got.RunnerDir != "/.runplane/runner" {
-				t.Errorf("config = %+v", got)
-			}
-		})
-	}
-}
-
-func TestForward(t *testing.T) {
-	cases := []struct {
-		cur, next sandbox.State
-		want      bool
-	}{
-		{sandbox.StateStarting, sandbox.StateIdle, true},
-		{sandbox.StateStarting, sandbox.StateBusy, true}, // the listening event can come late
-		{sandbox.StateIdle, sandbox.StateBusy, true},
-		{sandbox.StateBusy, sandbox.StateIdle, false},
-		{sandbox.StateIdle, sandbox.StateIdle, false},
-		{sandbox.StateStopping, sandbox.StateBusy, false},
-		{sandbox.StateBusy, sandbox.StateStopping, true},
-		{sandbox.StateStarting, sandbox.StateFailed, true},
-		{sandbox.StateStopping, sandbox.StateGone, true},
-		{sandbox.StateGone, sandbox.StateFailed, false},
-		{sandbox.StateFailed, sandbox.StateStopping, false},
-	}
-	for _, c := range cases {
-		if got := forward(c.cur, c.next); got != c.want {
-			t.Errorf("forward(%s, %s) = %v, want %v", c.cur, c.next, got, c.want)
+// checkMounts checks that a sandbox has runplane-init, the folder of the
+// control socket, and the runner bundle from the host, read-only, at the
+// paths where runplane-init and the guest config look for them. It also
+// checks the scratch mounts, and that no other mount lets a job write to the
+// host.
+func checkMounts(t *testing.T, got []mount.Mount, m mounts, scratch []mount.Mount) {
+	t.Helper()
+	want := append([]mount.Mount{
+		{Type: mount.TypeBind, Source: m.init, Target: "/.runplane/init", ReadOnly: true},
+		{Type: mount.TypeBind, Source: m.ctl, Target: "/run/runplane", ReadOnly: true},
+		{Type: mount.TypeBind, Source: m.bundle, Target: "/.runplane/runner", ReadOnly: true},
+	}, scratch...)
+	for _, w := range want {
+		if !slices.Contains(got, w) {
+			t.Errorf("no mount %+v in %+v", w, got)
 		}
 	}
-}
-
-func TestPastLimit(t *testing.T) {
-	t0 := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
-	cases := []struct {
-		name           string
-		limit          time.Duration
-		busyAt, holdTo time.Duration // after t0; 0 means none
-		at             time.Duration
-		want           bool
-	}{
-		// A warm sandbox waits up to the limit, the idle grace (5m), and
-		// the limit grace (5m) for a job.
-		{"idle within the graces", time.Hour, 0, 0, time.Hour + 9*time.Minute, false},
-		{"idle after the graces", time.Hour, 0, 0, time.Hour + 11*time.Minute, true},
-		// The limit of a job counts from its start.
-		{"job within the grace", time.Hour, 50 * time.Minute, 0, time.Hour + 54*time.Minute, false},
-		{"job after the grace", time.Hour, 50 * time.Minute, 0, time.Hour + 56*time.Minute, true},
-		{"during a debug hold", time.Hour, 50 * time.Minute, 3 * time.Hour, 2 * time.Hour, false},
-		{"after the hold and the grace", time.Hour, 50 * time.Minute, 3 * time.Hour, 3*time.Hour + 6*time.Minute, true},
-		{"no time limit", 0, 0, 0, 1000 * time.Hour, false},
-	}
-	for _, c := range cases {
-		b := &box{created: t0, spec: sandbox.Spec{TimeLimit: c.limit}}
-		if c.busyAt > 0 {
-			b.busyAt = t0.Add(c.busyAt)
-		}
-		if c.holdTo > 0 {
-			b.holdUntil = t0.Add(c.holdTo)
-		}
-		if got := pastLimit(b, t0.Add(c.at)); got != c.want {
-			t.Errorf("%s: pastLimit = %v, want %v", c.name, got, c.want)
+	for _, g := range got {
+		if g.Type == mount.TypeBind && !g.ReadOnly && !strings.HasPrefix(g.Source, m.scratch) {
+			t.Errorf("a job can write to the host folder %s at %s", g.Source, g.Target)
 		}
 	}
 }

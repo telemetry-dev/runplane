@@ -1,17 +1,40 @@
 import type { Schemas } from '~/api/client'
-import type { HostStats } from '~/api/events'
 import { formatBytes, formatMegabytes, formatRelativeTime } from '~/lib/format'
 
 // Text and state of the server rows, from the objects of GET /api/servers.
 
 export type Server = Schemas['Server']
 
-export const statusNames: Record<Server['status'], string> = {
-  online: 'Online',
-  installing: 'Installing',
-  unreachable: 'Unreachable',
-  draining: 'Draining',
-  disabled: 'Disabled',
+type StatusFacts = {
+  /** The server is connected: it sends host samples and finishes its jobs, so its usage and its running jobs are current. */
+  connected: boolean
+  /** The scheduler starts new runners on the server. */
+  takesRunners: boolean
+}
+
+/**
+ * What the status of a server means for its usage and its jobs. Go gives
+ * draining and disabled servers the same rules: they stay connected, send
+ * host samples, and finish their jobs, but get no new runners.
+ */
+export const statusFacts: Record<Server['status'], StatusFacts> = {
+  online: { connected: true, takesRunners: true },
+  draining: { connected: true, takesRunners: false },
+  disabled: { connected: true, takesRunners: false },
+  installing: { connected: false, takesRunners: false },
+  unreachable: { connected: false, takesRunners: false },
+}
+
+/** The systems that install.sh names for a server, as "Ubuntu 22.04 or 24.04, or Debian 12 or 13 (best effort)". */
+export function systemsText(systems: Schemas['System'][]): string {
+  const byName = new Map<string, Schemas['System'][]>()
+  for (const system of systems) byName.set(system.name, [...(byName.get(system.name) ?? []), system])
+  return [...byName]
+    .map(([name, list]) => {
+      const versions = `${name} ${list.map((system) => system.version).join(' or ')}`
+      return list.every((system) => system.best_effort) ? `${versions} (best effort)` : versions
+    })
+    .join(', or ')
 }
 
 /** "136.243.18.40 · Hetzner FSN1 · Ubuntu 24.04", without the facts the server has not reported. */
@@ -59,21 +82,16 @@ export function sortServers(servers: readonly Server[]): Server[] {
 
 type Usage = { cpu: number | null; memory: number | null; disk: number | null }
 
-/**
- * Usage percents from the newer of the server's sample and the last host.stats
- * event. An unreachable server's last sample is old, so its usage is unknown.
- */
-export function currentUsage(server: Server, live: HostStats | undefined): Usage {
-  if (server.status === 'unreachable') return { cpu: null, memory: null, disk: null }
-  if (live && (!server.stats_at || Date.parse(live.at) >= Date.parse(server.stats_at))) {
-    return { cpu: live.cpu_percent, memory: live.memory_percent, disk: live.disk_percent }
-  }
+/** Usage percents of the latest host sample. The last sample of a server without a connection is old, so its usage is unknown. */
+export function currentUsage(server: Server): Usage {
+  if (!statusFacts[server.status].connected) return { cpu: null, memory: null, disk: null }
   return { cpu: server.cpu_percent, memory: server.memory_percent, disk: server.disk_percent }
 }
 
 /**
- * The text in place of the usage columns of a server that runs no jobs:
- * "Installing runner agent · pulling runner image" or "Unreachable · last heartbeat 2h ago".
+ * The text in place of the usage of a server without a connection:
+ * "Installing runner agent · pulling runner image", "Unreachable · last
+ * heartbeat 2h ago", or the error of a server that never connected.
  */
 export function statusNote(server: Server, now = Date.now()): { title: string; detail: string } | undefined {
   if (server.status === 'installing') return { title: 'Installing runner agent', detail: server.status_detail }

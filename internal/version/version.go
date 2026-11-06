@@ -1,5 +1,6 @@
-// Package version holds the build version. The release build sets the
-// variables with -ldflags "-X github.com/runplane/runplane/internal/version.Version=...".
+// Package version holds the build version, the order of semantic versions,
+// and the rule for a release build. The release build sets the variables
+// with -ldflags "-X github.com/runplane/runplane/internal/version.Version=...".
 package version
 
 var (

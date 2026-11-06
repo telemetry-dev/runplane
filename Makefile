@@ -115,11 +115,11 @@ dev: init
 
 # runner-smoke downloads the latest actions/runner for this arch and starts
 # it in the local base image runplane/runner-ubuntu-24.04:local (docker build
-# --provenance=false -t runplane/runner-ubuntu-24.04:local images/ubuntu-24.04):
-# the .NET libraries must be in the image, and a bad JIT config must end the
-# runner.
+# --provenance=false -t runplane/runner-ubuntu-24.04:local --build-arg
+# UBUNTU=24.04 --build-arg IMAGE_OS=ubuntu24 images): the .NET libraries must
+# be in the image, and a bad JIT config must end the runner.
 runner-smoke:
-	go test -tags integration -count=1 -timeout 20m -v -run TestRealRunnerInBaseImage ./internal/image/
+	go test -tags integration -count=1 -timeout 20m -v -run TestRealRunnerInBaseImage ./internal/runner/
 
 # clean keeps the other files in .dev, such as notes.
 clean:

@@ -8,7 +8,7 @@
     "build:embed": "pnpm build && node scripts/embed.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "gen:api": "go run ../cmd/runplane openapi > src/api/openapi.json && openapi-typescript src/api/openapi.json -o src/api/schema.d.ts"
+    "gen:api": "go run ../cmd/runplane openapi > src/api/openapi.json && openapi-typescript src/api/openapi.json -o src/api/schema.d.ts && node scripts/gen-limits.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

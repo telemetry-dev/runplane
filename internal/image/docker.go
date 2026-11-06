@@ -17,6 +17,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/runplane/runplane/images"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 var platform = ocispec.Platform{OS: "linux", Architecture: runtime.GOARCH}
@@ -90,16 +91,16 @@ func (m *Manager) pull(ctx context.Context, ref string, r *reporter) error {
 }
 
 func (m *Manager) build(ctx context.Context, name, tag string) error {
-	dir, err := fs.Sub(images.FS, name)
-	if err != nil {
-		return fmt.Errorf("build %s: %w", name, err)
+	args := map[string]*string{}
+	for k, v := range images.BuildArgs(name) {
+		args[k] = &v
 	}
 	pr, pw := io.Pipe()
 	defer pr.Close()
-	go func() { pw.CloseWithError(writeContext(pw, dir)) }()
+	go func() { pw.CloseWithError(writeContext(pw, images.FS)) }()
 	res, err := m.cfg.Docker.ImageBuild(ctx, pr, client.ImageBuildOptions{
 		Tags:      []string{tag},
-		Labels:    map[string]string{labelManaged: "true"},
+		BuildArgs: args,
 		Version:   build.BuilderBuildKit,
 		Remove:    true,
 		Platforms: []ocispec.Platform{platform},
@@ -159,7 +160,7 @@ func writeContext(w io.Writer, dir fs.FS) error {
 // hold. Docker refuses to remove an image that a container uses; GC leaves it.
 func (m *Manager) dockerGC(ctx context.Context, keep map[string]bool) error {
 	list, err := m.cfg.Docker.ImageList(ctx, client.ImageListOptions{
-		Filters: client.Filters{}.Add("label", labelManaged+"=true"),
+		Filters: client.Filters{}.Add("label", guest.LabelManaged+"=true"),
 	})
 	if err != nil {
 		return fmt.Errorf("list images: %w", err)

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/runplane/runplane/internal/events"
@@ -73,17 +71,16 @@ func (s *Scheduler) syncServers(ctx context.Context) {
 				s.log.Warn("cleanup: stop sandbox", "sandbox", x.ID, "err", err)
 			}
 		}
-		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: v.ID, States: liveStates})
+		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{ServerID: v.ID, States: sandbox.LiveStates()})
 		if err != nil {
 			s.log.Warn("cleanup: list rows", "server", v.ID, "err", err)
 			continue
 		}
 		for _, b := range rows {
-			if listed[b.ID] || starting[b.ID] != "" || !b.CreatedAt.Before(since) {
+			if listed[b.ID] || starting[b.ID] || !b.CreatedAt.Before(since) {
 				continue
 			}
 			s.setState(ctx, b.ID, sandbox.StateGone, "not found on the server")
-			s.flushSandbox(ctx, b.ID)
 		}
 	}
 
@@ -95,7 +92,6 @@ func (s *Scheduler) syncServers(ctx context.Context) {
 	for _, b := range rows {
 		if !known[b.ServerID] {
 			s.setState(ctx, b.ID, sandbox.StateGone, "server removed")
-			s.flushSandbox(ctx, b.ID)
 		}
 	}
 }
@@ -121,7 +117,6 @@ func (s *Scheduler) dropWaiting(ctx context.Context, serverID string) {
 		}
 		s.log.Info("cleanup: drop a sandbox of an unreachable server", "sandbox", b.ID, "server", serverID)
 		s.setState(ctx, b.ID, sandbox.StateGone, "server unreachable")
-		s.flushSandbox(ctx, b.ID)
 	}
 }
 
@@ -134,15 +129,9 @@ func (s *Scheduler) removeStrayRunners(ctx context.Context) {
 			s.log.Warn("cleanup: list runners", "scale_set", h.set.ID, "err", err)
 			continue
 		}
-		// A runner can exist on GitHub before its row. Take this snapshot
-		// after the runner list and before the rows.
-		s.mu.Lock()
-		starting := map[string]bool{}
-		for _, name := range s.starting {
-			starting[name] = true
-		}
-		s.mu.Unlock()
-		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{PoolID: h.set.PoolID, States: liveStates})
+		// A start writes its row before GitHub makes its runner, so the rows
+		// read after the runner list name each runner of a start.
+		rows, err := s.st.ListSandboxes(ctx, store.SandboxFilter{PoolID: h.set.PoolID, States: sandbox.LiveStates()})
 		if err != nil {
 			s.log.Warn("cleanup: list rows", "err", err)
 			continue
@@ -152,7 +141,7 @@ func (s *Scheduler) removeStrayRunners(ctx context.Context) {
 			known[b.RunnerName] = true
 		}
 		for _, r := range runners {
-			if r.Busy || known[r.Name] || starting[r.Name] {
+			if r.Busy || known[r.Name] {
 				continue
 			}
 			s.log.Info("cleanup: remove a runner with no sandbox", "runner", r.Name, "scale_set", h.set.ID)
@@ -223,10 +212,9 @@ func (s *Scheduler) stopOverdue(ctx context.Context) {
 }
 
 // cancelLostJobs completes the running jobs whose sandbox is gone for more
-// than lostJobAfter with no completion message. The result is the one that
-// the runner reported, or else cancelled; a late JobCompleted, or the
-// conclusion of the GitHub job that the finish step reads, replaces a
-// cancelled result.
+// than lostJobAfter with no completion message. The result is a guess: the
+// one that the runner reported, or else cancelled. A late JobCompleted, or
+// the conclusion of the GitHub job that the finish step reads, replaces it.
 func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 	jobs, err := s.st.ListStaleRunningJobs(ctx, s.now().Add(-lostJobAfter))
 	if err != nil {
@@ -247,13 +235,13 @@ func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 		s.mu.Unlock()
 		s.log.Info("cleanup: complete a job whose sandbox is gone", "job", j.ID, "sandbox", j.SandboxID, "result", result)
 		done, err := s.st.UpsertJob(ctx, store.JobMessage{
-			RunnerRequestID: j.RunnerRequestID, State: store.JobCompleted, Result: result, FinishedAt: finished,
-		})
+			RunnerRequestID: j.RunnerRequestID, State: store.JobCompleted, Result: result, Guessed: true, FinishedAt: finished,
+		}, s.now())
 		if err != nil {
 			s.log.Warn("cleanup: complete job", "job", j.ID, "err", err)
 			continue
 		}
-		s.publish(events.JobState, done)
+		s.bus.Publish(events.JobState(done))
 		s.finish(j.ID)
 	}
 }
@@ -262,7 +250,7 @@ func (s *Scheduler) cancelLostJobs(ctx context.Context) {
 // step did not end, for example because runplane stopped during it. GitHub
 // does not send the JobCompleted message again.
 func (s *Scheduler) resumeFinish(ctx context.Context) {
-	jobs, err := s.st.ListUnfinishedJobs(ctx, s.now().Add(-resumeFinishWithin), resumeFinishBatch)
+	jobs, err := s.st.ListUnfinishedJobs(ctx, resumeFinishBatch)
 	if err != nil {
 		s.log.Warn("cleanup: list unfinished jobs", "err", err)
 		return
@@ -272,9 +260,10 @@ func (s *Scheduler) resumeFinish(ctx context.Context) {
 	}
 }
 
-// closeUnclaimedJobs closes the jobs that wait in queued for longer than
-// unclaimedJobAfter: runplane had no room for them, or GitHub gave them to
-// another runner.
+// closeUnclaimedJobs closes the jobs that wait for a runner for longer than
+// unclaimedJobAfter: runplane had no room for them, GitHub gave them to
+// another runner, or runplane did not get the message that ended their
+// assignment.
 func (s *Scheduler) closeUnclaimedJobs(ctx context.Context) {
 	now := s.now()
 	jobs, err := s.st.ExpireQueuedJobs(ctx, now.Add(-unclaimedJobAfter), now)
@@ -285,7 +274,7 @@ func (s *Scheduler) closeUnclaimedJobs(ctx context.Context) {
 	pools := map[string]bool{}
 	for _, j := range jobs {
 		s.log.Info("cleanup: close a job that runplane did not run", "job", j.ID, "queued_at", j.QueuedAt)
-		s.publish(events.JobState, j)
+		s.bus.Publish(events.JobState(j))
 		pools[j.PoolID] = true
 	}
 	for id := range pools {
@@ -303,9 +292,7 @@ func (s *Scheduler) dropExpired() {
 }
 
 // retention deletes the jobs and sandbox rows older than job_retention_days,
-// the stored logs older than log_retention_days, the expired sessions and
-// tokens, and the old server and cache samples. A retention of 0 days keeps
-// everything.
+// and the stored logs older than log_retention_days.
 func (s *Scheduler) retention(ctx context.Context) {
 	st, err := s.st.GetSettings(ctx)
 	if err != nil {
@@ -313,40 +300,16 @@ func (s *Scheduler) retention(ctx context.Context) {
 		return
 	}
 	now := s.now()
-	if st.JobRetentionDays > 0 {
-		before := now.AddDate(0, 0, -st.JobRetentionDays)
-		ids, err := s.st.DeleteJobsBefore(ctx, before)
-		if err != nil {
-			s.log.Warn("retention: delete jobs", "err", err)
-		}
-		s.removeLogs(ids)
-		if err := s.st.DeleteSandboxesBefore(ctx, before); err != nil {
-			s.log.Warn("retention: delete sandboxes", "err", err)
-		}
+	before := now.AddDate(0, 0, -st.JobRetentionDays)
+	ids, err := s.st.DeleteJobsBefore(ctx, before)
+	if err != nil {
+		s.log.Warn("retention: delete jobs", "err", err)
 	}
-	if st.LogRetentionDays > 0 {
-		ids, err := s.st.ExpireJobLogs(ctx, now.AddDate(0, 0, -st.LogRetentionDays))
-		if err != nil {
-			s.log.Warn("retention: expire logs", "err", err)
-		}
-		s.removeLogs(ids)
+	s.jobLogs.Remove(ids)
+	if err := s.st.DeleteSandboxesBefore(ctx, before); err != nil {
+		s.log.Warn("retention: delete sandboxes", "err", err)
 	}
-	if err := s.st.DeleteExpired(ctx, now); err != nil {
-		s.log.Warn("retention: delete expired rows", "err", err)
-	}
-	if err := s.st.PruneServerStats(ctx, now.Add(-statsRetention)); err != nil {
-		s.log.Warn("retention: prune server stats", "err", err)
-	}
-	if err := s.st.PruneCacheStats(ctx, now.Add(-statsRetention)); err != nil {
-		s.log.Warn("retention: prune cache stats", "err", err)
-	}
-}
-
-func (s *Scheduler) removeLogs(jobIDs []string) {
-	for _, id := range jobIDs {
-		err := os.Remove(filepath.Join(s.logsDir, id+".log"))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			s.log.Warn("retention: remove job log", "job", id, "err", err)
-		}
+	if err := s.jobLogs.Expire(ctx, now.AddDate(0, 0, -st.LogRetentionDays)); err != nil {
+		s.log.Warn("retention: expire logs", "err", err)
 	}
 }

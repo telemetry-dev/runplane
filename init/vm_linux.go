@@ -13,17 +13,11 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/runplane/runplane/internal/sandbox/control"
-)
-
-// Drives of a microVM: vda is the read-only root disk.
-const (
-	bundleDev  = "/dev/vdb" // read-only runner bundle
-	scratchDev = "/dev/vdc" // sparse ext4, erased after the job
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // detectVM reports VM mode: init is PID 1 and the kernel command line has
-// runplane.mode=vm. It mounts /proc to read the command line.
+// guest.VMFlag. It mounts /proc to read the command line.
 func detectVM() (bool, error) {
 	if os.Getpid() != 1 {
 		return false, nil
@@ -35,7 +29,7 @@ func detectVM() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read kernel command line: %w", err)
 	}
-	return slices.Contains(strings.Fields(string(cmdline)), "runplane.mode=vm"), nil
+	return slices.Contains(strings.Fields(string(cmdline)), guest.VMFlag), nil
 }
 
 // setupVM makes the writable root of a microVM. The root disk is read-only
@@ -55,11 +49,11 @@ func setupVM() error {
 	}
 	stage := "/run/runplane-init"
 	disk, root := stage+"/scratch", stage+"/root"
-	upper, work := disk+"/root/upper", disk+"/root/work"
+	upper, work := disk+"/"+guest.ScratchRoot+"/upper", disk+"/"+guest.ScratchRoot+"/work"
 	if err := mkdirs(disk, root); err != nil {
 		return err
 	}
-	if err := mount(scratchDev, disk, "ext4", 0, ""); err != nil {
+	if err := mount(guest.DriveScratch.Device(), disk, "ext4", 0, ""); err != nil {
 		return err
 	}
 	if err := mkdirs(upper, work); err != nil {
@@ -68,10 +62,10 @@ func setupVM() error {
 	if err := mount("overlay", root, "overlay", 0, "lowerdir=/,upperdir="+upper+",workdir="+work); err != nil {
 		return err
 	}
-	if err := mkdirs(root+scratchDir, root+"/.oldroot"); err != nil {
+	if err := mkdirs(root+guest.ScratchDir, root+"/.oldroot"); err != nil {
 		return err
 	}
-	if err := unix.Mount(disk, root+scratchDir, "", unix.MS_MOVE, ""); err != nil {
+	if err := unix.Mount(disk, root+guest.ScratchDir, "", unix.MS_MOVE, ""); err != nil {
 		return fmt.Errorf("move scratch disk: %w", err)
 	}
 	if err := pivot(root); err != nil {
@@ -134,17 +128,14 @@ func setImageEnv(file string) error {
 	if err != nil {
 		return err
 	}
-	for kv := range strings.SplitSeq(string(b), "\x00") {
-		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
-			if err := os.Setenv(k, v); err != nil {
-				return err
-			}
+	for k, v := range guest.DecodeImageEnv(b) {
+		if err := os.Setenv(k, v); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// pivot makes root the new root mount and drops the old root.
 func pivot(root string) error {
 	if err := unix.Chdir(root); err != nil {
 		return err
@@ -163,7 +154,7 @@ func pivot(root string) error {
 
 // configureVM applies the parts of the config that Docker does for a
 // container: host name, /etc/hosts, DNS, and the loopback device.
-func configureVM(cfg control.GuestConfig) error {
+func configureVM(cfg guest.Config) error {
 	if cfg.Hostname != "" {
 		if err := unix.Sethostname([]byte(cfg.Hostname)); err != nil {
 			return fmt.Errorf("set host name: %w", err)
@@ -197,15 +188,16 @@ func mountBundle(dir string) error {
 	if err := mkdirs(dir); err != nil {
 		return err
 	}
+	dev := guest.DriveRunner.Device()
 	var errs []error
 	for _, fstype := range []string{"ext4", "erofs", "squashfs"} {
-		err := unix.Mount(bundleDev, dir, fstype, unix.MS_RDONLY, "")
+		err := unix.Mount(dev, dir, fstype, unix.MS_RDONLY, "")
 		if err == nil {
 			return nil
 		}
 		errs = append(errs, fmt.Errorf("%s: %w", fstype, err))
 	}
-	return fmt.Errorf("mount runner bundle %s: %w", bundleDev, errors.Join(errs...))
+	return fmt.Errorf("mount runner bundle %s: %w", dev, errors.Join(errs...))
 }
 
 func loopbackUp() error {
@@ -236,7 +228,8 @@ func powerOff(vm bool, code int) {
 		os.Exit(code)
 	}
 	// Firecracker on x86 has no power-off device. It exits when the guest
-	// resets the CPU, which a reboot does with the kernel option reboot=k.
+	// resets the CPU, which a reboot does with the kernel option reboot=k
+	// (guest.KernelArgs).
 	cmd := unix.LINUX_REBOOT_CMD_POWER_OFF
 	if runtime.GOARCH == "amd64" {
 		cmd = unix.LINUX_REBOOT_CMD_RESTART
@@ -254,7 +247,6 @@ func mount(src, target, fstype string, flags uintptr, data string) error {
 	return nil
 }
 
-// mountOnce mounts unless something is mounted at target already.
 func mountOnce(src, target, fstype string, flags uintptr, data string) error {
 	if isMountPoint(target) {
 		return nil
@@ -262,8 +254,7 @@ func mountOnce(src, target, fstype string, flags uintptr, data string) error {
 	return mount(src, target, fstype, flags, data)
 }
 
-// isMountPoint reports if path is a mount point. Without /proc it reports
-// false.
+// Without /proc, isMountPoint reports false.
 func isMountPoint(path string) bool {
 	info, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {

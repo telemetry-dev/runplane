@@ -18,34 +18,35 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/runplane/runplane/internal/blob"
+	"github.com/runplane/runplane/internal/datadisk"
 )
 
 // tagTTL is how long a tag is trusted before a check with upstream.
 const tagTTL = 10 * time.Minute
 
 type Config struct {
-	Dir      string                   // cache folder, for example /var/lib/runplane/mirror
-	MaxBytes int64                    // size limit of the cache; 0 = no limit
-	Allow    func(ip netip.Addr) bool // reports if a client address can use the mirror
-	Logger   *slog.Logger
+	Dir string // cache folder, for example /var/lib/runplane/mirror
+	// Space returns the room of the mirror on the data disk now
+	// (datadisk.Limits). Below min_free_disk_percent, the mirror keeps no
+	// new content and removes the least recently used files.
+	Space  func() datadisk.Space
+	Allow  func(ip netip.Addr) bool // reports if a client address can use the mirror
+	Logger *slog.Logger
+	Now    func() time.Time // nil: time.Now
+	// Upstream is the registry that the mirror pulls from. "": Docker Hub.
+	Upstream string
 }
 
 // Stats counts the use of the mirror since the start. A request for a
 // manifest or a blob is a hit if the mirror serves it from the cache.
 type Stats struct {
-	Hits      int64 `json:"hits"`
-	Misses    int64 `json:"misses"`
-	HitBytes  int64 `json:"hit_bytes"`  // bytes sent to clients from the cache
-	MissBytes int64 `json:"miss_bytes"` // bytes fetched from upstream
-	SizeBytes int64 `json:"size_bytes"` // bytes in the cache now
-}
-
-func (s *Stats) Add(o Stats) {
-	s.Hits += o.Hits
-	s.Misses += o.Misses
-	s.HitBytes += o.HitBytes
-	s.MissBytes += o.MissBytes
-	s.SizeBytes += o.SizeBytes
+	Hits      int64
+	Misses    int64
+	HitBytes  int64 // bytes sent to clients from the cache
+	MissBytes int64 // bytes fetched from upstream
+	SizeBytes int64 // bytes in the cache now
 }
 
 // Mirror is an http.Handler for /v2/.
@@ -55,6 +56,7 @@ type Mirror struct {
 	tags  *tagIndex
 	allow func(netip.Addr) bool
 	log   *slog.Logger
+	now   func() time.Time
 
 	ctx    context.Context // ends at Close
 	cancel context.CancelFunc
@@ -71,22 +73,28 @@ type Mirror struct {
 
 // New opens the cache in cfg.Dir. Call Close after the HTTP server stops.
 func New(cfg Config) (*Mirror, error) {
-	s, err := openStore(cfg.Dir, cfg.MaxBytes)
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	s, err := openStore(cfg.Dir, cfg.Space)
 	if err != nil {
 		return nil, fmt.Errorf("open mirror cache: %w", err)
 	}
-	tags, err := openTags(filepath.Join(cfg.Dir, "tags"))
+	tags, err := openTags(filepath.Join(cfg.Dir, "tags"), cfg.Now)
 	if err != nil {
 		return nil, fmt.Errorf("open mirror cache: %w", err)
 	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.ResponseHeaderTimeout = time.Minute
 	m := &Mirror{
-		up:        &upstream{base: "https://registry-1.docker.io", client: &http.Client{Transport: t}},
+		up: &upstream{
+			base: cmp.Or(cfg.Upstream, "https://registry-1.docker.io"), client: &http.Client{Transport: t}, now: cfg.Now,
+		},
 		store:     s,
 		tags:      tags,
 		allow:     cfg.Allow,
 		log:       cmp.Or(cfg.Logger, slog.New(slog.DiscardHandler)),
+		now:       cfg.Now,
 		downloads: map[string]*download{},
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
@@ -144,9 +152,8 @@ func (m *Mirror) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	nameRe   = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
-	tagRe    = regexp.MustCompile(`^\w[\w.-]{0,127}$`)
-	digestRe = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	nameRe = regexp.MustCompile(`^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$`)
+	tagRe  = regexp.MustCompile(`^\w[\w.-]{0,127}$`)
 )
 
 // parsePath splits a path such as /alpine/manifests/latest (after /v2) into
@@ -165,7 +172,7 @@ func parsePath(path string) (name, kind, ref string, err error) {
 	if !strings.Contains(name, "/") {
 		name = "library/" + name
 	}
-	if !digestRe.MatchString(ref) && (kind == blobsDir || !tagRe.MatchString(ref)) {
+	if !blob.ValidDigest(ref) && (kind == blobsDir || !tagRe.MatchString(ref)) {
 		return "", "", "", &apiError{http.StatusBadRequest, "DIGEST_INVALID", "invalid tag or sha256 digest"}
 	}
 	return name, kind, ref, nil

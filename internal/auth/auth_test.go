@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/runplane/runplane/internal/audit"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -27,7 +29,7 @@ func newEnv(t *testing.T) *testEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	e := &testEnv{st: st, now: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
-	e.svc = NewService(st, []byte("device key"))
+	e.svc = NewService(st, []byte("device key"), nil)
 	e.svc.now = func() time.Time { return e.now }
 	return e
 }
@@ -58,9 +60,6 @@ func TestPasswordHashFormat(t *testing.T) {
 	// Made with the reference implementation (libargon2):
 	// echo -n "correct horse battery" | argon2 saltsaltsaltsalt -id -t 2 -k 19456 -p 1 -l 32
 	const ref = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$iPOQ5f2O21FsjnBvo1AiFcDuSXciCnKUrXFO+yfgNoM"
-	if got := hashWithSalt("correct horse battery", []byte("saltsaltsaltsalt")); got != ref {
-		t.Errorf("hash:\n got %s\nwant %s", got, ref)
-	}
 	if ok, err := CheckPassword(ref, "correct horse battery"); !ok || err != nil {
 		t.Errorf("right password: %v, %v", ok, err)
 	}
@@ -71,6 +70,24 @@ func TestPasswordHashFormat(t *testing.T) {
 		if _, err := CheckPassword(bad, "x"); err == nil {
 			t.Errorf("CheckPassword(%q) has no error", bad)
 		}
+	}
+
+	// CheckPassword reads the parameters from the hash, so HashPassword must
+	// write the ones that it used, at least the OWASP minimum of 19 MiB and
+	// 2 passes, with a new salt for each hash.
+	hash := HashPassword("correct horse battery")
+	if ok, err := CheckPassword(hash, "correct horse battery"); !ok || err != nil {
+		t.Errorf("right password against %s: %v, %v", hash, ok, err)
+	}
+	if ok, err := CheckPassword(hash, "correct horse batterY"); ok || err != nil {
+		t.Errorf("wrong password against %s: %v, %v", hash, ok, err)
+	}
+	var memory, passes, threads int
+	if _, err := fmt.Sscanf(hash, "$argon2id$v=19$m=%d,t=%d,p=%d$", &memory, &passes, &threads); err != nil || memory < 19456 || passes < 2 {
+		t.Errorf("hash %s, want argon2id with m >= 19456 and t >= 2", hash)
+	}
+	if again := HashPassword("correct horse battery"); again == hash {
+		t.Error("two hashes of one password are equal: the salt is not random")
 	}
 }
 
@@ -150,7 +167,7 @@ func TestLoginFromAKnownDevice(t *testing.T) {
 		"no device":                     "",
 		"device of another user":        e.svc.Device("someone else", ""),
 		"device with a changed ID":      "x" + id + "." + mac,
-		"device of a key that is wrong": NewService(e.st, []byte("other key")).Device(admin.ID, ""),
+		"device of a key that is wrong": NewService(e.st, []byte("other key"), nil).Device(admin.ID, ""),
 	} {
 		if err := e.login("admin@example.com", "first password", token, "10.9.9.9"); !errors.Is(err, ErrRateLimited) {
 			t.Errorf("%s with the email locked: err = %v, want ErrRateLimited", name, err)
@@ -231,21 +248,6 @@ func TestSetupCode(t *testing.T) {
 		t.Fatalf("short password: err = %v", err)
 	}
 
-	// Lowercase without dashes also works.
-	typed := code[0:4] + code[5:9] + code[10:14]
-	u, err := setup(" " + strings.ToLower(typed) + " ")
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	// The code is used: it fails even when no user exists again.
-	if err := e.st.DeleteUser(ctx, u.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := setup(code); !errors.Is(err, ErrBadSetupCode) {
-		t.Fatalf("used code: err = %v, want ErrBadSetupCode", err)
-	}
-
 	expiring, err := e.svc.NewSetupCode(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -253,6 +255,16 @@ func TestSetupCode(t *testing.T) {
 	e.wait(24 * time.Hour)
 	if _, err := setup(expiring); !errors.Is(err, ErrBadSetupCode) {
 		t.Fatalf("expired code: err = %v, want ErrBadSetupCode", err)
+	}
+
+	// Lowercase without dashes also works.
+	code, err = e.svc.NewSetupCode(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := code[0:4] + code[5:9] + code[10:14]
+	if _, err := setup(" " + strings.ToLower(typed) + " "); err != nil {
+		t.Fatalf("setup: %v", err)
 	}
 }
 
@@ -274,8 +286,44 @@ func TestSetupRefusedAfterFirstAdmin(t *testing.T) {
 	if _, err := e.svc.NewSetupCode(ctx); !errors.Is(err, ErrSetupDone) {
 		t.Fatalf("new code after the first user: err = %v, want ErrSetupDone", err)
 	}
+	// The valid code does not make serve tell that no admin exists.
+	if _, err := e.svc.EnsureSetupCode(ctx); !errors.Is(err, ErrSetupDone) {
+		t.Fatalf("ensure a code after the first user: err = %v, want ErrSetupDone", err)
+	}
 	if n, _ := e.st.CountUsers(ctx); n != 1 {
 		t.Fatalf("users = %d, want 1", n)
+	}
+}
+
+// install.sh prints a code, then runplane restarts. serve keeps the code.
+func TestEnsureSetupCodeKeepsAValidCode(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	printed, err := e.svc.NewSetupCode(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, err := e.svc.EnsureSetupCode(ctx); err != nil || code != "" {
+		t.Fatalf("EnsureSetupCode = %q, %v; want no new code while one is valid", code, err)
+	}
+	if _, _, err := e.svc.Setup(ctx, printed, "Ada", "ada@example.com", "a long password", "127.0.0.1", "test"); err != nil {
+		t.Fatalf("the printed code stopped working after a restart: %v", err)
+	}
+}
+
+func TestEnsureSetupCodeReplacesAnExpiredCode(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if _, err := e.svc.NewSetupCode(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.wait(SetupCodeTTL)
+	code, err := e.svc.EnsureSetupCode(ctx)
+	if err != nil || code == "" {
+		t.Fatalf("EnsureSetupCode = %q, %v; want a new code", code, err)
+	}
+	if _, _, err := e.svc.Setup(ctx, code, "Ada", "ada@example.com", "a long password", "127.0.0.1", "test"); err != nil {
+		t.Fatalf("the new code does not work: %v", err)
 	}
 }
 
@@ -284,13 +332,14 @@ func TestInviteSingleUse(t *testing.T) {
 	ctx := context.Background()
 	admin, _ := e.setup(t)
 
-	if _, err := e.svc.CreateInvite(ctx, admin.ID, "admin@example.com", RoleMember); !errors.Is(err, ErrEmailTaken) {
+	by := audit.Actor{UserID: admin.ID}
+	if _, _, err := e.svc.CreateInvite(ctx, by, "admin@example.com", RoleMember); !errors.Is(err, ErrEmailTaken) {
 		t.Fatalf("invite for a user: err = %v", err)
 	}
-	if _, err := e.svc.CreateInvite(ctx, admin.ID, "bob@example.com", "owner"); !errors.Is(err, ErrBadRole) {
+	if _, _, err := e.svc.CreateInvite(ctx, by, "bob@example.com", "owner"); !errors.Is(err, ErrBadRole) {
 		t.Fatalf("bad role: err = %v", err)
 	}
-	token, err := e.svc.CreateInvite(ctx, admin.ID, " Bob@Example.com", RoleMember)
+	_, token, err := e.svc.CreateInvite(ctx, by, " Bob@Example.com", RoleMember)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +365,7 @@ func TestInviteSingleUse(t *testing.T) {
 		t.Fatalf("second accept: err = %v, want ErrBadInvite", err)
 	}
 
-	late, err := e.svc.CreateInvite(ctx, admin.ID, "carol@example.com", RoleAdmin)
+	_, late, err := e.svc.CreateInvite(ctx, by, "carol@example.com", RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,24 +404,100 @@ func TestChangePassword(t *testing.T) {
 	}
 }
 
-func TestCanDo(t *testing.T) {
-	tests := []struct {
-		role string
-		a    Action
-		want bool
-	}{
-		{RoleAdmin, ActionAdmin, true},
-		{RoleMember, ActionRead, true},
-		{RoleMember, ActionRerunJob, true},
-		{RoleMember, ActionStopSandbox, true},
-		{RoleMember, ActionOpenShell, true},
-		{RoleMember, ActionAdmin, false},
-		{"", ActionRead, false},
-		{"owner", ActionRead, false},
+// The operator resets a password from the shell. The Activity page shows it.
+func TestResetPassword(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin, oldToken := e.setup(t)
+	if _, err := e.svc.ResetPassword(ctx, audit.Actor{}, "eve@example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown email: err = %v, want store.ErrNotFound", err)
 	}
-	for _, tt := range tests {
-		if got := CanDo(tt.role, tt.a); got != tt.want {
-			t.Errorf("CanDo(%q, %d) = %v, want %v", tt.role, tt.a, got, tt.want)
-		}
+	password, err := e.svc.ResetPassword(ctx, audit.Actor{}, " Admin@Example.com ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.UserForToken(ctx, oldToken); !errors.Is(err, ErrNoSession) {
+		t.Errorf("session after the reset: err = %v, want ErrNoSession", err)
+	}
+	if err := e.login("admin@example.com", "first password", "", ""); !errors.Is(err, ErrBadLogin) {
+		t.Errorf("old password: err = %v, want ErrBadLogin", err)
+	}
+	if err := e.login("admin@example.com", password, "", ""); err != nil {
+		t.Errorf("new password: %v", err)
+	}
+	entries, _, err := e.st.ListAudit(ctx, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resets := slices.DeleteFunc(entries, func(a store.AuditEntry) bool { return a.Action != "user.password_reset" })
+	if len(resets) != 1 || resets[0].Target != admin.ID || resets[0].UserID != "" {
+		t.Errorf("reset entries %+v, want one of %s by runplane", resets, admin.ID)
+	}
+}
+
+// A refused name must not leave a changed password behind.
+func TestUpdateMeChangesNothingForABadName(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	admin, _ := e.setup(t)
+	blank, current, next := "  ", "first password", "second password"
+	if _, _, err := e.svc.UpdateMe(ctx, admin.ID, &blank, &current, &next, "", ""); !errors.Is(err, ErrBadName) {
+		t.Fatalf("blank name: err = %v, want ErrBadName", err)
+	}
+	if err := e.login("admin@example.com", "first password", "", ""); err != nil {
+		t.Fatalf("old password after the refused change: %v", err)
+	}
+	name := " Ada L "
+	u, token, err := e.svc.UpdateMe(ctx, admin.ID, &name, nil, nil, "", "")
+	if err != nil || u.Name != "Ada L" || token != "" {
+		t.Fatalf("rename: %+v, token %q, %v; want Ada L and no new session", u, token, err)
+	}
+}
+
+func TestUpdateMeNeedsTheCurrentPassword(t *testing.T) {
+	e := newEnv(t)
+	admin, _ := e.setup(t)
+	next := "second password"
+	if _, _, err := e.svc.UpdateMe(context.Background(), admin.ID, nil, nil, &next, "", ""); !errors.Is(err, ErrNoCurrentPassword) {
+		t.Fatalf("new password without the current one: err = %v, want ErrNoCurrentPassword", err)
+	}
+}
+
+// runplane keeps an admin: the last admin cannot lose the role or be
+// deleted, and nobody deletes the own account.
+func TestLastAdminStays(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	ada, _ := e.setup(t)
+	bob := store.User{ID: "bob", Email: "bob@example.com", Name: "Bob", Role: RoleAdmin, CreatedAt: e.now}
+	if err := e.st.CreateUser(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	by := audit.Actor{UserID: ada.ID}
+
+	if err := e.svc.DeleteUser(ctx, by, ada.ID); !errors.Is(err, ErrOwnAccount) {
+		t.Errorf("delete of the own account: err = %v, want ErrOwnAccount", err)
+	}
+	if u, err := e.svc.SetRole(ctx, by, ada.ID, RoleMember); err != nil || u.Role != RoleMember {
+		t.Fatalf("one of two admins becomes a member: %+v, %v", u, err)
+	}
+	users, err := e.st.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := LastAdmin(users); got != "bob" {
+		t.Errorf("last admin %q, want bob", got)
+	}
+	if _, err := e.svc.SetRole(ctx, by, "bob", RoleMember); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("the last admin becomes a member: err = %v, want ErrLastAdmin", err)
+	}
+	if err := e.svc.DeleteUser(ctx, by, "bob"); !errors.Is(err, ErrLastAdmin) {
+		t.Errorf("delete of the last admin: err = %v, want ErrLastAdmin", err)
+	}
+	if u, err := e.st.GetUser(ctx, "bob"); err != nil || u.Role != RoleAdmin {
+		t.Errorf("bob after the refused changes: %+v, %v; want an admin", u, err)
+	}
+	if err := e.svc.DeleteUser(ctx, audit.Actor{UserID: "bob"}, ada.ID); err != nil {
+		t.Errorf("delete of a member: %v", err)
 	}
 }

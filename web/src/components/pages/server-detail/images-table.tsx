@@ -12,8 +12,8 @@ import {
   useFittingColumns,
 } from '~/components/app/data-table'
 import { None } from '~/components/app/none'
-import { StatusIcon } from '~/components/app/status-icon'
-import { SkeletonRows } from '~/components/pages/runners/skeleton-rows'
+import { SkeletonRows } from '~/components/app/skeleton-rows'
+import { buildStateNames, StatusIcon } from '~/components/app/status-icon'
 import { Spinner } from '~/components/ui/spinner'
 import { formatBytes } from '~/lib/format'
 import { buildOn, shortDigest, type Server } from './server-format'
@@ -23,9 +23,9 @@ type ImageBuild = Schemas['ImageBuild']
 
 type ImagesTableProps = {
   server: Server
-  /** All images; undefined while they load. image.state events refetch them. */
+  /** All images; undefined while they load. */
   images: readonly Image[] | undefined
-  /** The row while the list did not load, in place of the loading rows. */
+  /** A LoadErrorRow in place of the loading rows, when the list did not load. */
   failed?: ReactNode
 }
 
@@ -41,11 +41,7 @@ export function ImagesTable({ server, images, failed }: ImagesTableProps) {
           <DataTableHead>On this server</DataTableHead>
         </DataTableHeader>
         {!images ? (
-          failed ? (
-            <DataTableEmpty>{failed}</DataTableEmpty>
-          ) : (
-            <SkeletonRows lines={2} label="Loading images" />
-          )
+          failed ?? <SkeletonRows lines={2} label="Loading images" />
         ) : images.length === 0 ? (
           <DataTableEmpty>No images.</DataTableEmpty>
         ) : (
@@ -118,16 +114,9 @@ function BuildState({ build, vm }: { build: ImageBuild | undefined; vm: boolean 
     <>
       <Spinner />
       <span className="truncate text-neutral-10">
-        {progress[build.status]}
+        {buildStateNames[build.status]}
         {build.status === 'converting' && vm && <span className="text-neutral-7"> · to a VM disk</span>}
       </span>
     </>
   )
-}
-
-const progress: Record<Exclude<ImageBuild['status'], 'ready' | 'failed'>, string> = {
-  pending: 'Waiting',
-  pulling: 'Pulling',
-  building: 'Building',
-  converting: 'Converting',
 }

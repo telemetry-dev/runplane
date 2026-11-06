@@ -1,4 +1,4 @@
-import { errorMessage, fieldErrors, type Schemas } from '~/api/client'
+import type { Schemas } from '~/api/client'
 import type { Pool } from './runner-format'
 
 // The values of the label dialog and the requests it sends.
@@ -24,8 +24,6 @@ export type Draft = {
 }
 
 export type PoolRequest = Required<Omit<Schemas['CreatePoolRequest'], 'name' | 'enabled'>>
-
-export const labelPattern = /^[a-z0-9][a-z0-9-]{0,62}$/
 
 /** The values of an existing pool, or the defaults of a new one on the given arch. */
 export function draftFrom(pool: Pool | undefined, arch: Arch, defaultImageId: string | undefined): Draft {
@@ -93,7 +91,7 @@ export function poolUpdate(pool: Pool, initial: Draft, after: PoolRequest, serve
 }
 
 /** The fields of `after` that differ from `before`, for PATCH /api/pools/{id}. */
-export function poolChanges(before: PoolRequest, after: PoolRequest): Schemas['UpdatePoolRequest'] {
+function poolChanges(before: PoolRequest, after: PoolRequest): Schemas['UpdatePoolRequest'] {
   const changes: Record<string, unknown> = {}
   for (const key of Object.keys(after) as (keyof PoolRequest)[]) {
     if (!sameValue(before[key], after[key])) changes[key] = after[key]
@@ -106,36 +104,8 @@ function sameValue(a: unknown, b: unknown): boolean {
   return a === b
 }
 
-export type LabelProblems = {
-  /** Messages under the form's fields, for the `errors` of the Form. */
-  errors: Record<string, string>
-  /** The message under Servers. */
-  servers?: string
-  /** The message under Image. */
-  image?: string
-  /** The message of the problems that no control shows. */
-  alert: string | null
-}
-
-/** The body fields that have a Field of the same name in the dialog. */
-const formFields = ['label', 'vcpu', 'memory_mb', 'disk_gb', 'min_idle', 'max_runners']
-
 /**
- * Splits the error of a failed save among the dialog's controls, so each
- * problem shows somewhere. The API names a server by its index, as "server_ids[2]".
+ * The body fields that the dialog shows: the Fields of the same name, and the
+ * servers and the image, whose problems show under those controls.
  */
-export function labelProblems(error: unknown): LabelProblems {
-  const problems: LabelProblems = { errors: {}, alert: null }
-  if (!error) return problems
-  const rest: string[] = []
-  for (const [name, message] of Object.entries(fieldErrors(error))) {
-    if (formFields.includes(name)) problems.errors[name] = message
-    else if (name === 'server_ids' || name.startsWith('server_ids[')) problems.servers ??= message
-    else if (name === 'image_id') problems.image = message
-    else rest.push(message)
-  }
-  const shown = Object.keys(problems.errors).length > 0 || problems.servers !== undefined || problems.image !== undefined
-  if (rest.length > 0) problems.alert = rest.join(' ')
-  else if (!shown) problems.alert = errorMessage(error)
-  return problems
-}
+export const formFields = ['label', 'vcpu', 'memory_mb', 'disk_gb', 'min_idle', 'max_runners', 'server_ids', 'image_id']

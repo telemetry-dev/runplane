@@ -1,18 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronsUpDown, Copy, Settings2, Users } from 'lucide-react'
-import { sessionQuery, statusQuery } from '~/api/queries'
+import { statusQuery, useCapabilities } from '~/api/session'
 import { copyText } from '~/components/app/copy-button'
 import { LogoMark } from '~/components/ui/brand'
 import { Menu, MenuItem, MenuLinkItem, MenuPopup, MenuSeparator, MenuTrigger } from '~/components/ui/menu'
 import { useFrameSubscribed } from './pending'
 
-/** Instance name and address at the top of the sidebar; opens instance actions. */
 export function InstanceMenu() {
   const subscribed = useFrameSubscribed()
   const name = useQuery({ ...statusQuery, subscribed }).data?.instance_name || 'runplane'
   // Members is an admin-only page.
-  const admin = useQuery({ ...sessionQuery, subscribed }).data?.role === 'admin'
+  const { admin } = useCapabilities({ subscribed })
 
   return (
     <Menu>

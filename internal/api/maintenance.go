@@ -1,19 +1,19 @@
 package api
 
 import (
-	"cmp"
 	"context"
+	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
-	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/audit"
+	"github.com/runplane/runplane/internal/backup"
 	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/update"
 )
 
 type Backup struct {
@@ -21,16 +21,15 @@ type Backup struct {
 	CreatedAt time.Time `json:"created_at"`
 	SizeBytes int64     `json:"size_bytes"`
 	S3Key     string    `json:"s3_key" doc:"Object key in the S3 bucket. Empty if not uploaded."`
-	Status    string    `json:"status" enum:"running,done,uploading,uploaded,failed"`
+	Status    string    `json:"status" enum:"running,done,uploading,uploaded,failed" doc:"failed: the backup or its upload to S3 failed, and error tells why. After a failed upload, the file stays on this server."`
 	Error     string    `json:"error"`
 	Available bool      `json:"available" doc:"The file is on this server, so it can be downloaded."`
 }
 
 func (h *Handler) backupOut(b store.Backup) Backup {
-	_, err := os.Stat(b.Path)
 	return Backup{
 		ID: b.ID, CreatedAt: b.CreatedAt, SizeBytes: b.SizeBytes, S3Key: b.S3Key, Status: b.Status, Error: b.Error,
-		Available: err == nil && h.inBackupsDir(b.Path),
+		Available: h.d.Backups.Available(b),
 	}
 }
 
@@ -47,52 +46,35 @@ func (h *Handler) listBackups(ctx context.Context, _ *struct{}) (*body[[]Backup]
 }
 
 func (h *Handler) createBackup(ctx context.Context, _ *struct{}) (*body[Backup], error) {
-	if h.d.Backups == nil {
-		return nil, unavailable("Backups")
-	}
-	id, err := h.d.Backups.Run(ctx)
+	id, err := h.d.Backups.Create(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	b, err := h.d.Store.GetBackup(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "The new backup is gone.")
 	}
-	h.audit(ctx, "backup.create", b.ID, nil)
-	h.d.Bus.Publish(events.Event{Type: events.BackupState, Data: b})
+	h.record(ctx, audit.BackupCreate, b.ID, nil)
 	return &body[Backup]{h.backupOut(b)}, nil
 }
 
 func (h *Handler) downloadBackup(ctx context.Context, in *PathID) (*huma.StreamResponse, error) {
-	b, err := h.d.Store.GetBackup(ctx, in.ID)
-	if err != nil {
+	b, f, err := h.d.Backups.Open(ctx, in.ID)
+	switch {
+	case errors.Is(err, backup.ErrNoFile):
+		return nil, huma.Error404NotFound("The backup file is not on this server.")
+	case err != nil:
 		return nil, notFound(err, "No backup has this ID.")
 	}
-	if !h.inBackupsDir(b.Path) {
-		return nil, huma.Error404NotFound("The backup file is not on this server.")
-	}
-	f, err := os.Open(b.Path)
-	if os.IsNotExist(err) {
-		return nil, huma.Error404NotFound("The backup file is not on this server.")
-	}
-	if err != nil {
-		return nil, err
-	}
-	h.audit(ctx, "backup.download", b.ID, nil)
+	h.record(ctx, audit.BackupDownload, b.ID, nil)
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		defer f.Close()
 		r, w := humago.Unwrap(hctx)
-		name := filepath.Base(b.Path)
+		name := filepath.Base(f.Name())
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 		http.ServeContent(w, r, name, b.CreatedAt, f)
 	}}, nil
-}
-
-// inBackupsDir guards the download against a path outside the backups folder.
-func (h *Handler) inBackupsDir(path string) bool {
-	rel, err := filepath.Rel(h.d.Config.BackupsDir(), path)
-	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
 }
 
 type UpdateStatus struct {
@@ -102,64 +84,47 @@ type UpdateStatus struct {
 	URL         string     `json:"url" doc:"Release page."`
 	Notes       string     `json:"notes" doc:"Release notes in Markdown."`
 	PublishedAt *time.Time `json:"published_at"`
-	AutoUpdate  bool       `json:"auto_update" doc:"The auto_update setting."`
 	State       string     `json:"state" enum:"idle,applying,restarting" doc:"applying: runplane downloads and installs the update. restarting: the new version starts."`
 }
 
 func (h *Handler) getUpdate(ctx context.Context, _ *struct{}) (*body[UpdateStatus], error) {
-	if h.d.Updater == nil {
-		return nil, unavailable("The updater")
-	}
-	st, err := h.d.Store.GetSettings(ctx)
-	if err != nil {
-		return nil, err
-	}
 	u, err := h.d.Updater.Check(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	u.AutoUpdate = st.AutoUpdate
-	h.updateMu.Lock()
-	u.State = cmp.Or(h.updating, u.State, "idle")
-	h.updateMu.Unlock()
-	return &body[UpdateStatus]{u}, nil
+	out := UpdateStatus{
+		Current: u.Current, Latest: u.Latest, Available: u.Available, URL: u.URL, Notes: u.Notes,
+		State: string(h.d.Updater.State()),
+	}
+	if !u.PublishedAt.IsZero() {
+		out.PublishedAt = &u.PublishedAt
+	}
+	return &body[UpdateStatus]{out}, nil
 }
 
 func (h *Handler) applyUpdate(ctx context.Context, _ *struct{}) (*empty, error) {
-	if h.d.Updater == nil {
-		return nil, unavailable("The updater")
-	}
-	h.updateMu.Lock()
-	if h.updating != "" {
-		h.updateMu.Unlock()
-		return nil, huma.Error409Conflict("An update is being installed.")
-	}
-	h.updating = "applying"
-	h.updateMu.Unlock()
-	h.audit(ctx, "update.apply", "", nil)
 	// The update goes on when the admin closes the page.
-	err := h.d.Updater.Apply(context.WithoutCancel(ctx))
-	next := "restarting"
-	if err != nil {
-		next = ""
+	u, err := h.d.Updater.Apply(context.WithoutCancel(ctx))
+	switch {
+	case errors.Is(err, update.ErrBusy):
+		return nil, huma.Error409Conflict("An update is being installed.")
+	case errors.Is(err, update.ErrNoUpdate):
+		return nil, huma.Error409Conflict("runplane " + u.Current + " is the latest version.")
 	}
-	h.updateMu.Lock()
-	h.updating = next
-	h.updateMu.Unlock()
+	// serve stops after the update, but the HTTP server waits for this
+	// handler before the store closes.
+	h.record(ctx, audit.UpdateApply, "", nil)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return nil, nil
 }
 
 func (h *Handler) installScript(ctx context.Context, _ *struct{}) (*huma.StreamResponse, error) {
-	if h.d.InstallScript == nil {
-		return nil, unavailable("The install script")
-	}
 	return &huma.StreamResponse{Body: func(hctx huma.Context) {
 		r, w := humago.Unwrap(hctx)
 		w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Write(h.d.InstallScript.Script(r))
+		w.Write(h.d.InstallScript.Script(r.Host))
 	}}, nil
 }

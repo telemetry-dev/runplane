@@ -1,21 +1,25 @@
-import { useSuspenseQuery } from '@tanstack/react-query'
+import { useSuspenseQuery, type QueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
-import { sessionQuery } from '~/api/queries'
+import { cachesQuery } from '~/api/caches'
+import { useCapabilities } from '~/api/session'
 import { KeyValue, KeyValueList } from '~/components/app/key-value'
 import { None } from '~/components/app/none'
 import { SectionHeader } from '~/components/app/section-header'
 import { Stat } from '~/components/app/stat'
 import { PageHeader } from '~/components/ui/page-header'
 import { formatBytes } from '~/lib/format'
-import { cacheStats, mirrorHitRate, mirrorSince, pulls, type CacheOverview } from './cache-format'
-import { cacheQuery } from './queries'
+import { cacheStats, hitRate, pulls, type CacheOverview } from './cache-format'
 import { RepositoriesTable } from './repositories-table'
+
+export function prefetch(client: QueryClient) {
+  return client.ensureQueryData(cachesQuery)
+}
 
 /** The Cache design: the Actions cache by repository, and the registry mirror. */
 export function CachePage() {
-  const { data: cache } = useSuspenseQuery(cacheQuery)
-  const admin = useSuspenseQuery(sessionQuery).data?.role === 'admin'
+  const { data: cache } = useSuspenseQuery({ ...cachesQuery, refetchInterval })
+  const { admin } = useCapabilities()
   const stats = cacheStats(cache)
   const repositories = cache.enabled ? cache.repositories.length : 0
 
@@ -24,7 +28,7 @@ export function CachePage() {
       <PageHeader title="Cache" />
       <StatsRow>
         <Stat label="Size" value={stats.size} total={stats.limit} />
-        <Stat label="Hit rate, last 7 days" value={stats.hitRate} />
+        <Stat label={stats.hitRateLabel} value={stats.hitRate} />
         <Stat label="Entries" value={stats.entries} />
         <Stat label="Downloads saved by the mirror" value={stats.mirrorSaved} />
       </StatsRow>
@@ -37,6 +41,9 @@ export function CachePage() {
   )
 }
 
+// No event reports cache use, so the page refetches it while it is open.
+const refetchInterval = 30_000
+
 /** The page while the overview loads. */
 export function CacheSkeleton() {
   return (
@@ -44,7 +51,7 @@ export function CacheSkeleton() {
       <PageHeader title="Cache" />
       <StatsRow>
         <Stat label="Size" value={null} />
-        <Stat label="Hit rate, last 7 days" value={null} />
+        <Stat label="Hit rate" value={null} />
         <Stat label="Entries" value={null} />
         <Stat label="Downloads saved by the mirror" value={null} />
       </StatsRow>
@@ -65,18 +72,14 @@ function StatsRow({ children }: { children: ReactNode }) {
   )
 }
 
-/** The counts of the Docker Hub pull-through cache, which start over when runplane starts. */
+/** The counts of the Docker Hub pull-through cache of the connected servers. Each server counts from its own start. */
 function RegistryMirror({ cache }: { cache: CacheOverview }) {
   const mirror = cache.mirror
   return (
     <section className="flex flex-col gap-m">
       <h2 className="flex min-h-[22px] flex-wrap items-baseline gap-x-xs text-m font-heavy tracking-l text-neutral-10">
         Registry mirror
-        {cache.mirror_enabled && mirror && (
-          <span className="font-regular text-neutral-6" title={new Date(mirror.started_at).toLocaleString()}>
-            {mirrorSince(mirror.started_at)}
-          </span>
-        )}
+        {cache.mirror_enabled && <span className="font-regular text-neutral-6">of the connected servers, since each started</span>}
       </h2>
       {!cache.mirror_enabled ? (
         <p className="text-s text-neutral-7">
@@ -88,10 +91,10 @@ function RegistryMirror({ cache }: { cache: CacheOverview }) {
         </p>
       ) : (
         <KeyValueList>
-          <KeyValue label="Stored">{mirror ? formatBytes(mirror.size_bytes) : <None />}</KeyValue>
-          <KeyValue label="Hits">{mirror ? pulls(mirror.hits) : <None />}</KeyValue>
-          <KeyValue label="Misses">{mirror ? pulls(mirror.misses) : <None />}</KeyValue>
-          <KeyValue label="Hit rate">{(mirror && mirrorHitRate(mirror)) ?? <None />}</KeyValue>
+          <KeyValue label="Stored">{formatBytes(mirror.size_bytes)}</KeyValue>
+          <KeyValue label="Hits">{pulls(mirror.hits)}</KeyValue>
+          <KeyValue label="Misses">{pulls(mirror.misses)}</KeyValue>
+          <KeyValue label="Hit rate">{hitRate(mirror.hit_rate) ?? <None />}</KeyValue>
         </KeyValueList>
       )}
     </section>

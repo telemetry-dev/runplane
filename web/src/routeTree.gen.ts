@@ -17,7 +17,6 @@ import { Route as AppRunnersRouteImport } from './routes/_app/runners'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as SetupLoginRouteImport } from './routes/_setup/login'
 import { Route as SetupSetupRouteImport } from './routes/_setup/setup'
-import { Route as DevComponentsRouteImport } from './routes/dev.components'
 import { Route as AppJobsIndexRouteImport } from './routes/_app/jobs/index'
 import { Route as AppJobsJobIdRouteImport } from './routes/_app/jobs/$jobId'
 import { Route as AppServersIndexRouteImport } from './routes/_app/servers/index'
@@ -70,11 +69,6 @@ const SetupSetupRoute = SetupSetupRouteImport.update({
   id: '/setup',
   path: '/setup',
   getParentRoute: () => SetupRoute,
-} as any)
-const DevComponentsRoute = DevComponentsRouteImport.update({
-  id: '/dev/components',
-  path: '/dev/components',
-  getParentRoute: () => rootRouteImport,
 } as any)
 const AppJobsIndexRoute = AppJobsIndexRouteImport.update({
   id: '/jobs/',
@@ -155,7 +149,6 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AppSettingsRouteWithChildren
   '/login': typeof SetupLoginRoute
   '/setup': typeof SetupSetupRouteWithChildren
-  '/dev/components': typeof DevComponentsRoute
   '/jobs/$jobId': typeof AppJobsJobIdRoute
   '/servers/$serverId': typeof AppServersServerIdRoute
   '/settings/general': typeof AppSettingsGeneralRoute
@@ -176,7 +169,6 @@ export interface FileRoutesByTo {
   '/cache': typeof AppCacheRoute
   '/runners': typeof AppRunnersRoute
   '/login': typeof SetupLoginRoute
-  '/dev/components': typeof DevComponentsRoute
   '/jobs/$jobId': typeof AppJobsJobIdRoute
   '/servers/$serverId': typeof AppServersServerIdRoute
   '/settings/general': typeof AppSettingsGeneralRoute
@@ -201,7 +193,6 @@ export interface FileRoutesById {
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/_setup/login': typeof SetupLoginRoute
   '/_setup/setup': typeof SetupSetupRouteWithChildren
-  '/dev/components': typeof DevComponentsRoute
   '/_app/': typeof AppIndexRoute
   '/_app/jobs/$jobId': typeof AppJobsJobIdRoute
   '/_app/servers/$serverId': typeof AppServersServerIdRoute
@@ -227,7 +218,6 @@ export interface FileRouteTypes {
     | '/settings'
     | '/login'
     | '/setup'
-    | '/dev/components'
     | '/jobs/$jobId'
     | '/servers/$serverId'
     | '/settings/general'
@@ -248,7 +238,6 @@ export interface FileRouteTypes {
     | '/cache'
     | '/runners'
     | '/login'
-    | '/dev/components'
     | '/jobs/$jobId'
     | '/servers/$serverId'
     | '/settings/general'
@@ -272,7 +261,6 @@ export interface FileRouteTypes {
     | '/_app/settings'
     | '/_setup/login'
     | '/_setup/setup'
-    | '/dev/components'
     | '/_app/'
     | '/_app/jobs/$jobId'
     | '/_app/servers/$serverId'
@@ -293,7 +281,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   SetupRoute: typeof SetupRouteWithChildren
-  DevComponentsRoute: typeof DevComponentsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -353,13 +340,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/setup'
       preLoaderRoute: typeof SetupSetupRouteImport
       parentRoute: typeof SetupRoute
-    }
-    '/dev/components': {
-      id: '/dev/components'
-      path: '/dev/components'
-      fullPath: '/dev/components'
-      preLoaderRoute: typeof DevComponentsRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/_app/jobs/': {
       id: '/_app/jobs/'
@@ -541,7 +521,6 @@ const SetupRouteWithChildren = SetupRoute._addFileChildren(SetupRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   SetupRoute: SetupRouteWithChildren,
-  DevComponentsRoute: DevComponentsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

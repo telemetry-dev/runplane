@@ -8,23 +8,21 @@ import (
 )
 
 type GitHubApp struct {
-	ID               string
-	AppID            int64
-	Slug             string
-	Name             string
-	ClientID         string
-	OwnerLogin       string
-	OwnerType        string
-	HTMLURL          string
-	PrivateKeyEnc    []byte // sealed with internal/secret
-	ClientSecretEnc  []byte
-	WebhookSecretEnc []byte
-	CreatedAt        time.Time
+	ID            string
+	AppID         int64
+	Slug          string
+	Name          string
+	ClientID      string
+	OwnerLogin    string
+	OwnerType     string
+	HTMLURL       string
+	PrivateKeyEnc []byte // sealed with internal/secret
+	CreatedAt     time.Time
 }
 
 type ManifestState struct {
 	StateHash    string
-	AccountType  string // organization | user
+	AccountType  string // Organization | User, the GitHub account type of the new app
 	Organization string
 	CreatedAt    time.Time
 	ExpiresAt    time.Time
@@ -87,12 +85,11 @@ type ScaleSetStats struct {
 	IdleRunners       int `json:"idle_runners"`
 }
 
-const appCols = `id, app_id, slug, name, client_id, owner_login, owner_type, html_url, private_key_enc, client_secret_enc,
-	webhook_secret_enc, created_at`
+const appCols = `id, app_id, slug, name, client_id, owner_login, owner_type, html_url, private_key_enc, created_at`
 
 func (a *GitHubApp) cols() []any {
 	return []any{&a.ID, &a.AppID, &a.Slug, &a.Name, &a.ClientID, &a.OwnerLogin, &a.OwnerType, &a.HTMLURL,
-		&a.PrivateKeyEnc, &a.ClientSecretEnc, &a.WebhookSecretEnc, at(&a.CreatedAt)}
+		&a.PrivateKeyEnc, at(&a.CreatedAt)}
 }
 
 // GetGitHubApp returns the app, or ErrNotFound if runplane has no app.
@@ -126,6 +123,10 @@ func (m *ManifestState) cols() []any {
 
 func (s *Store) CreateManifestState(ctx context.Context, m ManifestState) error {
 	return exec(ctx, s.w, "create manifest state", insert("manifest_states", manifestCols), m.cols()...)
+}
+
+func (s *Store) DeleteExpiredManifestStates(ctx context.Context, now time.Time) error {
+	return exec(ctx, s.w, "delete expired manifest states", "DELETE FROM manifest_states WHERE expires_at <= ?", ms(now))
 }
 
 // ConsumeManifestState deletes the state and returns it. It returns
@@ -163,6 +164,13 @@ func (s *Store) GetInstallation(ctx context.Context, id int64) (Installation, er
 func (s *Store) ListInstallations(ctx context.Context) ([]Installation, error) {
 	return queryAll(ctx, s.r, "list installations", scanRow[Installation],
 		"SELECT "+installationCols+" FROM installations ORDER BY account_login")
+}
+
+// GitHubConnected tells if runplane has a GitHub App with at least one
+// installation.
+func (s *Store) GitHubConnected(ctx context.Context) (bool, error) {
+	return queryOne(ctx, s.r, "check the github connection", scanValue[bool],
+		"SELECT EXISTS (SELECT 1 FROM installations i JOIN github_apps a ON a.app_id = i.app_id)")
 }
 
 // DeleteInstallation also deletes its repositories.
@@ -226,23 +234,25 @@ func (s *Store) ListScaleSets(ctx context.Context) ([]ScaleSet, error) {
 	return queryAll(ctx, s.r, "list scale sets", scanRow[ScaleSet], "SELECT "+scaleSetCols+" FROM scale_sets ORDER BY name, id")
 }
 
-func (s *Store) SetScaleSetStatus(ctx context.Context, id, status, errMsg string) error {
-	return exec1(ctx, s.w, "set scale set status", "UPDATE scale_sets SET status = ?, error = ?, updated_at = ? WHERE id = ?",
-		status, errMsg, ms(time.Now()), id)
+// SetScaleSetStatus writes the status and the error of the scale set at now
+// if one of them changed. It reports whether it wrote them.
+func (s *Store) SetScaleSetStatus(ctx context.Context, id, status, errMsg string, now time.Time) (bool, error) {
+	return changed(ctx, s.w, "set scale set status", `UPDATE scale_sets SET status = ?1, error = ?2, updated_at = ?3
+		WHERE id = ?4 AND (status != ?1 OR error != ?2)`, status, errMsg, ms(now), id)
 }
 
-// SetScaleSetRemote records the GitHub side of a scale set. It does not
-// touch the status, the statistics, or the poll time.
-func (s *Store) SetScaleSetRemote(ctx context.Context, id string, githubID, runnerGroupID int64, name string) error {
+// SetScaleSetRemote records the GitHub side of a scale set at now. It does
+// not touch the status, the statistics, or the poll time.
+func (s *Store) SetScaleSetRemote(ctx context.Context, id string, githubID, runnerGroupID int64, name string, now time.Time) error {
 	return exec1(ctx, s.w, "set scale set remote",
 		"UPDATE scale_sets SET github_id = ?, runner_group_id = ?, name = ?, updated_at = ? WHERE id = ?",
-		githubID, runnerGroupID, name, ms(time.Now()), id)
+		githubID, runnerGroupID, name, ms(now), id)
 }
 
 func (s *Store) SetScaleSetStats(ctx context.Context, id string, stats ScaleSetStats, polledAt time.Time) error {
 	return exec1(ctx, s.w, "set scale set stats",
-		"UPDATE scale_sets SET stats_json = ?, last_poll_at = ?, updated_at = ? WHERE id = ?",
-		jsonCol(&stats), ms(polledAt), ms(time.Now()), id)
+		"UPDATE scale_sets SET stats_json = ?1, last_poll_at = ?2, updated_at = ?2 WHERE id = ?3",
+		jsonCol(&stats), ms(polledAt), id)
 }
 
 // TouchScaleSetPoll records a listener poll that brought no statistics.

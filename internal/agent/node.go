@@ -1,45 +1,68 @@
-// Package agent connects the servers of runplane. The primary operates its
-// own server through a LocalNode and each agent through a Session: Listener
-// accepts the agent connections on the primary, and Run operates the agent
-// end on the other servers.
+// Package agent connects the servers of runplane. The primary operates each
+// server through a Node: its own server through a localnode.Node, and each
+// agent through a Session. Listener accepts the agent connections on the
+// primary, and Run operates the agent end on the other servers.
 package agent
 
 import (
 	"context"
-	"errors"
-	"log/slog"
-	"sync"
+	"io"
 	"time"
 
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/update"
 )
 
 // Node is one server as the primary sees it: its sandbox driver, its host,
-// its images and runner bundles, and its runplane binary.
+// its images and runner bundles, its registry mirror, and its runplane
+// binary.
 type Node interface {
-	Driver() sandbox.Driver
+	// Local reports if the node is the server of this process. The other
+	// nodes are agents.
+	Local() bool
+	Driver() Driver
+	Configure(ctx context.Context, s Settings) error
 	Facts(ctx context.Context) (host.Info, error)
-	Doctor(ctx context.Context) ([]host.Check, error)
+	// Doctor runs the doctor on the server, with the min_free_disk_percent
+	// of its last settings.
+	Doctor(ctx context.Context) (doctor.Report, error)
 	// EnsureImage makes an image ready on the server. progress, if not nil,
 	// gets each step.
-	EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error)
-	EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error)
+	EnsureImage(ctx context.Context, ref string, progress func(Progress)) (Image, error)
+	EnsureRunner(ctx context.Context, version, arch string) (Bundle, error)
 	// GCImages removes the images whose digest is not in keep.
 	GCImages(ctx context.Context, keep []string) error
 	// PruneRunners removes the runner bundles except the two newest and the
 	// versions in keep.
 	PruneRunners(ctx context.Context, keep []string) error
-	Configure(ctx context.Context, s sandbox.Settings) error
+	MirrorStats(ctx context.Context) (MirrorStats, error)
 	// Update replaces the runplane binary with a release. The server runs
 	// the new binary after a restart.
 	Update(ctx context.Context, version string) error
 	// Stats delivers one host sample every 10 seconds. A reader that falls
-	// behind gets only the latest sample.
+	// behind gets only the latest sample (SendLatest).
 	Stats() <-chan host.Stats
+	// Close ends the connection of an agent, whose sandboxes keep
+	// operating. A local node stops its registry mirror.
+	Close() error
 }
+
+// Driver is the part of a sandbox driver that the primary uses on each
+// server. The settings and the doctor of a server go through its Node.
+type Driver interface {
+	Mode() sandbox.Mode
+	Start(ctx context.Context, spec sandbox.Spec) error
+	Stop(ctx context.Context, id string) error
+	List(ctx context.Context) ([]sandbox.Sandbox, error)
+	Capacity(ctx context.Context) (sandbox.Capacity, error)
+	Events() <-chan sandbox.Event
+	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+	Shell(ctx context.Context, id string, size sandbox.TermSize) (sandbox.Terminal, error)
+	Hold(ctx context.Context, id string, until time.Time) error
+}
+
+var _ Node = (*Session)(nil)
 
 // Forward passes the driver events and the host stats of n on until both
 // channels close. It returns ctx.Err() if ctx ends first.
@@ -66,103 +89,9 @@ func Forward(ctx context.Context, n Node, onEvent func(sandbox.Event), onStats f
 	return nil
 }
 
-type LocalConfig struct {
-	Driver  sandbox.Driver
-	Images  *image.Manager
-	Bundles *image.Bundles
-	Updater *update.Updater
-	// Doctor holds the doctor options of this server. Its DataDir also
-	// selects the disk for the facts and the stats. Configure sets
-	// MinFreeDiskPercent.
-	Doctor host.Options
-	Logger *slog.Logger
-}
-
-// LocalNode is the server that runplane operates on.
-type LocalNode struct {
-	cfg   LocalConfig
-	mu    sync.Mutex // guards cfg.Doctor
-	stats chan host.Stats
-}
-
-func NewLocal(cfg LocalConfig) (*LocalNode, error) {
-	if cfg.Driver == nil || cfg.Images == nil || cfg.Bundles == nil || cfg.Updater == nil {
-		return nil, errors.New("new local node: Driver, Images, Bundles, and Updater are required")
-	}
-	return &LocalNode{cfg: cfg, stats: make(chan host.Stats, 1)}, nil
-}
-
-// Run samples the host stats for Stats until ctx ends.
-func (n *LocalNode) Run(ctx context.Context) {
-	sampler := host.Sampler{DataDir: n.cfg.Doctor.DataDir}
-	for {
-		err := sampler.Run(ctx, func(s host.Stats) { sendLatest(n.stats, s) })
-		if err == nil {
-			return
-		}
-		n.cfg.Logger.Warn("sample host stats", "err", err)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(10 * time.Second):
-		}
-	}
-}
-
-func (n *LocalNode) Driver() sandbox.Driver { return n.cfg.Driver }
-
-func (n *LocalNode) Facts(ctx context.Context) (host.Info, error) {
-	return host.Facts(ctx, n.cfg.Doctor.DataDir)
-}
-
-func (n *LocalNode) Doctor(ctx context.Context) ([]host.Check, error) {
-	n.mu.Lock()
-	opts := n.cfg.Doctor
-	n.mu.Unlock()
-	return host.Doctor(ctx, n.cfg.Driver.Mode(), opts), nil
-}
-
-func (n *LocalNode) EnsureImage(ctx context.Context, ref string, progress func(image.Progress)) (sandbox.ImageRef, error) {
-	img, err := n.cfg.Images.Ensure(ctx, ref, progress)
-	if err != nil {
-		return sandbox.ImageRef{}, err
-	}
-	return sandbox.ImageRef{Ref: img.Ref, Digest: img.Digest}, nil
-}
-
-func (n *LocalNode) EnsureRunner(ctx context.Context, version, arch string) (image.Bundle, error) {
-	return n.cfg.Bundles.Ensure(ctx, version, arch)
-}
-
-func (n *LocalNode) GCImages(ctx context.Context, keep []string) error {
-	return n.cfg.Images.GC(ctx, keep)
-}
-
-func (n *LocalNode) PruneRunners(_ context.Context, keep []string) error {
-	return n.cfg.Bundles.Prune(keep)
-}
-
-// Configure keeps the free disk limit for the doctor and passes the
-// settings to the driver if it takes them.
-func (n *LocalNode) Configure(_ context.Context, s sandbox.Settings) error {
-	n.mu.Lock()
-	n.cfg.Doctor.MinFreeDiskPercent = float64(s.MinFreeDiskPercent)
-	n.mu.Unlock()
-	if c, ok := n.cfg.Driver.(sandbox.Configurable); ok {
-		return c.Configure(s)
-	}
-	return nil
-}
-
-func (n *LocalNode) Update(ctx context.Context, version string) error {
-	return n.cfg.Updater.Apply(ctx, version)
-}
-
-func (n *LocalNode) Stats() <-chan host.Stats { return n.stats }
-
-// sendLatest puts v in ch, a channel with a buffer of one, and drops an
+// SendLatest puts v in ch, a channel with a buffer of one, and drops an
 // older value that nobody took.
-func sendLatest[T any](ch chan T, v T) {
+func SendLatest[T any](ch chan T, v T) {
 	for {
 		select {
 		case ch <- v:

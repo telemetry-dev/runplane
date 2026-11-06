@@ -37,11 +37,11 @@ func TestLookupStore(t *testing.T) {
 	st := openStore(t)
 	job, err := st.UpsertJob(ctx, store.JobMessage{
 		RunnerRequestID: 7, State: store.JobRunning, Repository: "octo/api", JobName: "build",
-	})
+	}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{Actor: "octocat"}); err != nil {
+	if err := st.SetJobEnrichment(ctx, job.ID, store.JobEnrichment{Actor: "octocat"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	// The sandboxes of each group started in the same second, so their IDs
@@ -82,9 +82,8 @@ func TestLookupStore(t *testing.T) {
 	}
 }
 
-// shellDriver is a driver that only opens shells.
+// shellDriver is a driver that opens shells.
 type shellDriver struct {
-	sandbox.Driver
 	term sandbox.Terminal
 	got  []string
 }
@@ -99,7 +98,7 @@ func TestDriversOpenOnServerOfSandbox(t *testing.T) {
 	st := openStore(t)
 	insertSandbox(t, st, debugID, sandbox.StateBusy, true, "") // on server "srv"
 	agent := &shellDriver{term: &fakeTerm{}}
-	d := Drivers{Store: st, Driver: func(serverID string) sandbox.Driver {
+	d := Drivers{Store: st, Driver: func(serverID string) Driver {
 		if serverID == "srv" {
 			return agent
 		}
@@ -114,7 +113,7 @@ func TestDriversOpenOnServerOfSandbox(t *testing.T) {
 		t.Errorf("shell opened on srv for %q, want %q", agent.got, debugID)
 	}
 
-	d.Driver = func(string) sandbox.Driver { return nil }
+	d.Driver = func(string) Driver { return nil }
 	if _, err := d.Open(ctx, debugID, sandbox.TermSize{Rows: 24, Cols: 80}); err == nil {
 		t.Error("Open on a server that is not connected = nil error")
 	}

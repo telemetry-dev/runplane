@@ -60,14 +60,19 @@ describe('clock', () => {
 
 describe('noLogReason', () => {
   test('tells a job that has not run from a finished job without a log', () => {
-    const job = { state: 'queued', started_at: null, reject_reason: '' } as const
+    const job = { state: 'queued', started_at: null, reject_reason: '', finish_pending: false } as const
     expect(noLogReason(job)).toBe('The log starts when the job runs.')
     expect(noLogReason({ ...job, state: 'completed' })).toBe('The job ended before it ran.')
     expect(noLogReason({ ...job, state: 'completed', started_at: '2026-11-04T04:38:45Z' })).toBe('GitHub has no log for this job.')
   })
 
+  test('waits for the download of the log of a job that ran', () => {
+    const job = { state: 'completed', started_at: '2026-11-04T04:38:45Z', reject_reason: '', finish_pending: true } as const
+    expect(noLogReason(job)).toBe('Downloading the log from GitHub…')
+  })
+
   test('gives the reason runplane refused the job', () => {
-    expect(noLogReason({ state: 'completed', started_at: null, reject_reason: 'the repository is public' })).toBe(
+    expect(noLogReason({ state: 'completed', started_at: null, reject_reason: 'the repository is public', finish_pending: false })).toBe(
       'runplane does not run this job: the repository is public',
     )
   })

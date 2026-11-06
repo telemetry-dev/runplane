@@ -14,22 +14,15 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"time"
 
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
-const (
-	controlSocket = "/run/runplane/control.sock" // container mode
-	vsockPort     = 1024                         // VM mode, on the host (CID 2)
-)
-
-type guest struct {
+type guestInit struct {
 	vm     bool
 	log    *slog.Logger
 	logs   *logQueue
@@ -37,7 +30,7 @@ type guest struct {
 	req    *hostRequests
 	shells *shellServer
 	link   *guestLink
-	cfg    control.GuestConfig
+	cfg    guest.Config
 }
 
 func main() {
@@ -45,7 +38,7 @@ func main() {
 		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 	}
 	logs := newLogQueue(logQueueMax)
-	log := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, logs.writer("init")), &slog.HandlerOptions{
+	log := slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, logs.writer(guest.SourceInit)), &slog.HandlerOptions{
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey && len(groups) == 0 {
 				return slog.Attr{} // each log line has its own time
@@ -53,7 +46,7 @@ func main() {
 			return a
 		},
 	}))
-	g := &guest{log: log, logs: logs, reaper: newReaper(), req: newHostRequests(), shells: newShellServer(log)}
+	g := &guestInit{log: log, logs: logs, reaper: newReaper(), req: newHostRequests(), shells: newShellServer(log)}
 	g.handleSignals()
 
 	vm, err := detectVM()
@@ -67,10 +60,10 @@ func main() {
 			log.Error("set up the VM", "err", err)
 			powerOff(true, 1)
 		}
-		if err := setImageEnv(sandbox.ImageEnvFile); err != nil {
+		if err := setImageEnv(guest.ImageEnvFile); err != nil {
 			log.Warn("set the environment of the image", "err", err)
 		}
-	} else if _, err := os.Stat(filepath.Dir(controlSocket)); err != nil {
+	} else if _, err := os.Stat(guest.CtlDir); err != nil {
 		log.Error("no VM and no control socket folder: is this a runplane sandbox?", "err", err)
 		os.Exit(1)
 	}
@@ -82,9 +75,8 @@ func main() {
 	powerOff(vm, code)
 }
 
-// run gets the config, prepares the sandbox, runs the runner, and waits for
-// a hold. It returns the exit code of init in container mode.
-func (g *guest) run() int {
+// run returns the exit code of init in container mode.
+func (g *guestInit) run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -111,7 +103,7 @@ func (g *guest) run() int {
 		code, failure = g.runRunner(acct)
 	}
 	g.link.event(sandbox.RunnerEvent{Kind: sandbox.RunnerExited, ExitCode: code, Error: failure})
-	g.req.waitHold(cfg.Debug, holdGrace)
+	g.req.waitHold(cfg.Debug, guest.HoldGrace)
 	if dockerd != nil {
 		dockerd.stop()
 	}
@@ -121,7 +113,7 @@ func (g *guest) run() int {
 	return 0
 }
 
-func (g *guest) prepare() (account, error) {
+func (g *guestInit) prepare() (account, error) {
 	if g.cfg.RunnerDir == "" {
 		return account{}, errors.New("the config has no runner_dir")
 	}
@@ -133,7 +125,7 @@ func (g *guest) prepare() (account, error) {
 			return account{}, err
 		}
 	}
-	acct, err := lookupAccount("runner", "/etc/passwd", "/etc/group")
+	acct, err := lookupAccount(guest.RunnerUser, "/etc/passwd", "/etc/group")
 	if err != nil {
 		return account{}, err
 	}
@@ -147,19 +139,16 @@ func (g *guest) prepare() (account, error) {
 	return acct, nil
 }
 
-// finish sends the last events and log lines. The host can be away, so it
-// waits at most 10 seconds.
-func (g *guest) finish() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (g *guestInit) finish() {
+	ctx, cancel := context.WithTimeout(context.Background(), guest.FlushWait)
 	defer cancel()
 	g.link.flushEvents(ctx)
 	g.log.Info("stopping the sandbox")
 	g.link.flushLogs(ctx)
 }
 
-// handleSignals turns SIGTERM and SIGINT into a shutdown. Docker stop sends
-// SIGTERM; in a VM, Ctrl-Alt-Del sends SIGINT.
-func (g *guest) handleSignals() {
+// Docker stop sends SIGTERM; in a VM, Ctrl-Alt-Del sends SIGINT.
+func (g *guestInit) handleSignals() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, unix.SIGTERM, unix.SIGINT)
 	// Without a handler, Go exits on SIGHUP, and on SIGPIPE from a write to
@@ -181,10 +170,10 @@ func (g *guest) handleSignals() {
 func dialer(vm bool) func(context.Context) (net.Conn, error) {
 	if vm {
 		return func(ctx context.Context) (net.Conn, error) {
-			return vsock.DialContext(ctx, vsock.Host, vsockPort, nil)
+			return vsock.DialContext(ctx, vsock.Host, guest.VsockPort, nil)
 		}
 	}
 	return func(ctx context.Context) (net.Conn, error) {
-		return dialHost(ctx, controlSocket)
+		return dialHost(ctx, guest.CtlDir)
 	}
 }

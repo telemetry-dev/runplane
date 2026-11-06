@@ -9,6 +9,7 @@ import {
   serverSize,
   sortServers,
   statusNote,
+  systemsText,
   type Server,
 } from './server-info'
 
@@ -44,6 +45,9 @@ const primary: Server = {
   firecracker_version: '1.13.1',
   version: 'v0.4.2',
   update_state: 'current',
+  update_error: '',
+  wait_reason: '',
+  actions: { can_drain: true, can_resume: false, can_remove: false, can_update: false, can_run_doctor: true },
   stats_at: '2026-11-04T04:49:42.447Z',
   created_at: '2026-10-02T04:49:45.447Z',
   updated_at: '2026-11-04T04:49:42.447Z',
@@ -115,23 +119,19 @@ test('sortServers keeps working servers first, then installing, then unreachable
 })
 
 describe('currentUsage', () => {
-  const live = { server_id: primary.id, cpu_percent: 71, memory_percent: 40.5, disk_percent: 35, at: '2026-11-04T04:49:52Z' }
-
-  test('takes a host.stats event that is newer than the list sample', () => {
-    expect(currentUsage(primary, live)).toEqual({ cpu: 71, memory: 40.5, disk: 35 })
-  })
-
-  test('keeps a refetched list sample that is newer than the last event', () => {
-    expect(currentUsage({ ...primary, stats_at: '2026-11-04T04:50:02.5Z' }, live)).toEqual({ cpu: 52, memory: 38, disk: 34 })
-  })
-
-  test('takes the event when the list has no sample', () => {
-    expect(currentUsage(fresh, live)).toEqual({ cpu: 71, memory: 40.5, disk: 35 })
-    expect(currentUsage(fresh, undefined)).toEqual({ cpu: null, memory: null, disk: null })
+  test('takes the latest sample of the server', () => {
+    expect(currentUsage(primary)).toEqual({ cpu: 52, memory: 38, disk: 34 })
+    expect(currentUsage(fresh)).toEqual({ cpu: null, memory: null, disk: null })
   })
 
   test('an unreachable server has no current usage', () => {
-    expect(currentUsage({ ...primary, status: 'unreachable' }, live)).toEqual({ cpu: null, memory: null, disk: null })
+    expect(currentUsage({ ...primary, status: 'unreachable' })).toEqual({ cpu: null, memory: null, disk: null })
+  })
+
+  // They stay connected and finish their jobs.
+  test('a draining or disabled server keeps its usage', () => {
+    expect(currentUsage({ ...primary, status: 'draining' })).toEqual({ cpu: 52, memory: 38, disk: 34 })
+    expect(currentUsage({ ...primary, status: 'disabled' })).toEqual({ cpu: 52, memory: 38, disk: 34 })
   })
 })
 
@@ -191,4 +191,15 @@ describe('commandLines', () => {
       'curl -fsSL https://ci.kestrel.dev/install.sh | sudo sh',
     ])
   })
+})
+
+test('systemsText groups the versions of each system and names the best-effort systems', () => {
+  const systems = [
+    { name: 'Ubuntu', version: '22.04', best_effort: false },
+    { name: 'Ubuntu', version: '24.04', best_effort: false },
+    { name: 'Debian', version: '12', best_effort: true },
+    { name: 'Debian', version: '13', best_effort: true },
+  ]
+  expect(systemsText(systems)).toBe('Ubuntu 22.04 or 24.04, or Debian 12 or 13 (best effort)')
+  expect(systemsText(systems.slice(1, 2))).toBe('Ubuntu 24.04')
 })

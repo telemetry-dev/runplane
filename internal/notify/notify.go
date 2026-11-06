@@ -1,5 +1,5 @@
-// Package notify sends runplane events to Slack, Discord, and generic
-// webhook channels.
+// Package notify keeps the notification channels (Slack, Discord, and
+// generic webhooks) and sends the runplane alerts to them.
 package notify
 
 import (
@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -22,23 +23,30 @@ const (
 	Webhook = "webhook" // generic JSON POST
 )
 
+var Kinds = []string{Slack, Discord, Webhook}
+
 // Retry and timeout values. Tests make them short.
 var (
 	attemptTimeout = 10 * time.Second
 	retryDelays    = []time.Duration{time.Second, 3 * time.Second}
 )
 
-// Send posts the event to the channel of kind at target. Each attempt has a
-// 10-second timeout. Send tries again two times when the receiver answers
-// with a 5xx status, 429, or a network error.
-func Send(ctx context.Context, kind, target string, ev Event) error {
-	if err := validate(kind, target); err != nil {
+// send posts the event to the channel of kind at target. The link of the
+// event goes to the dashboard at the base URL dashboard, and an empty
+// dashboard gives no link. Each attempt has a 10-second timeout. send tries
+// again two times when the receiver answers with a 5xx status, 429, or a
+// network error.
+func send(ctx context.Context, kind, target, dashboard string, ev Event) error {
+	if !slices.Contains(Kinds, kind) {
+		return fmt.Errorf("unknown channel kind %q", kind)
+	}
+	if err := checkURL(kind, target); err != nil {
 		return err
 	}
 	if ev.At.IsZero() {
 		ev.At = time.Now()
 	}
-	body, err := json.Marshal(payload(kind, ev))
+	body, err := json.Marshal(payload(kind, ev, ev.link(dashboard)))
 	if err != nil {
 		return fmt.Errorf("encode %s payload: %w", kind, err)
 	}
@@ -61,18 +69,14 @@ func Send(ctx context.Context, kind, target string, ev Event) error {
 	return nil
 }
 
-func validate(kind, target string) error {
-	switch kind {
-	case Slack, Discord, Webhook:
-	default:
-		return fmt.Errorf("unknown channel kind %q", kind)
-	}
+// checkURL applies the rules of the URL of a channel of kind to target.
+func checkURL(kind, target string) error {
 	u, err := url.Parse(target)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return fmt.Errorf("channel URL must be an http or https URL")
+		return errors.New("enter an http or https URL")
 	}
 	if kind != Webhook && u.Scheme != "https" {
-		return fmt.Errorf("%s webhook URL must use https", kind)
+		return fmt.Errorf("a %s webhook URL starts with https://", kind)
 	}
 	return nil
 }
@@ -135,14 +139,15 @@ type webhookMessage struct {
 	At    string         `json:"at"`
 }
 
-// payload returns the JSON body for the channel kind.
-func payload(kind string, ev Event) any {
+// payload is the message of ev for a channel of kind, with the link to the
+// dashboard page of the event.
+func payload(kind string, ev Event, link string) any {
 	at := ev.At.UTC().Format(time.RFC3339)
 	switch kind {
 	case Slack:
 		title := slackEscape(ev.Title)
-		if ev.URL != "" {
-			title = "<" + ev.URL + "|" + title + ">"
+		if link != "" {
+			title = "<" + link + "|" + title + ">"
 		}
 		// No unfurl: the dashboard is private, and a preview shows only the login page.
 		return slackMessage{Text: "*" + title + "*\n" + slackEscape(ev.Text)}
@@ -151,7 +156,7 @@ func payload(kind string, ev Event) any {
 			// Discord rejects embeds with longer fields.
 			Title:       truncate(ev.Title, 256),
 			Description: truncate(ev.Text, 4096),
-			URL:         ev.URL,
+			URL:         link,
 			Color:       color(ev.Type),
 			Timestamp:   at,
 		}}}
@@ -163,7 +168,7 @@ func payload(kind string, ev Event) any {
 		if data == nil {
 			data = map[string]any{}
 		}
-		return webhookMessage{Event: ev.Type, Title: ev.Title, Text: ev.Text, URL: ev.URL, Data: data, At: at}
+		return webhookMessage{Event: ev.Type, Title: ev.Title, Text: ev.Text, URL: link, Data: data, At: at}
 	}
 }
 

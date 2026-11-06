@@ -1,11 +1,17 @@
 import { Field as BaseField } from '@base-ui/react/field'
 import { RadioGroup } from '@base-ui/react/radio-group'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { $api, errorMessage, type Schemas } from '~/api/client'
-import { serversQuery } from '~/components/pages/servers/queries'
-import { serverSize, sortServers, statusNames } from '~/components/pages/servers/server-info'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
+import { useId, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { $api, type Schemas } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { imagesQuery } from '~/api/images'
+import { limits } from '~/api/limits'
+import { placementQuery, putPool } from '~/api/pools'
+import { serversQuery } from '~/api/servers'
+import { settingsQuery } from '~/api/settings'
+import { LoadError } from '~/components/app/load-error'
+import { mutedStatus, serverStatusNames } from '~/components/app/status-dot'
+import { serverSize, sortServers } from '~/components/pages/servers/server-info'
 import { Button } from '~/components/ui/button'
 import { Checkbox } from '~/components/ui/checkbox'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
@@ -18,9 +24,8 @@ import { Select, SelectItem, SelectLabel, SelectPopup, SelectTrigger } from '~/c
 import { Spinner } from '~/components/ui/spinner'
 import { toastManager } from '~/components/ui/toast'
 import { cx } from '~/lib/cx'
-import { draftFrom, labelPattern, labelProblems, poolRequest, poolUpdate, type Arch, type Draft } from './label-form'
-import { imagesQuery, putPool, refreshRunners } from './queries'
-import { formatTimeLimit, type Pool } from './runner-format'
+import { draftFrom, formFields, poolRequest, poolUpdate, type Arch, type Draft } from './label-form'
+import { formatTimeLimit, placementProblem, type Pool } from './runner-format'
 
 type Server = Schemas['Server']
 
@@ -56,14 +61,7 @@ function LabelFormLoader({ pool, labelInput, onSaved }: FormProps) {
   const settings = useQuery(settingsQuery)
   const failed = [servers, images, settings].find((query) => query.isError)
 
-  if (failed) {
-    return (
-      <div role="alert" className="flex flex-col items-start gap-m text-s text-neutral-8">
-        <p>Could not load the form. {errorMessage(failed.error)}</p>
-        <Button onClick={() => void failed.refetch()}>Try again</Button>
-      </div>
-    )
-  }
+  if (failed) return <LoadError what="the form" error={failed.error} onRetry={() => void failed.refetch()} retrying={failed.isFetching} />
   if (!servers.data || !images.data || !settings.data) {
     return (
       <p role="status" className="flex items-center gap-s text-s text-neutral-7">
@@ -105,7 +103,6 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
 
   function saved(result: Pool) {
     putPool(client, result)
-    void refreshRunners(client)
     toastManager.add({ title: `Saved ${result.label}` })
     onSaved()
   }
@@ -130,20 +127,19 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
     else update.mutate({ params: { path: { id: pool.id } }, body: changes })
   }
 
-  // One object until the error changes, so the Form shows its errors again only for a new one.
-  const problems = useMemo(() => labelProblems(save.error), [save.error])
+  const problems = useFormProblems(save.error, { fields: formFields })
   const archServers = sortServers(servers.filter((server) => server.arch === draft.arch))
   const label = draft.label.trim()
 
   return (
-    <Form errors={problems.errors} onFormSubmit={submit} className="gap-l">
+    <Form errors={problems.fields} onFormSubmit={submit} className="gap-l">
       <Field name="label" label="Label" validate={validateLabel}>
         <Input
           ref={labelInput}
           value={draft.label}
           onValueChange={(value) => change({ label: value })}
           placeholder="runplane-4cpu"
-          maxLength={63}
+          maxLength={poolLimits.label.maxLength}
           autoComplete="off"
           spellCheck={false}
           className="font-code text-xs leading-s tracking-m"
@@ -156,22 +152,36 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
 
       <div className="flex flex-col gap-xs">
         <div className="grid grid-cols-3 items-start gap-m">
-          <Field name="vcpu" label={<Unit unit="vCPU">CPU</Unit>} validate={range(1, 64)}>
-            <NumberInput value={draft.vcpu} onValueChange={(vcpu) => change({ vcpu })} min={1} max={64} suffix="vCPU" format={integer} />
+          <Field name="vcpu" label={<Unit unit="vCPU">CPU</Unit>} validate={inRange(poolLimits.vcpu)}>
+            <NumberInput
+              value={draft.vcpu}
+              onValueChange={(vcpu) => change({ vcpu })}
+              min={poolLimits.vcpu.minimum}
+              max={poolLimits.vcpu.maximum}
+              suffix="vCPU"
+              format={integer}
+            />
           </Field>
-          <Field name="memory_mb" label={<Unit unit="GB">Memory</Unit>} validate={range(0.5, 256)}>
+          <Field name="memory_mb" label={<Unit unit="GB">Memory</Unit>} validate={inRange(memoryGb)}>
             <NumberInput
               value={draft.memoryGb}
               onValueChange={(memoryGb) => change({ memoryGb })}
-              min={0.5}
-              max={256}
+              min={memoryGb.minimum}
+              max={memoryGb.maximum}
               step={0.5}
               suffix="GB"
               format={{ useGrouping: false, maximumFractionDigits: 1 }}
             />
           </Field>
-          <Field name="disk_gb" label={<Unit unit="GB">Disk</Unit>} validate={range(8, 1024)}>
-            <NumberInput value={draft.diskGb} onValueChange={(diskGb) => change({ diskGb })} min={8} max={1024} suffix="GB" format={integer} />
+          <Field name="disk_gb" label={<Unit unit="GB">Disk</Unit>} validate={inRange(poolLimits.disk_gb)}>
+            <NumberInput
+              value={draft.diskGb}
+              onValueChange={(diskGb) => change({ diskGb })}
+              min={poolLimits.disk_gb.minimum}
+              max={poolLimits.disk_gb.maximum}
+              suffix="GB"
+              format={integer}
+            />
           </Field>
         </div>
         <FitHint draft={draft} />
@@ -189,17 +199,29 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
           pool={pool}
           value={draft.imageId}
           onValueChange={(imageId) => change({ imageId })}
-          error={problems.image}
+          error={problems.fields.image_id}
         />
       </div>
 
       <div className="flex flex-col gap-xs">
         <div className="grid grid-cols-3 items-start gap-m">
-          <Field name="min_idle" label="Warm runners" validate={range(0, 1000)}>
-            <NumberInput value={draft.minIdle} onValueChange={(minIdle) => change({ minIdle })} min={0} max={1000} format={integer} />
+          <Field name="min_idle" label="Warm runners" validate={inRange(poolLimits.min_idle)}>
+            <NumberInput
+              value={draft.minIdle}
+              onValueChange={(minIdle) => change({ minIdle })}
+              min={poolLimits.min_idle.minimum}
+              max={poolLimits.min_idle.maximum}
+              format={integer}
+            />
           </Field>
-          <Field name="max_runners" label="Max runners" validate={range(1, 1000)}>
-            <NumberInput value={draft.maxRunners} onValueChange={(maxRunners) => change({ maxRunners })} min={1} max={1000} format={integer} />
+          <Field name="max_runners" label="Max runners" validate={inRange(poolLimits.max_runners)}>
+            <NumberInput
+              value={draft.maxRunners}
+              onValueChange={(maxRunners) => change({ maxRunners })}
+              min={poolLimits.max_runners.minimum}
+              max={poolLimits.max_runners.maximum}
+              format={integer}
+            />
           </Field>
           <TimeLimitSelect
             value={draft.timeLimit}
@@ -219,7 +241,7 @@ function LabelForm({ pool, labelInput, servers, images, settings, onSaved }: Lab
           setNoServers(false)
           change(values)
         }}
-        error={noServers ? 'Select at least one server.' : problems.servers}
+        error={noServers ? 'Select at least one server.' : problems.fields.server_ids}
       />
 
       {problems.alert && (
@@ -249,14 +271,13 @@ function FitHint({ draft }: { draft: Draft }) {
     arch,
     vcpu: vcpu ?? 0,
     memory_mb: Math.round((memoryGb ?? 0) * 1024),
-    // The API reads the server IDs as one comma-separated value.
-    server_ids: serverIds.length > 0 ? [serverIds.join(',')] : undefined,
+    server_ids: serverIds,
   }
-  const placement = $api.useQuery('get', '/api/pools/placement', { params: { query } }, { enabled: sized, placeholderData: keepPreviousData }).data
+  const placement = useQuery({ ...placementQuery(query), enabled: sized, placeholderData: keepPreviousData }).data
   if (!sized || !placement) return null
+  const problem = placementProblem(arch, placement)
+  if (problem) return <p className="text-xs text-neutral-10">{problem}.</p>
   const { placeable_servers: fits, online_servers: total } = placement
-  if (total === 0) return <p className="text-xs text-neutral-10">No {arch} server is online.</p>
-  if (fits === 0) return <p className="text-xs text-neutral-10">No {arch} server is large enough.</p>
   return (
     <p className="text-xs text-neutral-7">
       Fits on {fits} of {total} {arch} {total === 1 ? 'server' : 'servers'}.
@@ -388,7 +409,7 @@ function ServerChoice({ arch, servers, allServers, selected, onChange, error }: 
                 className="flex cursor-pointer items-center gap-s px-m py-xs text-s [&:not(:last-child)]:pb-[calc(var(--space-xs)+1px)] [&:not(:last-child)]:shadow-[inset_0_-1px_0_var(--neutral-4)]"
               >
                 <Checkbox checked={selected.includes(server.id)} onCheckedChange={(checked) => toggle(server.id, checked)} />
-                <span className={cx('min-w-0 grow truncate', muted(server) ? 'text-neutral-7' : 'text-neutral-10')}>{server.name}</span>
+                <span className={cx('min-w-0 grow truncate', mutedStatus[server.status] ? 'text-neutral-7' : 'text-neutral-10')}>{server.name}</span>
                 <span className="shrink-0 text-neutral-7">{serverDetail(server)}</span>
               </label>
             ))}
@@ -425,27 +446,27 @@ function validateLabel(value: unknown): string | null {
   return labelPattern.test(label) ? null : 'Use lowercase letters, digits, and dashes.'
 }
 
-function range(min: number, max: number) {
-  return (value: unknown) => (typeof value === 'number' && value >= min && value <= max ? null : `Enter ${min} to ${max}.`)
-}
-
-function muted(server: Server): boolean {
-  return server.status === 'unreachable' || server.status === 'disabled'
+function inRange({ minimum, maximum }: { minimum: number; maximum: number }) {
+  return (value: unknown) => (typeof value === 'number' && value >= minimum && value <= maximum ? null : `Enter ${minimum} to ${maximum}.`)
 }
 
 /** "16 vCPU · 64 GB", after the state of a server that is not online: "Installing · 8 vCPU · 30 GB". */
 function serverDetail(server: Server): string {
   const size = serverSize(server)
   if (server.status === 'online') return size
-  return [statusNames[server.status], size].filter(Boolean).join(' · ')
+  return [serverStatusNames[server.status], size].filter(Boolean).join(' · ')
 }
 
-const archOptions = [
-  { value: 'x64', label: 'x64' },
-  { value: 'arm64', label: 'arm64' },
-] as const
-
 const timeLimits = [0, 30, 60, 120, 360, 720, 1440]
+
+const poolLimits = limits.CreatePoolRequest
+
+const labelPattern = new RegExp(poolLimits.label.pattern)
+
+const archOptions = poolLimits.arch.enum.map((value) => ({ value, label: value }))
+
+// The dialog shows memory in GB; the API takes megabytes.
+const memoryGb = { minimum: poolLimits.memory_mb.minimum / 1024, maximum: poolLimits.memory_mb.maximum / 1024 }
 
 const integer = { useGrouping: false, maximumFractionDigits: 0 }
 

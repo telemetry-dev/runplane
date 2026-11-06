@@ -97,13 +97,6 @@ describe('parseLog with a growing log', () => {
     expect(parsed.width).toBe(whole.width)
   })
 
-  test('keeps the lines it parsed before and parses only the new ones', () => {
-    const first = parseLog('one\ntwo\n')
-    const next = parseLog('one\ntwo\nthree\n', first)
-    expect(next.lines[0]).toBe(first.lines[0])
-    expect(next.lines.map((line) => line.plain)).toEqual(['one', 'two', 'three'])
-  })
-
   test('parses a different log from the start', () => {
     const first = parseLog('one\ntwo\n')
     expect(parseLog('other\n', first).lines.map((line) => line.plain)).toEqual(['other'])

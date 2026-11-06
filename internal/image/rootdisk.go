@@ -24,24 +24,9 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
-	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/ext4"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
-
-const initPath = "sbin/runplane-init"
-
-// mountPoints are the folders that runplane-init mounts file systems on. The
-// root disk is read-only, so they must exist in it.
-var mountPoints = []struct {
-	path string
-	mode int64
-}{
-	{"dev", 0o755},
-	{"proc", 0o555},
-	{"sys", 0o555},
-	{"run", 0o755},
-	{"tmp", 0o1777},
-	{"mnt/scratch", 0o755},
-}
 
 // ensureRootDisk pulls the image for this platform without Docker and makes
 // its ext4 root disk. A root disk that is already there is used again.
@@ -91,7 +76,7 @@ func (m *Manager) ensureRootDisk(ctx context.Context, src source, r *reporter) (
 	}
 
 	r.status(StatusConverting)
-	out.Size, err = writeExt4(out.Path, func(w io.Writer) error {
+	out.Size, err = ext4.Write(out.Path, func(w io.Writer) error {
 		return rootfs(w, mutate.Extract(layersImage{img, layers}), init.bin, cfg.Config.Env)
 	})
 	if err != nil {
@@ -129,8 +114,8 @@ func (m *Manager) buildRootDisk(ctx context.Context, src source, init []byte, r 
 	c, err := m.cfg.Docker.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
 			Image:  tag,
-			Cmd:    []string{"/" + initPath},
-			Labels: map[string]string{labelManaged: "true"},
+			Cmd:    []string{guest.InitPath},
+			Labels: map[string]string{guest.LabelManaged: "true"},
 		},
 	})
 	if err != nil {
@@ -146,7 +131,7 @@ func (m *Manager) buildRootDisk(ctx context.Context, src source, init []byte, r 
 		read += n
 		r.bytes(StatusConverting, read, info.Size)
 	}}
-	out.Size, err = writeExt4(out.Path, func(w io.Writer) error {
+	out.Size, err = ext4.Write(out.Path, func(w io.Writer) error {
 		return rootfs(w, readCloser{counted, files}, init, env)
 	})
 	if err != nil {
@@ -179,8 +164,8 @@ func remoteImage(ctx context.Context, ref string) (v1.Image, error) {
 	return img, nil
 }
 
-// download copies the compressed layers of img to files in dir, four at a
-// time. The layers report the reads of the files as converting progress.
+// download copies the compressed layers of img to files in dir. The layers
+// report the reads of the files as converting progress.
 func download(ctx context.Context, img v1.Image, dir string, r *reporter) ([]fileLayer, error) {
 	remoteLayers, err := img.Layers()
 	if err != nil {
@@ -234,8 +219,8 @@ type fileLayer struct {
 	read func(n int64)
 }
 
-// fetch copies the compressed bytes of the remote layer to the file. The
-// remote reader returns an error at the end if the digest is not correct.
+// fetch needs no digest check: the remote reader returns an error at the end
+// if the digest is not correct.
 func (l fileLayer) fetch(ctx context.Context, add func(int64)) error {
 	rc, err := l.Layer.Compressed()
 	if err != nil {
@@ -314,29 +299,25 @@ func rootfs(w io.Writer, src io.ReadCloser, init []byte, env []string) error {
 			return fmt.Errorf("read image files: %w", err)
 		}
 	}
-	for _, mp := range mountPoints {
-		p := resolve(mp.path, links)
+	for _, mp := range guest.MountPoints {
+		p := resolve(strings.TrimPrefix(mp.Path, "/"), links)
 		if p == "" || have[p] {
 			continue
 		}
-		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: p + "/", Mode: mp.mode}); err != nil {
+		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: p + "/", Mode: mp.Mode}); err != nil {
 			return err
 		}
-	}
-	var environ []byte
-	for _, kv := range env {
-		environ = append(append(environ, kv...), 0)
 	}
 	files := []struct {
 		path string
 		mode int64
 		data []byte
 	}{
-		{initPath, 0o755, init},
-		{clean(sandbox.ImageEnvFile), 0o644, environ},
+		{guest.InitPath, 0o755, init},
+		{guest.ImageEnvFile, 0o644, guest.EncodeImageEnv(env)},
 	}
 	for _, f := range files {
-		hdr := &tar.Header{Typeflag: tar.TypeReg, Name: resolve(f.path, links), Mode: f.mode, Size: int64(len(f.data))}
+		hdr := &tar.Header{Typeflag: tar.TypeReg, Name: resolve(strings.TrimPrefix(f.path, "/"), links), Mode: f.mode, Size: int64(len(f.data))}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}

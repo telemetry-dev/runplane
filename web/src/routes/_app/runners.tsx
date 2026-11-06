@@ -1,8 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { imagesQuery, poolsQuery, sandboxesQuery } from '~/components/pages/runners/queries'
-import { RunnersPage, RunnersSkeleton } from '~/components/pages/runners/runners-page'
-import { serversQuery } from '~/components/pages/servers/queries'
-import { settingsQuery } from '~/components/pages/settings/settings-api'
+import { prefetch, RunnersPage, RunnersSkeleton } from '~/components/pages/runners/runners-page'
 import { pageHead } from '~/lib/head'
 
 export const Route = createFileRoute('/_app/runners')({
@@ -10,14 +7,8 @@ export const Route = createFileRoute('/_app/runners')({
   // ?label= marks one label, for links such as the size advice of Job detail.
   validateSearch: (search: Record<string, unknown>): { label?: string } =>
     typeof search.label === 'string' ? { label: search.label } : {},
-  loader: async ({ context: { queryClient } }) => {
-    // The label dialog needs these; load them before it opens.
-    void queryClient.prefetchQuery(serversQuery)
-    void queryClient.prefetchQuery(imagesQuery)
-    void queryClient.prefetchQuery(settingsQuery)
-    await Promise.all([queryClient.ensureQueryData(poolsQuery), queryClient.ensureQueryData(sandboxesQuery())])
-  },
+  loader: ({ context: { queryClient } }) => prefetch(queryClient),
   pendingComponent: RunnersSkeleton,
   pendingMs: 200,
-  component: RunnersPage,
+  component: () => <RunnersPage marked={Route.useSearch().label} />,
 })

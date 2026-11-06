@@ -15,22 +15,41 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/runplane/runplane/internal/doctor"
 	"github.com/runplane/runplane/internal/host"
-	"github.com/runplane/runplane/internal/image"
 	"github.com/runplane/runplane/internal/sandbox"
 )
 
-// Hello is the first line that an agent sends on a new connection. A new
-// agent sends its install token, a known agent its server ID and secret.
+// Hello is the first message of an agent on a new connection. A new agent
+// sends its install token, a known agent its server ID and secret.
 type Hello struct {
+	Token    string
+	ServerID string
+	Secret   string
+	Version  string
+	Mode     sandbox.Mode
+	Host     host.Info
+	// Addr is the IP address of the agent. The Listener sets it.
+	Addr string
+}
+
+// The types below are the JSON of the protocol. They are apart from the
+// types of the other packages, so that a change in those packages cannot
+// change the protocol for agents of an older release. The sandbox types are
+// the driver contract, and they go as they are.
+
+// helloLine is the first line that an agent sends.
+type helloLine struct {
 	Token    string       `json:"token"`
 	ServerID string       `json:"server_id"`
 	Secret   string       `json:"secret"`
 	Version  string       `json:"version"`
 	Mode     sandbox.Mode `json:"mode"`
-	Host     host.Info    `json:"host"`
-	// Addr is the IP address of the agent. The Listener sets it.
-	Addr string `json:"-"`
+	Host     hostInfo     `json:"host"`
+}
+
+func (h helloLine) hello() Hello {
+	return Hello{Token: h.Token, ServerID: h.ServerID, Secret: h.Secret, Version: h.Version, Mode: h.Mode, Host: h.Host.info()}
 }
 
 // reply is the line that the primary sends back.
@@ -41,43 +60,150 @@ type reply struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// hostReport is the body of GET /v1/host. Doctor is set only with doctor=1.
-type hostReport struct {
-	Info   host.Info    `json:"info"`
-	Doctor []host.Check `json:"doctor,omitempty"`
+// An agent of an earlier release sends more facts in hostInfo, which only its
+// doctor read. The primary ignores them.
+type hostInfo struct {
+	Hostname           string `json:"hostname"`
+	OS                 string `json:"os"`
+	Kernel             string `json:"kernel"`
+	Arch               string `json:"arch"`
+	VCPU               int    `json:"vcpu"`
+	MemoryMB           int    `json:"memory_mb"`
+	DiskBytes          int64  `json:"disk_bytes"`
+	FreeDiskBytes      int64  `json:"free_disk_bytes"`
+	DiskKind           string `json:"disk_kind"`
+	KVM                bool   `json:"kvm"`
+	DockerVersion      string `json:"docker_version"`
+	SysboxVersion      string `json:"sysbox_version"`
+	FirecrackerVersion string `json:"firecracker_version"`
+	IPv4               string `json:"ipv4"`
+	Provider           string `json:"provider"`
+	Region             string `json:"region"`
 }
 
-// imageMessage is one line of the POST /v1/images/ensure stream. The last
-// line has Image or Error.
-type imageMessage struct {
-	Progress *image.Progress   `json:"progress,omitempty"`
-	Image    *sandbox.ImageRef `json:"image,omitempty"`
-	Error    string            `json:"error,omitempty"`
+func wireInfo(i host.Info) hostInfo {
+	return hostInfo{
+		Hostname: i.Hostname, OS: i.OS, Kernel: i.Kernel, Arch: i.Arch,
+		VCPU: i.VCPU, MemoryMB: i.MemoryMB, DiskBytes: i.DiskBytes, FreeDiskBytes: i.FreeDiskBytes,
+		DiskKind: i.DiskKind, KVM: i.KVM, DockerVersion: i.DockerVersion, SysboxVersion: i.SysboxVersion,
+		FirecrackerVersion: i.FirecrackerVersion, IPv4: i.IPv4, Provider: i.Provider, Region: i.Region,
+	}
 }
 
-// streamItem is one line of the POST /v1/events stream.
-type streamItem struct {
-	Event *sandbox.Event `json:"event,omitempty"`
-	Stats *host.Stats    `json:"stats,omitempty"`
+func (i hostInfo) info() host.Info {
+	return host.Info{
+		Hostname: i.Hostname, OS: i.OS, Kernel: i.Kernel, Arch: i.Arch,
+		Resources: host.Resources{VCPU: i.VCPU, MemoryMB: i.MemoryMB, DiskBytes: i.DiskBytes, FreeDiskBytes: i.FreeDiskBytes},
+		DiskKind:  i.DiskKind, KVM: i.KVM, DockerVersion: i.DockerVersion, SysboxVersion: i.SysboxVersion,
+		FirecrackerVersion: i.FirecrackerVersion, IPv4: i.IPv4, Provider: i.Provider, Region: i.Region,
+	}
 }
 
-type runnerRequest struct {
+type hostCheck struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Detail  string `json:"detail"`
+	Fix     string `json:"fix,omitempty"`
+	Command string `json:"command,omitempty"`
+}
+
+func wireChecks(list []doctor.Check) []hostCheck {
+	out := make([]hostCheck, len(list))
+	for i, c := range list {
+		out[i] = hostCheck{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
+	}
+	return out
+}
+
+func checks(list []hostCheck) []doctor.Check {
+	out := make([]doctor.Check, len(list))
+	for i, c := range list {
+		out[i] = doctor.Check{ID: c.ID, Name: c.Name, Status: doctor.Status(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
+	}
+	return out
+}
+
+type hostStats struct {
+	At            time.Time `json:"at"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemoryPercent float64   `json:"memory_percent"`
+	DiskPercent   float64   `json:"disk_percent"`
+	VCPU          int       `json:"vcpu"`
+	MemoryMB      int       `json:"memory_mb"`
+	DiskBytes     int64     `json:"disk_bytes"`
+	FreeDiskBytes int64     `json:"free_disk_bytes"`
+}
+
+func wireStats(s host.Stats) hostStats {
+	return hostStats{
+		At: s.At, CPUPercent: s.CPUPercent, MemoryPercent: s.MemoryPercent, DiskPercent: s.DiskPercent,
+		VCPU: s.VCPU, MemoryMB: s.MemoryMB, DiskBytes: s.DiskBytes, FreeDiskBytes: s.FreeDiskBytes,
+	}
+}
+
+func (s hostStats) stats() host.Stats {
+	return host.Stats{
+		At: s.At, CPUPercent: s.CPUPercent, MemoryPercent: s.MemoryPercent, DiskPercent: s.DiskPercent,
+		Resources: host.Resources{VCPU: s.VCPU, MemoryMB: s.MemoryMB, DiskBytes: s.DiskBytes, FreeDiskBytes: s.FreeDiskBytes},
+	}
+}
+
+// Image is an image that is ready on a server.
+type Image struct {
+	sandbox.ImageRef
+	// SizeBytes is the space of the image on the server: its root disk in
+	// VM mode, else its Docker image. An agent of an earlier release sends
+	// no size.
+	SizeBytes int64 `json:"size_bytes"`
+}
+
+// Progress is one step of EnsureImage.
+type Progress struct {
+	Status ImageStatus `json:"status"`
+	Done   int64       `json:"done"`  // bytes, 0 when unknown
+	Total  int64       `json:"total"` // bytes, 0 when unknown
+	Error  string      `json:"error,omitempty"`
+}
+
+// ImageStatus is the step of EnsureImage that a Progress tells about.
+type ImageStatus string
+
+const (
+	ImagePending    ImageStatus = "pending"
+	ImagePulling    ImageStatus = "pulling"
+	ImageBuilding   ImageStatus = "building"
+	ImageConverting ImageStatus = "converting"
+	ImageReady      ImageStatus = "ready"
+	ImageFailed     ImageStatus = "failed"
+)
+
+// Bundle is a runner bundle that is ready on a server.
+type Bundle struct {
 	Version string `json:"version"`
 	Arch    string `json:"arch"`
+	SHA256  string `json:"sha256"` // of the release archive
+	// Patched reports if the runner keeps ACTIONS_RESULTS_URL from its .env
+	// file, so that jobs use the runplane cache server.
+	Patched bool `json:"patched"`
 }
 
-type holdRequest struct {
-	Until time.Time `json:"until"`
+// MirrorStats counts the use of the registry mirror of a server since the
+// start of runplane on the server.
+type MirrorStats struct {
+	Hits      int64 `json:"hits"`
+	Misses    int64 `json:"misses"`
+	HitBytes  int64 `json:"hit_bytes"`  // bytes sent to clients from the cache
+	MissBytes int64 `json:"miss_bytes"` // bytes fetched from upstream
+	SizeBytes int64 `json:"size_bytes"` // bytes in the cache now
 }
 
-type updateRequest struct {
-	Version string `json:"version"`
-}
-
-// gcRequest is the body of POST /v1/images/gc: the digests of the images
-// that the server keeps.
-type gcRequest struct {
-	Keep []string `json:"keep"`
+func (m *MirrorStats) Add(o MirrorStats) {
+	m.Hits += o.Hits
+	m.Misses += o.Misses
+	m.HitBytes += o.HitBytes
+	m.MissBytes += o.MissBytes
+	m.SizeBytes += o.SizeBytes
 }
 
 const (
@@ -99,7 +225,6 @@ func yamuxConfig(log *slog.Logger) *yamux.Config {
 	return cfg
 }
 
-// streamClient sends each HTTP request on a stream of sess.
 func streamClient(sess *yamux.Session) *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		DialContext:         func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
@@ -150,7 +275,6 @@ func writeJSONLine(w io.Writer, v any) error {
 	return err
 }
 
-// responseError reads the error text of a failed response.
 func responseError(resp *http.Response) error {
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 	if text := strings.TrimSpace(string(msg)); text != "" {

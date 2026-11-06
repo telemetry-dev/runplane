@@ -34,7 +34,6 @@ type ImageBuild struct {
 	Status    string    `json:"status"`
 	Error     string    `json:"error"`
 	SizeBytes int64     `json:"size_bytes"`
-	Path      string    `json:"path"` // ext4 root disk in VM mode
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -66,18 +65,18 @@ func (s *Store) ListImages(ctx context.Context) ([]Image, error) {
 	return queryAll(ctx, s.r, "list images", scanRow[Image], "SELECT "+imageCols+" FROM images ORDER BY is_default DESC, name, id")
 }
 
-// UpdateImage writes the name and the ref.
+// UpdateImage writes the name, the ref, and the update time.
 func (s *Store) UpdateImage(ctx context.Context, i Image) error {
 	return exec1(ctx, s.w, "update image", "UPDATE images SET name = ?, ref = ?, updated_at = ? WHERE id = ?",
-		i.Name, i.Ref, ms(time.Now()), i.ID)
+		i.Name, i.Ref, ms(i.UpdatedAt), i.ID)
 }
 
-func (s *Store) SetDefaultImage(ctx context.Context, id string) error {
+func (s *Store) SetDefaultImage(ctx context.Context, id string, now time.Time) error {
 	return s.tx(ctx, "set default image", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE images SET is_default = 0 WHERE is_default = 1 AND id != ?", id); err != nil {
 			return err
 		}
-		return exec1(ctx, tx, "mark default", "UPDATE images SET is_default = 1, updated_at = ? WHERE id = ?", ms(time.Now()), id)
+		return exec1(ctx, tx, "mark default", "UPDATE images SET is_default = 1, updated_at = ? WHERE id = ?", ms(now), id)
 	})
 }
 
@@ -86,10 +85,10 @@ func (s *Store) DeleteImage(ctx context.Context, id string) error {
 	return exec1(ctx, s.w, "delete image", "DELETE FROM images WHERE id = ?", id)
 }
 
-const imageBuildCols = "image_id, server_id, digest, status, error, size_bytes, path, updated_at"
+const imageBuildCols = "image_id, server_id, digest, status, error, size_bytes, updated_at"
 
 func (b *ImageBuild) cols() []any {
-	return []any{&b.ImageID, &b.ServerID, &b.Digest, &b.Status, &b.Error, &b.SizeBytes, &b.Path, at(&b.UpdatedAt)}
+	return []any{&b.ImageID, &b.ServerID, &b.Digest, &b.Status, &b.Error, &b.SizeBytes, at(&b.UpdatedAt)}
 }
 
 func (s *Store) UpsertImageBuild(ctx context.Context, b ImageBuild) error {

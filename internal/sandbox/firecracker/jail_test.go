@@ -16,10 +16,10 @@ import (
 
 func TestPrepareChroot(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("scratch disks need Linux")
+		t.Skip("needs Linux, where scratch disks work")
 	}
 	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
-		t.Skip("no mkfs.ext4")
+		t.Skip("needs mkfs.ext4")
 	}
 	root := t.TempDir()
 	d := testDriver(t, root, &fakeHost{})

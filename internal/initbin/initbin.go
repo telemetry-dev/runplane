@@ -1,6 +1,6 @@
 // Package initbin holds the runplane-init binary for the architecture of
-// this build. `make init` builds it, gzipped, into bin/runplane-init before
-// the runplane build; without it, bin has only a placeholder.
+// this build. `make init` builds it, gzipped, into File before the runplane
+// build; without it, bin has only a placeholder.
 package initbin
 
 import (
@@ -11,25 +11,25 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sync"
 )
+
+// File is the gzipped binary that `make init` writes, relative to this
+// package.
+const File = "bin/runplane-init"
 
 //go:embed all:bin
 var bin embed.FS
 
 // gzipped is the embedded binary, or empty when the build has none.
-var gzipped, _ = bin.ReadFile("bin/runplane-init")
+var gzipped, _ = bin.ReadFile(File)
 
-// Bytes returns the runplane-init binary: the embedded one, or else
-// runplane-init next to the runplane executable.
+var errNoInit = errors.New("this build of runplane has no runplane-init: run make init, then build runplane again")
+
+// Bytes returns the embedded runplane-init binary.
 func Bytes() ([]byte, error) {
 	if len(gzipped) == 0 {
-		p, err := besideExecutable()
-		if err != nil {
-			return nil, err
-		}
-		return os.ReadFile(p)
+		return nil, errNoInit
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(gzipped))
 	if err != nil {
@@ -47,9 +47,8 @@ var (
 	path string
 )
 
-// Path returns the path of a runplane-init binary: the embedded binary,
-// written one time to a temporary file, or runplane-init next to the
-// runplane executable.
+// Path returns the path of the embedded runplane-init binary, which it
+// writes one time to a temporary file.
 func Path() (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -59,9 +58,6 @@ func Path() (string, error) {
 		if _, err := os.Stat(path); err == nil {
 			return path, nil
 		}
-	}
-	if len(gzipped) == 0 {
-		return besideExecutable()
 	}
 	b, err := Bytes()
 	if err != nil {
@@ -84,20 +80,4 @@ func Path() (string, error) {
 	}
 	path = f.Name()
 	return path, nil
-}
-
-func besideExecutable() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("find runplane-init: %w", err)
-	}
-	if exe, err = filepath.EvalSymlinks(exe); err != nil {
-		return "", fmt.Errorf("find runplane-init: %w", err)
-	}
-	p := filepath.Join(filepath.Dir(exe), "runplane-init")
-	st, err := os.Stat(p)
-	if err != nil || !st.Mode().IsRegular() {
-		return "", errors.New("find runplane-init: this build has no embedded runplane-init and there is none next to the runplane binary; build it with make init")
-	}
-	return p, nil
 }

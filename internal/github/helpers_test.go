@@ -24,11 +24,10 @@ import (
 	"time"
 
 	"github.com/actions/scaleset"
-	"github.com/actions/scaleset/listener"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/runplane/runplane/internal/events"
-	"github.com/runplane/runplane/internal/notify"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/scheduler"
 	"github.com/runplane/runplane/internal/secret"
 	"github.com/runplane/runplane/internal/store"
@@ -63,9 +62,8 @@ type env struct {
 	srv      *httptest.Server
 	svc      *Service
 	sched    *fakeScheduler
-	bundles  *fakeBundles
-	notifier *fakeNotifier
-	tokens   atomic.Int32 // installation tokens that the fake made
+	inst     *fakeInstallations // the installations that Sync reads
+	tokens   atomic.Int32       // installation tokens that the fake made
 	tokenTTL time.Duration
 }
 
@@ -81,8 +79,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	e := &env{t: t, st: st, box: box, bus: &events.Bus{}, mux: http.NewServeMux(), tokenTTL: time.Hour,
-		sched:   &fakeScheduler{got: make(chan *scaleset.RunnerScaleSetMessage, 16)},
-		bundles: &fakeBundles{}, notifier: &fakeNotifier{}}
+		sched: &fakeScheduler{got: make(chan scheduler.Message, 16)}}
 	e.srv = httptest.NewServer(e.mux)
 	t.Cleanup(e.srv.Close)
 	e.mux.HandleFunc("POST /api/v3/app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -92,14 +89,24 @@ func newEnv(t *testing.T) *env {
 			"expires_at": time.Now().Add(e.tokenTTL),
 		})
 	})
-	e.svc = New(Config{Store: st, Box: box, Bus: e.bus, Log: slog.New(slog.DiscardHandler), Scheduler: e.sched,
-		Bundles: e.bundles, Notifier: e.notifier})
-	e.svc.web, e.svc.api.base = e.srv.URL, e.srv.URL+"/api/v3"
+	e.inst = e.installations()
+	e.svc = New(Config{Store: st, Box: box, Bus: e.bus, Log: slog.New(slog.DiscardHandler), Scheduler: e.sched})
+	// Config has no option for the GitHub hosts, so the test sets them.
+	e.svc.web = e.srv.URL
+	e.svc.api = ghrest.Client{URL: e.srv.URL + "/api/v3", RetryWait: time.Millisecond}
 	t.Cleanup(func() {
 		e.svc.stop()
 		e.svc.stopListeners()
 	})
 	return e
+}
+
+// sync reads the installations of the fake and makes the scale sets agree.
+func (e *env) sync() {
+	e.t.Helper()
+	if err := e.svc.Sync(context.Background()); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // connect stores the GitHub App, as the manifest flow does.
@@ -122,6 +129,8 @@ func acmeEnv(t *testing.T) *env {
 	return e
 }
 
+// install records the installation in the store, and in the fake, so that
+// a Sync keeps it.
 func (e *env) install(id int64, login, accountType string) {
 	e.t.Helper()
 	err := e.st.UpsertInstallation(context.Background(), store.Installation{
@@ -130,6 +139,10 @@ func (e *env) install(id int64, login, accountType string) {
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	e.inst.mu.Lock()
+	e.inst.list = append(e.inst.list, map[string]any{"id": id, "app_id": testAppID, "suspended_at": nil,
+		"account": map[string]any{"login": login, "id": id, "type": accountType}})
+	e.inst.mu.Unlock()
 }
 
 func (e *env) pool(id, label string, enabled bool) {
@@ -142,11 +155,21 @@ func (e *env) pool(id, label string, enabled bool) {
 	}
 }
 
-// checkJWT verifies an app JWT with the public key of the test app.
+// checkJWT accepts only an app JWT that GitHub accepts: RS256 with the key
+// of the app and the client ID as the issuer, an issue time that is not in
+// the future, and at most 10 minutes from the issue time to the expiry.
 func (e *env) checkJWT(r *http.Request) {
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	_, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },
-		jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(testClientID))
+	var claims jwt.RegisteredClaims
+	_, err := jwt.ParseWithClaims(raw, &claims, func(*jwt.Token) (any, error) { return &testKey().PublicKey, nil },
+		jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(testClientID), jwt.WithIssuedAt(), jwt.WithExpirationRequired())
+	switch {
+	case err != nil:
+	case claims.IssuedAt == nil:
+		err = fmt.Errorf("no iat")
+	case claims.ExpiresAt.Sub(claims.IssuedAt.Time) > 10*time.Minute:
+		err = fmt.Errorf("iat %s and exp %s are more than 10 minutes apart", claims.IssuedAt, claims.ExpiresAt)
+	}
 	if err != nil {
 		e.t.Errorf("%s %s: bad app JWT: %v", r.Method, r.URL.Path, err)
 	}
@@ -158,15 +181,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// countEvents counts the events of type typ on ch so far.
-func countEvents(ch <-chan events.Event, typ string) int {
+// countEvents counts the events on ch so far.
+func countEvents[E any](ch <-chan E) int {
 	n := 0
 	for {
 		select {
-		case e := <-ch:
-			if e.Type == typ {
-				n++
-			}
+		case <-ch:
+			n++
 		default:
 			return n
 		}
@@ -185,53 +206,46 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-type fakeBundles struct{ versions []string }
-
-func (f *fakeBundles) EnsureLatest(_ context.Context, version string) error {
-	f.versions = append(f.versions, version)
-	return nil
-}
-
-type fakeNotifier struct{ sent []notify.Event }
-
-func (f *fakeNotifier) Notify(_ context.Context, e notify.Event) error {
-	f.sent = append(f.sent, e)
-	return nil
-}
-
 // fakeScheduler acquires every available job, like the real scheduler does
-// for jobs that it accepts. It sends the messages from GitHub to got.
+// for jobs that it accepts. It sends the messages with jobs to got.
 type fakeScheduler struct {
 	last     scheduler.ScaleSetClient // of the last attached scale set
 	detached []string
 	max      int
-	got      chan *scaleset.RunnerScaleSetMessage
+	got      chan scheduler.Message
+
+	mu       sync.Mutex
+	acquired []int64 // the keys that AcquireJobs gave back
 }
 
-func (f *fakeScheduler) Attach(_ store.ScaleSet, c scheduler.ScaleSetClient) listener.Scaler {
+func (f *fakeScheduler) Attach(_ store.ScaleSet, c scheduler.ScaleSetClient) scheduler.Scaler {
 	f.last = c
 	c.SetMaxRunners(f.max)
-	return scalerFunc(func(ctx context.Context, msg *scaleset.RunnerScaleSetMessage) error {
-		if msg == nil || msg.MessageID == listener.InitialMessageID {
+	return scalerFunc(func(ctx context.Context, m scheduler.Message) error {
+		if len(m.Available) == 0 {
 			return nil
 		}
-		var ids []int64
-		for _, j := range msg.JobAvailableMessages {
-			ids = append(ids, j.RunnerRequestID)
+		var keys []int64
+		for _, j := range m.Available {
+			keys = append(keys, j.RunnerRequestID)
 		}
-		if _, err := c.AcquireJobs(ctx, ids); err != nil {
+		acquired, err := c.AcquireJobs(ctx, keys)
+		if err != nil {
 			return err
 		}
-		f.got <- msg
+		f.mu.Lock()
+		f.acquired = append(f.acquired, acquired...)
+		f.mu.Unlock()
+		f.got <- m
 		return nil
 	})
 }
 
 func (f *fakeScheduler) Detach(id string) { f.detached = append(f.detached, id) }
 
-type scalerFunc func(context.Context, *scaleset.RunnerScaleSetMessage) error
+type scalerFunc func(context.Context, scheduler.Message) error
 
-func (f scalerFunc) Scale(ctx context.Context, m *scaleset.RunnerScaleSetMessage) error {
+func (f scalerFunc) Scale(ctx context.Context, m scheduler.Message) error {
 	return f(ctx, m)
 }
 
@@ -242,6 +256,7 @@ type fakeActions struct {
 	actionsState
 	nextID     int
 	conflict   bool             // the session endpoint answers 409
+	noUpdate   bool             // the update of a scale set fails
 	agents     map[int64]string // runner ID -> "busy", "gone", or "broken"; others are removable
 	revokeNext bool             // the next admin token is revoked at once
 	revoked    string
@@ -327,8 +342,12 @@ func (e *env) actions() *fakeActions {
 		json.NewDecoder(r.Body).Decode(&s)
 		s.ID, _ = strconv.Atoi(r.PathValue("id"))
 		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.noUpdate {
+			actionsError(w, http.StatusBadRequest, "InvalidRunnerScaleSetException")
+			return
+		}
 		f.sets[s.ID] = s
-		f.mu.Unlock()
 		writeJSON(w, http.StatusOK, s)
 	})
 	m.HandleFunc("DELETE "+sets+"/{id}", func(w http.ResponseWriter, r *http.Request) {

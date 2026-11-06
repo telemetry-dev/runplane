@@ -16,7 +16,7 @@ import (
 // more than watchdogLimit, the watchdog aborts the connection, so that
 // Docker can remove the container.
 type watchdog struct {
-	connections string // /sys/fs/fuse/connections
+	connections string
 	mountinfo   string
 	blocked     map[string]time.Time // connection → first sample with waiting requests
 }
@@ -34,9 +34,8 @@ func newWatchdog() *watchdog {
 	}
 }
 
-// check reads the connections. It aborts each connection that blocks a
-// container in ours for more than watchdogLimit, and returns these
-// containers.
+// check aborts each connection that blocks a container in ours for more than
+// watchdogLimit, and returns these containers.
 func (w *watchdog) check(now time.Time, ours func(containerID string) bool) []string {
 	conns := w.sysboxConnections()
 	var hung []string
@@ -123,19 +122,14 @@ func (w *watchdog) sysboxConnections() map[string]string {
 	return conns
 }
 
-// checkSysboxFS removes the sandboxes that the watchdog finds hung. The
+// checkSysboxFS kills the sandboxes that the watchdog finds hung. The
 // scheduler then starts new ones.
 func (d *Driver) checkSysboxFS() {
 	ours := func(containerID string) bool { return d.byContainer(containerID) != nil }
 	for _, containerID := range d.dog.check(time.Now(), ours) {
-		b := d.byContainer(containerID)
-		if b == nil {
-			continue
+		if b := d.byContainer(containerID); b != nil {
+			b.Log().Error("sysbox-fs stopped answering, removing the sandbox (sysbox issue #1018)")
+			b.FailNow("sysbox-fs stopped answering (sysbox issue #1018)")
 		}
-		d.log.Error("sysbox-fs stopped answering, removing the sandbox (sysbox issue #1018)", "sandbox", b.id)
-		d.mu.Lock()
-		b.failure = "sysbox-fs stopped answering (sysbox issue #1018)"
-		d.mu.Unlock()
-		go d.remove(b)
 	}
 }

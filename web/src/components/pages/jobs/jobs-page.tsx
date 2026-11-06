@@ -1,30 +1,32 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { useLocation, useNavigate, useSearch, type HistoryState } from '@tanstack/react-router'
+import { keepPreviousData, useQuery, type QueryClient } from '@tanstack/react-query'
+import { useLocation, useNavigate, type HistoryState } from '@tanstack/react-router'
 import { useCallback } from 'react'
-import { $api, errorMessage } from '~/api/client'
-import { statusQuery } from '~/api/queries'
+import { facetsQuery, jobsQuery } from '~/api/jobs'
+import { statusQuery } from '~/api/session'
+import { LoadError } from '~/components/app/load-error'
 import { Button } from '~/components/ui/button'
 import { PageHeader } from '~/components/ui/page-header'
-import { hasFilters, jobsApiQuery, pageRange, pageSize, rangeOptions, type JobsSearch } from './jobs-search'
+import { defaultRange, hasFilters, jobsApiQuery, pageRange, pageSize, rangeOptions, type JobsSearch } from './jobs-search'
 import { JobsTable } from './jobs-table'
 import { JobsToolbar } from './jobs-toolbar'
 
-export function jobsQuery(search: JobsSearch) {
-  return $api.queryOptions('get', '/api/jobs', { params: { query: jobsApiQuery(search) } })
+/** Starts the requests of the page, also on link hover; the page shows its own loading state. */
+export function prefetch(client: QueryClient, search: JobsSearch) {
+  void client.prefetchQuery(jobsQuery(jobsApiQuery(search)))
+  void client.prefetchQuery(facetsQuery)
 }
 
-/** The "Jobs" design: search and filters, the jobs table, and cursor pages. job.state events refresh the list. */
-export function JobsPage() {
-  const search = useSearch({ from: '/_app/jobs/' })
-  const navigate = useNavigate({ from: '/jobs/' })
+/** The "Jobs" design: search and filters, the jobs table, and cursor pages. */
+export function JobsPage({ search }: { search: JobsSearch }) {
+  const navigate = useNavigate()
   const before = useLocation({ select: (location) => previousCursors(location.state) })
-  const jobs = useQuery({ ...jobsQuery(search), placeholderData: keepPreviousData })
+  const jobs = useQuery({ ...jobsQuery(jobsApiQuery(search)), placeholderData: keepPreviousData })
 
   const change = useCallback(
     (next: Partial<JobsSearch>, typing = false) => {
-      void navigate({ search: (previous) => ({ ...previous, ...next, cursor: undefined }), replace: typing })
+      void navigate({ to: '/jobs', search: { ...search, ...next, cursor: undefined }, replace: typing })
     },
-    [navigate],
+    [navigate, search],
   )
 
   const items = jobs.data?.items ?? null
@@ -34,7 +36,7 @@ export function JobsPage() {
 
   function goTo(cursor: string | undefined, pages: string[]) {
     const state: HistoryState & { jobPages: string[] } = { jobPages: pages }
-    void navigate({ search: (previous) => ({ ...previous, cursor }), state })
+    void navigate({ to: '/jobs', search: { ...search, cursor }, state })
   }
 
   return (
@@ -43,7 +45,7 @@ export function JobsPage() {
       <div className="flex flex-col gap-m">
         <JobsToolbar search={search} onChange={change} />
         {jobs.isError && !jobs.data ? (
-          <LoadError message={errorMessage(jobs.error)} onRetry={() => void jobs.refetch()} />
+          <LoadError what="the jobs" error={jobs.error} onRetry={() => void jobs.refetch()} retrying={jobs.isFetching} />
         ) : (
           <JobsTable
             jobs={items}
@@ -87,17 +89,8 @@ function EmptyText({ search, onClear }: { search: JobsSearch; onClear: () => voi
     )
   }
   if (!hasJobs || search.range === 'all') return 'No jobs yet. Jobs show here when a workflow runs on a runplane runner.'
-  const range = rangeOptions.find((option) => option.value === (search.range ?? '7d'))?.label.toLowerCase()
+  const range = rangeOptions.find((option) => option.value === (search.range ?? defaultRange))?.label.toLowerCase()
   return `No jobs in the ${range}.`
-}
-
-function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div role="alert" className="flex flex-wrap items-center justify-between gap-m rounded-m bg-neutral-2 px-l py-m text-s text-neutral-8">
-      <span>Could not load jobs: {message}</span>
-      <Button onClick={onRetry}>Try again</Button>
-    </div>
-  )
 }
 
 /**

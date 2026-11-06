@@ -2,8 +2,10 @@ import { Form } from '@base-ui/react/form'
 import { useQuery } from '@tanstack/react-query'
 import { KeyRound, LogOut } from 'lucide-react'
 import { useState } from 'react'
-import { $api, api, errorMessage, isApiError, useFieldErrors } from '~/api/client'
-import { sessionQuery, statusQuery } from '~/api/queries'
+import { $api, api, isApiError } from '~/api/client'
+import { useFormProblems } from '~/api/form-problems'
+import { limits } from '~/api/limits'
+import { sessionQuery, statusQuery } from '~/api/session'
 import { Avatar } from '~/components/ui/avatar'
 import { Button } from '~/components/ui/button'
 import { Dialog, DialogClose, DialogFooter, DialogPopup } from '~/components/ui/dialog'
@@ -20,10 +22,10 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from '~/components/ui/menu'
+import { formatVersion } from '~/lib/format'
 import { useThemeMode } from '~/lib/theme-mode'
 import { useFrameSubscribed } from './pending'
 
-/** The user row at the bottom of the sidebar; opens theme mode, password change, and sign out. */
 export function UserMenu() {
   const subscribed = useFrameSubscribed()
   const user = useQuery({ ...sessionQuery, subscribed }).data
@@ -49,7 +51,7 @@ export function UserMenu() {
           <span className="min-w-0 flex-1 truncate text-s text-neutral-8">{name}</span>
           {version && (
             <span title={version} className="text-xs text-neutral-6">
-              {shortVersion(version)}
+              {formatVersion(version)}
             </span>
           )}
         </MenuTrigger>
@@ -84,13 +86,12 @@ export function UserMenu() {
 // Lives inside the popup, so closing the dialog drops the form state and the last error.
 function ChangePasswordForm({ onDone }: { onDone: () => void }) {
   const update = $api.useMutation('patch', '/api/me', { onSuccess: onDone })
-  const errors = useFieldErrors(update.error)
-  const message = update.error && Object.keys(errors).length === 0 ? errorMessage(update.error) : undefined
+  const problems = useFormProblems(update.error)
 
   return (
     <Form
       className="flex flex-col gap-l"
-      errors={errors}
+      errors={problems.fields}
       onFormSubmit={(values) =>
         update.mutate({ body: { current_password: values.current_password, new_password: values.new_password } })
       }
@@ -98,8 +99,8 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
       <Field name="current_password" label="Current password">
         <Input type="password" autoComplete="current-password" required />
       </Field>
-      <Field name="new_password" label="New password">
-        <Input type="password" autoComplete="new-password" required />
+      <Field name="new_password" label="New password" description={`At least ${newPassword.minLength} characters.`}>
+        <Input type="password" autoComplete="new-password" minLength={newPassword.minLength} required />
       </Field>
       <Field
         name="confirm_password"
@@ -108,9 +109,9 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
       >
         <Input type="password" autoComplete="new-password" required />
       </Field>
-      {message && (
+      {problems.alert && (
         <p role="alert" className="text-s text-error">
-          {message}
+          {problems.alert}
         </p>
       )}
       <DialogFooter>
@@ -123,8 +124,4 @@ function ChangePasswordForm({ onDone }: { onDone: () => void }) {
   )
 }
 
-/** "v1.2.0 (3f2a9c1)" and "1.2.0" both give "v1.2.0"; other names such as "dev" stay. */
-function shortVersion(version: string): string {
-  const name = version.split(' ')[0]!
-  return /^\d/.test(name) ? `v${name}` : name
-}
+const newPassword = limits.UpdateMeRequest.new_password

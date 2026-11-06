@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
-	"github.com/danielgtaylor/huma/v2"
-
+	"github.com/runplane/runplane/internal/field"
+	"github.com/runplane/runplane/internal/ghapp"
+	"github.com/runplane/runplane/internal/ghrest"
+	"github.com/runplane/runplane/internal/pages"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/store"
 )
 
@@ -19,25 +23,23 @@ import (
 // It has no slash, so a branch named runplane cannot block it.
 const pullBranch = "runplane-runs-on"
 
-// pullPermissions are the installation permissions that OpenPullRequest
-// uses. A change in .github/workflows needs workflows next to contents.
-var pullPermissions = []string{"contents", "pull_requests", "workflows"}
-
-// hostedRunsOn matches a runs-on line with one GitHub-hosted label that a
-// pool can take: ubuntu-latest, or ubuntu-24.04, the release of the runplane
-// base image. Quotes and a comment can follow the label.
-var hostedRunsOn = regexp.MustCompile(`(?m)^([ \t]*(?:-[ \t]+)?runs-on:[ \t]*["']?)ubuntu-(?:latest|24\.04)(["']?[ \t]*(?:#[^\r\n]*)?\r?)$`)
+// hostedRunsOn matches a runs-on line with one label of ghapp.HostedLabels.
+// Quotes and a comment can follow the label.
+var hostedRunsOn = regexp.MustCompile(`(?m)^([ \t]*(?:-[ \t]+)?runs-on:[ \t]*["']?)(?:` + anyOf(ghapp.HostedLabels) +
+	`)(["']?[ \t]*(?:#[^\r\n]*)?\r?)$`)
 
 // OpenPullRequest opens a pull request in the repository that sets runs-on
-// to label in each job on ubuntu-latest or ubuntu-24.04, and returns its
-// number and URL. While the pull request of an earlier call is open, it
-// returns that one. base is the browser URL of runplane, for the
-// description.
+// to label in each job on one of ghapp.HostedLabels, and returns its number
+// and URL. While the pull request of an earlier call is open, it returns
+// that one. base is the browser URL of runplane, for the description.
+//
+// The jobs of the pull request must start, so it returns field.Problems at
+// "label" when no enabled pool has the label, and at "repository" when the
+// app has no access to the repository, runplane takes no jobs of it, or it
+// has no job to move. It returns ghapp.ErrNoPullPermissions when the
+// account has not accepted ghapp.PullPermissions.
 func (s *Service) OpenPullRequest(ctx context.Context, base, repository, label string) (int, string, error) {
-	repo, err := s.st.GetRepositoryByName(ctx, repository)
-	if errors.Is(err, store.ErrNotFound) {
-		return 0, "", huma.Error404NotFound("The GitHub App has no access to " + repository + ".")
-	}
+	repo, err := s.pullRepository(ctx, repository, label)
 	if err != nil {
 		return 0, "", err
 	}
@@ -81,15 +83,15 @@ func (s *Service) OpenPullRequest(ctx context.Context, base, repository, label s
 		return 0, "", err
 	}
 	err = r.json(ctx, http.MethodPost, "/git/commits", map[string]any{
-		"message": "Run jobs on runplane\n\nThe jobs on ubuntu-latest and ubuntu-24.04 use the runplane label " + label + ".",
+		"message": "Run jobs on runplane\n\nThe jobs on " + ghapp.HostedLabelsText("") + " use the runplane label " + label + ".",
 		"tree":    made.SHA, "parents": []string{branch.Commit.SHA},
 	}, &made)
 	if err != nil {
 		return 0, "", err
 	}
 	err = r.json(ctx, http.MethodPost, "/git/refs", map[string]any{"ref": "refs/heads/" + pullBranch, "sha": made.SHA}, nil)
-	var apiErr *apiError
-	if errors.As(err, &apiErr) && apiErr.status == http.StatusUnprocessableEntity {
+	var apiErr *ghrest.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnprocessableEntity {
 		// The branch of an earlier pull request that is closed now.
 		err = r.json(ctx, http.MethodPatch, "/git/refs/heads/"+pullBranch, map[string]any{"sha": made.SHA, "force": true}, nil)
 	}
@@ -113,7 +115,6 @@ type pullRequest struct {
 	HTMLURL string `json:"html_url"`
 }
 
-// treeFile is a file of a new Git tree, with its full content.
 type treeFile struct {
 	Path    string `json:"path"`
 	Mode    string `json:"mode"`
@@ -121,34 +122,62 @@ type treeFile struct {
 	Content string `json:"content"`
 }
 
-// checkPullPermissions returns a 403 problem if the account of the
-// installation did not accept pullPermissions. An app from before runplane
-// asked for them gets them in its settings on GitHub.
-func (s *Service) checkPullPermissions(ctx context.Context, installationID int64) error {
-	var inst installation
-	err := s.api.json(ctx, call{method: http.MethodGet, path: fmt.Sprintf("/app/installations/%d", installationID), auth: appAuth{s}}, &inst)
+// pullRepository returns the repository of a pull request that moves jobs
+// to the pool label, or field.Problems when the jobs would not start.
+func (s *Service) pullRepository(ctx context.Context, repository, label string) (store.Repository, error) {
+	pools, err := s.st.ListPools(ctx)
 	if err != nil {
-		return fmt.Errorf("read the installation: %w", err)
+		return store.Repository{}, err
 	}
-	for _, name := range pullPermissions {
-		if inst.Permissions[name] != "write" {
-			return huma.Error403Forbidden("The GitHub App needs read and write access to Contents, Pull requests, and Workflows. " +
-				"Add these permissions in the app settings on GitHub, then accept them for " + inst.Account.Login + ".")
+	if !slices.ContainsFunc(pools, func(p store.Pool) bool { return p.Enabled && p.Label == label }) {
+		return store.Repository{}, field.Problems{{Key: "label", Message: "No enabled pool has this label.", Value: label}}
+	}
+	repo, err := s.st.GetRepositoryByName(ctx, repository)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.Repository{}, repositoryProblem(repository, "The GitHub App has no access to "+repository+".")
+	}
+	if err != nil {
+		return store.Repository{}, err
+	}
+	inst, err := s.st.GetInstallation(ctx, repo.InstallationID)
+	if err != nil {
+		return store.Repository{}, err
+	}
+	if inst.SuspendedAt != nil {
+		return store.Repository{}, repositoryProblem(repository, "GitHub suspended the app installation on "+inst.AccountLogin+".")
+	}
+	settings, err := s.st.GetSettings(ctx)
+	if err != nil {
+		return store.Repository{}, err
+	}
+	if !policy.TakesJobs(settings, repo) {
+		return store.Repository{}, repositoryProblem(repository, "runplane takes no jobs of "+repo.FullName+", so the moved jobs would not start.")
+	}
+	return repo, nil
+}
+
+func (s *Service) checkPullPermissions(ctx context.Context, installationID int64) error {
+	inst, err := s.readInstallation(ctx, installationID)
+	if err != nil {
+		return err
+	}
+	for _, p := range ghapp.PullPermissions {
+		if inst.Permissions[p.Name] != p.Access {
+			return fmt.Errorf("%w. Add these permissions in the app settings on GitHub, then accept them for %s",
+				ghapp.ErrNoPullPermissions, inst.Account.Login)
 		}
 	}
 	return nil
 }
 
-// repoREST sends REST calls about one repository as its installation.
 type repoREST struct {
-	api  *rest
-	auth auth
+	api  ghrest.Client
+	auth ghrest.Auth
 	name string // owner/name
 }
 
-// json sends a call to path below /repos/owner/name.
 func (r repoREST) json(ctx context.Context, method, path string, body, out any) error {
-	return r.api.json(ctx, call{method: method, path: "/repos/" + r.name + path, body: body, auth: r.auth}, out)
+	return r.api.JSON(ctx, ghrest.Call{Method: method, Path: "/repos/" + r.name + path, Body: body, Auth: r.auth}, out)
 }
 
 // moveWorkflows reads the workflows at the commit ref and returns the ones
@@ -160,9 +189,9 @@ func (r repoREST) moveWorkflows(ctx context.Context, ref, label string) ([]treeF
 		SHA  string `json:"sha"`
 	}
 	err := r.json(ctx, http.MethodGet, "/contents/.github/workflows?ref="+ref, nil, &entries)
-	var apiErr *apiError
-	if errors.As(err, &apiErr) && apiErr.status == http.StatusNotFound {
-		return nil, 0, huma.Error422UnprocessableEntity(r.name + " has no workflows in .github/workflows.")
+	var apiErr *ghrest.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		return nil, 0, repositoryProblem(r.name, r.name+" has no workflows in .github/workflows.")
 	}
 	if err != nil {
 		return nil, 0, err
@@ -191,17 +220,30 @@ func (r repoREST) moveWorkflows(ctx context.Context, ref, label string) ([]treeF
 		jobs += n
 	}
 	if jobs == 0 {
-		return nil, 0, huma.Error422UnprocessableEntity("No job in the workflows of " + r.name + " runs on ubuntu-latest or ubuntu-24.04.")
+		return nil, 0, repositoryProblem(r.name, "No job in the workflows of "+r.name+" runs on "+ghapp.HostedLabelsText("")+".")
 	}
 	return files, jobs, nil
 }
 
+func repositoryProblem(repository, msg string) error {
+	return field.Problems{{Key: "repository", Message: msg, Value: repository}}
+}
+
 // moveJobs sets runs-on to label in each job of the workflow that runs on
-// ubuntu-latest or ubuntu-24.04, and counts these jobs. The other lines
-// stay as they are.
+// one of ghapp.HostedLabels, and counts these jobs. The other lines stay as
+// they are.
 func moveJobs(workflow, label string) (string, int) {
 	n := len(hostedRunsOn.FindAllStringIndex(workflow, -1))
 	return hostedRunsOn.ReplaceAllString(workflow, "${1}"+label+"${2}"), n
+}
+
+// anyOf is a regexp term that matches each of the texts.
+func anyOf(texts []string) string {
+	quoted := make([]string, len(texts))
+	for i, t := range texts {
+		quoted[i] = regexp.QuoteMeta(t)
+	}
+	return strings.Join(quoted, "|")
 }
 
 func pullDescription(base, label string, jobs int, files []treeFile) string {
@@ -210,12 +252,12 @@ func pullDescription(base, label string, jobs int, files []treeFile) string {
 	if jobs == 1 {
 		noun = "job"
 	}
-	fmt.Fprintf(&b, "This pull request sets `runs-on` to `%s` for %d %s on `ubuntu-latest` or `ubuntu-24.04`. "+
+	fmt.Fprintf(&b, "This pull request sets `runs-on` to `%s` for %d %s on %s. "+
 		"These jobs then run on your runplane servers. Workflows that run on pull requests use the change for this pull request too, "+
-		"so you can see the jobs in runplane before you merge.\n\nChanged workflows:\n\n", label, jobs, noun)
+		"so you can see the jobs in runplane before you merge.\n\nChanged workflows:\n\n", label, jobs, noun, ghapp.HostedLabelsText("`"))
 	for _, f := range files {
 		fmt.Fprintf(&b, "- `%s`\n", f.Path)
 	}
-	fmt.Fprintf(&b, "\nJobs in runplane: %s/jobs\n", base)
+	fmt.Fprintf(&b, "\nJobs in runplane: %s%s\n", base, pages.Jobs)
 	return b.String()
 }

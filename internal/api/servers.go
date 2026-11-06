@@ -3,15 +3,16 @@ package api
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/runplane/runplane/internal/events"
+	"github.com/runplane/runplane/internal/doctor"
+	"github.com/runplane/runplane/internal/field"
+	"github.com/runplane/runplane/internal/fleet"
+	"github.com/runplane/runplane/internal/policy"
 	"github.com/runplane/runplane/internal/sandbox"
 	"github.com/runplane/runplane/internal/store"
-	"github.com/runplane/runplane/internal/version"
 )
 
 // ServerSummary is the server card of the overview.
@@ -21,14 +22,15 @@ type ServerSummary struct {
 	Kind          string     `json:"kind" enum:"local,agent" doc:"local is the primary."`
 	Status        string     `json:"status" enum:"online,installing,unreachable,draining,disabled"`
 	StatusDetail  string     `json:"status_detail" doc:"For example the install progress or the last error."`
-	Arch          string     `json:"arch" doc:"x64 or arm64. Empty until the server reports its facts."`
-	Mode          string     `json:"mode" doc:"container, vm, or dev. Empty until the server reports its facts."`
+	Arch          string     `json:"arch" enum:"x64,arm64," doc:"Empty until the server reports its facts."`
+	Mode          string     `json:"mode" enum:"container,vm,dev," doc:"Empty until the server reports its facts."`
 	VCPU          int        `json:"vcpu"`
 	MemoryMB      int        `json:"memory_mb"`
 	DiskBytes     int64      `json:"disk_bytes"`
 	CPUPercent    *float64   `json:"cpu_percent" doc:"Latest host sample. Null without samples."`
 	MemoryPercent *float64   `json:"memory_percent"`
 	DiskPercent   *float64   `json:"disk_percent"`
+	StatsAt       *time.Time `json:"stats_at" doc:"Time of the latest host sample."`
 	RunningJobs   int        `json:"running_jobs" doc:"Sandboxes that run a job."`
 	Sandboxes     int        `json:"sandboxes" doc:"Sandboxes that are not gone or failed."`
 	VCPUInUse     int        `json:"vcpu_in_use" doc:"vCPUs of the live sandboxes."`
@@ -38,34 +40,35 @@ type ServerSummary struct {
 
 type Server struct {
 	ServerSummary
-	Address            string     `json:"address"`
-	Provider           string     `json:"provider" doc:"Cloud provider, if runplane knows it."`
-	Region             string     `json:"region" doc:"Region or location of the cloud provider, for example fsn1. Empty if unknown."`
-	OS                 string     `json:"os"`
-	Kernel             string     `json:"kernel"`
-	DiskKind           string     `json:"disk_kind" doc:"NVMe, SSD, HDD, or empty if unknown."`
-	KVM                bool       `json:"kvm"`
-	DockerVersion      string     `json:"docker_version"`
-	SysboxVersion      string     `json:"sysbox_version"`
-	FirecrackerVersion string     `json:"firecracker_version"`
-	Version            string     `json:"version" doc:"runplane version on the server."`
-	UpdateState        string     `json:"update_state" enum:"current,available,updating,failed,none" doc:"current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and status_detail tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version."`
-	StatsAt            *time.Time `json:"stats_at" doc:"Time of the latest host sample."`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	Address            string        `json:"address"`
+	Provider           string        `json:"provider" doc:"Cloud provider, if runplane knows it."`
+	Region             string        `json:"region" doc:"Region or location of the cloud provider, for example fsn1. Empty if unknown."`
+	OS                 string        `json:"os"`
+	Kernel             string        `json:"kernel"`
+	DiskKind           string        `json:"disk_kind" doc:"NVMe, SSD, HDD, or empty if unknown."`
+	KVM                bool          `json:"kvm"`
+	DockerVersion      string        `json:"docker_version"`
+	SysboxVersion      string        `json:"sysbox_version"`
+	FirecrackerVersion string        `json:"firecracker_version"`
+	Version            string        `json:"version" doc:"runplane version on the server."`
+	UpdateState        string        `json:"update_state" enum:"current,available,updating,failed,none" doc:"current: the server runs the version of the primary. available: POST /api/servers/{id}/update installs the release of the primary on the agent. updating: an update runs. failed: the last update failed, and update_error tells why; POST again tries again. none: runplane cannot update the server, because the primary is not a release build or the server has not reported its version."`
+	UpdateError        string        `json:"update_error" doc:"Why the last update of the agent failed. Empty when it did not fail."`
+	WaitReason         string        `json:"wait_reason" doc:"Why the server gets no runners in its mode, for example while allow_public_repos is on and the server is not in VM mode. Empty when it gets runners. status tells if the server is draining or disabled."`
+	Actions            ServerActions `json:"actions" doc:"The changes that an admin can make to the server now."`
+	CreatedAt          time.Time     `json:"created_at"`
+	UpdatedAt          time.Time     `json:"updated_at"`
 }
 
-// Values of Server.UpdateState.
-const (
-	UpdateCurrent   = "current"
-	UpdateAvailable = "available"
-	UpdateUpdating  = "updating"
-	UpdateFailed    = "failed"
-	UpdateNone      = "none"
-)
+type ServerActions struct {
+	CanDrain     bool `json:"can_drain" doc:"PATCH status draining."`
+	CanResume    bool `json:"can_resume" doc:"PATCH status online, after a drain or a disable."`
+	CanRemove    bool `json:"can_remove" doc:"DELETE. The primary cannot be removed."`
+	CanUpdate    bool `json:"can_update" doc:"POST /api/servers/{id}/update: the agent is connected, and update_state is available or failed."`
+	CanRunDoctor bool `json:"can_run_doctor" doc:"POST /api/servers/{id}/doctor: the server is connected."`
+}
 
 // servers converts store servers and adds the latest host sample, the
-// sandbox use, and the update state.
+// sandbox use, the update state, and why a server waits.
 func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, error) {
 	stats, err := h.d.Store.LatestServerStats(ctx)
 	if err != nil {
@@ -75,25 +78,27 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 	if err != nil {
 		return nil, err
 	}
-	regions, err := h.d.Store.ServerRegions(ctx)
+	settings, err := h.d.Store.GetSettings(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Server, len(list))
 	byID := map[string]*Server{}
 	for i, v := range list {
-		f := v.ServerFacts
+		f, a := v.ServerFacts, h.d.Servers.Actions(v)
 		out[i] = Server{
 			ServerSummary: ServerSummary{
 				ID: v.ID, Name: v.Name, Kind: v.Kind, Status: v.Status, StatusDetail: v.StatusDetail, Arch: f.Arch,
 				Mode: string(f.Mode), VCPU: f.VCPU, MemoryMB: f.MemoryMB, DiskBytes: f.DiskBytes, LastSeenAt: v.LastSeenAt,
 			},
-			Address: f.Address, Provider: f.Provider, Region: regions[v.ID], OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
+			Address: f.Address, Provider: f.Provider, Region: f.Region, OS: f.OS, Kernel: f.Kernel, DiskKind: f.DiskKind, KVM: f.KVM,
 			DockerVersion: f.DockerVersion, SysboxVersion: f.SysboxVersion, FirecrackerVersion: f.FirecrackerVersion,
-			Version: f.Version, UpdateState: UpdateNone, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
-		}
-		if h.d.Servers != nil {
-			out[i].UpdateState = h.d.Servers.UpdateState(v)
+			Version: f.Version, UpdateState: string(h.d.Servers.UpdateState(v)), UpdateError: v.UpdateError,
+			WaitReason: waitReason(settings, v),
+			Actions: ServerActions{
+				CanDrain: a.Drain, CanResume: a.Resume, CanRemove: a.Remove, CanUpdate: a.Update, CanRunDoctor: a.RunDoctor,
+			},
+			CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
 		}
 		if st, ok := stats[v.ID]; ok {
 			out[i].CPUPercent, out[i].MemoryPercent, out[i].DiskPercent = &st.CPUPercent, &st.MemoryPercent, &st.DiskPercent
@@ -114,6 +119,17 @@ func (h *Handler) servers(ctx context.Context, list []store.Server) ([]Server, e
 		}
 	}
 	return out, nil
+}
+
+// waitReason tells why the scheduler starts no runners on the server, or
+// returns "". A server without facts runs no driver yet. A public job that
+// waits keeps a server out of its own scale set only, so it is no reason
+// here.
+func waitReason(st store.Settings, v store.Server) string {
+	if v.Mode == "" {
+		return ""
+	}
+	return policy.RunnerRefusal(st, v.Mode, false)
 }
 
 func (h *Handler) listServers(ctx context.Context, _ *struct{}) (*body[[]Server], error) {
@@ -144,23 +160,19 @@ type ServerToken struct {
 }
 
 func (h *Handler) createServerToken(ctx context.Context, in *body[*ServerTokenRequest]) (*body[ServerToken], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	var name string
 	if in.Body != nil {
-		name = strings.TrimSpace(in.Body.Name)
+		name = in.Body.Name
 	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
-	t, err := h.d.Servers.NewToken(ctx, base, name, currentUser(ctx).ID)
+	t, err := h.d.Servers.NewToken(ctx, actor(ctx), base, name)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.audit(ctx, "server.token", t.ID, map[string]any{"name": name, "expires_at": t.ExpiresAt})
-	return &body[ServerToken]{t}, nil
+	return &body[ServerToken]{ServerToken{ID: t.ID, Token: t.Token, Command: t.Command, ExpiresAt: t.ExpiresAt}}, nil
 }
 
 type ServerTokenStatus struct {
@@ -189,30 +201,15 @@ type SSHInstall struct {
 }
 
 func (h *Handler) installServerSSH(ctx context.Context, in *body[SSHInstall]) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	req := in.Body
-	req.Name, req.Host = strings.TrimSpace(req.Name), strings.TrimSpace(req.Host)
-	var errs problems
-	if req.Name == "" {
-		errs.add("body.name", "Enter a name.", in.Body.Name)
-	}
-	if req.Host == "" || strings.ContainsAny(req.Host, " /@") {
-		errs.add("body.host", "Enter a host name or an IP address.", in.Body.Host)
-	}
-	if err := errs.err(); err != nil {
-		return nil, err
-	}
 	base, err := h.baseURL(ctx)
 	if err != nil {
 		return nil, err
 	}
-	id, err := h.d.Servers.InstallSSH(ctx, base, req)
+	id, err := h.d.Servers.InstallSSH(ctx, actor(ctx), base, fleet.SSHInstall{Name: req.Name, Host: req.Host, Port: req.Port, User: req.User})
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
-	h.audit(ctx, "server.install", id, map[string]any{"name": req.Name, "host": req.Host, "port": req.Port, "user": req.User})
 	v, err := h.d.Store.GetServer(ctx, id)
 	if err != nil {
 		return nil, notFound(err, "The new server is gone.")
@@ -225,116 +222,67 @@ type SSHKey struct {
 }
 
 func (h *Handler) getSSHKey(ctx context.Context, _ *struct{}) (*body[SSHKey], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Adding servers")
-	}
 	key, err := h.d.Servers.SSHPublicKey(ctx)
 	if err != nil {
-		return nil, h.serviceErr(err)
+		return nil, serviceErr(err)
 	}
 	return &body[SSHKey]{SSHKey{PublicKey: key}}, nil
 }
 
+// UpdateServerRequest has the name limits of SSHInstall.
 type UpdateServerRequest struct {
-	Name   *string `json:"name,omitempty" minLength:"1" maxLength:"64"`
+	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty" enum:"online,draining,disabled" doc:"draining and disabled servers get no new sandboxes. online makes a draining or disabled server take sandboxes again."`
+}
+
+func (UpdateServerRequest) TransformSchema(r huma.Registry, s *huma.Schema) *huma.Schema {
+	return patchOf[SSHInstall](r, s)
 }
 
 func (h *Handler) updateServer(ctx context.Context, in *struct {
 	PathID
 	Body UpdateServerRequest
 }) (*body[Server], error) {
-	v, err := h.d.Store.GetServer(ctx, in.ID)
+	v, err := h.d.Servers.UpdateServer(ctx, actor(ctx), in.ID, fleet.ServerChange{Name: in.Body.Name, Status: in.Body.Status})
+	if errors.Is(err, fleet.ErrInstalling) || errors.Is(err, fleet.ErrNotPaused) {
+		return nil, huma.Error409Conflict(field.Sentence(err))
+	}
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
-	}
-	b := in.Body
-	var name string
-	if b.Name != nil {
-		if name = strings.TrimSpace(*b.Name); name == "" {
-			return nil, invalid("body.name", "Enter a name.", *b.Name)
-		}
-	}
-	changeStatus := b.Status != nil && *b.Status != v.Status
-	if changeStatus {
-		if v.Status == store.ServerInstalling {
-			return nil, huma.Error409Conflict("The server is still installing.")
-		}
-		if *b.Status == store.ServerOnline && v.Status != store.ServerDraining && v.Status != store.ServerDisabled {
-			return nil, huma.Error409Conflict("Only a draining or disabled server can go online. The server is " + v.Status + ".")
-		}
-	}
-	if name != "" {
-		if err := h.d.Store.SetServerName(ctx, v.ID, name); err != nil {
-			return nil, notFound(err, "No server has this ID.")
-		}
-	}
-	if changeStatus {
-		if err := h.d.Store.SetServerStatus(ctx, v.ID, *b.Status, ""); err != nil {
-			return nil, notFound(err, "No server has this ID.")
-		}
-	}
-	old := v
-	if v, err = h.d.Store.GetServer(ctx, v.ID); err != nil {
-		return nil, notFound(err, "No server has this ID.")
-	}
-	h.d.Bus.Publish(events.Event{Type: events.ServerState, Data: v})
-	changes := map[string][2]any{}
-	if v.Name != old.Name {
-		changes["name"] = [2]any{old.Name, v.Name}
-	}
-	if v.Status != old.Status {
-		changes["status"] = [2]any{old.Status, v.Status}
-	}
-	if len(changes) > 0 {
-		h.audit(ctx, "server.update", v.ID, map[string]any{"name": v.Name, "status": v.Status, "changes": changes})
 	}
 	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
 func (h *Handler) deleteServer(ctx context.Context, in *PathID) (*empty, error) {
-	v, err := h.d.Store.GetServer(ctx, in.ID)
-	if err != nil {
-		return nil, notFound(err, "No server has this ID.")
-	}
-	if v.Kind == store.ServerLocal {
+	err := h.d.Servers.RemoveServer(ctx, actor(ctx), in.ID)
+	switch {
+	case errors.Is(err, fleet.ErrLocalServer):
 		return nil, huma.Error409Conflict("The primary server cannot be removed.")
+	case errors.Is(err, store.ErrNotFound):
+		return nil, huma.Error404NotFound("No server has this ID.")
+	case err != nil:
+		return nil, serviceErr(err)
 	}
-	if h.d.Servers == nil {
-		return nil, unavailable("Removing servers")
-	}
-	if err := h.d.Servers.Remove(ctx, v.ID); err != nil {
-		return nil, h.serviceErr(err)
-	}
-	if err := h.d.Store.DeleteServer(ctx, v.ID); err != nil {
-		return nil, notFound(err, "No server has this ID.")
-	}
-	// The delete can change the servers of pools, or disable them.
-	h.poolsChanged(ctx)
-	h.audit(ctx, "server.delete", v.ID, map[string]any{"name": v.Name})
 	return nil, nil
 }
 
 func (h *Handler) updateAgent(ctx context.Context, in *PathID) (*body[Server], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("Agent updates")
-	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	switch h.d.Servers.UpdateState(v) {
-	case UpdateCurrent:
+	switch err := h.d.Servers.UpdateAgent(ctx, actor(ctx), v.ID); {
+	case errors.Is(err, fleet.ErrUpToDate):
 		return nil, huma.Error409Conflict("The server runs runplane " + v.Version + ", the version of the primary.")
-	case UpdateUpdating:
+	case errors.Is(err, fleet.ErrUpdateInProgress):
 		return nil, huma.Error409Conflict("An update of the server runs.")
-	case UpdateNone:
+	case errors.Is(err, fleet.ErrCannotUpdate):
 		return nil, huma.Error409Conflict("runplane cannot update the server: the primary is not a release build, or the server has not reported its version.")
+	case errors.Is(err, fleet.ErrNotConnected):
+		return nil, huma.Error409Conflict("The server is not connected, so it cannot update.")
+	case err != nil:
+		return nil, serviceErr(err)
 	}
-	if err := h.d.Servers.UpdateAgent(ctx, v.ID); err != nil {
-		return nil, h.serviceErr(err)
-	}
-	h.audit(ctx, "server.update_agent", v.ID, map[string]any{"name": v.Name, "from": v.Version, "to": version.Version})
 	return reply(first(h.servers(ctx, []store.Server{v})))
 }
 
@@ -349,43 +297,43 @@ func (h *Handler) getDoctor(ctx context.Context, in *PathID) (*body[DoctorResult
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	out := DoctorResult{ServerID: v.ID, Checks: []Check{}}
 	r, err := h.d.Store.GetDoctorResult(ctx, v.ID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		return &body[DoctorResult]{out}, nil
+		return &body[DoctorResult]{DoctorResult{ServerID: v.ID, Checks: []Check{}}}, nil
 	case err != nil:
 		return nil, err
 	}
-	out.CheckedAt = &r.CheckedAt
+	return &body[DoctorResult]{doctorResult(r)}, nil
+}
+
+func doctorResult(r store.DoctorResult) DoctorResult {
+	out := DoctorResult{ServerID: r.ServerID, CheckedAt: &r.CheckedAt, Checks: []Check{}}
 	for _, c := range r.Checks {
 		out.Checks = append(out.Checks, Check(c))
 	}
-	return &body[DoctorResult]{out}, nil
+	return out
 }
 
 func (h *Handler) runDoctor(ctx context.Context, in *PathID) (*body[DoctorResult], error) {
-	if h.d.Servers == nil {
-		return nil, unavailable("The doctor")
-	}
 	v, err := h.d.Store.GetServer(ctx, in.ID)
 	if err != nil {
 		return nil, notFound(err, "No server has this ID.")
 	}
-	checks, err := h.d.Servers.Doctor(ctx, v.ID)
-	if err != nil {
-		return nil, h.serviceErr(err)
+	r, err := h.d.Servers.Doctor(ctx, v.ID)
+	if errors.Is(err, fleet.ErrNotConnected) {
+		return nil, huma.Error409Conflict("The server is not connected, so its checks cannot run.")
 	}
-	return reply(h.saveDoctor(ctx, v.ID, checks))
+	if err != nil {
+		return nil, serviceErr(err)
+	}
+	return &body[DoctorResult]{doctorResult(r)}, nil
 }
 
-func (h *Handler) saveDoctor(ctx context.Context, serverID string, checks []Check) (DoctorResult, error) {
-	r := store.DoctorResult{ServerID: serverID, CheckedAt: time.Now().UTC().Truncate(time.Millisecond)}
-	for _, c := range checks {
-		r.Checks = append(r.Checks, store.DoctorCheck(c))
+func checks(list []doctor.Check) []Check {
+	out := make([]Check, len(list))
+	for i, c := range list {
+		out[i] = Check{ID: c.ID, Name: c.Name, Status: string(c.Status), Detail: c.Detail, Fix: c.Fix, Command: c.Command}
 	}
-	if err := h.d.Store.SaveDoctorResult(ctx, r); err != nil {
-		return DoctorResult{}, err
-	}
-	return DoctorResult{ServerID: serverID, CheckedAt: &r.CheckedAt, Checks: orEmpty(checks)}, nil
+	return out
 }

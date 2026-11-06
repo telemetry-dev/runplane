@@ -1,6 +1,5 @@
-import createFetchClient from 'openapi-fetch'
+import createFetchClient, { createFinalURL, createQuerySerializer, defaultPathSerializer, type QuerySerializerOptions } from 'openapi-fetch'
 import createQueryHooks from 'openapi-react-query'
-import { useMemo } from 'react'
 import type { components, paths } from './schema'
 
 export type Schemas = components['schemas']
@@ -28,6 +27,10 @@ export class ApiError extends Error implements Problem {
   }
 }
 
+// The spec gives each array query param as one comma-separated value
+// (explode: false), as the API reads it.
+const queryStyle: QuerySerializerOptions = { array: { style: 'form', explode: false } }
+
 /**
  * Typed fetch client for the Go API. Every request sends the session cookie and
  * the CSRF header. Every non-2xx response rejects with an ApiError, so a resolved
@@ -37,6 +40,7 @@ export const api = createFetchClient<paths>({
   baseUrl: '',
   credentials: 'include',
   headers: { 'X-Runplane-CSRF': '1' },
+  querySerializer: queryStyle,
 })
 
 api.use({
@@ -46,10 +50,32 @@ api.use({
 })
 
 /**
- * TanStack Query hooks over `api`. Query keys are `[method, path, init]`, for
- * example `['get', '/api/jobs/{id}', { params: { path: { id } } }]`.
+ * TanStack Query hooks over `api`. The query of a path without init has the
+ * key `[method, path]`, which is the start of the key of every query of the
+ * path, so invalidateQueries with it reaches each of them.
  */
 export const $api = createQueryHooks(api)
+
+type GetPath = { [P in keyof paths]: paths[P] extends { get: { parameters: unknown } } ? P : never }[keyof paths]
+type GetParams<P extends GetPath> = Pick<paths[P]['get']['parameters'], 'path' | 'query'>
+
+/** The URL of a GET route that the browser requests itself: a link, the EventSource, or the WebSocket. */
+export function apiUrl<P extends GetPath>(
+  path: P,
+  ...[params]: GetParams<P> extends { path: object } | { query: object } ? [GetParams<P>] : [GetParams<P>?]
+): string {
+  return createFinalURL(path, {
+    baseUrl: '',
+    params: params ?? {},
+    querySerializer: createQuerySerializer(queryStyle),
+    pathSerializer: defaultPathSerializer,
+  })
+}
+
+/** The retry rule of the queries: network and server failures, not answers like 404 or 403. */
+export function retryQuery(failures: number, error: unknown): boolean {
+  return failures < 2 && !(isApiError(error) && error.status < 500)
+}
 
 export async function toApiError(response: Response): Promise<ApiError> {
   const problem = parseProblem(await response.text())
@@ -64,29 +90,6 @@ export function errorMessage(error: unknown): string {
 
 export function isApiError(error: unknown, status?: number): error is ApiError {
   return error instanceof ApiError && (status === undefined || error.status === status)
-}
-
-/**
- * fieldErrors for the `errors` prop of a Base UI Form. The Form puts its errors
- * back whenever it gets a new object, so this keeps one object until `error`
- * changes; then a field's message goes away when the user edits that field, and
- * the form can be sent again.
- */
-export function useFieldErrors(error: unknown): Record<string, string> {
-  return useMemo(() => fieldErrors(error), [error])
-}
-
-/**
- * Field messages of a validation problem, keyed by request body field. Huma
- * reports a field as "body.new_password".
- */
-export function fieldErrors(error: unknown): Record<string, string> {
-  const errors: Record<string, string> = {}
-  if (!isApiError(error)) return errors
-  for (const item of error.errors ?? []) {
-    if (item.location?.startsWith('body.') && item.message) errors[item.location.slice(5)] = item.message
-  }
-  return errors
 }
 
 function parseProblem(text: string): Problem | undefined {

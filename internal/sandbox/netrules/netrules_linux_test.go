@@ -22,16 +22,74 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// These tests need root and the nft and iptables commands. Each test operates
-// in a new network namespace, so it never changes the firewall of the host
-// that runs it. Run them in a privileged container:
+// The tests that call isolate need root and the nft and iptables commands.
+// Each of them operates in a new network namespace, so it never changes the
+// firewall of the host that runs it. Run them in a privileged container:
 //
 //	docker run --rm --privileged ... go test ./internal/sandbox/netrules/
 
 var testCfg = Config{
-	TapSubnet:   DefaultTapSubnet,
 	ServicePort: 8486,
 	DNS:         []netip.Addr{netip.MustParseAddr("192.168.77.2")},
+}
+
+// The first two leases of DefaultTapSubnet.
+var (
+	lease0 = Lease{Index: 0, Tap: "rp-0", Host: mustAddr("10.214.0.1"), Guest: mustAddr("10.214.0.2")}
+	lease1 = Lease{Index: 1, Tap: "rp-1", Host: mustAddr("10.214.0.5"), Guest: mustAddr("10.214.0.6")}
+)
+
+// Each VM gets one /30 of the TAP range: the host side of its TAP has the
+// first address, and the guest the second.
+func TestTapLeases(t *testing.T) {
+	m := New(slog.New(slog.DiscardHandler), DefaultTapSubnet)
+	var leases []Lease
+	for {
+		l, err := m.AcquireTap()
+		if err != nil {
+			break
+		}
+		leases = append(leases, l)
+	}
+	if len(leases) != 16384 {
+		t.Fatalf("%d leases in a /16, want 16384", len(leases))
+	}
+	for _, want := range []Lease{
+		lease0,
+		lease1,
+		{Index: 64, Tap: "rp-64", Host: mustAddr("10.214.1.1"), Guest: mustAddr("10.214.1.2")},
+		{Index: 16383, Tap: "rp-16383", Host: mustAddr("10.214.255.253"), Guest: mustAddr("10.214.255.254")},
+	} {
+		if got := leases[want.Index]; got != want {
+			t.Errorf("lease %d = %+v, want %+v", want.Index, got, want)
+		}
+	}
+}
+
+// A closed lease comes back only after all other leases. Thus the
+// connection tracking entries of a stopped VM do not meet a new VM.
+func TestCloseTapGivesTheLeaseLast(t *testing.T) {
+	isolate(t)
+	m := newManager(t, netip.MustParsePrefix("10.214.0.0/28")) // 4 leases
+	acquire := func(n int) []int {
+		var got []int
+		for range n {
+			l, err := m.AcquireTap()
+			if err != nil {
+				break
+			}
+			got = append(got, l.Index)
+		}
+		return got
+	}
+	got := acquire(3)
+	if err := m.CloseTap(lease0); err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, acquire(10)...)
+	if want := []int{0, 1, 2, 3, 0}; !slices.Equal(got, want) {
+		t.Fatalf("indexes = %v, want %v", got, want)
+	}
 }
 
 func TestSetupIsIdempotentAndLeavesOtherTablesAlone(t *testing.T) {
@@ -41,7 +99,7 @@ func TestSetupIsIdempotentAndLeavesOtherTablesAlone(t *testing.T) {
 	run(t, "nft", "add rule inet other forward ip daddr 203.0.113.9 counter drop")
 	other := run(t, "nft", "list table inet other")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	first := run(t, "nft", "list table inet runplane")
 	setup(t, m, testCfg)
@@ -72,42 +130,43 @@ func TestSetupIsIdempotentAndLeavesOtherTablesAlone(t *testing.T) {
 	}
 }
 
-func TestAddTapAndRemoveTapChangeTheRules(t *testing.T) {
+func TestKeepTapAndCloseTapChangeTheRules(t *testing.T) {
 	isolate(t)
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	before := run(t, "nft", "list table inet runplane")
 
-	if err := m.AddTap("rp-3", netip.MustParseAddr("10.214.0.14"), netip.MustParseAddr("10.214.0.13")); err != nil {
+	lease := Lease{Index: 3, Tap: "rp-3", Host: mustAddr("10.214.0.13"), Guest: mustAddr("10.214.0.14")}
+	if err := m.KeepTap(lease); err != nil {
 		t.Fatal(err)
 	}
 	added := run(t, "nft", "list table inet runplane")
 	for _, want := range []string{`"rp-3" . 10.214.0.14`, `"rp-3" . 10.214.0.13`} {
 		if !strings.Contains(added, want) {
-			t.Errorf("table after AddTap has no %q:\n%s", want, added)
+			t.Errorf("table after KeepTap has no %q:\n%s", want, added)
 		}
 	}
 
-	if err := m.RemoveTap("rp-3"); err != nil {
+	if err := m.CloseTap(lease); err != nil {
 		t.Fatal(err)
 	}
 	if got := run(t, "nft", "list table inet runplane"); got != before {
-		t.Fatalf("table after RemoveTap:\n%s\nwant the table before AddTap:\n%s", got, before)
+		t.Fatalf("table after CloseTap:\n%s\nwant the table before KeepTap:\n%s", got, before)
 	}
 
-	if err := m.AddTap("rp-4", netip.MustParseAddr("10.99.0.2"), netip.MustParseAddr("10.99.0.1")); err == nil {
-		t.Error("AddTap accepted a guest outside the TAP subnet, which the masquerade rule does not cover")
+	if err := m.KeepTap(Lease{Index: 4, Tap: "rp-4", Host: mustAddr("10.99.0.1"), Guest: mustAddr("10.99.0.2")}); err == nil {
+		t.Error("KeepTap accepted a guest outside the TAP subnet, which the masquerade rule does not cover")
 	}
-	if err := m.AddTap("eth9", netip.MustParseAddr("10.214.0.18"), netip.MustParseAddr("10.214.0.17")); err == nil {
-		t.Error("AddTap accepted a name without the TAP prefix, which the rules do not treat as a sandbox")
+	if err := m.KeepTap(Lease{Index: 4, Tap: "eth9", Host: mustAddr("10.214.0.17"), Guest: mustAddr("10.214.0.18")}); err == nil {
+		t.Error("KeepTap accepted a name without the TAP prefix, which the rules do not treat as a sandbox")
 	}
 }
 
 func TestSetupAfterRestartKeepsTapsAndBridges(t *testing.T) {
 	isolate(t)
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	if err := m.AddTap("rp-0", netip.MustParseAddr("10.214.0.2"), netip.MustParseAddr("10.214.0.1")); err != nil {
+	if err := m.KeepTap(lease0); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Bridge("rpbr0", netip.MustParsePrefix("10.215.0.0/16"), netip.MustParseAddr("10.215.0.1")); err != nil {
@@ -116,7 +175,7 @@ func TestSetupAfterRestartKeepsTapsAndBridges(t *testing.T) {
 	want := run(t, "nft", "list table inet runplane")
 	m.Close()
 
-	restarted := newManager(t)
+	restarted := newManager(t, DefaultTapSubnet)
 	setup(t, restarted, testCfg)
 	if got := run(t, "nft", "list table inet runplane"); got != want {
 		t.Fatalf("table after a restart:\n%s\nwant:\n%s", got, want)
@@ -129,7 +188,7 @@ func TestDockerUserRulesInsertOnceAndRemoveCleanly(t *testing.T) {
 	run(t, "iptables-nft", "-A DOCKER-USER -s 203.0.113.0/24 -j DROP")
 	userRule := "-A DOCKER-USER -s 203.0.113.0/24 -j DROP"
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	bridge := func() {
 		t.Helper()
@@ -178,7 +237,7 @@ func TestDockerUserRulesGoToTheLegacyBackendThatHasTheChain(t *testing.T) {
 	isolate(t)
 	run(t, "iptables-legacy", "-N DOCKER-USER")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
 	if got := run(t, "iptables-legacy", "-S DOCKER-USER"); !strings.Contains(got, "-s 10.214.0.0/16 -m comment --comment runplane -j ACCEPT") {
 		t.Fatalf("legacy DOCKER-USER has no VM subnet rule:\n%s", got)
@@ -206,9 +265,9 @@ func TestHostFirewallWithDropPolicies(t *testing.T) {
 	block(t, host, sb, "198.51.100.2:9000")
 	block(t, host, sb, "10.214.0.1:8486")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	if err := m.AddTap("rp-0", mustAddr("10.214.0.2"), mustAddr("10.214.0.1")); err != nil {
+	if err := m.KeepTap(lease0); err != nil {
 		t.Fatal(err)
 	}
 	reach(t, host, sb, "198.51.100.2:9000")
@@ -249,9 +308,9 @@ func TestServicePortOnlyForSandboxesAndTheHost(t *testing.T) {
 	reach(t, host, lan, "198.51.100.1:8486")
 	reach(t, host, lan, "10.214.0.1:8486")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	if err := m.AddTap("rp-0", mustAddr("10.214.0.2"), mustAddr("10.214.0.1")); err != nil {
+	if err := m.KeepTap(lease0); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Bridge("rpbr0", netip.MustParsePrefix("198.18.0.0/24"), mustAddr("198.18.0.1")); err != nil {
@@ -273,7 +332,8 @@ func TestServicePortOnlyForSandboxesAndTheHost(t *testing.T) {
 }
 
 // TestPackets sends real traffic. Network namespaces stand in for two VMs
-// (veth devices with TAP names), the internet, and a private network.
+// (veth devices with TAP names), the internet with the services of a cloud
+// host, and a private network.
 func TestPackets(t *testing.T) {
 	host := isolate(t)
 	sb1 := peer(t, host, "rp-0", "10.214.0.1/30", "10.214.0.2/30")
@@ -282,6 +342,16 @@ func TestPackets(t *testing.T) {
 	lan := peer(t, host, "lan0", "192.168.77.1/24", "192.168.77.2/24")
 	setUp(t, handleAt(t, wan), "wan0p", "198.51.100.3/24")
 	addRoute(t, wan, "10.214.0.0/16", "198.51.100.1")
+	// The metadata and host agent services give out credentials and the
+	// settings of the host: AWS, GCP, Azure, and others at 169.254.169.254,
+	// Azure also at 168.63.129.16, and Alibaba at 100.100.100.200.
+	cloud := []string{"169.254.169.254", "168.63.129.16", "100.100.100.200"}
+	for _, a := range cloud {
+		setUp(t, handleAt(t, wan), "wan0p", a+"/32")
+		addRoute(t, host, a+"/32", "198.51.100.2")
+		serve(t, host, wan, a+":80")
+	}
+	serve(t, host, wan, "169.254.169.254:53")
 	// Reverse path filtering would also drop spoofed packets; turn it off
 	// to test the rules alone.
 	for f, v := range map[string]string{"ipv4/ip_forward": "1", "ipv4/conf/all/rp_filter": "0", "ipv4/conf/rp-0/rp_filter": "0"} {
@@ -302,14 +372,20 @@ func TestPackets(t *testing.T) {
 
 	// Without the rules all paths are open, so each block below comes
 	// from the rules.
-	reach(t, host, sb1, "10.214.0.6:9000")
-	reach(t, host, sb1, "192.168.77.2:80")
+	for _, addr := range []string{"198.51.100.2:9000", "10.214.0.6:9000", "10.214.0.1:2222", "10.214.0.5:8486", "198.51.100.1:8486", "192.168.77.2:80", "169.254.169.254:53"} {
+		reach(t, host, sb1, addr)
+	}
+	for _, a := range cloud {
+		reach(t, host, sb1, a+":80")
+	}
 	reach(t, host, wan, "10.214.0.2:9000")
 
-	m := newManager(t)
+	m := newManager(t, DefaultTapSubnet)
 	setup(t, m, testCfg)
-	for _, l := range []Lease{{Tap: "rp-0", Host: mustAddr("10.214.0.1"), Guest: mustAddr("10.214.0.2")}, {Tap: "rp-1", Host: mustAddr("10.214.0.5"), Guest: mustAddr("10.214.0.6")}} {
-		if err := m.AddTap(l.Tap, l.Guest, l.Host); err != nil {
+	// A TAP gets no traffic through until its lease opens.
+	block(t, host, sb1, "198.51.100.2:9000")
+	for _, l := range []Lease{lease0, lease1} {
+		if err := m.KeepTap(l); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -317,14 +393,18 @@ func TestPackets(t *testing.T) {
 	if got := reach(t, host, sb1, "198.51.100.2:9000"); got != "198.51.100.1" {
 		t.Errorf("internet server saw %s, want the masqueraded host address 198.51.100.1", got)
 	}
-	reach(t, host, sb1, "10.214.0.1:8486")   // service port on its own gateway
-	reach(t, host, sb1, "192.168.77.2:53")   // DNS server inside a blocked range
-	block(t, host, sb1, "10.214.0.6:9000")   // other sandbox
-	block(t, host, sb1, "10.214.0.1:2222")   // other host port
-	block(t, host, sb1, "10.214.0.5:8486")   // gateway of the other sandbox
-	block(t, host, sb1, "198.51.100.1:8486") // other host address
-	block(t, host, sb1, "192.168.77.2:80")   // private network
-	block(t, host, wan, "10.214.0.2:9000")   // new connection into a sandbox
+	reach(t, host, sb1, "10.214.0.1:8486")    // service port on its own gateway
+	reach(t, host, sb1, "192.168.77.2:53")    // DNS server inside a blocked range
+	block(t, host, sb1, "169.254.169.254:53") // port 53 of an address that is not a DNS server
+	block(t, host, sb1, "10.214.0.6:9000")    // other sandbox
+	block(t, host, sb1, "10.214.0.1:2222")    // other host port
+	block(t, host, sb1, "10.214.0.5:8486")    // gateway of the other sandbox
+	block(t, host, sb1, "198.51.100.1:8486")  // other host address
+	block(t, host, sb1, "192.168.77.2:80")    // private network
+	for _, a := range cloud {
+		block(t, host, sb1, a+":80")
+	}
+	block(t, host, wan, "10.214.0.2:9000") // new connection into a sandbox
 	// sb1 also takes the address of sb2, to spoof it.
 	setUp(t, handleAt(t, sb1), "rp-0p", "10.214.0.6/32")
 	if !udpArrives(t, host, sb1, "", udp) {
@@ -341,10 +421,13 @@ func TestPackets(t *testing.T) {
 	reach(t, host, sb1, "198.51.100.3:9000")
 	reach(t, host, sb1, "192.168.77.2:53") // DNS stays open outside the allowlist
 
-	if err := m.RemoveTap("rp-0"); err != nil {
+	// Without the rules, the spoofed datagram arrives.
+	if err := m.Teardown(); err != nil {
 		t.Fatal(err)
 	}
-	block(t, host, sb1, "198.51.100.3:9000")
+	if !udpArrives(t, host, sb1, "10.214.0.6", udp) {
+		t.Error("datagram from the spoofed source address did not arrive without the rules")
+	}
 }
 
 // TestBridgePackets does the same for container mode: a Linux bridge with
@@ -379,6 +462,7 @@ func TestBridgePackets(t *testing.T) {
 	serve(t, host, wan, "198.51.100.2:9000")
 	udp := listenUDP(t, host, wan, "198.51.100.2:9001")
 	reach(t, host, c1, "198.18.0.3:9000")
+	reach(t, host, c1, "198.18.0.1:2222")
 	reach(t, host, wan, "198.18.0.2:9000")
 	mac1, mac2 := linkMAC(t, c1, "c1p"), linkMAC(t, c2, "c2p")
 	// Without the rules, c1 can take the address of c2: the host then sends
@@ -391,8 +475,7 @@ func TestBridgePackets(t *testing.T) {
 	run(t, "ip", "neigh flush dev rpbr0")
 
 	cfg := testCfg
-	cfg.TapSubnet = netip.Prefix{}
-	m := newManager(t)
+	m := newManager(t, netip.Prefix{})
 	setup(t, m, cfg)
 	if err := m.Bridge("rpbr0", netip.MustParsePrefix("198.18.0.0/24"), mustAddr("198.18.0.1")); err != nil {
 		t.Fatal(err)
@@ -420,7 +503,7 @@ func TestBridgePackets(t *testing.T) {
 	if bridged {
 		block(t, host, c1, "198.18.0.3:9000")
 	} else {
-		t.Log("no br_netfilter: skip the check between containers")
+		t.Log("skip the check between containers: it needs the br_netfilter module (modprobe br_netfilter)")
 	}
 	setUp(t, handleAt(t, c1), "c1p", "10.99.0.9/32")
 	if !udpArrives(t, host, c1, "", udp) {
@@ -453,7 +536,7 @@ func TestBridgePackets(t *testing.T) {
 
 	// A new Manager, as after a restart, keeps the bindings.
 	m.Close()
-	restarted := newManager(t)
+	restarted := newManager(t, netip.Prefix{})
 	setup(t, restarted, cfg)
 	if udpArrives(t, host, c1, "198.18.0.3", udp) {
 		t.Error("after a restart: datagram from the address of the other container arrived")
@@ -466,9 +549,15 @@ func TestBridgePackets(t *testing.T) {
 	if !udpArrives(t, host, c1, "198.18.0.3", udp) {
 		t.Error("datagram from an address that no port has did not arrive after RemovePort")
 	}
+
+	if err := restarted.Teardown(); err != nil {
+		t.Fatal(err)
+	}
+	if !udpArrives(t, host, c1, "10.99.0.9", udp) {
+		t.Error("datagram from outside the bridge subnet did not arrive without the rules")
+	}
 }
 
-// linkMAC returns the MAC of the link name in ns.
 func linkMAC(t *testing.T, ns netns.NsHandle, name string) net.HardwareAddr {
 	t.Helper()
 	l, err := handleAt(t, ns).LinkByName(name)
@@ -478,7 +567,6 @@ func linkMAC(t *testing.T, ns netns.NsHandle, name string) net.HardwareAddr {
 	return l.Attrs().HardwareAddr
 }
 
-// neighMAC returns the MAC that the host has for ip on dev, or "".
 func neighMAC(t *testing.T, dev, ip string) string {
 	t.Helper()
 	l, err := netlink.LinkByName(dev)
@@ -529,9 +617,12 @@ func sendARP(t *testing.T, host, ns netns.NsHandle, dev string, mac net.Hardware
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
-func TestCreateTapLetsTheOwnerOpenIt(t *testing.T) {
+func TestOpenTapLetsTheOwnerOpenIt(t *testing.T) {
 	isolate(t)
-	if err := CreateTap("rp-7", 4242, 4342, netip.MustParsePrefix("10.214.0.29/30")); err != nil {
+	m := newManager(t, DefaultTapSubnet)
+	setup(t, m, testCfg)
+	lease := Lease{Index: 7, Tap: "rp-7", Host: mustAddr("10.214.0.29"), Guest: mustAddr("10.214.0.30")}
+	if err := m.OpenTap(lease, 4242, 4342); err != nil {
 		t.Fatal(err)
 	}
 	if err := openTapAs(t, 4242, 4342, "rp-7"); err != nil {
@@ -555,32 +646,50 @@ func TestCreateTapLetsTheOwnerOpenIt(t *testing.T) {
 	if l.Attrs().Flags&net.FlagUp == 0 {
 		t.Error("TAP is not up")
 	}
+	if table := run(t, "nft", "list table inet runplane"); !strings.Contains(table, `"rp-7" . 10.214.0.30`) {
+		t.Errorf("table after OpenTap has no rules for rp-7:\n%s", table)
+	}
 
-	if err := DeleteTap("rp-7"); err != nil {
+	if err := m.CloseTap(lease); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := netlink.LinkByName("rp-7"); err == nil {
-		t.Fatal("TAP exists after DeleteTap")
+		t.Fatal("TAP exists after CloseTap")
 	}
-	if err := DeleteTap("rp-7"); err != nil {
-		t.Fatalf("DeleteTap of a missing TAP: %v", err)
+	if err := m.CloseTap(lease); err != nil {
+		t.Fatalf("CloseTap of a closed TAP: %v", err)
 	}
 }
 
-func TestRecoverFindsUsedIndexes(t *testing.T) {
+// A new Manager, as after a restart of runplane, does not give out the
+// leases of the TAPs that the table has.
+func TestSetupKeepsTheLeasesOfTheTable(t *testing.T) {
 	isolate(t)
-	a := NewAllocator(netip.MustParsePrefix("10.214.0.0/27")) // 8 blocks
-	for _, i := range []int{2, 5} {
-		l := a.Lease(i)
-		if err := CreateTap(l.Tap, 0, 0, l.HostCIDR()); err != nil {
+	subnet := netip.MustParsePrefix("10.214.0.0/27") // 8 blocks
+	before := newManager(t, subnet)
+	setup(t, before, testCfg)
+	for _, l := range []Lease{
+		{Index: 2, Tap: "rp-2", Host: mustAddr("10.214.0.9"), Guest: mustAddr("10.214.0.10")},
+		{Index: 5, Tap: "rp-5", Host: mustAddr("10.214.0.21"), Guest: mustAddr("10.214.0.22")},
+	} {
+		if err := before.KeepTap(l); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := a.Recover(); err != nil {
-		t.Fatal(err)
+	before.Close()
+
+	m := newManager(t, subnet)
+	setup(t, m, testCfg)
+	var got []int
+	for {
+		l, err := m.AcquireTap()
+		if err != nil {
+			break
+		}
+		got = append(got, l.Index)
 	}
-	if got, want := acquireAll(a, 10), []int{6, 7, 0, 1, 3, 4}; !slices.Equal(got, want) {
-		t.Fatalf("free indexes after Recover = %v, want %v", got, want)
+	if want := []int{6, 7, 0, 1, 3, 4}; !slices.Equal(got, want) {
+		t.Fatalf("free indexes after a restart = %v, want %v", got, want)
 	}
 }
 
@@ -618,8 +727,8 @@ func isolate(t *testing.T) netns.NsHandle {
 	return ns
 }
 
-func newManager(t *testing.T) *Manager {
-	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+func newManager(t *testing.T, taps netip.Prefix) *Manager {
+	m := New(slog.New(slog.NewTextHandler(io.Discard, nil)), taps)
 	t.Cleanup(func() { m.Close() })
 	return m
 }
@@ -716,7 +825,6 @@ func peer(t *testing.T, host netns.NsHandle, hostIf, hostCIDR, peerCIDR string) 
 	return ns
 }
 
-// bridgePort makes a namespace behind a veth pair whose host side is a port of br.
 func bridgePort(t *testing.T, host netns.NsHandle, br *netlink.Bridge, name, cidr string) netns.NsHandle {
 	t.Helper()
 	ns := peer(t, host, name, "", cidr)

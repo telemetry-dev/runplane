@@ -14,30 +14,37 @@ import (
 	"strings"
 	"time"
 
+	"github.com/runplane/runplane/internal/ghapp"
+	"github.com/runplane/runplane/internal/ghrest"
 	"github.com/runplane/runplane/internal/ids"
 	"github.com/runplane/runplane/internal/store"
 )
 
 // Manifest returns the GitHub URL for the manifest form and the manifest
-// JSON. accountType is "organization" or "user".
-func (s *Service) Manifest(ctx context.Context, base, accountType, organization string) (string, string, error) {
-	if accountType != "organization" && accountType != "user" {
-		return "", "", fmt.Errorf("unknown account type %q", accountType)
-	}
+// JSON of a new app of owner: an organization with its login, or the
+// personal account of the user, with no login.
+func (s *Service) Manifest(ctx context.Context, base string, owner ghapp.Account) (string, string, error) {
 	settings, err := s.st.GetSettings(ctx)
 	if err != nil {
 		return "", "", err
 	}
 	state := rand.Text()
 	now := time.Now()
+	if err := s.st.DeleteExpiredManifestStates(ctx, now); err != nil {
+		return "", "", err
+	}
 	err = s.st.CreateManifestState(ctx, store.ManifestState{
-		StateHash: hashState(state), AccountType: accountType, Organization: organization,
+		StateHash: hashState(state), AccountType: owner.Type, Organization: owner.Login,
 		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	})
 	if err != nil {
 		return "", "", err
 	}
 
+	permissions := map[string]string{}
+	for _, p := range owner.AppPermissions() {
+		permissions[p.Name] = p.Access
+	}
 	manifest, err := json.Marshal(map[string]any{
 		"name":                appName(settings.InstanceName),
 		"url":                 base,
@@ -46,33 +53,12 @@ func (s *Service) Manifest(ctx context.Context, base, accountType, organization 
 		"setup_url":           base + "/api/github/setup",
 		"setup_on_update":     true,
 		"public":              false,
-		"default_permissions": permissions(accountType),
+		"default_permissions": permissions,
 	})
 	if err != nil {
 		return "", "", err
 	}
-	action := s.web + "/settings/apps/new"
-	if accountType == "organization" {
-		action = s.web + "/organizations/" + url.PathEscape(organization) + "/settings/apps/new"
-	}
-	return action + "?state=" + url.QueryEscape(state), string(manifest), nil
-}
-
-// permissions are the GitHub App permissions of an account type. An
-// organization uses organization runners; a personal account can only
-// use repository runners, which need administration. The pullPermissions
-// let runplane open the pull request that moves jobs to its labels.
-func permissions(accountType string) map[string]string {
-	p := map[string]string{"actions": "write", "metadata": "read"}
-	for _, name := range pullPermissions {
-		p[name] = "write"
-	}
-	if accountType == "organization" {
-		p["organization_self_hosted_runners"] = "write"
-	} else {
-		p["administration"] = "write"
-	}
-	return p
+	return owner.NewAppURL(s.web, state), string(manifest), nil
 }
 
 // appName makes a name from the instance name. GitHub App names are unique
@@ -87,7 +73,7 @@ func appName(instance string) string {
 
 // Callback converts the manifest code into the app and stores it. It
 // returns the installation page of the new app.
-func (s *Service) Callback(ctx context.Context, _, code, state string) (string, error) {
+func (s *Service) Callback(ctx context.Context, code, state string) (string, error) {
 	if code == "" || state == "" {
 		return "", errors.New("GitHub did not send the code and the state. Start again")
 	}
@@ -99,26 +85,24 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 		return "", err
 	}
 	var conv struct {
-		ID            int64   `json:"id"`
-		Slug          string  `json:"slug"`
-		Name          string  `json:"name"`
-		ClientID      string  `json:"client_id"`
-		ClientSecret  string  `json:"client_secret"`
-		WebhookSecret string  `json:"webhook_secret"`
-		PEM           string  `json:"pem"`
-		HTMLURL       string  `json:"html_url"`
-		Owner         account `json:"owner"`
+		ID       int64   `json:"id"`
+		Slug     string  `json:"slug"`
+		Name     string  `json:"name"`
+		ClientID string  `json:"client_id"`
+		PEM      string  `json:"pem"`
+		HTMLURL  string  `json:"html_url"`
+		Owner    account `json:"owner"`
 	}
-	err = s.api.json(ctx, call{method: http.MethodPost, path: "/app-manifests/" + url.PathEscape(code) + "/conversions"}, &conv)
+	err = s.api.JSON(ctx, ghrest.Call{Method: http.MethodPost, Path: "/app-manifests/" + url.PathEscape(code) + "/conversions"}, &conv)
 	if err != nil {
 		return "", fmt.Errorf("make the GitHub App: %w", err)
 	}
 	// For an organization that does not exist, or where the user cannot make
 	// apps, GitHub makes the app on the personal account.
-	if requested.AccountType == "organization" && !strings.EqualFold(conv.Owner.Login, requested.Organization) {
-		made := store.GitHubApp{Slug: conv.Slug, OwnerLogin: conv.Owner.Login, OwnerType: conv.Owner.Type, HTMLURL: conv.HTMLURL}
+	if requested.AccountType == ghapp.Organization && !strings.EqualFold(conv.Owner.Login, requested.Organization) {
+		made := store.GitHubApp{Slug: conv.Slug, OwnerLogin: conv.Owner.Login, OwnerType: conv.Owner.Type}
 		return "", fmt.Errorf("GitHub made the app on %s, not on the organization %s: the organization does not exist, "+
-			"or you cannot make apps in it. Delete the app at %s, then start again", conv.Owner.Login, requested.Organization, appDeleteURL(made))
+			"or you cannot make apps in it. Delete the app at %s, then start again", conv.Owner.Login, requested.Organization, s.appDeleteURL(made))
 	}
 	if _, err := parseKey([]byte(conv.PEM)); err != nil {
 		return "", err
@@ -132,12 +116,7 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 	app := store.GitHubApp{
 		ID: ids.New(), AppID: conv.ID, Slug: conv.Slug, Name: conv.Name, ClientID: conv.ClientID,
 		OwnerLogin: conv.Owner.Login, OwnerType: conv.Owner.Type, HTMLURL: conv.HTMLURL,
-		PrivateKeyEnc:   s.box.Seal([]byte(conv.PEM)),
-		ClientSecretEnc: s.box.Seal([]byte(conv.ClientSecret)),
-		CreatedAt:       time.Now(),
-	}
-	if conv.WebhookSecret != "" {
-		app.WebhookSecretEnc = s.box.Seal([]byte(conv.WebhookSecret))
+		PrivateKeyEnc: s.box.Seal([]byte(conv.PEM)), CreatedAt: time.Now(),
 	}
 	if err := s.st.SaveGitHubApp(ctx, app); err != nil {
 		return "", err
@@ -145,7 +124,7 @@ func (s *Service) Callback(ctx context.Context, _, code, state string) (string, 
 	s.dropCreds()
 	s.changed()
 	s.log.Info("made GitHub App", "slug", app.Slug, "owner", app.OwnerLogin)
-	return s.web + "/apps/" + url.PathEscape(app.Slug) + "/installations/new", nil
+	return ghapp.AppInstallURL(s.web, app.Slug), nil
 }
 
 // Disconnect stops the listeners, deletes the scale sets and their runners
@@ -164,22 +143,13 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	}
 	err = s.removeApp(ctx)
 	s.changed()
-	s.log.Info("disconnected GitHub; delete the app on GitHub", "url", appDeleteURL(c.app))
+	s.log.Info("disconnected GitHub; delete the app on GitHub", "url", s.appDeleteURL(c.app))
 	return err
 }
 
 // appDeleteURL is the GitHub page with the "Delete GitHub App" button.
-// It is on the host of the app page, so GitHub Enterprise Server works.
-func appDeleteURL(app store.GitHubApp) string {
-	web := "https://github.com"
-	if u, err := url.Parse(app.HTMLURL); err == nil && u.Host != "" {
-		web = u.Scheme + "://" + u.Host
-	}
-	slug := url.PathEscape(app.Slug)
-	if app.OwnerType == "Organization" {
-		return web + "/organizations/" + url.PathEscape(app.OwnerLogin) + "/settings/apps/" + slug + "/advanced"
-	}
-	return web + "/settings/apps/" + slug + "/advanced"
+func (s *Service) appDeleteURL(app store.GitHubApp) string {
+	return ghapp.Account{Type: app.OwnerType, Login: app.OwnerLogin}.AppDeleteURL(s.web, app.Slug)
 }
 
 // removeApp deletes all scale sets on GitHub and all app rows. A scale set
@@ -211,9 +181,6 @@ func (s *Service) removeApp(ctx context.Context) error {
 		}
 	}
 	s.dropCreds()
-	s.checkMu.Lock()
-	clear(s.checks)
-	s.checkMu.Unlock()
 	if len(failed) > 0 {
 		return fmt.Errorf("runplane forgot the GitHub App, but GitHub did not delete the scale sets %s. "+
 			"Remove them in the Actions runner settings on GitHub", strings.Join(failed, ", "))

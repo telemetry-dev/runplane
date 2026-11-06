@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { cx } from '~/lib/cx'
 
 // Tabs of gui/components/runplane/tabs.md: the pill strip of the Settings and
-// "Add server" designs, with one indicator that moves behind the active tab.
+// "Add server" designs.
 //
 //   <Tabs defaultValue="script">
 //     <TabsList aria-label="Connection">
@@ -16,7 +16,6 @@ import { cx } from '~/lib/cx'
 
 export const Tabs = BaseTabs.Root
 
-/** Strip and item styles, shared with the segmented control and the route links in segmented.tsx. */
 export const tabList = 'relative isolate inline-flex max-w-full self-start gap-xxs overflow-x-auto rounded-m bg-neutral-3 p-xxs'
 export const tabItem = cx(
   'rounded-s px-s py-xxs text-s font-medium whitespace-nowrap text-neutral-7 select-none',

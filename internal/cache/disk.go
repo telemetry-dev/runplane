@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 var (
@@ -25,10 +27,7 @@ type disk struct {
 	root string
 }
 
-// blobPath is the path of the blob of an entry, relative to the cache folder.
-func blobPath(id string) string { return filepath.Join("blobs", id) }
-
-func (d disk) blob(id string) string    { return filepath.Join(d.root, blobPath(id)) }
+func (d disk) blob(id string) string    { return filepath.Join(d.root, "blobs", id) }
 func (d disk) staging(id string) string { return filepath.Join(d.root, "uploads", id) }
 
 func (d disk) init() error {
@@ -69,22 +68,18 @@ func (d disk) commitBlocks(id string, blockIDs []string) error {
 		return errEmptyCommit
 	}
 	dir := d.staging(id)
-	tmp, err := os.CreateTemp(dir, "tmp-")
+	f, err := atomicfile.CreateIn(dir, d.blob(id), 0o600)
 	if err != nil {
-		return fmt.Errorf("create blob: %w", err)
+		return err
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
+	defer f.Close()
 	for _, blockID := range blockIDs {
-		if err := appendFile(tmp, filepath.Join(dir, blockName(blockID))); err != nil {
+		if err := appendFile(f, filepath.Join(dir, blockName(blockID))); err != nil {
 			return err
 		}
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write blob: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), d.blob(id)); err != nil {
-		return fmt.Errorf("commit blob: %w", err)
+	if err := f.Commit(); err != nil {
+		return err
 	}
 	return os.RemoveAll(dir)
 }
@@ -102,7 +97,6 @@ func (d disk) putBlob(id string, body io.Reader, limit int64) error {
 	return os.RemoveAll(dir)
 }
 
-// size returns the size of the committed blob of an entry.
 func (d disk) size(id string) (int64, error) {
 	info, err := os.Stat(d.blob(id))
 	if errors.Is(err, os.ErrNotExist) {
@@ -118,7 +112,6 @@ func (d disk) open(id string) (*os.File, error) {
 	return os.Open(d.blob(id))
 }
 
-// remove deletes the blob and the staged blocks of an entry.
 func (d disk) remove(id string) error {
 	err := os.Remove(d.blob(id))
 	if errors.Is(err, os.ErrNotExist) {
@@ -143,32 +136,25 @@ func blockName(blockID string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// writeFile writes body to path through a temporary file in dir, so that a
-// failed request leaves no partial file at path.
+// writeFile writes body to path through a temporary file in the staging
+// folder dir, so that a failed request leaves no partial file at path.
 func writeFile(dir, path string, body io.Reader, limit int64) error {
-	tmp, err := os.CreateTemp(dir, "tmp-")
+	f, err := atomicfile.CreateIn(dir, path, 0o600)
 	if err != nil {
-		return fmt.Errorf("create file: %w", err)
+		return err
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-	n, err := io.Copy(tmp, io.LimitReader(body, limit+1))
+	defer f.Close()
+	n, err := io.Copy(f, io.LimitReader(body, limit+1))
 	if err != nil {
 		return fmt.Errorf("read upload: %w", err)
 	}
 	if n > limit {
 		return errTooLarge
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("move file: %w", err)
-	}
-	return nil
+	return f.Commit()
 }
 
-func appendFile(dst *os.File, path string) error {
+func appendFile(dst io.Writer, path string) error {
 	src, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return errNoBlock

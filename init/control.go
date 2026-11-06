@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -16,10 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/runplane/runplane/internal/sandbox"
-	"github.com/runplane/runplane/internal/sandbox/control"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 )
 
 // guestLink is the guest end of the control channel. It dials the host again
@@ -32,18 +27,13 @@ type guestLink struct {
 	mux  http.Handler // what the guest serves to the host
 
 	mu         sync.Mutex
-	conn       *linkConn             // nil while disconnected
+	conn       *guest.Client         // nil while disconnected
 	up         chan struct{}         // closed when a connection opens
 	events     []sandbox.RunnerEvent // not sent yet
 	newEvent   chan struct{}         // closed and replaced on each new event
 	haveConfig bool
 	logsDone   chan struct{} // closed when the host has the full log
 	logsOnce   sync.Once
-}
-
-type linkConn struct {
-	client *http.Client
-	done   <-chan struct{} // closed when the connection drops
 }
 
 func newGuestLink(dial func(context.Context) (net.Conn, error), log *slog.Logger, logs *logQueue, mux http.Handler) *guestLink {
@@ -72,34 +62,20 @@ func (l *guestLink) run(ctx context.Context) {
 			continue
 		}
 		failing = false
-		cfg := yamux.DefaultConfig()
-		cfg.LogOutput = nil
-		cfg.Logger = slog.NewLogLogger(l.log.Handler(), slog.LevelDebug)
-		sess, err := yamux.Client(conn, cfg)
+		c, err := guest.NewClient(conn, l.mux, l.log)
 		if err != nil {
-			conn.Close()
-			l.log.Warn("start yamux session", "err", err)
+			l.log.Warn("connect to the host", "err", err)
 			sleep(ctx, time.Second)
 			continue
 		}
-		l.serve(ctx, sess)
+		l.serve(ctx, c)
 		sleep(ctx, time.Second)
 	}
 }
 
-func (l *guestLink) serve(ctx context.Context, sess *yamux.Session) {
-	srv := &http.Server{Handler: l.mux, ErrorLog: slog.NewLogLogger(l.log.Handler(), slog.LevelDebug)}
-	go srv.Serve(sess)
-	c := &linkConn{
-		client: &http.Client{Transport: &http.Transport{
-			DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
-		}},
-		done: sess.CloseChan(),
-	}
-
+func (l *guestLink) serve(ctx context.Context, c *guest.Client) {
 	l.mu.Lock()
 	if l.haveConfig {
-		l.events = append([]sandbox.RunnerEvent{{Kind: sandbox.RunnerResume}}, l.events...)
 		l.log.Info("connected to the host again")
 	}
 	l.conn = c
@@ -109,9 +85,9 @@ func (l *guestLink) serve(ctx context.Context, sess *yamux.Session) {
 	go l.sendEvents(c)
 	go l.streamLogs(c)
 	select {
-	case <-c.done:
+	case <-c.Done():
 	case <-ctx.Done():
-		sess.Close()
+		c.Close()
 	}
 
 	l.mu.Lock()
@@ -120,15 +96,15 @@ func (l *guestLink) serve(ctx context.Context, sess *yamux.Session) {
 	l.mu.Unlock()
 }
 
-// config gets the GuestConfig. It waits for a connection and asks again on
-// the next connection if a request fails. Call it one time only.
-func (l *guestLink) config(ctx context.Context) (control.GuestConfig, error) {
+// config waits for a connection. When a request fails, it asks again after a
+// second or on the next connection. Call it one time only.
+func (l *guestLink) config(ctx context.Context) (guest.Config, error) {
 	for {
 		c, err := l.wait(ctx)
 		if err != nil {
-			return control.GuestConfig{}, err
+			return guest.Config{}, err
 		}
-		cfg, err := getConfig(ctx, c.client)
+		cfg, err := c.Config(ctx)
 		if err == nil {
 			l.mu.Lock()
 			l.haveConfig = true
@@ -137,33 +113,15 @@ func (l *guestLink) config(ctx context.Context) (control.GuestConfig, error) {
 		}
 		l.log.Warn("get config", "err", err)
 		select {
-		case <-c.done:
+		case <-c.Done():
 		case <-time.After(time.Second):
 		case <-ctx.Done():
-			return control.GuestConfig{}, ctx.Err()
+			return guest.Config{}, ctx.Err()
 		}
 	}
 }
 
-func getConfig(ctx context.Context, client *http.Client) (control.GuestConfig, error) {
-	var cfg control.GuestConfig
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://host/v1/config", nil)
-	if err != nil {
-		return cfg, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return cfg, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return cfg, fmt.Errorf("host answered %s", resp.Status)
-	}
-	err = json.NewDecoder(resp.Body).Decode(&cfg)
-	return cfg, err
-}
-
-func (l *guestLink) wait(ctx context.Context) (*linkConn, error) {
+func (l *guestLink) wait(ctx context.Context) (*guest.Client, error) {
 	for {
 		l.mu.Lock()
 		c, up := l.conn, l.up
@@ -187,7 +145,7 @@ func (l *guestLink) event(ev sandbox.RunnerEvent) {
 	l.newEvent = make(chan struct{})
 }
 
-func (l *guestLink) sendEvents(c *linkConn) {
+func (l *guestLink) sendEvents(c *guest.Client) {
 	for {
 		l.mu.Lock()
 		if len(l.events) == 0 {
@@ -196,29 +154,29 @@ func (l *guestLink) sendEvents(c *linkConn) {
 			select {
 			case <-wake:
 				continue
-			case <-c.done:
+			case <-c.Done():
 				return
 			}
 		}
 		ev := l.events[0]
 		l.mu.Unlock()
-		status, err := postEvent(c.client, ev)
+		err := postEvent(c, ev)
 		select {
-		case <-c.done:
+		case <-c.Done():
 			// The host may not have the event. Send it again on the next connection.
 			return
 		default:
 		}
-		if err != nil {
+		switch {
+		case errors.Is(err, guest.ErrRejected):
+			l.log.Warn("the host rejected a runner event", "kind", ev.Kind, "err", err)
+		case err != nil:
 			l.log.Warn("send runner event", "kind", ev.Kind, "err", err)
 			select {
 			case <-time.After(time.Second):
-			case <-c.done:
+			case <-c.Done():
 			}
 			continue
-		}
-		if status != http.StatusNoContent {
-			l.log.Warn("the host rejected a runner event", "kind", ev.Kind, "status", status)
 		}
 		l.mu.Lock()
 		if len(l.events) > 0 && l.events[0] == ev {
@@ -228,21 +186,10 @@ func (l *guestLink) sendEvents(c *linkConn) {
 	}
 }
 
-func postEvent(client *http.Client, ev sandbox.RunnerEvent) (int, error) {
-	body, _ := json.Marshal(ev) // only strings and an int
+func postEvent(c *guest.Client, ev sandbox.RunnerEvent) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://host/v1/events", bytes.NewReader(body))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	resp.Body.Close()
-	return resp.StatusCode, nil
+	return c.PostEvent(ctx, ev)
 }
 
 func (l *guestLink) flushEvents(ctx context.Context) {
@@ -266,24 +213,15 @@ func (l *guestLink) flushEvents(ctx context.Context) {
 // streamLogs sends the log queue as one streamed request until the
 // connection drops or the queue closes. The host answers 204 only after the
 // end of the queue.
-func (l *guestLink) streamLogs(c *linkConn) {
+func (l *guestLink) streamLogs(c *guest.Client) {
 	for {
-		req, err := http.NewRequest(http.MethodPost, "http://host/v1/logs", l.logs.reader(c.done))
-		if err != nil {
+		err := c.StreamLogs(context.Background(), l.logs.reader(c.Done()))
+		if err == nil {
+			l.logsOnce.Do(func() { close(l.logsDone) })
 			return
 		}
-		req.Header.Set("Content-Type", "text/plain")
-		resp, err := c.client.Do(req)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusNoContent {
-				l.logsOnce.Do(func() { close(l.logsDone) })
-				return
-			}
-			err = fmt.Errorf("host answered %s", resp.Status)
-		}
 		select {
-		case <-c.done:
+		case <-c.Done():
 			return
 		case <-time.After(time.Second):
 			l.log.Warn("log stream broke, starting it again", "err", err)
@@ -300,21 +238,22 @@ func (l *guestLink) flushLogs(ctx context.Context) {
 }
 
 // dialHost connects to the host end of the control channel in container and
-// dev mode. In dev mode the ctl folder also holds control.addr: then the
-// guest dials TCP and sends the hello line first. It reads the file at each
-// dial, because the host writes a new token after a restart.
-func dialHost(ctx context.Context, socket string) (net.Conn, error) {
+// dev mode: the socket in the ctl folder dir. In dev mode, dir has the
+// guest.AddrFile instead: then the guest dials TCP and sends the hello line
+// first. It reads the file at each dial, because the host writes a new token
+// after a restart.
+func dialHost(ctx context.Context, dir string) (net.Conn, error) {
 	// A connect that hangs, for example in the TCP proxy of Docker on
 	// macOS, would otherwise wait for the kernel limit of about 2 minutes.
 	d := net.Dialer{Timeout: 5 * time.Second}
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(socket), control.AddrFile))
+	b, err := os.ReadFile(filepath.Join(dir, guest.AddrFile))
 	if errors.Is(err, fs.ErrNotExist) {
-		return d.DialContext(ctx, "unix", socket)
+		return d.DialContext(ctx, "unix", filepath.Join(dir, guest.SocketFile))
 	}
 	if err != nil {
 		return nil, err
 	}
-	addr, hello, err := control.ParseAddr(b)
+	addr, hello, err := guest.ParseAddr(b)
 	if err != nil {
 		return nil, err
 	}

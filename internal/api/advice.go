@@ -18,6 +18,12 @@ type SizeAdvice struct {
 }
 
 const (
+	adviceLarger  = "larger"
+	adviceSmaller = "smaller"
+	adviceNone    = "none"
+)
+
+const (
 	adviceRuns    = 10   // the last completed runs that count
 	adviceMinRuns = 3    // fewer runs give no advice
 	largerMemory  = 0.90 // of the memory, at the peak
@@ -37,11 +43,11 @@ const (
 //     than pool and keeps 30% headroom on the two peaks.
 func sizeAdvice(runs []store.RunUsage, pool *store.Pool, pools []store.Pool) SizeAdvice {
 	if pool == nil {
-		return SizeAdvice{Kind: "none", Reason: "The pool of this job no longer exists."}
+		return SizeAdvice{Kind: adviceNone, Reason: "The pool of this job no longer exists."}
 	}
 	runs = slices.DeleteFunc(slices.Clone(runs), func(r store.RunUsage) bool { return r.VCPU <= 0 || r.MemoryMB <= 0 })
 	if len(runs) < adviceMinRuns {
-		return SizeAdvice{Kind: "none", Reason: fmt.Sprintf(
+		return SizeAdvice{Kind: adviceNone, Reason: fmt.Sprintf(
 			"Size advice needs %d completed runs with CPU and memory samples. This job has %d.", adviceMinRuns, len(runs))}
 	}
 	var cpuPeaks, cpuAvgs, mems []float64
@@ -67,7 +73,7 @@ func sizeAdvice(runs []store.RunUsage, pool *store.Pool, pools []store.Pool) Siz
 			return p.VCPU >= pool.VCPU && p.MemoryMB >= pool.MemoryMB &&
 				(!memShort || mem <= headroom*float64(p.MemoryMB)) && (!cpuShort || cpuAvg <= headroom*float64(p.VCPU))
 		})
-		return SizeAdvice{Kind: "larger", Label: label, Reason: strings.Join(why, " and ") + of + noPool(label, pool)}
+		return SizeAdvice{Kind: adviceLarger, Label: label, Reason: strings.Join(why, " and ") + of + noPool(label, pool)}
 	}
 	if cpuPeak < smallerShare*vcpu && mem < smallerShare*memory {
 		label := smallest(pools, pool, func(p store.Pool) bool {
@@ -75,9 +81,9 @@ func sizeAdvice(runs []store.RunUsage, pool *store.Pool, pools []store.Pool) Siz
 				cpuPeak <= headroom*float64(p.VCPU) && mem <= headroom*float64(p.MemoryMB)
 		})
 		why := fmt.Sprintf("CPU use peaked at %.0f%% of %d vCPUs and memory at %s of %s", 100*cpuPeak/vcpu, pool.VCPU, gb(mem), gb(memory))
-		return SizeAdvice{Kind: "smaller", Label: label, Reason: why + of + noPool(label, pool)}
+		return SizeAdvice{Kind: adviceSmaller, Label: label, Reason: why + of + noPool(label, pool)}
 	}
-	return SizeAdvice{Kind: "none", Reason: "The CPU and memory use fit the pool" + of}
+	return SizeAdvice{Kind: adviceNone, Reason: "The CPU and memory use fit the pool" + of}
 }
 
 // p90 is the 90th percentile with the nearest-rank method.

@@ -1,5 +1,4 @@
 import type { Schemas } from '~/api/client'
-import type { PoolStats } from '~/api/events'
 import { formatDuration } from '~/lib/format'
 
 // Text and order of the Labels and Live runners tables, from GET /api/pools and GET /api/sandboxes.
@@ -13,15 +12,6 @@ export function sortSandboxes(sandboxes: readonly Sandbox[]): Sandbox[] {
   return sandboxes.toSorted(
     (a, b) => stateRank[a.state] - stateRank[b.state] || Date.parse(b.created_at) - Date.parse(a.created_at),
   )
-}
-
-export const stateNames: Record<Sandbox['state'], string> = {
-  starting: 'Starting',
-  idle: 'Idle',
-  busy: 'Busy',
-  stopping: 'Stopping',
-  gone: 'Gone',
-  failed: 'Failed',
 }
 
 /**
@@ -40,6 +30,16 @@ export function poolScope(pool: Pick<Pool, 'arch' | 'server_ids'>, servers: read
   return pool.server_ids.map((id) => names.get(id) ?? 'Removed server').join(', ')
 }
 
+type Placement = Pick<Schemas['PoolPlacement'], 'online_servers' | 'waiting_servers' | 'placeable_servers'>
+
+/** Why no sandbox of the pool size can start, as "No x64 server is online", or undefined when one can. */
+export function placementProblem(arch: string, placement: Placement): string | undefined {
+  if (placement.placeable_servers > 0) return undefined
+  if (placement.online_servers === 0) return `No ${arch} server is online`
+  if (placement.waiting_servers === placement.online_servers) return `No ${arch} server gets runners now`
+  return `No ${arch} server is large enough`
+}
+
 /** "16 vCPU · 64 GB" */
 export function poolSize(pool: Pick<Pool, 'vcpu' | 'memory_mb'>): string {
   return `${pool.vcpu} vCPU · ${gigabytes(pool.memory_mb)} GB`
@@ -53,14 +53,6 @@ export function poolHardware(pool: Pick<Pool, 'arch' | 'disk_gb'>): string {
 /** Memory in GB with at most one decimal: 16384 → 16, 512 → 0.5. */
 export function gigabytes(mb: number): number {
   return Math.round((mb / 1024) * 10) / 10
-}
-
-type Counts = Pick<Pool, 'idle' | 'busy' | 'starting' | 'queued'>
-
-/** The pool counts of the last pool.stats event, or of the list until an event arrives. */
-export function liveCounts(pool: Pool, live: PoolStats | undefined): Counts {
-  const source = live ?? pool
-  return { idle: source.idle, busy: source.busy, starting: source.starting, queued: source.queued }
 }
 
 /** "30 minutes", "1 hour", "6 hours", "1 hour 30 minutes". */

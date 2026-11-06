@@ -2,11 +2,16 @@ package api
 
 import (
 	"context"
-	"errors"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/runplane/runplane/internal/auth"
+	"github.com/runplane/runplane/internal/store"
+	"github.com/runplane/runplane/internal/update"
 )
 
 func TestNewInviteLinkReplacesTheOldOne(t *testing.T) {
@@ -38,31 +43,35 @@ func TestNewInviteLinkReplacesTheOldOne(t *testing.T) {
 	b.do("POST", "/api/invites/"+first.Invite.ID+"/link", nil, nil).want(t, 404)
 }
 
-// fakeNotifier records the tests and fails for URLs that contain "broken".
-type fakeNotifier struct{ sent []string }
-
-func (f *fakeNotifier) Test(_ context.Context, _, kind, url string) error {
-	f.sent = append(f.sent, kind+" "+url)
-	if strings.Contains(url, "broken") {
-		return errors.New("receiver answered 404 Not Found")
-	}
-	return nil
-}
-
+// A test message goes to the receiver of the channel, and the delivery of
+// a saved channel shows in the list.
 func TestNotificationTests(t *testing.T) {
-	n := &fakeNotifier{}
-	e := newEnv(t, func(d *Deps) { d.Notifier = n })
+	var mu sync.Mutex
+	var paths []string
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if strings.Contains(r.URL.Path, "broken") {
+			http.Error(w, "no such hook", http.StatusNotFound)
+		}
+	}))
+	defer receiver.Close()
+	e := newEnv(t)
 	b := e.login("ada@example.com", auth.RoleAdmin)
 
 	b.do("POST", "/api/notifications/test", map[string]string{"kind": "slack", "url": "http://hooks.slack.com/x"}, nil).want(t, 422)
-	b.do("POST", "/api/notifications/test", map[string]string{"kind": "webhook", "url": "http://10.0.0.2/hook"}, nil).want(t, 204)
-	if len(n.sent) != 1 || n.sent[0] != "webhook http://10.0.0.2/hook" {
-		t.Fatalf("sent %q, want one test to the unsaved webhook", n.sent)
+	b.do("POST", "/api/notifications/test", map[string]string{"kind": "webhook", "url": receiver.URL + "/hook"}, nil).want(t, 204)
+	mu.Lock()
+	sent := slices.Clone(paths)
+	mu.Unlock()
+	if !slices.Equal(sent, []string{"/hook"}) {
+		t.Fatalf("receiver got %q, want one test to the unsaved webhook", sent)
 	}
 
 	var c NotificationChannel
 	b.do("POST", "/api/notifications", map[string]any{
-		"name": "ops", "kind": "webhook", "url": "https://example.com/broken", "events": []string{"job.failed"},
+		"name": "ops", "kind": "webhook", "url": receiver.URL + "/broken", "events": []string{"job.failed"},
 	}, &c).want(t, 200)
 	if c.LastSentAt != nil {
 		t.Fatalf("new channel has last_sent_at %v", c.LastSentAt)
@@ -74,53 +83,60 @@ func TestNotificationTests(t *testing.T) {
 		t.Fatalf("after a failed test: last_sent_at %v, last_error %q", list[0].LastSentAt, list[0].LastError)
 	}
 
-	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"url": "https://example.com/fixed"}, nil).want(t, 200)
+	b.do("PATCH", "/api/notifications/"+c.ID, map[string]any{"url": receiver.URL + "/fixed"}, nil).want(t, 200)
 	b.do("POST", "/api/notifications/"+c.ID+"/test", nil, nil).want(t, 204)
 	b.do("GET", "/api/notifications", nil, &list).want(t, 200)
 	if list[0].LastError != "" {
 		t.Fatalf("after a good test: last_error %q, want none", list[0].LastError)
 	}
+	b.do("POST", "/api/notifications/nope/test", nil, nil).want(t, 404)
 }
 
-// fakeUpdater blocks Apply until release closes.
+// fakeUpdater is an updater in a state, whose Apply returns err.
 type fakeUpdater struct {
-	applying chan struct{}
-	release  chan struct{}
+	state update.State
+	err   error
 }
 
-func (f *fakeUpdater) Check(context.Context) (UpdateStatus, error) {
-	return UpdateStatus{Current: "v1.0.0", Latest: "v1.1.0", Available: true}, nil
+func (f fakeUpdater) Check(context.Context) (update.Status, error) {
+	return update.Status{Current: "v1.0.0", Latest: "v1.1.0", Available: true}, nil
 }
 
-func (f *fakeUpdater) Apply(context.Context) error {
-	close(f.applying)
-	<-f.release
-	return nil
+func (f fakeUpdater) State() update.State { return f.state }
+
+func (f fakeUpdater) Apply(context.Context) (update.Status, error) {
+	return update.Status{Current: "v1.0.0", Latest: "v1.1.0", Available: true}, f.err
 }
 
+// The dashboard shows the state of the updater, also of an auto update. A
+// second update while one runs is a conflict, and the audit log has only
+// the update that started.
 func TestUpdateState(t *testing.T) {
-	u := &fakeUpdater{applying: make(chan struct{}), release: make(chan struct{})}
-	e := newEnv(t, func(d *Deps) { d.Updater = u })
-	b := e.login("ada@example.com", auth.RoleAdmin)
-	other := e.login("eve@example.com", auth.RoleAdmin)
-
-	var st UpdateStatus
-	b.do("GET", "/api/update", nil, &st).want(t, 200)
-	if st.State != "idle" {
-		t.Fatalf("state before the update = %q, want idle", st.State)
-	}
-	done := make(chan response)
-	go func() { done <- b.do("POST", "/api/update", nil, nil) }()
-	recv(t, u.applying)
-	other.do("GET", "/api/update", nil, &st).want(t, 200)
-	if st.State != "applying" {
-		t.Fatalf("state during the update = %q, want applying", st.State)
-	}
-	other.do("POST", "/api/update", nil, nil).want(t, 409)
-	close(u.release)
-	recv(t, done).want(t, 204)
-	other.do("GET", "/api/update", nil, &st).want(t, 200)
-	if st.State != "restarting" {
-		t.Fatalf("state after the update = %q, want restarting", st.State)
+	for _, tt := range []struct {
+		state  update.State
+		err    error
+		status int
+	}{
+		{update.Idle, nil, 204},
+		{update.Applying, update.ErrBusy, 409},
+		{update.Restarting, update.ErrBusy, 409},
+		{update.Idle, update.ErrNoUpdate, 409},
+	} {
+		e := newEnv(t, func(d *Deps) { d.Updater = fakeUpdater{state: tt.state, err: tt.err} })
+		b := e.login("ada@example.com", auth.RoleAdmin)
+		var st UpdateStatus
+		b.do("GET", "/api/update", nil, &st).want(t, 200)
+		if st.State != string(tt.state) || st.Latest != "v1.1.0" {
+			t.Errorf("state %q, latest %q; want %s and v1.1.0", st.State, st.Latest, tt.state)
+		}
+		if res := b.do("POST", "/api/update", nil, nil); res.StatusCode != tt.status {
+			t.Errorf("update with %v: status %d, want %d", tt.err, res.StatusCode, tt.status)
+		}
+		entries, _, err := e.st.ListAudit(context.Background(), "", 10)
+		must(t, err)
+		recorded := slices.ContainsFunc(entries, func(a store.AuditEntry) bool { return a.Action == "update.apply" })
+		if recorded != (tt.err == nil) {
+			t.Errorf("update with %v: update.apply entry %v, want %v", tt.err, recorded, tt.err == nil)
+		}
 	}
 }

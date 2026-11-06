@@ -4,42 +4,61 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/hashicorp/yamux"
-
 	"github.com/runplane/runplane/internal/sandbox"
+	"github.com/runplane/runplane/internal/sandbox/guest"
 	"github.com/runplane/runplane/internal/sandbox/netrules"
 )
 
 // fakeHost records the host changes of the driver. stopping holds the
-// scopes that systemd is about to stop.
+// scopes that systemd is about to stop, and netErr fails the firewall
+// writes.
 type fakeHost struct {
 	mu                           sync.Mutex
-	added, kept, dropped, killed []string
+	opened, kept, closed, killed []string
+	nets                         []netrules.Config
+	netErr                       error
 	stopping                     map[string]bool
+	next                         int // the index of the next lease
 }
 
-func (h *fakeHost) setupNet(context.Context, netrules.Config) error { return nil }
-func (h *fakeHost) close() error                                    { return nil }
-func (h *fakeHost) stopJobs() (map[string]bool, error)              { return h.stopping, nil }
-func (h *fakeHost) probe(context.Context, netrules.Lease, netip.Addr, string) error {
+func (h *fakeHost) setupNet(_ context.Context, cfg netrules.Config) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.nets = append(h.nets, cfg)
+	return h.netErr
+}
+
+func (h *fakeHost) tapLeases() int                     { return 16384 }
+func (h *fakeHost) stopJobs() (map[string]bool, error) { return h.stopping, nil }
+func (h *fakeHost) probe(context.Context, netrules.Lease, netip.Addr) error {
 	return errors.ErrUnsupported
 }
 
-func (h *fakeHost) addTap(l netrules.Lease, _, _ int) error { return h.add(&h.added, l.Tap) }
-func (h *fakeHost) keepTap(l netrules.Lease) error          { return h.add(&h.kept, l.Tap) }
-func (h *fakeHost) dropTap(l netrules.Lease) error          { return h.add(&h.dropped, l.Tap) }
-func (h *fakeHost) killScope(unit string) error             { return h.add(&h.killed, unit) }
+func (h *fakeHost) acquireTap() (netrules.Lease, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.next++
+	return leaseOf(h.next - 1), nil
+}
+
+func (h *fakeHost) openTap(l netrules.Lease, _, _ int) error { return h.add(&h.opened, l.Tap) }
+func (h *fakeHost) keepTap(l netrules.Lease) error           { return h.add(&h.kept, l.Tap) }
+func (h *fakeHost) closeTap(l netrules.Lease) error          { return h.add(&h.closed, l.Tap) }
+func (h *fakeHost) killScope(unit string) error              { return h.add(&h.killed, unit) }
 
 func (h *fakeHost) add(list *[]string, s string) error {
 	h.mu.Lock()
@@ -54,13 +73,25 @@ func (h *fakeHost) calls(list *[]string) []string {
 	return slices.Clone(*list)
 }
 
+// leaseOf is lease i of 10.214.0.0/16, for i below 64.
+func leaseOf(i int) netrules.Lease {
+	return netrules.Lease{
+		Index: i, Tap: fmt.Sprintf("rp-%d", i),
+		Host: netip.AddrFrom4([4]byte{10, 214, 0, byte(4*i + 1)}), Guest: netip.AddrFrom4([4]byte{10, 214, 0, byte(4*i + 2)}),
+	}
+}
+
 // testDriver is a driver with its data folder and cgroup tree in root.
 func testDriver(t *testing.T, root string, sys hostOps) *Driver {
 	t.Helper()
+	data := filepath.Join(root, "data")
 	d := newDriver(Options{
-		DataDir:     filepath.Join(root, "data"),
-		ServicePort: 8486,
-		Logger:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		DataDir:          data,
+		Sandboxes:        filepath.Join(data, "sandboxes"),
+		ScratchTemplates: filepath.Join(data, "scratch-templates"),
+		JailDir:          filepath.Join(data, "jail"),
+		ServicePort:      8486,
+		Logger:           slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}, idRange{uid: os.Getuid(), gid: os.Getgid(), count: 16}, sys)
 	d.cgroupRoot = filepath.Join(root, "cgroup")
 	t.Cleanup(func() { d.Close() })
@@ -71,7 +102,7 @@ func testDriver(t *testing.T, root string, sys hostOps) *Driver {
 func recovered(t *testing.T, root string, sys hostOps) *Driver {
 	t.Helper()
 	d := testDriver(t, root, sys)
-	if err := d.recover(); err != nil {
+	if err := d.recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	return d
@@ -81,43 +112,64 @@ func recovered(t *testing.T, root string, sys hostOps) *Driver {
 // record, the chroot, and a scope with a process.
 func writeVM(t *testing.T, root, id string, tap int, state sandbox.State, created time.Time) {
 	t.Helper()
-	spec := sandbox.Spec{ID: id, PoolID: "pool1", VCPU: 1, MemoryMB: 512, DiskGB: 1, TimeLimit: time.Hour}
-	b, err := json.Marshal(record{Spec: spec, Tap: tap, CreatedAt: created, State: state})
+	writeRecord(t, root, id, "vm", tap, state, created)
+	writeFile(t, filepath.Join(root, "data", "jail", "firecracker", id, "root", scratchFile), "")
+	writeFile(t, scopeProcs(root, id), "4242\n")
+}
+
+// writeRecord writes the record of a sandbox in the form of the lifecycle
+// package.
+func writeRecord(t *testing.T, root, id string, mode sandbox.Mode, tap int, state sandbox.State, created time.Time) {
+	t.Helper()
+	lease := leaseOf(tap)
+	b, err := json.Marshal(map[string]any{
+		"mode":       mode,
+		"spec":       sandbox.Spec{ID: id, PoolID: "pool1", VCPU: 1, MemoryMB: 512, DiskGB: 1, TimeLimit: time.Hour},
+		"created_at": created,
+		"ip":         lease.Guest.String(),
+		"state":      state,
+		"host":       map[string]any{"lease": lease},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(root, "data", "sandboxes", id, recordFile), string(b))
-	writeFile(t, filepath.Join(root, "data", "jail", "firecracker", id, "root", scratchFile), "")
-	writeFile(t, scopeProcs(root, id), "4242\n")
+	writeFile(t, filepath.Join(root, "data", "sandboxes", id, "sandbox.json"), string(b))
 }
 
 func scopeProcs(root, id string) string {
 	return filepath.Join(root, "cgroup", "runplane.slice", "runplane-vm-"+id+".scope", "cgroup.procs")
 }
 
-// dialGuest connects to a control socket as runplane-init does through
-// vsock. It returns a client for the host, and calls onShutdown when the
-// host asks the guest to power off.
-func dialGuest(t *testing.T, socket string, onShutdown func()) *http.Client {
+// dialGuest connects to the control socket of the VM id as runplane-init
+// does through vsock: Firecracker forwards the guest port 1024 to the socket
+// v.sock_1024 in the chroot. It calls onShutdown when the host asks the
+// guest to power off.
+func dialGuest(t *testing.T, root, id string, onShutdown func()) *guest.Client {
 	t.Helper()
-	conn, err := net.Dial("unix", socket)
+	conn, err := net.Dial("unix", filepath.Join(root, "data", "jail", "firecracker", id, "root", "v.sock_1024"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := yamux.Client(conn, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sess.Close() })
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/shutdown", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST "+guest.PathShutdown, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		onShutdown()
 	})
-	go http.Serve(sess, mux)
-	return &http.Client{Transport: &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) { return sess.Open() },
-	}}
+	c, err := guest.NewClient(conn, mux, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
+}
+
+// connected waits until the host serves the guest of c: the host answers
+// an empty log stream.
+func connected(t *testing.T, c *guest.Client) {
+	t.Helper()
+	if err := c.StreamLogs(context.Background(), strings.NewReader("")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func nextEvent(t *testing.T, d *Driver) sandbox.Event {
@@ -171,16 +223,11 @@ func TestCloseStopsTheVMsThatSystemdStops(t *testing.T) {
 	d := recovered(t, root, sys)
 	shutdowns := make(chan string, len(ids))
 	for _, id := range ids {
-		dialGuest(t, filepath.Join(d.chroot(id), controlSocket), func() {
+		c := dialGuest(t, root, id, func() {
 			shutdowns <- id
 			writeFile(t, scopeProcs(root, id), "") // the guest powers off
 		})
-		v := d.vms[id]
-		for start := time.Now(); !v.ctl.Connected(); time.Sleep(time.Millisecond) {
-			if time.Since(start) > 5*time.Second {
-				t.Fatalf("the guest of %s does not connect", id)
-			}
-		}
+		connected(t, c)
 	}
 
 	d.Close()
@@ -196,9 +243,36 @@ func TestCloseStopsTheVMsThatSystemdStops(t *testing.T) {
 		t.Errorf("scopes killed: %v, want none", killed)
 	}
 	for id, want := range map[string]bool{"vm1": false, "vm2": true} {
-		if exists(d.sandboxDir(id)) != want || exists(d.jailDir(id)) != want {
+		if exists(filepath.Join(root, "data", "sandboxes", id)) != want || exists(filepath.Join(root, "data", "jail", "firecracker", id)) != want {
 			t.Errorf("the folders of %s exist: %v, want %v", id, !want, want)
 		}
+	}
+}
+
+// netrules keeps the old rules when a firewall write fails. The fleet sends
+// the same settings again at the next connection, and that Configure must
+// write the firewall again: else the VMs keep the old allowlist and DNS
+// servers until these settings change again.
+func TestConfigureWritesTheFirewallAgain(t *testing.T) {
+	ctx := t.Context()
+	sys := &fakeHost{netErr: errors.New("nft: netlink busy")}
+	d := testDriver(t, t.TempDir(), sys)
+	dns := []netip.Addr{netip.MustParseAddr("9.9.9.9")}
+	s := sandbox.Settings{DNS: dns, EgressAllowlist: []string{"192.0.2.1"}}
+	if err := d.Configure(ctx, s); err == nil {
+		t.Fatal("Configure gave no error after a failed firewall write")
+	}
+	sys.mu.Lock()
+	sys.netErr = nil
+	sys.mu.Unlock()
+	if err := d.Configure(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	want := netrules.Config{ServicePort: 8486, DNS: dns, Allowlist: []string{"192.0.2.1"}}
+	sys.mu.Lock()
+	defer sys.mu.Unlock()
+	if len(sys.nets) != 2 || !reflect.DeepEqual(sys.nets[1], want) {
+		t.Errorf("firewall writes %+v, want two writes of %+v", sys.nets, want)
 	}
 }
 

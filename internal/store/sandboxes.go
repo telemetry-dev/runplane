@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/runplane/runplane/internal/sandbox"
@@ -18,7 +20,6 @@ type Sandbox struct {
 	State         sandbox.State `json:"state"`
 	RunnerID      int64         `json:"runner_id"`
 	RunnerName    string        `json:"runner_name"`
-	IP            string        `json:"ip"`
 	ImageDigest   string        `json:"image_digest"`
 	RunnerVersion string        `json:"runner_version"`
 	JobID         string        `json:"job_id"`
@@ -41,14 +42,6 @@ type SandboxFilter struct {
 	States   []sandbox.State // empty = all
 }
 
-// SandboxCount is the count of live sandboxes for one pool, server, and state.
-type SandboxCount struct {
-	PoolID   string
-	ServerID string
-	State    sandbox.State
-	Count    int
-}
-
 // SandboxJob is a live sandbox with the repository and the run data of its job.
 type SandboxJob struct {
 	SandboxID string
@@ -60,13 +53,13 @@ type SandboxJob struct {
 	RunRef
 }
 
-const sandboxCols = `id, pool_id, server_id, scale_set_id, mode, state, runner_id, runner_name, ip, image_digest,
+const sandboxCols = `id, pool_id, server_id, scale_set_id, mode, state, runner_id, runner_name, image_digest,
 	runner_version, job_id, debug, hold_until, vcpu, memory_mb, disk_gb, created_at, idle_at, busy_at, stopped_at, exit_reason,
 	error`
 
 func (b *Sandbox) cols() []any {
 	return []any{&b.ID, &b.PoolID, &b.ServerID, &b.ScaleSetID, &b.Mode, &b.State, &b.RunnerID, &b.RunnerName,
-		&b.IP, &b.ImageDigest, &b.RunnerVersion, &b.JobID, &b.Debug, atPtr(&b.HoldUntil), &b.VCPU, &b.MemoryMB,
+		&b.ImageDigest, &b.RunnerVersion, &b.JobID, &b.Debug, atPtr(&b.HoldUntil), &b.VCPU, &b.MemoryMB,
 		&b.DiskGB, at(&b.CreatedAt), atPtr(&b.IdleAt), atPtr(&b.BusyAt), atPtr(&b.StoppedAt), &b.ExitReason, &b.Error}
 }
 
@@ -74,15 +67,37 @@ func (s *Store) InsertSandbox(ctx context.Context, b Sandbox) error {
 	return exec(ctx, s.w, "insert sandbox", insert("sandboxes", sandboxCols), b.cols()...)
 }
 
-// SetSandboxIP records the address of a sandbox of the server serverID. It
-// returns ErrNotFound for a sandbox of another server, so a server cannot
-// give its address to a sandbox that it does not run.
-func (s *Store) SetSandboxIP(ctx context.Context, serverID, id, ip string) error {
-	return exec1(ctx, s.w, "set sandbox ip", "UPDATE sandboxes SET ip = ? WHERE id = ? AND server_id = ?", ip, id, serverID)
+// SetSandboxRunner records the GitHub runner of a starting sandbox. It
+// returns ErrNotFound if the sandbox is no longer starting, because a stop
+// came first.
+func (s *Store) SetSandboxRunner(ctx context.Context, id string, runnerID int64) error {
+	return exec1(ctx, s.w, "set sandbox runner",
+		"UPDATE sandboxes SET runner_id = ? WHERE id = ? AND state = ?", runnerID, id, sandbox.StateStarting)
 }
 
-func (s *Store) SetSandboxJob(ctx context.Context, id, jobID string) error {
-	return exec1(ctx, s.w, "set sandbox job", "UPDATE sandboxes SET job_id = ? WHERE id = ?", jobID, id)
+// DeleteSandbox deletes the row of a sandbox that got no runner.
+func (s *Store) DeleteSandbox(ctx context.Context, id string) error {
+	return exec(ctx, s.w, "delete sandbox", "DELETE FROM sandboxes WHERE id = ?", id)
+}
+
+// LinkJobSandbox records that the sandbox runs the job: the job gets the
+// sandbox and its server, and the sandbox gets the job. It returns the two
+// rows after the change, or ErrNotFound if one of them does not exist.
+func (s *Store) LinkJobSandbox(ctx context.Context, jobID, sandboxID string) (Job, Sandbox, error) {
+	var j Job
+	var b Sandbox
+	err := s.tx(ctx, "link job and sandbox", func(tx *sql.Tx) error {
+		var err error
+		b, err = queryOne(ctx, tx, "set sandbox job", scanRow[Sandbox],
+			"UPDATE sandboxes SET job_id = ? WHERE id = ? RETURNING "+sandboxCols, jobID, sandboxID)
+		if err != nil {
+			return err
+		}
+		j, err = queryOne(ctx, tx, "set job sandbox", scanRow[Job],
+			"UPDATE jobs SET sandbox_id = ?, server_id = ? WHERE id = ? RETURNING "+jobCols, b.ID, b.ServerID, jobID)
+		return err
+	})
+	return j, b, err
 }
 
 func (s *Store) SetSandboxHold(ctx context.Context, id string, until time.Time) error {
@@ -94,8 +109,32 @@ func (s *Store) SetSandboxDebug(ctx context.Context, id string) error {
 	return exec1(ctx, s.w, "set sandbox debug", "UPDATE sandboxes SET debug = 1 WHERE id = ?", id)
 }
 
-// sandboxRank orders the sandbox states. gone and failed share the last rank.
-const sandboxRank = `CASE %s WHEN 'starting' THEN 0 WHEN 'idle' THEN 1 WHEN 'busy' THEN 2 WHEN 'stopping' THEN 3 ELSE 4 END`
+// The SQL terms of the sandbox states come from the order in package
+// sandbox.
+var (
+	liveState = "state NOT IN (" + stateList(sandbox.DoneStates()) + ")"
+	doneState = "state IN (" + stateList(sandbox.DoneStates()) + ")"
+)
+
+// stateList returns "'a', 'b'" for the states.
+func stateList(list []sandbox.State) string {
+	quoted := make([]string, len(list))
+	for i, st := range list {
+		quoted[i] = "'" + string(st) + "'"
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// rankOf returns a CASE term with the sandbox.State Rank of the state in expr.
+func rankOf(expr string) string {
+	var b strings.Builder
+	b.WriteString("CASE " + expr)
+	for _, st := range append(sandbox.LiveStates(), sandbox.DoneStates()...) {
+		fmt.Fprintf(&b, " WHEN '%s' THEN %d", st, st.Rank())
+	}
+	b.WriteString(" ELSE -1 END")
+	return b.String()
+}
 
 // AdvanceSandboxState records a change at t to a state that comes after the
 // current one, and returns the row and true. The first change to idle, busy,
@@ -105,14 +144,17 @@ const sandboxRank = `CASE %s WHEN 'starting' THEN 0 WHEN 'idle' THEN 1 WHEN 'bus
 // already in that state or a later one. Events can arrive out of order, and
 // a late "listening" must not make a busy sandbox idle again.
 func (s *Store) AdvanceSandboxState(ctx context.Context, id string, state sandbox.State, reason string, t time.Time) (Sandbox, bool, error) {
+	if state.Rank() < 0 {
+		return Sandbox{}, false, fmt.Errorf("advance sandbox state: unknown state %q", state)
+	}
 	b, err := queryOne(ctx, s.w, "advance sandbox state", scanRow[Sandbox], `UPDATE sandboxes SET
 			state = ?1,
 			idle_at = CASE WHEN ?1 = 'idle' THEN coalesce(idle_at, ?2) ELSE idle_at END,
 			busy_at = CASE WHEN ?1 = 'busy' THEN coalesce(busy_at, ?2) ELSE busy_at END,
-			stopped_at = CASE WHEN ?1 IN ('gone', 'failed') THEN coalesce(stopped_at, ?2) ELSE stopped_at END,
+			stopped_at = CASE WHEN ?1 IN (`+stateList(sandbox.DoneStates())+`) THEN coalesce(stopped_at, ?2) ELSE stopped_at END,
 			error = CASE WHEN ?1 = 'failed' AND error = '' THEN ?3 ELSE error END,
 			exit_reason = CASE WHEN ?1 IN ('stopping', 'gone') AND exit_reason = '' THEN ?3 ELSE exit_reason END
-		WHERE id = ?4 AND `+fmt.Sprintf(sandboxRank, "state")+` < `+fmt.Sprintf(sandboxRank, "?1")+`
+		WHERE id = ?4 AND `+rankOf("state")+` < `+rankOf("?1")+`
 		RETURNING `+sandboxCols, state, ms(t), reason, id)
 	if err == nil {
 		return b, true, nil
@@ -154,44 +196,30 @@ func (s *Store) ListSandboxes(ctx context.Context, f SandboxFilter) ([]Sandbox, 
 		"SELECT "+sandboxCols+" FROM sandboxes"+where(conds)+" ORDER BY created_at DESC, id DESC", args...)
 }
 
-// ListLiveSandboxes returns the sandboxes that are not gone or failed.
 func (s *Store) ListLiveSandboxes(ctx context.Context) ([]Sandbox, error) {
-	return s.ListSandboxes(ctx, SandboxFilter{States: []sandbox.State{
-		sandbox.StateStarting, sandbox.StateIdle, sandbox.StateBusy, sandbox.StateStopping,
-	}})
+	return s.ListSandboxes(ctx, SandboxFilter{States: sandbox.LiveStates()})
 }
 
-// FindLiveSandboxes returns the sandboxes that are not gone or failed and
-// whose ID starts with prefix, newest first.
+// FindLiveSandboxes returns the live sandboxes whose ID starts with prefix,
+// newest first.
 func (s *Store) FindLiveSandboxes(ctx context.Context, prefix string) ([]Sandbox, error) {
 	return queryAll(ctx, s.r, "find sandboxes", scanRow[Sandbox], "SELECT "+sandboxCols+` FROM sandboxes
-		WHERE state IN ('starting', 'idle', 'busy', 'stopping') AND substr(id, 1, length(?1)) = ?1
+		WHERE `+liveState+` AND substr(id, 1, length(?1)) = ?1
 		ORDER BY created_at DESC, id DESC`, prefix)
 }
 
-func (s *Store) CountLiveSandboxes(ctx context.Context) ([]SandboxCount, error) {
-	return queryAll(ctx, s.r, "count sandboxes", func(sc scanner) (SandboxCount, error) {
-		var c SandboxCount
-		err := sc.Scan(&c.PoolID, &c.ServerID, &c.State, &c.Count)
-		return c, err
-	}, `SELECT pool_id, server_id, state, count(*) FROM sandboxes
-		WHERE state NOT IN ('gone', 'failed') GROUP BY pool_id, server_id, state`)
-}
-
-// DeleteSandboxesBefore deletes the gone and failed sandboxes that stopped before before.
+// DeleteSandboxesBefore deletes the done sandboxes that stopped before before.
 func (s *Store) DeleteSandboxesBefore(ctx context.Context, before time.Time) error {
 	return exec(ctx, s.w, "delete old sandboxes",
-		"DELETE FROM sandboxes WHERE state IN ('gone', 'failed') AND stopped_at < ?", ms(before))
+		"DELETE FROM sandboxes WHERE "+doneState+" AND stopped_at < ?", ms(before))
 }
 
-// The state term must stay equal to the WHERE clause of the sandboxes_live_ip
-// index.
-const sandboxJobQuery = `SELECT s.id, s.server_id, coalesce(j.repository, ''),
+var sandboxJobQuery = `SELECT s.id, s.server_id, coalesce(j.repository, ''),
 		coalesce((SELECT r.default_branch FROM repositories r WHERE r.full_name = j.repository LIMIT 1), ''),
 		coalesce(j.workflow_ref, ''), coalesce(j.event, ''), coalesce(j.head_branch, ''), coalesce(j.pr_number, 0),
 		coalesce(j.base_ref, '')
 	FROM sandboxes s LEFT JOIN jobs j ON j.id = s.job_id
-	WHERE s.state NOT IN ('gone', 'failed') AND `
+	WHERE s.` + liveState + ` AND `
 
 func (b *SandboxJob) cols() []any {
 	return []any{&b.SandboxID, &b.ServerID, &b.Repository, &b.DefaultBranch, &b.WorkflowRef, &b.Event, &b.HeadBranch,
@@ -201,11 +229,4 @@ func (b *SandboxJob) cols() []any {
 // LiveSandboxJob returns the sandbox with this ID if it still operates.
 func (s *Store) LiveSandboxJob(ctx context.Context, id string) (SandboxJob, error) {
 	return queryOne(ctx, s.r, "get sandbox job", scanRow[SandboxJob], sandboxJobQuery+"s.id = ?", id)
-}
-
-// LiveSandboxJobByIP returns the newest operating sandbox of the server
-// with this IP address.
-func (s *Store) LiveSandboxJobByIP(ctx context.Context, serverID, ip string) (SandboxJob, error) {
-	return queryOne(ctx, s.r, "get sandbox job", scanRow[SandboxJob],
-		sandboxJobQuery+"s.ip = ? AND s.server_id = ? ORDER BY s.created_at DESC LIMIT 1", ip, serverID)
 }

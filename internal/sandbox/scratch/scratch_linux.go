@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/runplane/runplane/internal/atomicfile"
 )
 
 // Create makes a sparse ext4 disk of sizeGB at path. It replaces a file at
@@ -35,8 +37,6 @@ func (d *Disks) Create(path string, sizeGB int) error {
 	return nil
 }
 
-// template returns the empty ext4 file of sizeGB and makes it first if it
-// does not exist.
 func (d *Disks) template(sizeGB int) (string, error) {
 	path := filepath.Join(d.dir, fmt.Sprintf("ext4-%dg.img", sizeGB))
 	d.mu.Lock()
@@ -47,28 +47,23 @@ func (d *Disks) template(sizeGB int) (string, error) {
 	if err := os.MkdirAll(d.dir, 0o700); err != nil {
 		return "", fmt.Errorf("create template folder: %w", err)
 	}
-	f, err := os.CreateTemp(d.dir, ".tmp-*")
+	f, err := atomicfile.Create(path, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create template: %w", err)
 	}
-	tmp := f.Name()
-	defer os.Remove(tmp)
-	err = f.Truncate(int64(sizeGB) << 30)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
+	defer f.Close()
+	if err := f.Truncate(int64(sizeGB) << 30); err != nil {
 		return "", fmt.Errorf("size template: %w", err)
 	}
 	// Without "nodiscard", mke2fs punches a hole over the whole file and
 	// then knows that the inode tables read as zero. It marks them zeroed,
 	// so the kernel does not write ~1 GB of zeros for each 64 GB at the
 	// first mount of each copy, and the copies stay sparse.
-	cmd := exec.Command("mkfs.ext4", "-F", "-q", "-m", "0", "-E", "lazy_itable_init=0,lazy_journal_init=1", tmp)
+	cmd := exec.Command("mkfs.ext4", "-F", "-q", "-m", "0", "-E", "lazy_itable_init=0,lazy_journal_init=1", f.Name())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("mkfs.ext4: %w: %s", err, bytes.TrimSpace(out))
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := f.Commit(); err != nil {
 		return "", fmt.Errorf("save template: %w", err)
 	}
 	return path, nil
@@ -135,48 +130,6 @@ func Used(mountpoint string) (int64, error) {
 		return 0, fmt.Errorf("measure %s: %w", mountpoint, err)
 	}
 	return int64(st.Blocks-st.Bfree) * st.Frsize, nil
-}
-
-// Usage returns the bytes that the files under dir use on disk. It stays on
-// the file system of dir and counts hard links once. Container mode uses it
-// to measure the scratch volume of a sandbox that has no scratch disk.
-func Usage(dir string) (int64, error) {
-	var root unix.Stat_t
-	if err := unix.Lstat(dir, &root); err != nil {
-		return 0, fmt.Errorf("measure %s: %w", dir, err)
-	}
-	seen := map[uint64]bool{} // inodes with more than one link
-	var total int64
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		var st unix.Stat_t
-		if err == nil {
-			err = unix.Lstat(path, &st)
-		}
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil // removed while we walk
-		}
-		if err != nil {
-			return err
-		}
-		if st.Dev != root.Dev {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.IsDir() && st.Nlink > 1 {
-			if seen[st.Ino] {
-				return nil
-			}
-			seen[st.Ino] = true
-		}
-		total += st.Blocks * 512
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("measure %s: %w", dir, err)
-	}
-	return total, nil
 }
 
 // copyFile copies src to dst. It clones the file if the file system can

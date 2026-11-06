@@ -36,8 +36,8 @@ The script does these steps:
 3. It downloads runplane and makes sure that the signature of `SHA256SUMS` and the SHA-256 of each file are correct (refer to [Release](#release)).
 4. In container mode, it installs Docker Engine (only if the server does not have it) and Sysbox.
 5. In VM mode, it installs Firecracker v1.17.0, the jailer, and the guest kernel. It also gives the user `runplane-vm` a range of uids and gids, one for each VM. If the base image of the release repository is not public on GHCR, it installs Docker Engine, because runplane then builds the base image on the server. Docker builds images only, and the jobs operate in VMs.
-6. It writes `/etc/runplane/runplane.env` and the systemd units, then it starts `runplane.service`.
-7. It runs `runplane doctor` and shows the dashboard URL and a one-time setup code.
+6. It writes `/etc/runplane/runplane.env` and the systemd units, and it makes a one-time setup code. Then it starts `runplane.service`.
+7. It runs `runplane doctor` and shows the dashboard URL and the setup code.
 
 To see each step before the install, add `--dry-run`. The dry run changes nothing on the server.
 
@@ -66,7 +66,7 @@ In VM mode, the script installs Firecracker v1.17.0, which the runplane tests us
 curl -fsSL https://github.com/runplane/runplane/releases/latest/download/install.sh | sudo RUNPLANE_FIRECRACKER_VERSION=v1.16.1 sh
 ```
 
-To update runplane, run the install command again. You can also select the update in **Settings > General**, or run `sudo runplane update` on the server. In VM mode, the update also replaces the guest kernel with the kernel of the release. A restart of runplane does not stop the jobs that operate. A shutdown of the server stops the jobs that operate with the result `cancelled`.
+To update runplane, run the install command again. You can also select the update in **Settings > General**, or run `sudo runplane update` on the primary. In VM mode, the update also replaces the guest kernel with the kernel of the release. A restart of runplane does not stop the jobs that operate. A shutdown of the server stops the jobs that operate with the result `cancelled`.
 
 The primary updates its agents. When an agent connects with a different version, the primary sends it the update to its own release. After an update of the primary, the agents connect again and get the new release. The primary tries each version one time on each agent. If the update is not successful, the **Servers** page shows **Update failed** after the name of the server. The page of the server shows the reason. You can start the update again with **Update agent** in the menu of the server. A primary that is not a release build does not update its agents.
 
@@ -76,7 +76,7 @@ You can also update an agent by hand. Run this command on the agent server:
 curl -fsSL http://203.0.113.10:8484/install.sh | sudo sh
 ```
 
-The primary serves this script. Thus the agent gets the version of the primary. On an agent, the script keeps the registration in `/etc/runplane/agent.json` and does not install a primary. On the agent server, `sudo runplane update` installs the latest release.
+The primary serves this script. Thus the agent gets the version of the primary. On an agent, the script keeps the registration in `/etc/runplane/agent.json` and does not install a primary. An agent must run the release of its primary, so `sudo runplane update` does not operate on an agent.
 
 To remove runplane, run this command:
 
@@ -187,7 +187,7 @@ An agent must run the same release as the primary. The primary updates each agen
 
 **Warning:** Use runplane only with private repositories. A pull request from a fork of a public repository can run code on your server.
 
-In container mode, runplane always rejects jobs from public repositories. All Sysbox containers share the host kernel and one ID mapping, thus the isolation between jobs is weaker. In VM mode, runplane rejects jobs from public repositories and from fork pull requests, unless you change these settings. You can let jobs from public repositories run only if each server operates in VM mode.
+In container mode, runplane never runs jobs from public repositories. All Sysbox containers share the host kernel and one ID mapping, thus the isolation between jobs is weaker. In VM mode, runplane rejects jobs from public repositories and from fork pull requests, unless you change these settings. You can turn on the setting for public repositories only if each server operates in VM mode. While the setting is on, a server that connects in a different mode gets no runners, and the **Servers** page tells the cause. To give runners to that server again, turn the setting off.
 
 | Item | Container mode (Sysbox CE) | VM mode (Firecracker) |
 | --- | --- | --- |
@@ -196,7 +196,7 @@ In container mode, runplane always rejects jobs from public repositories. All Sy
 | Network model | One Docker bridge, with the MAC and IP binding in `bridge runplane` | A TAP with a /30 for each VM |
 | AppArmor | The Sysbox profile | Not applicable |
 | Host daemon on the `/proc` path | `sysbox-fs` (Sysbox issue 1018) | None |
-| Public repositories | Rejected | Permitted with the setting |
+| Public repositories | Never | Permitted with the setting |
 
 Sandboxes cannot connect to the host, to other sandboxes, to private networks, to `169.254.169.254`, or to the Azure host endpoint `168.63.129.16`. They can connect only to the public internet and to the runplane cache service on the host.
 
@@ -295,10 +295,10 @@ Other commands:
 | `sh deploy/test-install.sh` | Dry runs of `install.sh` in Ubuntu, Debian, and Fedora containers |
 | `kernel/build.sh --config-only` | A check of the guest kernel config, without a kernel build |
 
-The tests of netlink, nftables, loop devices, and mounts must have root access on Linux. To do these tests on macOS, use a Linux container:
+The tests of netlink, nftables, loop devices, mounts, and the debug shell of `runplane-init` must have root access on Linux. To do these tests on macOS, use a Linux container:
 
 ```sh
-docker run --rm --privileged -v "$PWD":/src -v "$HOME/go/pkg/mod":/go/pkg/mod -w /src golang:1.27 go test ./internal/...
+docker run --rm --privileged -v "$PWD":/src -v "$HOME/go/pkg/mod":/go/pkg/mod -w /src golang:1.27 go test ./init/... ./internal/...
 ```
 
 ## Release
@@ -321,4 +321,4 @@ A person who can change the release files can also change the `install.sh` of th
 
 **Caution:** Do not change the key after the first release. A binary with the earlier key cannot do a self-update to a release with a new key. On these servers, run the install command of the new release again.
 
-The `images.yml` workflow pushes the base images to GHCR each week and after each change in `images/`. The builds use the `runplane` label. QEMU builds the architecture that the runner does not have. After the first push, set the visibility of each image package on GHCR to public. Then servers pull the base images without a login, and VM mode does not need Docker. To do a check, run `docker logout ghcr.io && docker pull ghcr.io/<owner>/<repo>/runner-ubuntu-24.04:latest`.
+The `images.yml` workflow pushes the base images to GHCR each week and after each change of `images/Dockerfile`. The builds use the `runplane` label. QEMU builds the architecture that the runner does not have. After the first push, set the visibility of each image package on GHCR to public. Then servers pull the base images without a login, and VM mode does not need Docker. To do a check, run `docker logout ghcr.io && docker pull ghcr.io/<owner>/<repo>/runner-ubuntu-24.04:latest`.

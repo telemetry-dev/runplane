@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,7 +15,6 @@ func openTest(t *testing.T) *Store {
 	return s
 }
 
-// must stops the test if err is not nil.
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -22,10 +22,9 @@ func must(t *testing.T, err error) {
 	}
 }
 
-// addJob records a job message.
 func addJob(t *testing.T, s *Store, m JobMessage) Job {
 	t.Helper()
-	j, err := s.UpsertJob(t.Context(), m)
+	j, err := s.UpsertJob(t.Context(), m, time.Now())
 	must(t, err)
 	return j
 }
@@ -45,16 +44,20 @@ func TestOpenMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	_, err = s.w.Exec("PRAGMA user_version = 999")
-	must(t, err)
 	s.Close()
+	// A newer runplane gives its schema a higher number.
+	db, err := sql.Open("sqlite", path)
+	must(t, err)
+	_, err = db.Exec("PRAGMA user_version = 999")
+	must(t, err)
+	db.Close()
 	if s, err := Open(path); err == nil {
 		s.Close()
 		t.Fatal("Open accepted a database from a newer runplane")
 	}
 }
 
-func TestVacuumIntoWithDB(t *testing.T) {
+func TestVacuumInto(t *testing.T) {
 	s := openTest(t)
 	_, err := s.UpdateSettings(t.Context(), func(st *Settings) error {
 		st.InstanceName = "copied"
@@ -62,8 +65,8 @@ func TestVacuumIntoWithDB(t *testing.T) {
 	})
 	must(t, err)
 	path := filepath.Join(t.TempDir(), "backup.db")
-	if _, err := s.DB().Exec("VACUUM INTO ?", path); err != nil {
-		t.Fatalf("VACUUM INTO: %v", err)
+	if err := s.VacuumInto(t.Context(), path); err != nil {
+		t.Fatalf("VacuumInto: %v", err)
 	}
 	b, err := Open(path)
 	must(t, err)
