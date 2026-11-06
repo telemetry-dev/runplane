@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -111,13 +113,65 @@ func newFixture(t *testing.T, maxBytes int64, opts ...func(*Config)) *fixture {
 	return f
 }
 
+// counts returns the counts of a repository in the store. Run writes the
+// counts that it has in memory when it stops.
 func (f *fixture) counts(t *testing.T, repository string) store.CacheCounts {
-	f.srv.stats.flush(t.Context())
+	f.start(t)()
 	counts, err := f.st.CacheStatsByRepository(t.Context(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return counts[repository]
+}
+
+// start runs Run of the server until stop, which waits until Run returns.
+func (f *fixture) start(t *testing.T) (stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		f.srv.Run(ctx)
+		close(done)
+	}()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
+// dirBytes returns the bytes of the files under dir.
+func dirBytes(t *testing.T, dir string) int64 {
+	t.Helper()
+	var n int64
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err == nil {
+			n += info.Size()
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func openStore(t *testing.T) *store.Store {
